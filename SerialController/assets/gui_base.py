@@ -82,7 +82,7 @@ class AppBase:
         self.spinbox_communication_port.grid(column=1, row=0, sticky='ew')
         _validatecmd = (self.spinbox_communication_port.register(self.int_only), '%S')
         self.spinbox_communication_port.configure(validatecommand=_validatecmd)
-        self.spinbox_communication_port.configure(command=self.connect_com_port)
+        # self.spinbox_communication_port.configure(command=self.connect_com_port)
         self.button_reload_communication_port = ttk.Button(self.frame_camera)
         self.button_reload_communication_port.configure(text='Reload Port')
         self.button_reload_communication_port.grid(column=2, row=0)

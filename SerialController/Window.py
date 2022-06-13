@@ -31,7 +31,7 @@ PYTHON_COMMAND_DIR = "Commands/PythonCommands"
 MCU_COMMAND_DIR = "Commands/McuCommands"
 
 NAME = "Poke-Controller Modified"
-VERSION = f"v4.0.1 beta, python{platform.python_version()}"  # based on 1.0-beta3
+VERSION = f"v4.0.2 beta, python{platform.python_version()}"  # based on 1.0-beta3
 
 
 class PokeConApp(AppBase):
@@ -401,7 +401,8 @@ class PokeConApp(AppBase):
                 print('COM Port ' + str(self.communication_port.get()) + ' connected successfully')
                 self.keyPress = KeyPress(self.ser)
                 try:
-                    self.keyPress.isShowInput = self.menu.isShowInput
+                    if self.menu is not None:
+                        self.keyPress.isShowInput = self.menu.isShowInput
                 except:
                     self.logger.exception("Wrong COM Port")
 
