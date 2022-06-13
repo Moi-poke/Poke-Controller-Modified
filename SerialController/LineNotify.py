@@ -11,10 +11,10 @@ from logging import getLogger, DEBUG, NullHandler
 class Line_Notify:
 
     def __init__(self, camera=None, token_name='token'):
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
+        self.logger = getLogger(__name__)
+        self.logger.addHandler(NullHandler())
+        self.logger.setLevel(DEBUG)
+        self.logger.propagate = True
 
         self.res = None
         self.token_file = configparser.ConfigParser(comment_prefixes='#', allow_no_value=True)
@@ -37,7 +37,7 @@ class Line_Notify:
 
         encoding = 'utf-8-sig' if is_with_bom else 'utf-8'
 
-        self._logger.debug("Load token file")
+        self.logger.debug("Load token file")
         self.token_file.read(line_token_path, encoding)
 
     def is_utf8_file_with_bom(self, filename):
@@ -50,10 +50,10 @@ class Line_Notify:
     def __str__(self):
         for stat in self.status:
             if stat == 401:
-                self._logger.error("Invalid token")
+                self.logger.error("Invalid token")
                 return "LINE Token Check FAILED."
             elif stat == 200:
-                self._logger.info("Valid token")
+                self.logger.info("Valid token")
                 return "LINE-Token Check OK!"
 
     def send_text(self, notification_message, token='token'):
@@ -67,13 +67,13 @@ class Line_Notify:
             self.res = requests.post(line_notify_api, headers=headers, data=data)
             if self.res.status_code == 200:
                 print("[LINE]テキストを送信しました。")
-                self._logger.info("Send text")
+                self.logger.info("Send text")
             else:
                 print("[LINE]テキストの送信に失敗しました。")
-                self._logger.error("Failed to send text")
+                self.logger.error("Failed to send text")
         except KeyError:
             print('token名が間違っています')
-            self._logger.error('Using the wrong token')
+            self.logger.error('Using the wrong token')
 
     def send_text_n_image(self, notification_message, token='token'):
         """
@@ -100,13 +100,13 @@ class Line_Notify:
             self.res = requests.post(line_notify_api, headers=headers, params=data, files=files)
             if self.res.status_code == 200:
                 print("[LINE]テキストと画像を送信しました。")
-                self._logger.info("Send image with text")
+                self.logger.info("Send image with text")
             else:
                 print("[LINE]テキストと画像の送信に失敗しました。")
-                self._logger.error("Failed to send image with text")
+                self.logger.error("Failed to send image with text")
         except KeyError:
             print('token名が間違っています')
-            self._logger.error('Using the wrong token')
+            self.logger.error('Using the wrong token')
 
     def getRateLimit(self):
         try:
@@ -121,16 +121,16 @@ class Line_Notify:
                                                      datetime.timezone(datetime.timedelta(hours=9)))
                 print('Reset time:', dt, '\n')
 
-                self._logger.info(f"LINE API - Limit: {self.res[i].headers['X-RateLimit-Limit']}")
-                self._logger.info(f"LINE API - Remaining: {self.res[i].headers['X-RateLimit-Remaining']}")
-                self._logger.info(f"LINE API - ImageLimit: {self.res[i].headers['X-RateLimit-Limit']}")
-                self._logger.info(f"LINE API - ImageRemaining: {self.res[i].headers['X-RateLimit-ImageRemaining']}")
-                self._logger.info(f"Reset time: {dt}")
+                self.logger.info(f"LINE API - Limit: {self.res[i].headers['X-RateLimit-Limit']}")
+                self.logger.info(f"LINE API - Remaining: {self.res[i].headers['X-RateLimit-Remaining']}")
+                self._logger.info(f"LINE API - ImageLimit: {self.res[i].headers['X-RateLimit-ImageLimit']}")
+                self.logger.info(f"LINE API - ImageRemaining: {self.res[i].headers['X-RateLimit-ImageRemaining']}")
+                self.logger.info(f"Reset time: {dt}")
         except AttributeError as e:
-            self._logger.error(e)
+            self.logger.error(e)
             pass
         except KeyError as e:
-            self._logger.error(e)
+            self.logger.error(e)
             pass
 
 

@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 
 import cv2
 import threading
-from abc import abstractclassmethod
+from abc import ABC, abstractclassmethod
 from time import sleep
 import random
 import time
 from logging import getLogger, DEBUG, NullHandler
+import tkinter as tk
+import tkinter.ttk as ttk
 
 from LineNotify import Line_Notify
 from . import CommandBase
 from .Keys import Button, Direction, KeyPress
 
 import numpy as np
+import copy
+
 
 # the class For notifying stop signal is sent from Main window
 class StopThread(Exception):
@@ -29,11 +34,12 @@ class PythonCommand(CommandBase.Command):
         self.alive = True
         self.postProcess = None
         self.Line = Line_Notify()
+        self.message_dialogue = None
 
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
+        self.logger = getLogger(__name__)
+        self.logger.addHandler(NullHandler())
+        self.logger.setLevel(DEBUG)
+        self.logger.propagate = True
 
     @abstractclassmethod
     def do(self):
@@ -49,14 +55,13 @@ class PythonCommand(CommandBase.Command):
                 self.finish()
         except StopThread:
             print('-- finished successfully. --')
-            self._logger.info("Command finished successfully")
+            self.logger.info("Command finished successfully")
         except:
+            self.logger.exception(f"コマンド実行中にエラーが発生しました。")
             if self.keys is None:
                 self.keys = KeyPress(ser)
             print('interrupt')
-            self._logger.warning('Command stopped unexpectedly')
-            import traceback
-            traceback.print_exc()
+            self.logger.warning('Command stopped unexpectedly')
             self.keys.end()
             self.alive = False
 
@@ -74,7 +79,7 @@ class PythonCommand(CommandBase.Command):
         if self.checkIfAlive():  # try if we can stop now
             self.alive = False
             print('-- sent a stop request. --')
-            self._logger.info("Sending stop request")
+            self.logger.info("Sending stop request")
 
     # NOTE: Use this function if you want to get out from a command loop by yourself
     def finish(self):
@@ -83,9 +88,9 @@ class PythonCommand(CommandBase.Command):
 
     # press button at duration times(s)
     def press(self, buttons, duration=0.1, wait=0.1):
-        self.keys.input(buttons)
+        self.keys.input(copy.deepcopy(buttons))
         self.wait(duration)
-        self.keys.inputEnd(buttons)
+        self.keys.inputEnd(copy.deepcopy(buttons))
         self.wait(wait)
         self.checkIfAlive()
 
@@ -133,12 +138,19 @@ class PythonCommand(CommandBase.Command):
                 self.postProcess = None
 
             # raise exception for exit working thread
-            self._logger.info('Exit from command successfully')
+            self.logger.info('Exit from command successfully')
             raise StopThread('exit successfully')
         else:
             return True
 
+    def dialogue(self, title: str, message: int | str | list, need=list):
+        self.message_dialogue = tk.Toplevel()
+        ret = PokeConDialogue(self.message_dialogue, title, message).ret_value(need)
+        self.message_dialogue = None
+        return ret
+
     # Use time glitch
+
     # Controls the system time and get every-other-day bonus without any punishments
     def timeLeap(self, is_go_back=True):
         self.press(Button.HOME, wait=1)
@@ -189,10 +201,84 @@ class PythonCommand(CommandBase.Command):
         self.Line.send_text(txt, token)
 
 
+class PokeConDialogue(object):
+    def __init__(self, parent, title: str, message: int | str | list):
+        self._ls = None
+        self.isOK = None
+
+        self.message_dialogue = parent
+        self.message_dialogue.title(title)
+        self.message_dialogue.attributes("-topmost", True)
+        self.message_dialogue.protocol("WM_DELETE_WINDOW", self.close_window)
+
+        self.main_frame = tk.Frame(self.message_dialogue)
+        self.inputs = ttk.Frame(self.main_frame)
+
+        self.title_label = ttk.Label(self.main_frame, text=title, anchor='center')
+        self.title_label.grid(column=0, columnspan=2, ipadx='10', ipady='10', row=0, sticky='nsew')
+
+        self.dialogue_ls = {}
+        if type(message) is not list:
+            message = [message]
+        n = len(message)
+        x = self.message_dialogue.master.winfo_x()
+        w = self.message_dialogue.master.winfo_width()
+        y = self.message_dialogue.master.winfo_y()
+        h = self.message_dialogue.master.winfo_height()
+        w_ = self.message_dialogue.winfo_width()
+        h_ = self.message_dialogue.winfo_height()
+        self.message_dialogue.geometry(f"+{int(x + w / 2 - w_ / 2)}+{int(y + h / 2 - h_ / 2)}")
+        for i in range(n):
+            self.dialogue_ls[message[i]] = tk.StringVar()
+            label = ttk.Label(self.inputs, text=message[i])
+            entry = ttk.Entry(self.inputs, textvariable=self.dialogue_ls[message[i]])
+            label.grid(column=0, row=i, sticky='nsew', padx=3, pady=3)
+            entry.grid(column=1, row=i, sticky='nsew', padx=3, pady=3)
+
+        self.inputs.grid(column=0, columnspan=2, ipadx='10', ipady='10', row=1, sticky='nsew')
+        self.inputs.grid_anchor('center')
+        self.result = ttk.Frame(self.main_frame)
+        self.OK = ttk.Button(self.result, command=self.ok_command)
+        self.OK.configure(text='OK')
+        self.OK.grid(column=0, row=1)
+        self.Cancel = ttk.Button(self.result, command=self.cancel_command)
+        self.Cancel.configure(text='Cancel')
+        self.Cancel.grid(column=1, row=1, sticky='ew')
+        self.result.grid(column=0, columnspan=2, pady=5, row=2, sticky='ew')
+        self.result.grid_anchor('center')
+        self.main_frame.pack()
+        self.message_dialogue.master.wait_window(self.message_dialogue)
+
+    def ret_value(self, need):
+        if self.isOK:
+            if need == dict:
+                return {k: v.get() for k, v in self.dialogue_ls.items()}
+            elif need == list:
+                return self._ls
+            else:
+                print(f"Wrong arg. Try Return list.")
+                return self._ls
+        else:
+            return False
+
+    def close_window(self):
+        self.message_dialogue.destroy()
+        self.isOK = False
+
+    def ok_command(self):
+        self._ls = [v.get() for k, v in self.dialogue_ls.items()]
+        self.message_dialogue.destroy()
+        self.isOK = True
+
+    def cancel_command(self):
+        self.message_dialogue.destroy()
+        self.isOK = False
+
+
 TEMPLATE_PATH = "./Template/"
 
 
-class ImageProcPythonCommand(PythonCommand):
+class ImageProcPythonCommand(PythonCommand, ABC):
     def __init__(self, cam, gui=None):
         super(ImageProcPythonCommand, self).__init__()
 
@@ -279,18 +365,18 @@ class ImageProcPythonCommand(PythonCommand):
                 if self.gui is not None and show_position:
                     # self.gui.delete("ImageRecRect")
                     self.gui.ImgRect(*top_left,
-                                    *bottom_right,
-                                    outline='blue',
-                                    tag=tag,
-                                    ms=ms)
+                                     *bottom_right,
+                                     outline='blue',
+                                     tag=tag,
+                                     ms=ms)
             else:
                 if self.gui is not None and show_position and not show_only_true_rect:
                     # self.gui.delete("ImageRecRect")
                     self.gui.ImgRect(*top_left,
-                                    *bottom_right,
-                                    outline='red',
-                                    tag=tag,
-                                    ms=ms)
+                                     *bottom_right,
+                                     outline='red',
+                                     tag=tag,
+                                     ms=ms)
 
         return np.argmax(max_val_list), max_val_list, judge_threshold_list
 
@@ -327,7 +413,7 @@ class ImageProcPythonCommand(PythonCommand):
     except ModuleNotFoundError:
         pass
 
-    # Get interframe difference binarized image
+    # Get inter-frame difference binarized image
     # フレーム間差分により2値化された画像を取得
     def getInterframeDiff(self, frame1, frame2, frame3, threshold):
         diff1 = cv2.absdiff(frame1, frame2)

@@ -77,7 +77,7 @@ class ListenShiny(PythonCommand):
                         frames_per_buffer=CHUNK,
                         input=True,
                         output=False)
-        self._logger.debug(f"Connect: {p.get_device_info_by_index(device_index)}")
+        self.logger.debug(f"Connect: {p.get_device_info_by_index(device_index)}")
         try:
             while stream.is_active():  # 無限ループします
                 if not self.checkIfAlive():
@@ -131,7 +131,7 @@ class ListenShiny(PythonCommand):
                         # wf.close()
 
                         print("Sounds Shiny!" + this_time)
-                        self._logger.debug("Recognized sound.")
+                        self.logger.debug("Recognized sound.")
                         data1 = []
                         data2 = []
                         sound_count = 0

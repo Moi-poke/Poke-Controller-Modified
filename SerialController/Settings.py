@@ -12,20 +12,20 @@ class GuiSettings:
 
     def __init__(self):
 
-        self._logger = getLogger(__name__)
+        self.logger = getLogger(__name__)
         self.setting = configparser.ConfigParser()
         self.setting.optionxform = str
         # print("isExistConfig =", os.path.exists(self.SETTING_PATH))
 
         if not os.path.exists(self.SETTING_PATH):
-            self._logger.debug('Setting file does not exists.')
+            self.logger.debug('Setting file does not exists.')
             self.generate()
             self.load()
-            self._logger.debug('Settings file has been generated.')
+            self.logger.debug('Settings file has been generated.')
         else:
-            self._logger.debug('Setting file exists.')
+            self.logger.debug('Setting file exists.')
             self.load()
-            self._logger.debug('Settings file has been loaded.')
+            self.logger.debug('Settings file has been loaded.')
 
         # default
         self.camera_id = tk.IntVar(value=self.setting['General Setting'].getint('camera_id'))
@@ -36,6 +36,11 @@ class GuiSettings:
         self.is_show_realtime = tk.BooleanVar(value=self.setting['General Setting'].getboolean('is_show_realtime'))
         self.is_show_serial = tk.BooleanVar(value=self.setting['General Setting'].getboolean('is_show_serial'))
         self.is_use_keyboard = tk.BooleanVar(value=self.setting['General Setting'].getboolean('is_use_keyboard'))
+        self.isShowInput = tk.BooleanVar(value=self.setting['General Setting'].getboolean('isShowInput'))
+        self.is_use_L_stick_mouse = tk.BooleanVar(
+            value=self.setting['General Setting'].getboolean('is_use_L_stick_mouse'))
+        self.is_use_R_stick_mouse = tk.BooleanVar(
+            value=self.setting['General Setting'].getboolean('is_use_R_stick_mouse'))
         # Pokemon Home用の設定
         self.season = tk.StringVar(value=self.setting['Pokemon Home'].get('Season'))
         self.is_SingleBattle = tk.StringVar(value=self.setting['Pokemon Home'].get('Single or Double'))
@@ -49,13 +54,16 @@ class GuiSettings:
         # default
         self.setting['General Setting'] = {
             'camera_id': 0,
-            'com_port': 0,
+            'com_port': 1,
             'com_port_name': '',
             'fps': 45,
             'show_size': '640x360',
             'is_show_realtime': True,
             'is_show_serial': False,
             'is_use_keyboard': True,
+            'isShowInput': True,
+            'is_use_L_stick_mouse': False,
+            'is_use_R_stick_mouse': False,
         }
         # pokemon home用の設定
         self.setting['Pokemon Home'] = {
@@ -115,6 +123,9 @@ class GuiSettings:
             'is_show_realtime': self.is_show_realtime.get(),
             'is_show_serial': self.is_show_serial.get(),
             'is_use_keyboard': self.is_use_keyboard.get(),
+            'isShowInput': self.isShowInput.get(),
+            'is_use_L_stick_mouse': self.is_use_L_stick_mouse.get(),
+            'is_use_R_stick_mouse': self.is_use_R_stick_mouse.get(),
         }
         # pokemon home用の設定
         self.setting['Pokemon Home'] = {
@@ -125,4 +136,4 @@ class GuiSettings:
         with open(self.SETTING_PATH, 'w', encoding='utf-8') as file:
             self.setting.write(file)
         os.chmod(path=self.SETTING_PATH, mode=0o777)
-        self._logger.debug('Settings file has been saved.')
+        self.logger.debug('Settings file has been saved.')

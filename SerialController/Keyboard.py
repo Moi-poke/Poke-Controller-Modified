@@ -16,10 +16,10 @@ from Commands.Keys import Button, Direction, Hat
 # This handles keyboard interactions
 class Keyboard:
     def __init__(self):
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
+        self.logger = getLogger(__name__)
+        self.logger.addHandler(NullHandler())
+        self.logger.setLevel(DEBUG)
+        self.logger.propagate = True
 
         self.listener = Listener(
             on_press=self.on_press,
@@ -27,11 +27,11 @@ class Keyboard:
 
     def listen(self):
         self.listener.start()
-        self._logger.debug('Keyboard control start')
+        self.logger.debug('Keyboard control start')
 
     def stop(self):
         self.listener.stop()
-        self._logger.debug('Keyboard control stop')
+        self.logger.debug('Keyboard control stop')
 
     def on_press(self, key):
         try:
@@ -50,16 +50,16 @@ class SwitchKeyboardController(Keyboard):
     def __init__(self, keyPress):
         super(SwitchKeyboardController, self).__init__()
 
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
+        self.logger = getLogger(__name__)
+        self.logger.addHandler(NullHandler())
+        self.logger.setLevel(DEBUG)
+        self.logger.propagate = True
 
         self.to_use = Button.A
         self.setting = configparser.ConfigParser()
         self.setting.optionxform = str
 
-        self._logger.debug('Loading Keyboard control key-map setting')
+        self.logger.debug('Loading Keyboard control key-map setting')
         if os.path.isfile(self.SETTING_PATH):
             self.setting.read(self.SETTING_PATH, encoding='utf-8')
         self.key = keyPress
@@ -75,7 +75,7 @@ class SwitchKeyboardController(Keyboard):
         self.key_map = {**self.key_map_B, **self.key_map_D, **self.key_map_H}
         # self._logger.debug(self.key_map)
 
-        self._logger.debug('Initialization finished')
+        self.logger.debug('Initialization finished')
 
     def on_press(self, key):
         # for debug (show row key data)
@@ -83,7 +83,7 @@ class SwitchKeyboardController(Keyboard):
 
         if key is None:
             print('unknown key has input')
-            self._logger.warning('Unknown key has input')
+            self.logger.warning('Unknown key has input')
 
         # self._logger.debug(f"key type is {type(key)}")
         # self._logger.debug(f"key  is '{type(key)}'")
@@ -99,9 +99,9 @@ class SwitchKeyboardController(Keyboard):
             except KeyError:
                 return
         except Exception as e:
-            self._logger.error("Key has not recognized")
-            self._logger.error(type(e))
-            self._logger.error(e)
+            self.logger.error("Key has not recognized")
+            self.logger.error(type(e))
+            self.logger.error(e)
             _k = None
             key_type = None
 
@@ -158,7 +158,7 @@ class SwitchKeyboardController(Keyboard):
 
         if key is None:
             print('unknown key has released')
-            self._logger.warning('Unknown key has input')
+            self.logger.warning('Unknown key has input')
         try:
             _k = key.char
             key_type = (type(self.key_map[_k]))
@@ -169,9 +169,9 @@ class SwitchKeyboardController(Keyboard):
             except KeyError:
                 return
         except Exception as e:
-            self._logger.error("Key has not recognized")
-            self._logger.error(type(e))
-            self._logger.error(e)
+            self.logger.error("Key has not recognized")
+            self.logger.error(type(e))
+            self.logger.error(e)
             _k = None
             key_type = None
 
@@ -212,7 +212,7 @@ class SwitchKeyboardController(Keyboard):
             # self._logger.debug(f"push out {self.key_map[key.char]}")
 
         except AttributeError as e:
-            self._logger.debug(e)
+            self.logger.debug(e)
             # if key in self.holdingDir:
             #     self.holdingDir.remove(key)
             #     if self.holdingDir == []:
@@ -221,7 +221,7 @@ class SwitchKeyboardController(Keyboard):
             #     self.inputDir(self.holdingDir)
 
     def inputDir(self, dirs):
-        self._logger.debug(dirs)
+        self.logger.debug(dirs)
         if len(dirs) == 0:
             return
         elif len(dirs) == 1:
