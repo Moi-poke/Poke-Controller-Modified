@@ -137,7 +137,7 @@ class ReadCamThreading(object):
     def startReadingCam(self):
         self._init_camera()
         self._is_running = True
-        threading.Thread(target=self._update_camera, args=()).start()
+        threading.Thread(target=self._update_camera, args=(), daemon=True).start()
 
     def _init_camera(self):
         if os.name == 'nt':

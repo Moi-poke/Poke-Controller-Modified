@@ -31,7 +31,7 @@ PYTHON_COMMAND_DIR = "Commands/PythonCommands"
 MCU_COMMAND_DIR = "Commands/McuCommands"
 
 NAME = "Poke-Controller Modified"
-VERSION = f"v4.0.0 beta, python{platform.python_version()}"  # based on 1.0-beta3
+VERSION = f"v4.0.1 beta, python{platform.python_version()}"  # based on 1.0-beta3
 
 
 class PokeConApp(AppBase):
@@ -122,7 +122,8 @@ class PokeConApp(AppBase):
         self.is_use_keyboard = self.menu.is_use_keyboard
         self.is_use_L_stick_mouse = self.menu.is_use_L_stick_mouse
         self.is_use_R_stick_mouse = self.menu.is_use_R_stick_mouse
-        self.keyPress.isShowInput = self.menu.isShowInput
+        if self.keyPress is not None:
+            self.keyPress.isShowInput = self.menu.isShowInput
         if PLATFORM != 'Linux':
             try:
                 self.set_camera_name()
@@ -399,6 +400,10 @@ class PokeConApp(AppBase):
                 self.logger.info('COM Port ' + str(self.communication_port.get()) + ' connected successfully')
                 print('COM Port ' + str(self.communication_port.get()) + ' connected successfully')
                 self.keyPress = KeyPress(self.ser)
+                try:
+                    self.keyPress.isShowInput = self.menu.isShowInput
+                except:
+                    self.logger.exception("Wrong COM Port")
 
     def activate_keyboard(self) -> None:
         if self.settings.is_use_keyboard:
@@ -489,6 +494,7 @@ class PokeConApp(AppBase):
             cv2.destroyAllWindows()
             self.logger.debug("Stop Poke Controller")
             self.root.destroy()
+            self.logger.debug("Stopped")
 
     def closingController(self) -> None:
         self.controller.destroy()

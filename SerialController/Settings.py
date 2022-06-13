@@ -54,14 +54,14 @@ class GuiSettings:
         # default
         self.setting['General Setting'] = {
             'camera_id': 0,
-            'com_port': 1,
+            'com_port': 0,
             'com_port_name': '',
             'fps': 45,
             'show_size': '640x360',
             'is_show_realtime': True,
             'is_show_serial': False,
             'is_use_keyboard': True,
-            'isShowInput': True,
+            'isShowInput': False,
             'is_use_L_stick_mouse': False,
             'is_use_R_stick_mouse': False,
         }
