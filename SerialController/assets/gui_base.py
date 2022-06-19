@@ -76,6 +76,7 @@ class AppBase:
         self.label_communication_port.grid(column=0, padx=10, row=0, sticky='ew')
         self.spinbox_communication_port = ttk.Spinbox(self.frame_camera)
         self.communication_port = tk.IntVar(value=0)
+        self.communication_port_name = tk.StringVar(value="")
         self.spinbox_communication_port.configure(from_=0, increment=1, state='readonly',
                                                   textvariable=self.communication_port)
         self.spinbox_communication_port.configure(to=2147483647, width=5)

@@ -9,7 +9,7 @@ import platform
 import pathlib
 import tkinter as tk
 import tkinter.ttk as ttk
-import tkinter.messagebox as tkmsg
+from tkinter.messagebox import askyesno, askokcancel
 import pygubu
 
 import Settings
@@ -31,7 +31,7 @@ PYTHON_COMMAND_DIR = "Commands/PythonCommands"
 MCU_COMMAND_DIR = "Commands/McuCommands"
 
 NAME = "Poke-Controller Modified"
-VERSION = f"v4.0.2 beta, python{platform.python_version()}"  # based on 1.0-beta3
+VERSION = f"v4.0.3 beta, python{platform.python_version()}"  # based on 1.0-beta3
 
 
 class PokeConApp(AppBase):
@@ -70,6 +70,7 @@ class PokeConApp(AppBase):
         self.py_loader = None
         self.cur_command = None
         self.controller = None
+        self.isShowInput = False
 
         # 標準出力をログにリダイレクト
         sys.stdout = StdoutRedirector(self.text_log_area)
@@ -85,6 +86,7 @@ class PokeConApp(AppBase):
                 self.fps.set(self.settings.fps.get())
                 self.show_size.set(self.settings.show_size.get())
                 self.communication_port.set(self.settings.com_port.get())
+                self.communication_port_name.set(self.settings.com_port_name.get())
                 self.camera_id.set(self.settings.camera_id.get())
         except:
             self.logger.exception("設定ファイルに不具合があります。"
@@ -123,7 +125,8 @@ class PokeConApp(AppBase):
         self.is_use_L_stick_mouse = self.menu.is_use_L_stick_mouse
         self.is_use_R_stick_mouse = self.menu.is_use_R_stick_mouse
         if self.keyPress is not None:
-            self.keyPress.isShowInput = self.menu.isShowInput
+            self.isShowInput = self.menu.isShowInput
+            self.keyPress.isShowInput = self.isShowInput
         if PLATFORM != 'Linux':
             try:
                 self.set_camera_name()
@@ -190,7 +193,7 @@ class PokeConApp(AppBase):
         width, height = map(int, self.show_size.get().split("x"))
         self.preview.setShowsize(height, width)
         if self.show_size_tmp != self.combobox_show_size['values'].index(self.combobox_show_size.get()):
-            ret = tkmsg.askokcancel('確認', "この画面サイズに変更しますか？")
+            ret = askokcancel('確認', "この画面サイズに変更しますか？")
         else:
             return
 
@@ -395,14 +398,15 @@ class PokeConApp(AppBase):
             self.keyPress = None
             self.activate_serial()
         else:
-            if self.ser.openSerial(self.communication_port.get()):
+            if self.ser.openSerial(self.communication_port.get(), self.communication_port_name.get()):
                 # print('COM Port ' + str(self.communication_port.get()) + ' connected successfully')
                 self.logger.info('COM Port ' + str(self.communication_port.get()) + ' connected successfully')
                 print('COM Port ' + str(self.communication_port.get()) + ' connected successfully')
                 self.keyPress = KeyPress(self.ser)
                 try:
                     if self.menu is not None:
-                        self.keyPress.isShowInput = self.menu.isShowInput
+                        self.isShowInput = self.menu.isShowInput
+                        self.keyPress.isShowInput = self.isShowInput
                 except:
                     self.logger.exception("Wrong COM Port")
 
@@ -465,7 +469,7 @@ class PokeConApp(AppBase):
             self.stop_assigned_command()
 
     def exit(self) -> None:
-        ret = tkmsg.askyesno('確認', 'Poke Controllerを終了しますか？')
+        ret = askyesno('確認', 'Poke Controllerを終了しますか？')
         if ret:
             if self.ser.isOpened():
                 self.ser.closeSerial()
@@ -485,7 +489,7 @@ class PokeConApp(AppBase):
             self.settings.show_size.set(self.show_size.get())
             self.settings.com_port.set(self.communication_port.get())
             self.settings.is_use_keyboard.set(self.is_use_keyboard.get())
-            self.settings.isShowInput.set(self.keyPress.isShowInput.get())
+            self.settings.isShowInput.set(self.isShowInput.get())
             self.settings.is_use_L_stick_mouse.set(self.is_use_L_stick_mouse.get())
             self.settings.is_use_R_stick_mouse.set(self.is_use_R_stick_mouse.get())
 
