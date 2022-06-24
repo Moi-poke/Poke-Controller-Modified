@@ -31,7 +31,7 @@ PYTHON_COMMAND_DIR = "Commands/PythonCommands"
 MCU_COMMAND_DIR = "Commands/McuCommands"
 
 NAME = "Poke-Controller Modified"
-VERSION = f"v4.0.3 beta, python{platform.python_version()}"  # based on 1.0-beta3
+VERSION = f"v4.0.4 beta, python{platform.python_version()}"  # based on 1.0-beta3
 
 
 class PokeConApp(AppBase):
@@ -125,7 +125,7 @@ class PokeConApp(AppBase):
         self.is_use_L_stick_mouse = self.menu.is_use_L_stick_mouse
         self.is_use_R_stick_mouse = self.menu.is_use_R_stick_mouse
         if self.keyPress is not None:
-            self.isShowInput = self.menu.isShowInput
+            self.isShowInput = self.menu.isShowInput.get()
             self.keyPress.isShowInput = self.isShowInput
         if PLATFORM != 'Linux':
             try:
@@ -405,7 +405,7 @@ class PokeConApp(AppBase):
                 self.keyPress = KeyPress(self.ser)
                 try:
                     if self.menu is not None:
-                        self.isShowInput = self.menu.isShowInput
+                        self.isShowInput = self.menu.isShowInput.get()
                         self.keyPress.isShowInput = self.isShowInput
                 except:
                     self.logger.exception("Wrong COM Port")
@@ -489,7 +489,7 @@ class PokeConApp(AppBase):
             self.settings.show_size.set(self.show_size.get())
             self.settings.com_port.set(self.communication_port.get())
             self.settings.is_use_keyboard.set(self.is_use_keyboard.get())
-            self.settings.isShowInput.set(self.isShowInput.get())
+            self.settings.isShowInput.set(self.isShowInput)
             self.settings.is_use_L_stick_mouse.set(self.is_use_L_stick_mouse.get())
             self.settings.is_use_R_stick_mouse.set(self.is_use_R_stick_mouse.get())
 
