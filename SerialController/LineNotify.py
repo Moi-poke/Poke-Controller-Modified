@@ -7,7 +7,9 @@ import requests
 from PIL import Image
 from logging import Logger, getLogger, DEBUG, NullHandler
 
-TOKEN_FILE = os.path.join(os.path.dirname(__file__), 'line_token.ini')
+def _get_token_list(filename: str):
+    proxy = _open_file_with_utf8(filename)['LINE']
+    return {key: proxy[key] for key in proxy}
 
 def _open_file_with_utf8(filename: str):
     """
@@ -37,10 +39,11 @@ class Line_Notify:
         self.__res = None
         
         self._logger.debug("Load token file")
-        token_file = _open_file_with_utf8(TOKEN_FILE)
+        
+        TOKEN_FILE = os.path.join(os.path.dirname(__file__), 'line_token.ini')
 
         self.__camera = camera
-        self.__token_list = {key: token_file['LINE'][key] for key in token_file['LINE']}
+        self.__token_list = _get_token_list(TOKEN_FILE)
         self.__token_num = len(self.__token_list)
         # self.line_notify_token = self.token_file['LINE'][token_name]
         self.__headers = [{'Authorization': f'Bearer {token}'} for key, token in self.__token_list.items()]
