@@ -14,7 +14,7 @@ endpoints = {
     "notify": "https://notify-api.line.me/api/notify"
 }
 
-class _Token():
+class _Token:
     """
     LINE Notifyのトークンを表す
     """
@@ -70,7 +70,7 @@ class _Token():
 
         return _Status(self, res, tz)
     
-class _Message():
+class _Message:
     """
     LINE Notifyで送信するメッセージを表す
     """
@@ -90,7 +90,7 @@ def _convert_image(image_bgr: cv2.Mat):
     image.save(png, format='png')  # 空のio.BytesIOオブジェクトにpngファイルとして書き込み
     return png.getvalue()  # io.BytesIOオブジェクトをbytes形式で読みとり
 
-class _Image():
+class _Image:
     """
     LINE Notifyで送信する画像を表す
     """
