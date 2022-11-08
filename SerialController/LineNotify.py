@@ -5,8 +5,26 @@ import os
 
 import requests
 from PIL import Image
-from logging import getLogger, DEBUG, NullHandler
+from logging import Logger, getLogger, DEBUG, NullHandler
 
+TOKEN_FILE = os.path.join(os.path.dirname(__file__), 'line_token.ini')
+
+def _open_file_with_utf8(filename: str):
+    """
+    utf-8 のファイルを BOM ありかどうかを自動判定して読み込む
+    """
+    parser = configparser.ConfigParser(comment_prefixes='#', allow_no_value=True)
+    parser.read(filename, 'utf-8-sig' if _is_utf8_file_with_bom(filename) else 'utf-8')
+    
+    return parser
+
+def _is_utf8_file_with_bom(filename):
+    """
+    utf-8 ファイルが BOM ありかどうかを判定する
+    """
+    with open(filename, encoding='utf-8') as f:
+        line_first = f.readline()
+    return line_first[0] == '\ufeff'
 
 class Line_Notify:
 
@@ -17,35 +35,18 @@ class Line_Notify:
         self._logger.propagate = True
 
         self.res = None
-        self.token_file = configparser.ConfigParser(comment_prefixes='#', allow_no_value=True)
-        self.open_file_with_utf8()
+        
+        self._logger.debug("Load token file")
+        token_file = _open_file_with_utf8(TOKEN_FILE)
+
         self.camera = camera
-        self.token_list = {key: self.token_file['LINE'][key] for key in self.token_file['LINE']}
+        self.token_list = {key: token_file['LINE'][key] for key in token_file['LINE']}
         self.token_num = len(self.token_list)
         # self.line_notify_token = self.token_file['LINE'][token_name]
         self.headers = [{'Authorization': f'Bearer {token}'} for key, token in self.token_list.items()]
         self.res = [requests.get('https://notify-api.line.me/api/status', headers=head) for head in self.headers]
         self.status = [responses.status_code for responses in self.res]
         self.chk_token_json = [responses.json() for responses in self.res]
-
-    def open_file_with_utf8(self):
-        """
-        utf-8 のファイルを BOM ありかどうかを自動判定して読み込む
-        """
-        line_token_path = os.path.join(os.path.dirname(__file__), 'line_token.ini')
-        is_with_bom = self.is_utf8_file_with_bom(line_token_path)
-
-        encoding = 'utf-8-sig' if is_with_bom else 'utf-8'
-
-        self._logger.debug("Load token file")
-        self.token_file.read(line_token_path, encoding)
-
-    def is_utf8_file_with_bom(self, filename):
-        """
-        utf-8 ファイルが BOM ありかどうかを判定する
-        """
-        line_first = open(filename, encoding='utf-8').readline()
-        return line_first[0] == '\ufeff'
 
     def __str__(self):
         for stat in self.status:
