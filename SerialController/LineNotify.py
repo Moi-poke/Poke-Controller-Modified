@@ -34,22 +34,22 @@ class Line_Notify:
         self._logger.setLevel(DEBUG)
         self._logger.propagate = True
 
-        self.res = None
+        self.__res = None
         
         self._logger.debug("Load token file")
         token_file = _open_file_with_utf8(TOKEN_FILE)
 
-        self.camera = camera
-        self.token_list = {key: token_file['LINE'][key] for key in token_file['LINE']}
-        self.token_num = len(self.token_list)
+        self.__camera = camera
+        self.__token_list = {key: token_file['LINE'][key] for key in token_file['LINE']}
+        self.__token_num = len(self.__token_list)
         # self.line_notify_token = self.token_file['LINE'][token_name]
-        self.headers = [{'Authorization': f'Bearer {token}'} for key, token in self.token_list.items()]
-        self.res = [requests.get('https://notify-api.line.me/api/status', headers=head) for head in self.headers]
-        self.status = [responses.status_code for responses in self.res]
-        self.chk_token_json = [responses.json() for responses in self.res]
+        self.__headers = [{'Authorization': f'Bearer {token}'} for key, token in self.__token_list.items()]
+        self.__res = [requests.get('https://notify-api.line.me/api/status', headers=head) for head in self.__headers]
+        self.__status = [responses.status_code for responses in self.__res]
+        self.__chk_token_json = [responses.json() for responses in self.__res]
 
     def __str__(self):
-        for stat in self.status:
+        for stat in self.__status:
             if stat == 401:
                 self._logger.error("Invalid token")
                 return "LINE Token Check FAILED."
@@ -63,10 +63,10 @@ class Line_Notify:
         """
         line_notify_api = 'https://notify-api.line.me/api/notify'
         try:
-            headers = {'Authorization': f'Bearer {self.token_list[token]}'}
+            headers = {'Authorization': f'Bearer {self.__token_list[token]}'}
             data = {'Message': f'{notification_message}'}
-            self.res = requests.post(line_notify_api, headers=headers, data=data)
-            if self.res.status_code == 200:
+            self.__res = requests.post(line_notify_api, headers=headers, data=data)
+            if self.__res.status_code == 200:
                 print("[LINE]テキストを送信しました。")
                 self._logger.info("Send text")
             else:
@@ -82,12 +82,12 @@ class Line_Notify:
         開いているときはテキストと画像を通知する
         """
         try:
-            if self.camera is None:
+            if self.__camera is None:
                 print("Camera is not Opened. Send text only.")
                 self.send_text(notification_message)
                 return
 
-            image_bgr = self.camera.readFrame()
+            image_bgr = self.__camera.readFrame()
             image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(image_rgb)
             png = io.BytesIO()  # 空のio.BytesIOオブジェクトを用意
@@ -95,11 +95,11 @@ class Line_Notify:
             b_frame = png.getvalue()  # io.BytesIOオブジェクトをbytes形式で読みとり
 
             line_notify_api = 'https://notify-api.line.me/api/notify'
-            headers = {'Authorization': f'Bearer {self.token_list[token]}'}
+            headers = {'Authorization': f'Bearer {self.__token_list[token]}'}
             data = {'Message': f'{notification_message}'}
             files = {'imageFile': b_frame}
-            self.res = requests.post(line_notify_api, headers=headers, params=data, files=files)
-            if self.res.status_code == 200:
+            self.__res = requests.post(line_notify_api, headers=headers, params=data, files=files)
+            if self.__res.status_code == 200:
                 print("[LINE]テキストと画像を送信しました。")
                 self._logger.info("Send image with text")
             else:
@@ -111,21 +111,21 @@ class Line_Notify:
 
     def getRateLimit(self):
         try:
-            for i in range(self.token_num):
-                print(f'For: {list(self.token_list.keys())[i]}')
-                print('X-RateLimit-Limit: ' + self.res[i].headers['X-RateLimit-Limit'])
-                print('X-RateLimit-ImageLimit: ' + self.res[i].headers['X-RateLimit-ImageLimit'])
-                print('X-RateLimit-Remaining: ' + self.res[i].headers['X-RateLimit-Remaining'])
-                print('X-RateLimit-ImageRemaining: ' + self.res[i].headers['X-RateLimit-ImageRemaining'])
+            for i in range(self.__token_num):
+                print(f'For: {list(self.__token_list.keys())[i]}')
+                print('X-RateLimit-Limit: ' + self.__res[i].headers['X-RateLimit-Limit'])
+                print('X-RateLimit-ImageLimit: ' + self.__res[i].headers['X-RateLimit-ImageLimit'])
+                print('X-RateLimit-Remaining: ' + self.__res[i].headers['X-RateLimit-Remaining'])
+                print('X-RateLimit-ImageRemaining: ' + self.__res[i].headers['X-RateLimit-ImageRemaining'])
                 import datetime
-                dt = datetime.datetime.fromtimestamp(int(self.res[i].headers['X-RateLimit-Reset']),
+                dt = datetime.datetime.fromtimestamp(int(self.__res[i].headers['X-RateLimit-Reset']),
                                                      datetime.timezone(datetime.timedelta(hours=9)))
                 print('Reset time:', dt, '\n')
 
-                self._logger.info(f"LINE API - Limit: {self.res[i].headers['X-RateLimit-Limit']}")
-                self._logger.info(f"LINE API - Remaining: {self.res[i].headers['X-RateLimit-Remaining']}")
-                self._logger.info(f"LINE API - ImageLimit: {self.res[i].headers['X-RateLimit-Limit']}")
-                self._logger.info(f"LINE API - ImageRemaining: {self.res[i].headers['X-RateLimit-ImageRemaining']}")
+                self._logger.info(f"LINE API - Limit: {self.__res[i].headers['X-RateLimit-Limit']}")
+                self._logger.info(f"LINE API - Remaining: {self.__res[i].headers['X-RateLimit-Remaining']}")
+                self._logger.info(f"LINE API - ImageLimit: {self.__res[i].headers['X-RateLimit-Limit']}")
+                self._logger.info(f"LINE API - ImageRemaining: {self.__res[i].headers['X-RateLimit-ImageRemaining']}")
                 self._logger.info(f"Reset time: {dt}")
         except AttributeError as e:
             self._logger.error(e)
