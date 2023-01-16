@@ -76,8 +76,9 @@ class AutoRaid(ImageProcPythonCommand):
             # 「レイドに参加できませんでした」を検知して処理を行っても良い(Xを押して更新する、方向キーを押す)
             while not self.isContainTemplate('SV_Raid/RaidBattle_JP.png', threshold=0.8, use_gray=True,
                                              show_value=False):
-                self.press(Button.X, wait=2.0)
                 self.press(Button.A, wait=2.0)
+                self.press(Button.X, wait=2.0)
+                
 
             # 捕まえるか否かの判定
             is_capture = self.is_capture_pokemon()
