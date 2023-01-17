@@ -112,7 +112,7 @@ class AutoRaid(ImageProcPythonCommand):
                                              show_value=False):
                 # レイド解散チェック(解散していた場合XA連打の処理に戻る)
                 if self.isContainTemplate("SV_Raid/raid_breakup.png", threshold=0.8, use_gray=False, show_value=False):
-                    continue
+                    break
                 print("レイドのwhile")
                 raid_while_num += 1
                 self.wait(2.0)
@@ -208,21 +208,21 @@ class AutoRaid(ImageProcPythonCommand):
 
     def decide_myPokemon(self, raidPokemon_type: Type):
         # ニンフィア(1番目)を使うタイプ
-        NINFIA = [Type.FIGHTING, Type.DRAGON, Type.DARK]
+        NINFIA = [Type.DRAGON]
         # テツノカイナ(2番目を使うタイプ)
-        TETUNOKAINA = [Type.NORMAL, Type.ICE, Type.ROCK, Type.STEEL]
+        TETUNOKAINA = [Type.NORMAL, Type.ICE, Type.ROCK, Type.STEEL, Type.DARK]
         # ハラバリー(3番目を使うタイプ)
         HARABARI = [Type.WATER, Type.FLYING]
         # クエスパトラ(4番目を使うタイプ)
-        KUESUPATORA = [Type.POISON]
+        KUESUPATORA = [Type.POISON, Type.FIGHTING]
         # テツノドクガ(5番目を使うタイプ)
         TETUNODOKUGA = [Type.GRASS, Type.BUG]
         # マリルリ(6番目を使うタイプ)
         MARIRURI = [Type.FIRE, Type.GROUND]
         # ハバタクカミ(7番目を使うタイプ)
         HABATAKUKAMI= [Type.PSYCHIC, Type.GHOST] 
-        # デカヌチャン(8番目を使うタイプ)
-        DEKANUCHAN = [Type.FAIRY]
+        # ドドゲザン(8番目を使うタイプ)
+        DODOGEZAN = [Type.FAIRY]
         # ガブリアス(9番目を使うタイプ)
         GABURIASU = [Type.ELECTRIC]
 
@@ -248,8 +248,8 @@ class AutoRaid(ImageProcPythonCommand):
         elif raidPokemon_type in HABATAKUKAMI:
             print('ハバタクカミを使用します。')
             return 7
-        elif raidPokemon_type in DEKANUCHAN:
-            print('デカヌチャンを使用します。')
+        elif raidPokemon_type in DODOGEZAN:
+            print('ドドゲザンを使用します。')
             return 8
         elif raidPokemon_type in GABURIASU:
             print('ガブリアスを使用します。')
@@ -295,7 +295,7 @@ class AutoRaid(ImageProcPythonCommand):
             self.press(Direction.DOWN, wait=1.0)
         elif 8 <= num <= 12:
             self.press(Direction.DOWN, wait=1.0)
-            for _ in range(1, num):
+            for _ in range(1, num - 6):
                 self.press(Direction.RIGHT, wait=1.0)
         else:
             time.sleep(1.0)
