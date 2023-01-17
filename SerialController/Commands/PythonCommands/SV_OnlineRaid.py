@@ -287,7 +287,7 @@ class AutoRaid(ImageProcPythonCommand):
         print(f"ボックスから{num}匹目を選択。")
 
         if num == 1:
-            time.slee(1.0)
+            time.sleep(1.0)
         if 2 <= num <= 6:
             for _ in range(1, num):
                 self.press(Direction.RIGHT, wait=1.0)
