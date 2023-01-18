@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import time
+from typing import MutableSequence
 
 from Commands.PythonCommandBase import PythonCommand, ImageProcPythonCommand
 from Commands.Keys import KeyPress, Button, Direction, Stick, Hat
@@ -9,6 +10,8 @@ import os
 import shutil
 import glob
 import enum
+
+from typing_extensions import TypedDict
 
 
 class Type(enum.Enum):
@@ -31,6 +34,11 @@ class Type(enum.Enum):
     STEEL = "はがねタイプ"
     FAIRY = "フェアリータイプ"
 
+class Pokemon(TypedDict):
+    name: str
+    x: int  # for python 3.8 or above, use Literal[1, 2, 3, 4, 5, 6]
+    y: int  # for python 3.8 or above, use Literal[1, 2, 3, 4, 5]
+    types: MutableSequence[Type]
 
 class AutoRaid(ImageProcPythonCommand):
     NAME = 'SV_Online自動レイド_v.0.4'
@@ -95,10 +103,10 @@ class AutoRaid(ImageProcPythonCommand):
             raidPokemon_type = self.judge_raidPokemon_type()
 
             # レイドポケモンのタイプに応じて使用するポケモンを決定する
-            myPokemon_num = self.decide_myPokemon(raidPokemon_type)
+            myPokemon_coordinate = self.decide_myPokemon(raidPokemon_type)
 
             # 必要に応じて使用するポケモンを変更する
-            self.change_pokemon_from_box(myPokemon_num)
+            self.change_pokemon_from_box(myPokemon_coordinate)
 
             # レイド準備完了
             self.press(Button.A, wait=1.0)
@@ -206,77 +214,87 @@ class AutoRaid(ImageProcPythonCommand):
         print("合致するタイプがないのでドラゴンタイプとして処理します。")
         return Type.DRAGON
 
-    def decide_myPokemon(self, raidPokemon_type: Type):
-        # ニンフィア(1番目)を使うタイプ
-        NINFIA = [Type.DRAGON]
-        # テツノカイナ(2番目を使うタイプ)
-        TETUNOKAINA = [Type.NORMAL, Type.ICE, Type.ROCK, Type.STEEL, Type.DARK]
-        # ハラバリー(3番目を使うタイプ)
-        HARABARI = [Type.WATER, Type.FLYING]
-        # クエスパトラ(4番目を使うタイプ)
-        KUESUPATORA = [Type.POISON, Type.FIGHTING]
-        # テツノドクガ(5番目を使うタイプ)
-        TETUNODOKUGA = [Type.GRASS, Type.BUG]
-        # マリルリ(6番目を使うタイプ)
-        MARIRURI = [Type.FIRE, Type.GROUND]
-        # ハバタクカミ(7番目を使うタイプ)
-        HABATAKUKAMI= [Type.PSYCHIC, Type.GHOST] 
-        # ドドゲザン(8番目を使うタイプ)
-        DODOGEZAN = [Type.FAIRY]
-        # ガブリアス(9番目を使うタイプ)
-        GABURIASU = [Type.ELECTRIC]
+    def decide_myPokemon(self, raidPokemon_type: Type) -> (int, int):
+        pokemons: MutableSequence[Pokemon] = [
+            {
+                "name": "ニンフィア",
+                "x": 1,
+                "y": 1,
+                "types": [Type.DRAGON]
+            },
+            {
+                "name": "テツノカイナ",
+                "x": 2,
+                "y": 1,
+                "types": [Type.NORMAL, Type.ICE, Type.ROCK, Type.STEEL, Type.DARK]
+            },
+            {
+                "name": "ハラバリー",
+                "x": 3,
+                "y": 1,
+                "types": [Type.WATER, Type.FLYING]
+            },
+            {
+                "name": "クエスパトラ",
+                "x": 4,
+                "y": 1,
+                "types": [Type.POISON, Type.FIGHTING]
+            },
+            {
+                "name": "テツノドクガ",
+                "x": 5,
+                "y": 1,
+                "types": [Type.GRASS, Type.BUG]
+            },
+            {
+                "name": "マリルリ",
+                "x": 6,
+                "y": 1,
+                "types": [Type.FIRE, Type.GROUND]
+            },
+            {
+                "name": "ハバタクカミ",
+                "x": 1,
+                "y": 2,
+                "types": [Type.PSYCHIC, Type.GHOST]
+            },
+            {
+                "name": "ドドゲザン",
+                "x": 2,
+                "y": 2,
+                "types": [Type.FAIRY]
+            },
+            {
+                "name": "ガブリアス",
+                "x": 3,
+                "y": 2,
+                "types": [Type.ELECTRIC]
+            },
+        ]
 
+        found_pokemon = next((x for x in pokemons if raidPokemon_type in x["types"]), pokemons[0])
 
-        if raidPokemon_type in NINFIA:
-            print('ニンフィアを使用します。')
-            return 1
-        elif raidPokemon_type in TETUNOKAINA:
-            print('テツノカイナを使用します。')
-            return 2
-        elif raidPokemon_type in HARABARI:
-            print('ハラバリーを使用します。')
-            return 3
-        elif raidPokemon_type in KUESUPATORA:
-            print('クエスパトラを使用します。')
-            return 4
-        elif raidPokemon_type in TETUNODOKUGA:
-            print('テツノドクガを使用します。')
-            return 5
-        elif raidPokemon_type in MARIRURI:
-            print('マリルリを使用します。')
-            return 6
-        elif raidPokemon_type in HABATAKUKAMI:
-            print('ハバタクカミを使用します。')
-            return 7
-        elif raidPokemon_type in DODOGEZAN:
-            print('ドドゲザンを使用します。')
-            return 8
-        elif raidPokemon_type in GABURIASU:
-            print('ガブリアスを使用します。')
-            return 9
-        # デフォルトではニンフィア(1番目)を使用する
-        else:
-            print('ニンフィアを使用します。')
-            return 1
+        print(f"{found_pokemon['name']}を使用します")
+        return (found_pokemon["x"], found_pokemon["y"])
 
-    # def change_pokemon(self, num):
+    # def change_pokemon(self, coordinate):
     #     self.press(Direction.DOWN, wait=0.5)
     #     self.press(Button.A, wait=3.0)
 
     #     # ボックス操作
     #     while not self.isContainTemplate('SV_Raid/raid_box.png', threshold=0.9, use_gray=True, show_value=False):
     #         time.sleep(0.5)
-    #     print(f"手持ちから{num}匹目を選択。")
+    #     print(f"手持ちから{coordinate}匹目を選択。")
     #     self.press(Direction.LEFT, wait=1.0)
 
-    #     for _ in range(1, num):
+    #     for _ in range(1, coordinate):
     #         self.press(Direction.DOWN, wait=1.0)
 
     #     self.press(Button.A, wait=1)
     #     self.press(Button.A, wait=5.0)
     #     self.press(Direction.UP, wait=1)
 
-    def change_pokemon_from_box(self, num: int):
+    def change_pokemon_from_box(self, coordinate: (int, int)):
         time.sleep(1.0)
         self.press(Direction.DOWN, wait=1.0)
         self.press(Button.A, wait=3.0)
@@ -284,21 +302,12 @@ class AutoRaid(ImageProcPythonCommand):
         # ボックス操作
         while not self.isContainTemplate('SV_Raid/raid_box.png', threshold=0.9, use_gray=True, show_value=False):
             time.sleep(0.5)
-        print(f"ボックスから{num}匹目を選択。")
+        print(f"ボックスから{coordinate}匹目を選択。")
 
-        if num == 1:
-            time.sleep(1.0)
-        if 2 <= num <= 6:
-            for _ in range(1, num):
-                self.press(Direction.RIGHT, wait=1.0)
-        elif num == 7:
+        for _ in range(0, coordinate[0]):
+            self.press(Direction.RIGHT, wait=1.0)
+        for _ in range(1, coordinate[1]):
             self.press(Direction.DOWN, wait=1.0)
-        elif 8 <= num <= 12:
-            self.press(Direction.DOWN, wait=1.0)
-            for _ in range(1, num - 6):
-                self.press(Direction.RIGHT, wait=1.0)
-        else:
-            time.sleep(1.0)
 
         self.press(Button.A, wait=1)
         self.press(Button.A, wait=5.0)

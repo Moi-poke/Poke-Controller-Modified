@@ -19,3 +19,6 @@ numpy
 # requirements not mentioned in the documents above:
 #
 scipy
+
+# けんとoriginal
+typing-extensions

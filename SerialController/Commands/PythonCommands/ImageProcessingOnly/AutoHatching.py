@@ -26,7 +26,7 @@ class AutoHatching(ImageProcPythonCommand):
         while True:
             for i in range(0, self.itr_max):
                 print('iteration: ' + str(i + 1) + ' (' + str(i * 5) + '/30) -> (' + str((i + 1) * 5) + '/30)')
-                print('hatched box num : ' + str(self.hatched_box_num))
+                print('hatched box coordinate : ' + str(self.hatched_box_num))
 
                 self.getNewEgg()
                 self.press(Direction.UP, duration=0.05, wait=0.5)
@@ -50,7 +50,7 @@ class AutoHatching(ImageProcPythonCommand):
                     self.hatched_num += 1
                     self.party_num += 1
                     print('party_num: ' + str(self.party_num))
-                    print('all hatched num: ' + str(self.hatched_num))
+                    print('all hatched coordinate: ' + str(self.hatched_num))
 
                     self.press(Button.X, wait=1)
                     self.press(Button.A, wait=3)  # open up a map
