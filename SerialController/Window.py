@@ -25,6 +25,9 @@ from Menubar import PokeController_Menubar
 NAME = "Poke-Controller"
 VERSION = "v3.0.2.7.0a Modified"  # based on 1.0-beta3(custom by @dragonite303)
 
+# Baud Rateを変更する場合は"readonly"に変更してください。
+baud_rate_state = "disabled"
+
 '''
 Todo:
 ・デバッグ用にPoke-Controller本体にコントローラーを接続して動かしたい
@@ -150,7 +153,7 @@ class PokeControllerApp:
 
         self.baud_rate_cb = ttk.Combobox(self.serial_lf)
         self.baud_rate = tk.StringVar()
-        self.baud_rate_cb.config(justify='right', state='readonly', textvariable=self.baud_rate, values=[9600, 4800])
+        self.baud_rate_cb.config(justify='right', state=baud_rate_state, textvariable=self.baud_rate, values=[9600, 4800])
         self.baud_rate_cb.config(width='6')
         self.baud_rate_cb.grid(column='3', padx='5', row='0', sticky='ew')
         self.baud_rate_cb.bind('<<ComboboxSelected>>', self.applyBaudRate, add='')
@@ -449,12 +452,19 @@ class PokeControllerApp:
             # self.show_size_tmp = self.show_size_cb['values'].index(self.show_size_cb.get())
 
     def activateSerial(self):
+        if self.baud_rate.get() == "4800":
+            ret =tkmsg.askquestion("確認","Baud Rateを4800にすると動かなくなる可能性があります。\n変更しますか？")
+            print(ret)
+            if ret != "yes":
+                self.baud_rate_cb.set(value=9600)
+                return
         if self.ser.isOpened():
             print('Port is already opened and being closed.')
             self.ser.closeSerial()
             self.keyPress = None
             self.activateSerial()
         else:
+            
             if self.ser.openSerial(self.com_port.get(), self.com_port_name.get(), self.baud_rate.get()):
                 print('COM Port ' + str(self.com_port.get()) + ' connected successfully')
                 self._logger.debug('COM Port ' + str(self.com_port.get()) + ' connected successfully')

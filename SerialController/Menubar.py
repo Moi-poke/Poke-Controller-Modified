@@ -4,6 +4,7 @@ import tkinter as tk
 from KeyConfig import PokeKeycon
 from LineNotify import Line_Notify
 from get_pokestatistics import GetFromHomeGUI
+from Pokecon_Code_Editor import Pokecon_Code_Editor
 from logging import getLogger, DEBUG, NullHandler
 
 
@@ -24,6 +25,7 @@ class PokeController_Menubar(tk.Menu):
         self.camera = self.master.camera
         self.poke_treeview = None
         self.key_config = None
+        self.code_de = None
         self.line = None
 
         tk.Menu.__init__(self, self.root, **kw)
@@ -33,6 +35,7 @@ class PokeController_Menubar(tk.Menu):
         self.menu.add(tk.CASCADE, menu=self.menu_command, label='コマンド')
 
         self.menu.add('separator')
+        self.add('command',command=self.OpenCodeDesigner ,label='Code Editor')
         self.menu.add('command', label='設定(dummy)')
         # TODO: setup command_id_arg 'false' for menuitem.
         self.menu.add('command', command=self.exit, label='終了')
@@ -49,7 +52,6 @@ class PokeController_Menubar(tk.Menu):
         self.menu_command.add('command', command=self.OpenPokeHomeCoop, label='Pokemon Home 連携')
         self.menu_command.add('command', command=self.OpenKeyConfig, label='キーコンフィグ')
         self.menu_command.add('command', command=self.ResetWindowSize, label='画面サイズのリセット')
-
     # TODO: setup command_id_arg 'false' for menuitem.
 
     def OpenPokeHomeCoop(self):
@@ -94,6 +96,25 @@ class PokeController_Menubar(tk.Menu):
         self._logger.debug("Reset window size")
         self.preview.setShowsize(360, 640)
         self.show_size_cb.current(0)
+
+    def OpenCodeDesigner(self):
+        self._logger.debug("Open code designer")
+        if self.code_de is not None:
+            self.code_de.focus_force()
+            return
+        CD_window = Pokecon_Code_Editor(self)
+        CD_window.protocol("WM_DELETE_WINDOW",CD_window.destroy)
+        # CD_window.protocol("<Return>",None)
+
+        self.code_de = CD_window
+
+    def closingCodeDesigner(self):
+        self._logger.debug("Close Code Desinger window")
+        self.code_de.destroy()
+        self.code_de = None
+        
+    def testfunc(self):
+        print("test")
 
     def exit(self):
         self._logger.debug("Close Menubar")
