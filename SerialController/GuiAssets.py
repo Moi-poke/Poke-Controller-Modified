@@ -439,15 +439,17 @@ class CaptureArea(tk.Canvas):
 
     def capture(self):
         if self.is_show_var.get():
-            image_bgr = self.camera.readFrame()
+            image_bgr, image_rgb = self.camera.readFrame()
+            # print(image_bgr)
         else:
             self.after(self.next_frames, self.capture)
             return
 
         if image_bgr is not None:
-            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            # image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
             image_pil = Image.fromarray(image_rgb).resize(self.show_size)
             image_tk = ImageTk.PhotoImage(image_pil)
+            # print()
 
             self.im = image_tk
             # self.configure( image=image_tk)
@@ -605,6 +607,67 @@ class ControllerGUI:
     def destroy(self):
         self.window.destroy()
         self._logger.debug("GUI controller destroyed")
+
+
+class CaptureAreaCustom(tk.Canvas):
+    def __init__(self, camera, fps, is_show:tk.BooleanVar, ser, master:tk.Canvas=None, show_width=640, show_height=360):
+        super().__init__(master, borderwidth=0, cursor='tcross', width=show_width, height=show_height)
+        
+        self._logger = getLogger(__name__)
+        self._logger.addHandler(NullHandler())
+        self._logger.setLevel(DEBUG)
+        self._logger.propagate = True
+        
+        self.master = master
+        self.radius = 60  # 描画する円の半径
+        self.camera = camera
+        self.isRealtimeUpdate = is_show.get()
+        self.show_width = self.master.winfo_width()
+        self.show_height = self.master.winfo_height()
+        self.show_size = (self.show_width, self.show_height)
+        
+        
+        self.setFps(fps)
+        
+        # Set disabled image first
+        disabled_img = cv2.imread("./Images/disabled.png", cv2.IMREAD_GRAYSCALE)
+        disabled_pil = Image.fromarray(disabled_img).resize(self.show_size)
+        self.disabled_tk = ImageTk.PhotoImage(disabled_pil)
+        self.im = self.disabled_tk
+        # self.configure(image=self.disabled_tk)  # labelからキャンバスに変更したので微修正
+        self.disabled_image = self.create_image(0, 0, image=self.disabled_tk, anchor=tk.NW)
+    
+    def startCapture(self):
+        self.capture()
+
+    
+    def setFps(self, fps):
+        self.next_frames = int(1000 / int(fps))
+        self._logger.info(f"FPS set to {fps}")
+
+    def capture(self):
+        if self.isRealtimeUpdate:
+            # image_bgr = self.camera.readFrame()
+            image_bgr, image_rgb = self.camera.readFrame()
+            # print(image_rgb)
+        else:
+            self.after(self.next_frames, self.capture)
+            return
+
+        if image_rgb is not None:
+            # image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            image_pil = Image.fromarray(image_rgb).resize(self.show_size)
+            image_tk = ImageTk.PhotoImage(image_pil)
+
+            self.im = image_tk
+            # self.configure( image=image_tk)
+            self.itemconfig(self.disabled_image, image=image_tk)
+        else:
+            self.im = self.disabled_tk
+            # self.configure(image=self.disabled_tk)
+            self.itemconfig(self.disabled_image, image=self.disabled_tk)
+
+        self.after(self.next_frames, self.capture)
 
 
 # To avoid the error says 'ScrolledText' object has no attribute 'flush'

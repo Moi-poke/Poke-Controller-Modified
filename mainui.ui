@@ -1,0 +1,581 @@
+<?xml version='1.0' encoding='utf-8'?>
+<interface version="1.3">
+  <object class="customtkinter.CTk" id="mainwindow" named="True">
+    <property name="color_theme">dark-blue</property>
+    <property name="title" translatable="yes">Poke Controller modified v4.0</property>
+    <containerlayout manager="grid">
+      <property name="anchor">center</property>
+      <property type="col" id="0" name="weight">1</property>
+      <property type="row" id="0" name="weight">1</property>
+    </containerlayout>
+    <child>
+      <object class="ttk.Panedwindow" id="panedwindow_master" named="True">
+        <property name="height">540</property>
+        <property name="orient">horizontal</property>
+        <property name="width">960</property>
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="row">0</property>
+          <property name="sticky">nsew</property>
+        </layout>
+        <child>
+          <object class="ttk.Panedwindow.Pane" id="pane_left" named="True">
+            <property name="weight">3</property>
+            <child>
+              <object class="ttk.Panedwindow" id="panedwindow_left" named="True">
+                <property name="height">540</property>
+                <property name="orient">vertical</property>
+                <property name="width">640</property>
+                <layout manager="grid">
+                  <property name="column">0</property>
+                  <property name="row">0</property>
+                  <property name="sticky">nsew</property>
+                </layout>
+                <child>
+                  <object class="ttk.Panedwindow.Pane" id="pane_canvas" named="True">
+                    <property name="weight">3</property>
+                    <child>
+                      <object class="customtkinter.CTkFrame" id="frame_canvas" named="True">
+                        <layout manager="grid">
+                          <property name="column">0</property>
+                          <property name="row">0</property>
+                          <property name="sticky">nsew</property>
+                        </layout>
+                        <child>
+                          <object class="tk.Canvas" id="canvas_camera" named="True">
+                            <property name="background">#1c1a1a</property>
+                            <property name="cursor">crosshair</property>
+                            <property name="height">360</property>
+                            <property name="relief">raised</property>
+                            <property name="takefocus">false</property>
+                            <property name="width">640</property>
+                            <layout manager="pack">
+                              <property name="anchor">center</property>
+                              <property name="expand">true</property>
+                              <property name="side">top</property>
+                            </layout>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
+                  <object class="ttk.Panedwindow.Pane" id="pane_commands" named="True">
+                    <property name="weight">1</property>
+                    <child>
+                      <object class="customtkinter.CTkFrame" id="frame_commands" named="True">
+                        <property name="height">50</property>
+                        <layout manager="grid">
+                          <property name="column">0</property>
+                          <property name="row">0</property>
+                          <property name="sticky">sew</property>
+                        </layout>
+                        <containerlayout manager="grid">
+                          <property name="anchor">sw</property>
+                          <property type="col" id="0" name="weight">1</property>
+                          <property type="row" id="0" name="weight">1</property>
+                        </containerlayout>
+                        <child>
+                          <object class="customtkinter.CTkTabview" id="tabview_commands" named="True">
+                            <property name="height">150</property>
+                            <layout manager="grid">
+                              <property name="column">0</property>
+                              <property name="row">0</property>
+                              <property name="sticky">nsew</property>
+                            </layout>
+                            <child>
+                              <object class="customtkinter.CTkTabview.Tab" id="tab_9">
+                                <property name="label" translatable="yes">Camera</property>
+                                <containerlayout manager="grid">
+                                  <property name="anchor">center</property>
+                                  <property type="col" id="0" name="uniform">0</property>
+                                  <property type="col" id="all" name="uniform">0</property>
+                                  <property type="col" id="all" name="weight">1</property>
+                                  <property type="row" id="0" name="uniform">0</property>
+                                  <property type="row" id="all" name="uniform">0</property>
+                                  <property type="row" id="all" name="weight">1</property>
+                                </containerlayout>
+                                <child>
+                                  <object class="customtkinter.CTkOptionMenu" id="ctkoptionmenu_2">
+                                    <property name="dynamic_resizing">True</property>
+                                    <property name="values">["0","1","2","3"]</property>
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">0</property>
+                                      <property name="sticky">ew</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="customtkinter.CTkComboBox" id="ctkcombobox_7">
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">1</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="customtkinter.CTkComboBox" id="ctkcombobox_11">
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">2</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="customtkinter.CTkTabview.Tab" id="tab_10">
+                                <property name="label" translatable="yes">Serial</property>
+                                <containerlayout manager="grid">
+                                  <property name="propagate">false</property>
+                                  <property type="col" id="0" name="uniform">0</property>
+                                  <property type="row" id="0" name="uniform">0</property>
+                                  <property type="row" id="0" name="weight">1</property>
+                                </containerlayout>
+                                <child>
+                                  <object class="customtkinter.CTkButton" id="ctkbutton_1">
+                                    <property name="text" translatable="yes">ctkbutton_1</property>
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">0</property>
+                                      <property name="sticky">ew</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="customtkinter.CTkTabview.Tab" id="tab_11">
+                                <property name="label" translatable="yes">Control</property>
+                                <containerlayout manager="grid">
+                                  <property type="row" id="0" name="uniform">0</property>
+                                </containerlayout>
+                                <child>
+                                  <object class="customtkinter.CTkProgressBar" id="ctkprogressbar_1">
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">0</property>
+                                      <property name="sticky">ew</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="ttk.Button" id="button_4">
+                                    <property name="text" translatable="yes">button_4</property>
+                                    <bind sequence="&lt;ButtonPress&gt;" handler="openSetSizeWindow" add="" />
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">1</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="customtkinter.CTkTabview.Tab" id="tab_12">
+                                <property name="label" translatable="yes">Commands</property>
+                                <containerlayout manager="grid">
+                                  <property type="col" id="0" name="weight">1</property>
+                                  <property type="row" id="0" name="uniform">0</property>
+                                  <property type="row" id="0" name="weight">1</property>
+                                  <property type="row" id="1" name="weight">1</property>
+                                </containerlayout>
+                                <child>
+                                  <object class="customtkinter.CTkSegmentedButton" id="ctksegmentedbutton_1">
+                                    <property name="dynamic_resizing">True</property>
+                                    <property name="values">["Python", "MCU", "Short cut"]</property>
+                                    <property name="variable">string:seg_v</property>
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="columnspan">2</property>
+                                      <property name="padx">50</property>
+                                      <property name="row">0</property>
+                                      <property name="sticky">new</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="customtkinter.CTkComboBox" id="ctkcombobox_1">
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">1</property>
+                                      <property name="sticky">ew</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="customtkinter.CTkButton" id="ctkbutton_2">
+                                    <property name="text" translatable="yes">ctkbutton_2</property>
+                                    <layout manager="grid">
+                                      <property name="column">1</property>
+                                      <property name="row">1</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="customtkinter.CTkFrame" id="ctkframe_1">
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="columnspan">2</property>
+                                      <property name="row">2</property>
+                                      <property name="sticky">ew</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="customtkinter.CTkTabview.Tab" id="tab_13">
+                                <property name="label" translatable="yes">Others</property>
+                                <containerlayout manager="grid">
+                                  <property type="col" id="0" name="uniform">1</property>
+                                  <property type="col" id="0" name="weight">1</property>
+                                  <property type="row" id="0" name="uniform">0</property>
+                                  <property type="row" id="0" name="weight">1</property>
+                                </containerlayout>
+                                <child>
+                                  <object class="customtkinter.CTkLabel" id="ctklabel_8">
+                                    <property name="text" translatable="yes">ctklabel_8</property>
+                                    <layout manager="grid">
+                                      <property name="column">0</property>
+                                      <property name="row">0</property>
+                                      <property name="sticky">ew</property>
+                                    </layout>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="ttk.Panedwindow.Pane" id="pane_texts" named="True">
+            <property name="weight">1</property>
+            <child>
+              <object class="customtkinter.CTkFrame" id="frame_texts" named="True">
+                <layout manager="grid">
+                  <property name="column">1</property>
+                  <property name="row">0</property>
+                  <property name="sticky">nsew</property>
+                </layout>
+                <containerlayout manager="grid">
+                  <property type="col" id="0" name="weight">1</property>
+                  <property type="row" id="0" name="weight">1</property>
+                </containerlayout>
+                <child>
+                  <object class="customtkinter.CTkTabview" id="tabview_texts" named="True">
+                    <layout manager="grid">
+                      <property name="column">0</property>
+                      <property name="columnspan">3</property>
+                      <property name="row">0</property>
+                      <property name="sticky">nsew</property>
+                    </layout>
+                    <child>
+                      <object class="customtkinter.CTkTabview.Tab" id="tab_1">
+                        <property name="label" translatable="yes">tab_1</property>
+                        <containerlayout manager="grid">
+                          <property name="anchor">n</property>
+                          <property type="col" id="0" name="weight">1</property>
+                          <property type="row" id="0" name="weight">1</property>
+                        </containerlayout>
+                        <child>
+                          <object class="customtkinter.CTkTextbox" id="ctktextbox_1">
+                            <property name="font">{ＭＳ ゴシック} 12 {}</property>
+                            <property name="state">normal</property>
+                            <property name="text" translatable="yes">Lorem ipsum dolor sit amet, consectetur adipiscing elit. In maximus ac est ut cursus. Aenean quis aliquet leo. Maecenas facilisis urna nulla, in aliquet augue tristique at. Nulla ut ornare metus. Cras cursus porta mauris sed aliquet. Nunc vitae dignissim sem. Donec sit amet lorem sit amet libero commodo accumsan at et lacus. Quisque tristique porta erat, eu mattis lorem sodales vel. Integer sit amet justo felis. Donec vulputate eros ut luctus mollis. Praesent luctus, dolor eu consequat faucibus, dui arcu fermentum erat, sed maximus odio urna ac nisl. Donec nec dui pharetra, hendrerit turpis non, interdum augue. Proin mollis lorem in aliquam mattis.
+
+Integer id nulla ultricies, pellentesque nulla at, laoreet nulla. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Suspendisse non quam auctor, placerat lorem eget, tempor ligula. Morbi condimentum, odio sed pellentesque lobortis, urna augue bibendum risus, eget sagittis orci est id sem. Phasellus luctus lacinia dolor ut malesuada. Vivamus ut lorem vel eros convallis pretium. Suspendisse ornare tincidunt iaculis. Nullam congue molestie nibh, a accumsan felis maximus id. Vivamus interdum magna sed arcu rhoncus pretium. Fusce congue, quam nec laoreet euismod, sapien tellus interdum orci, quis maximus enim eros ac augue. In in viverra nibh, et pretium purus. Phasellus bibendum leo non enim fringilla, et rutrum augue viverra. Cras sit amet tincidunt tellus, a lacinia odio. Integer vel laoreet turpis, non placerat erat.
+
+Duis tincidunt pretium varius. Ut fermentum nisl eget luctus pellentesque. Mauris vulputate hendrerit tincidunt. Ut turpis odio, varius in accumsan at, fermentum eu risus. Sed mattis accumsan vulputate. Etiam dolor lectus, egestas eu mauris vel, condimentum interdum lacus. Vivamus id viverra nisl. Sed dolor dui, porta non fringilla interdum, suscipit id eros. Sed cursus, ligula id placerat pulvinar, eros libero ornare ante, eget malesuada magna sapien a lorem. Integer facilisis purus at est condimentum tincidunt. Aenean mollis ipsum at feugiat fermentum. Nullam eu libero ante. Phasellus id dignissim lorem. Suspendisse blandit turpis orci, vitae scelerisque ligula viverra eu. Maecenas imperdiet mattis arcu a maximus.
+
+Phasellus luctus tortor leo, vel euismod diam tincidunt a. Vivamus in enim id velit posuere gravida eget non ex. Etiam iaculis risus id ex sodales dictum. Nam volutpat nulla eget felis elementum scelerisque. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Ut suscipit placerat lacus, a feugiat lectus. Praesent scelerisque imperdiet nulla ac tincidunt.
+
+Proin nec ante cursus, cursus dui pretium, posuere eros. Sed at sapien eu mauris sollicitudin placerat. Curabitur a justo vel ante accumsan facilisis. Nulla aliquam odio sed commodo vehicula. Proin metus odio, aliquet at tincidunt nec, euismod et lorem. Morbi lobortis sapien et auctor auctor. Pellentesque id ultrices magna. Suspendisse placerat odio vulputate dapibus varius. Proin eget aliquet nulla, feugiat volutpat ligula. Aenean et eros enim.</property>
+                            <property name="width">280</property>
+                            <property name="wrap">word</property>
+                            <layout manager="grid">
+                              <property name="column">0</property>
+                              <property name="row">0</property>
+                              <property name="sticky">nsew</property>
+                            </layout>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
+                  <object class="customtkinter.CTkEntry" id="fontSizeEntry" named="True">
+                    <property name="font">{ＭＳ ゴシック} 12 {}</property>
+                    <property name="justify">right</property>
+                    <property name="state">disabled</property>
+                    <property name="textvariable">int:font_size</property>
+                    <property name="width">50</property>
+                    <layout manager="grid">
+                      <property name="column">0</property>
+                      <property name="row">1</property>
+                      <property name="sticky">e</property>
+                    </layout>
+                  </object>
+                </child>
+                <child>
+                  <object class="customtkinter.CTkButton" id="increaseFontSizeButton" named="True">
+                    <property name="text" translatable="yes">▲</property>
+                    <property name="width">25</property>
+                    <layout manager="grid">
+                      <property name="column">1</property>
+                      <property name="row">1</property>
+                      <property name="sticky">nsew</property>
+                    </layout>
+                  </object>
+                </child>
+                <child>
+                  <object class="customtkinter.CTkButton" id="decreaseFontSizeButton" named="True">
+                    <property name="text" translatable="yes">▼</property>
+                    <property name="width">25</property>
+                    <layout manager="grid">
+                      <property name="column">2</property>
+                      <property name="row">1</property>
+                      <property name="sticky">nsew</property>
+                    </layout>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+  <object class="tk.Menu" id="menu_1">
+    <property name="tearoff">false</property>
+    <property name="title" translatable="yes">menu</property>
+    <child>
+      <object class="tk.Menuitem.Submenu" id="submenu_1">
+        <property name="label" translatable="yes">File</property>
+        <property name="tearoff">false</property>
+        <child>
+          <object class="tk.Menuitem.Checkbutton" id="checkbutton_3">
+            <property name="label" translatable="yes">checkbutton_3</property>
+          </object>
+        </child>
+        <child>
+          <object class="tk.Menuitem.Command" id="command_1">
+            <property name="label" translatable="yes">command_1</property>
+          </object>
+        </child>
+        <child>
+          <object class="tk.Menuitem.Checkbutton" id="checkbutton_1">
+            <property name="label" translatable="yes">checkbutton_1</property>
+          </object>
+        </child>
+        <child>
+          <object class="tk.Menuitem.Checkbutton" id="checkbutton_2">
+            <property name="label" translatable="yes">checkbutton_2</property>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="tk.Menuitem.Submenu" id="submenu_3">
+        <property name="label" translatable="yes">Option</property>
+        <property name="tearoff">false</property>
+        <child>
+          <object class="tk.Menuitem.Radiobutton" id="radiobutton_NS" named="True">
+            <property name="label" translatable="yes">Switch(9600bps)</property>
+            <property name="variable">string:hw_mode</property>
+          </object>
+        </child>
+        <child>
+          <object class="tk.Menuitem.Radiobutton" id="radiobutton_2">
+            <property name="label" translatable="yes">GC(4800bps)</property>
+            <property name="state">disabled</property>
+            <property name="variable">string:hw_mode</property>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="tk.Menuitem.Submenu" id="submenu_4">
+        <property name="label" translatable="yes">Help</property>
+        <property name="specialmenu">help</property>
+        <property name="tearoff">false</property>
+        <child>
+          <object class="tk.Menuitem.Command" id="command_2">
+            <property name="bitmap">info</property>
+            <property name="label" translatable="yes">help</property>
+            <property name="state">disabled</property>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+  <object class="customtkinter.CTkToplevel" id="ctktoplevel_1">
+    <child>
+      <object class="customtkinter.CTkLabel" id="ctklabel_14">
+        <property name="text" translatable="yes">ctklabel_14</property>
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="row">0</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkComboBox" id="ctkcombobox_3">
+        <layout manager="grid">
+          <property name="column">1</property>
+          <property name="row">0</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkLabel" id="ctklabel_15">
+        <property name="text" translatable="yes">ctklabel_14</property>
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="row">1</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkComboBox" id="ctkcombobox_4">
+        <layout manager="grid">
+          <property name="column">1</property>
+          <property name="row">1</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkButton" id="ctkbutton_3">
+        <property name="text" translatable="yes">disconnect</property>
+        <layout manager="grid">
+          <property name="column">1</property>
+          <property name="row">2</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkLabel" id="ctklabel_16">
+        <property name="text" translatable="yes">ctklabel_14</property>
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="row">3</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkComboBox" id="ctkcombobox_5">
+        <layout manager="grid">
+          <property name="column">1</property>
+          <property name="row">3</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkLabel" id="ctklabel_17">
+        <property name="text" translatable="yes">ctklabel_14</property>
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="row">4</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkComboBox" id="ctkcombobox_6">
+        <layout manager="grid">
+          <property name="column">1</property>
+          <property name="row">4</property>
+        </layout>
+      </object>
+    </child>
+  </object>
+  <object class="customtkinter.CTkToplevel" id="setWindowsize" named="True">
+    <property name="resizable">none</property>
+    <property name="takefocus">true</property>
+    <containerlayout manager="grid">
+      <property type="col" id="0" name="weight">1</property>
+      <property type="row" id="0" name="weight">1</property>
+    </containerlayout>
+    <child>
+      <object class="customtkinter.CTkLabel" id="label_title" named="True">
+        <property name="state">disabled</property>
+        <property name="takefocus">false</property>
+        <property name="text" translatable="yes">texts</property>
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="row">0</property>
+        </layout>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkFrame" id="win_frame1" named="True">
+        <property name="fg_color">#ffffff</property>
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="padx">15</property>
+          <property name="pady">5</property>
+          <property name="row">1</property>
+          <property name="sticky">nsew</property>
+        </layout>
+        <child>
+          <object class="customtkinter.CTkEntry" id="entry1" named="True">
+            <property name="textvariable">int:set_width</property>
+            <layout manager="grid">
+              <property name="column">1</property>
+              <property name="row">0</property>
+            </layout>
+          </object>
+        </child>
+        <child>
+          <object class="customtkinter.CTkLabel" id="ctklabel_27">
+            <property name="fg_color">#ffffff</property>
+            <property name="text" translatable="yes">label</property>
+            <property name="textvariable">string:current_width</property>
+            <layout manager="grid">
+              <property name="column">0</property>
+              <property name="row">0</property>
+            </layout>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="customtkinter.CTkFrame" id="ctkframe_15">
+        <layout manager="grid">
+          <property name="column">0</property>
+          <property name="ipady">10</property>
+          <property name="row">2</property>
+        </layout>
+        <child>
+          <object class="customtkinter.CTkButton" id="button_ok" named="True">
+            <property name="text" translatable="yes">OK</property>
+            <property name="width">50</property>
+            <layout manager="grid">
+              <property name="column">0</property>
+              <property name="row">0</property>
+            </layout>
+          </object>
+        </child>
+        <child>
+          <object class="customtkinter.CTkButton" id="button_cancel" named="True">
+            <property name="text" translatable="yes">Cancel</property>
+            <property name="width">50</property>
+            <layout manager="grid">
+              <property name="column">1</property>
+              <property name="row">0</property>
+            </layout>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>
