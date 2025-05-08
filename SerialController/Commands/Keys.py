@@ -5,11 +5,30 @@ import math
 import time
 from collections import OrderedDict
 from enum import Enum, IntEnum, IntFlag, auto
-import queue
-from logging import getLogger, DEBUG, NullHandler
+from queue import Queue
+from typing import Any, Optional, Self, Union, List, Dict, Tuple, TypeVar
+
+from loguru import logger
+
+from Commands import Sender
+
+# Type aliases
+T = TypeVar("T")
+ButtonOrHat = Union["Button", "Hat"]
+DirectionOrTilt = Union["Direction", "Tilt"]
+ControlInput = Union[ButtonOrHat, DirectionOrTilt]
+
+# Constants
+STICK_MIN = 0
+STICK_CENTER = 128
+STICK_MAX = 255
+STICK_RANGE = STICK_MAX - STICK_MIN
+HALF_STICK_RANGE = STICK_RANGE // 2
 
 
 class Button(IntFlag):
+    """Controller buttons represented as bit flags."""
+
     Y = auto()
     B = auto()
     A = auto()
@@ -27,6 +46,8 @@ class Button(IntFlag):
 
 
 class Hat(IntEnum):
+    """Hat switch positions."""
+
     TOP = 0
     TOP_RIGHT = 1
     RIGHT = 2
@@ -39,11 +60,15 @@ class Hat(IntEnum):
 
 
 class Stick(Enum):
+    """Controller sticks."""
+
     LEFT = auto()
     RIGHT = auto()
 
 
 class Tilt(Enum):
+    """Stick tilt directions."""
+
     UP = auto()
     RIGHT = auto()
     DOWN = auto()
@@ -54,329 +79,420 @@ class Tilt(Enum):
     R_LEFT = auto()
 
 
-# direction value definitions
-min = 0
-center = 128
-max = 255
+class Direction:
+    """Represents stick direction with angle and magnitude."""
+
+    def __init__(
+        self,
+        stick: Stick,
+        angle: Union[Tuple[int, int], float, int],
+        magnification: float = 1.0,
+        isDegree: bool = True,
+        showName: Optional[str] = None,
+        printShowName: Optional[bool] = True,
+    ) -> None:
+        """
+        Initialize stick direction.
+
+        Args:
+            stick: LEFT or RIGHT stick
+            angle: Angle in degrees or tuple of (x, y) coordinates
+            magnification: Stick deflection magnitude (0.0 to 1.0)
+            is_degree: Whether angle is in degrees (True) or radians (False)
+            show_name: Display name for this direction
+            print_show_name: Whether to print the show name
+        """
+        self.stick = stick
+        self.angle_for_show = angle
+        self.showName = showName
+        self.mag = max(0.0, min(1.0, magnification))
+
+        if isinstance(angle, tuple):
+            self.x, self.y = angle
+            self.showName = f"({self.x},{self.y})"
+            if printShowName:
+                print("押し込み量", self.showName)
+        else:
+            angle_rad = math.radians(angle) if isDegree else angle
+            self.x = math.ceil(
+                HALF_STICK_RANGE * math.cos(angle_rad) * self.mag + STICK_CENTER
+            )
+            self.y = math.floor(
+                HALF_STICK_RANGE * math.sin(angle_rad) * self.mag + STICK_CENTER
+            )
+
+    def __repr__(self) -> str:
+        """String representation of the direction."""
+        mag_str = f"{self.mag:.2f}"
+        if self.showName:
+            return f"<{self.stick}, {self.showName}, mag={mag_str}>"
+        return f"<{self.stick}, {self.angle_for_show}[deg], mag={mag_str}>"
+
+    def __eq__(self, other: Any) -> bool:
+        """Check if two directions are equal."""
+        if not isinstance(other, Direction):
+            return False
+        return (
+            self.stick == other.stick
+            and self.angle_for_show == other.angle_for_show
+            and self.mag == other.mag
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.stick, self.angle_for_show, self.mag))
+
+    def get_tilting(self) -> List[Tilt]:
+        """Get list of tilt directions for this stick position."""
+        tilting = []
+        if self.stick == Stick.LEFT:
+            if self.x < STICK_CENTER:
+                tilting.append(Tilt.LEFT)
+            elif self.x > STICK_CENTER:
+                tilting.append(Tilt.RIGHT)
+
+            if self.y < STICK_CENTER - 1:
+                tilting.append(Tilt.DOWN)
+            elif self.y > STICK_CENTER - 1:
+                tilting.append(Tilt.UP)
+        else:  # RIGHT stick
+            if self.x < STICK_CENTER:
+                tilting.append(Tilt.R_LEFT)
+            elif self.x > STICK_CENTER:
+                tilting.append(Tilt.R_RIGHT)
+
+            if self.y < STICK_CENTER - 1:
+                tilting.append(Tilt.R_DOWN)
+            elif self.y > STICK_CENTER - 1:
+                tilting.append(Tilt.R_UP)
+        return tilting
+
+    @classmethod
+    def from_angle(
+        cls,
+        stick: Stick,
+        angle: Union[float, int],
+        name: str,
+        magnification: float = 1.0,
+        isDegree: bool = True,
+    ) -> Self:
+        """Create direction from angle with given name."""
+        return cls(
+            stick, angle, magnification=magnification, isDegree=isDegree, showName=name
+        )
+
+    # for IDE
+    UP: "Direction"
+    RIGHT: "Direction"
+    DOWN: "Direction"
+    LEFT: "Direction"
+    UP_RIGHT: "Direction"
+    DOWN_RIGHT: "Direction"
+    DOWN_LEFT: "Direction"
+    UP_LEFT: "Direction"
+
+    R_UP: "Direction"
+    R_RIGHT: "Direction"
+    R_DOWN: "Direction"
+    R_LEFT: "Direction"
+    R_UP_RIGHT: "Direction"
+    R_DOWN_RIGHT: "Direction"
+    R_DOWN_LEFT: "Direction"
+    R_UP_LEFT: "Direction"
 
 
-# serial format
+# Predefined directions
+DIRECTION_DEFINITIONS: Dict[str, Tuple[Stick, Union[float, int]]] = {
+    "UP": (Stick.LEFT, 90),
+    "RIGHT": (Stick.LEFT, 0),
+    "DOWN": (Stick.LEFT, -90),
+    "LEFT": (Stick.LEFT, -180),
+    "UP_RIGHT": (Stick.LEFT, 45),
+    "DOWN_RIGHT": (Stick.LEFT, -45),
+    "DOWN_LEFT": (Stick.LEFT, -135),
+    "UP_LEFT": (Stick.LEFT, 135),
+    "R_UP": (Stick.RIGHT, 90),
+    "R_RIGHT": (Stick.RIGHT, 0),
+    "R_DOWN": (Stick.RIGHT, -90),
+    "R_LEFT": (Stick.RIGHT, -180),
+    "R_UP_RIGHT": (Stick.RIGHT, 45),
+    "R_DOWN_RIGHT": (Stick.RIGHT, -45),
+    "R_DOWN_LEFT": (Stick.RIGHT, -135),
+    "R_UP_LEFT": (Stick.RIGHT, 135),
+}
+
+# Create class attributes for each predefined direction
+for name, (stick, angle) in DIRECTION_DEFINITIONS.items():
+    setattr(Direction, name, Direction.from_angle(stick, angle, name))
+
+
 class SendFormat:
-    def __init__(self):
+    """Formats controller input data for serial transmission."""
 
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
-
-        # This format structure needs to be the same as the one written in Joystick.c
-        self.format = OrderedDict([
-            ('btn', 0),  # send bit array for buttons
-            ('hat', Hat.CENTER),
-            ('lx', center),
-            ('ly', center),
-            ('rx', center),
-            ('ry', center),
-        ])
-
+    def __init__(self) -> None:
+        """Initialize with neutral position values."""
+        self.format: OrderedDict = OrderedDict(
+            [
+                ("btn", 0),  # Button bit array
+                ("hat", Hat.CENTER),
+                ("lx", STICK_CENTER),
+                ("ly", STICK_CENTER),
+                ("rx", STICK_CENTER),
+                ("ry", STICK_CENTER),
+            ]
+        )
         self.L_stick_changed = False
         self.R_stick_changed = False
         self.Hat_pos = Hat.CENTER
 
-    def setButton(self, btns):
-        for btn in btns:
-            self.format['btn'] |= btn
+    def set_button(self, buttons: List[Button]) -> None:
+        """Set button states."""
+        for btn in buttons:
+            self.format["btn"] |= btn
 
-    def unsetButton(self, btns):
-        for btn in btns:
-            self.format['btn'] &= ~btn
+    def unset_button(self, buttons: List[Button]) -> None:
+        """Unset button states."""
+        for btn in buttons:
+            self.format["btn"] &= ~btn
 
-    def resetAllButtons(self):
-        self.format['btn'] = 0
+    def reset_all_buttons(self) -> None:
+        """Reset all buttons to unpressed state."""
+        self.format["btn"] = 0
 
-    def setHat(self, btns):
-        # self._logger.debug(btns)
-        if not btns:
-            self.format['hat'] = self.Hat_pos
-        else:
-            self.Hat_pos = btns[0]
-            self.format['hat'] = btns[0]  # takes only first element
+    def set_hat(self, hat_positions: List[Hat]) -> None:
+        """Set hat position (uses first position if multiple given)."""
+        if hat_positions:
+            self.Hat_pos = hat_positions[0]
+            self.format["hat"] = self.Hat_pos
 
-    def unsetHat(self):
-        # if self.Hat_pos is not Hat.CENTER:
+    def unset_hat(self) -> None:
+        """Reset hat to center position."""
         self.Hat_pos = Hat.CENTER
-        self.format['hat'] = self.Hat_pos
+        self.format["hat"] = self.Hat_pos
 
-    def setAnyDirection(self, dirs):
-        for dir in dirs:
-            if dir.stick == Stick.LEFT:
-                if self.format['lx'] != dir.x or self.format['ly'] != 255 - dir.y:
+    def set_any_direction(self, directions: List[Direction]) -> None:
+        """Set stick directions."""
+        for direction in directions:
+            if direction.stick == Stick.LEFT:
+                if (
+                    self.format["lx"] != direction.x
+                    or self.format["ly"] != STICK_MAX - direction.y
+                ):
                     self.L_stick_changed = True
 
-                self.format['lx'] = dir.x
-                self.format['ly'] = 255 - dir.y  # NOTE: y axis directs under
-            elif dir.stick == Stick.RIGHT:
-                if self.format['rx'] != dir.x or self.format['ry'] != 255 - dir.y:
+                self.format["lx"] = direction.x
+                self.format["ly"] = STICK_MAX - direction.y  # Y axis is inverted
+            else:  # RIGHT stick
+                if (
+                    self.format["rx"] != direction.x
+                    or self.format["ry"] != STICK_MAX - direction.y
+                ):
                     self.R_stick_changed = True
 
-                self.format['rx'] = dir.x
-                self.format['ry'] = 255 - dir.y
+                self.format["rx"] = direction.x
+                self.format["ry"] = STICK_MAX - direction.y
 
-    def unsetDirection(self, dirs):
-        if Tilt.UP in dirs or Tilt.DOWN in dirs:
-            self.format['ly'] = center
-            self.format['lx'] = self.fixOtherAxis(self.format['lx'])
+    def unset_direction(self, tilts: List[Tilt]) -> None:
+        """Reset specified tilt directions to neutral."""
+        if any(t in tilts for t in (Tilt.UP, Tilt.DOWN)):
+            self.format["ly"] = STICK_CENTER
+            self.format["lx"] = self._fix_other_axis(self.format["lx"])
             self.L_stick_changed = True
-        if Tilt.RIGHT in dirs or Tilt.LEFT in dirs:
-            self.format['lx'] = center
-            self.format['ly'] = self.fixOtherAxis(self.format['ly'])
+
+        if any(t in tilts for t in (Tilt.RIGHT, Tilt.LEFT)):
+            self.format["lx"] = STICK_CENTER
+            self.format["ly"] = self._fix_other_axis(self.format["ly"])
             self.L_stick_changed = True
-        if Tilt.R_UP in dirs or Tilt.R_DOWN in dirs:
-            self.format['ry'] = center
-            self.format['rx'] = self.fixOtherAxis(self.format['rx'])
-            self.R_stick_changed = True
-        if Tilt.R_RIGHT in dirs or Tilt.R_LEFT in dirs:
-            self.format['rx'] = center
-            self.format['ry'] = self.fixOtherAxis(self.format['ry'])
+
+        if any(t in tilts for t in (Tilt.R_UP, Tilt.R_DOWN)):
+            self.format["ry"] = STICK_CENTER
+            self.format["rx"] = self._fix_other_axis(self.format["rx"])
             self.R_stick_changed = True
 
-    # Use this to fix an either tilt to max when the other axis sets to 0
-    def fixOtherAxis(self, fix_target):
-        if fix_target == center:
-            return center
-        else:
-            return 0 if fix_target < center else 255
+        if any(t in tilts for t in (Tilt.R_RIGHT, Tilt.R_LEFT)):
+            self.format["rx"] = STICK_CENTER
+            self.format["ry"] = self._fix_other_axis(self.format["ry"])
+            self.R_stick_changed = True
 
-    def resetAllDirections(self):
-        self.format['lx'] = center
-        self.format['ly'] = center
-        self.format['rx'] = center
-        self.format['ry'] = center
+    def _fix_other_axis(self, fix_target: int) -> int:
+        """Adjust opposite axis when one axis is reset."""
+        if fix_target == STICK_CENTER:
+            return STICK_CENTER
+        return 0 if fix_target < STICK_CENTER else STICK_MAX
+
+    def reset_all_directions(self) -> None:
+        """Reset all sticks to neutral position."""
+        for axis in ("lx", "ly", "rx", "ry"):
+            self.format[axis] = STICK_CENTER
         self.L_stick_changed = True
         self.R_stick_changed = True
         self.Hat_pos = Hat.CENTER
 
-    def convert2str(self):
-        str_format = ''
-        str_L = ''
-        str_R = ''
-        str_Hat = ''
-        space = ' '
+    def convert2str(self) -> str:
+        # ビットフラグ用の定数
+        LEFT_STICK_FLAG = 0x2
+        RIGHT_STICK_FLAG = 0x1
 
-        # set bits array with stick flags
-        send_btn = int(self.format['btn']) << 2
-        # send_btn |= 0x3
+        # 送信データの構成要素を格納するリスト
+        parts: List[str] = []
+        # space = " "
+
+        # ボタンデータの処理（2ビット左シフト + スティックフラグ）
+        send_btn = int(self.format["btn"]) << 2
+
+        # 左スティックのデータ処理
         if self.L_stick_changed:
-            send_btn |= 0x2
-            str_L = format(self.format['lx'], 'x') + space + format(self.format['ly'], 'x')
-        if self.R_stick_changed:
-            send_btn |= 0x1
-            str_R = format(self.format['rx'], 'x') + space + format(self.format['ry'], 'x')
-        # if self.Hat_changed:
-        str_Hat = str(int(self.format['hat']))
-        # format(send_btn, 'x') + \
-        # print(hex(send_btn))
-        str_format = format(send_btn, '#06x') + \
-                     (space + str_Hat) + \
-                     (space + str_L if self.L_stick_changed else '') + \
-                     (space + str_R if self.R_stick_changed else '')
+            send_btn |= LEFT_STICK_FLAG
+            lx = format(self.format["lx"], "02x")  # 2桁の16進数にフォーマット
+            ly = format(self.format["ly"], "02x")
+            parts.extend([lx, ly])
 
+        # 右スティックのデータ処理
+        if self.R_stick_changed:
+            send_btn |= RIGHT_STICK_FLAG
+            rx = format(self.format["rx"], "02x")
+            ry = format(self.format["ry"], "02x")
+            parts.extend([rx, ry])
+
+        # ヘッダー部分の構築
+        header = [
+            format(send_btn, "#06x"),  # 0x付き4桁16進数
+            str(int(self.format["hat"])),
+        ]
+
+        # 最終的な文字列の組み立て
+        full_command = [" ".join(header), " ".join(parts)]
+
+        # フラグリセット
         self.L_stick_changed = False
         self.R_stick_changed = False
 
-        # print(str_format)
-        return str_format  # the last space is not needed
-
-
-# This class handle L stick and R stick at any angles
-class Direction:
-    def __init__(self, stick, angle, magnification=1.0, isDegree=True, showName=None):
-
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
-
-        self.stick = stick
-        self.angle_for_show = angle
-        self.showName = showName
-        if magnification > 1.0:
-            self.mag = 1.0
-        elif magnification < 0:
-            self.mag = 0.0
-        else:
-            self.mag = magnification
-
-        if isinstance(angle, tuple):
-            # assuming (X, Y)
-            self.x = angle[0]
-            self.y = angle[1]
-            self.showName = '(' + str(self.x) + ', ' + str(self.y) + ')'
-            print('押し込み量', self.showName)
-        else:
-            angle = math.radians(angle) if isDegree else angle
-
-            # We set stick X and Y from 0 to 255, so they are calculated as below.
-            # X = 127.5*cos(theta) + 127.5
-            # Y = 127.5*sin(theta) + 127.5
-            self.x = math.ceil(127.5 * math.cos(angle) * self.mag + 127.5)
-            self.y = math.floor(127.5 * math.sin(angle) * self.mag + 127.5)
-
-    def __repr__(self):
-        if self.showName:
-            return "<{}, {}>".format(self.stick, self.showName)
-        else:
-            return "<{}, {}[deg]>".format(self.stick, self.angle_for_show)
-
-    def __eq__(self, other):
-        if not type(other) is Direction:
-            return False
-
-        if self.stick == other.stick and self.angle_for_show == other.angle_for_show:
-            return True
-        else:
-            return False
-
-    def getTilting(self):
-        tilting = []
-        if self.stick == Stick.LEFT:
-            if self.x < center:
-                tilting.append(Tilt.LEFT)
-            elif self.x > center:
-                tilting.append(Tilt.RIGHT)
-
-            if self.y < center - 1:
-                tilting.append(Tilt.DOWN)
-            elif self.y > center - 1:
-                tilting.append(Tilt.UP)
-        elif self.stick == Stick.RIGHT:
-            if self.x < center:
-                tilting.append(Tilt.R_LEFT)
-            elif self.x > center:
-                tilting.append(Tilt.R_RIGHT)
-
-            if self.y < center - 1:
-                tilting.append(Tilt.R_DOWN)
-            elif self.y > center - 1:
-                tilting.append(Tilt.R_UP)
-        return tilting
-
-
-# Left stick for ease of use
-Direction.UP = Direction(Stick.LEFT, 90, showName='UP')
-Direction.RIGHT = Direction(Stick.LEFT, 0, showName='RIGHT')
-Direction.DOWN = Direction(Stick.LEFT, -90, showName='DOWN')
-Direction.LEFT = Direction(Stick.LEFT, -180, showName='LEFT')
-Direction.UP_RIGHT = Direction(Stick.LEFT, 45, showName='UP_RIGHT')
-Direction.DOWN_RIGHT = Direction(Stick.LEFT, -45, showName='DOWN_RIGHT')
-Direction.DOWN_LEFT = Direction(Stick.LEFT, -135, showName='DOWN_LEFT')
-Direction.DOWN_LEFT = Direction(Stick.LEFT, -135, showName='DOWN_LEFT')
-Direction.UP_LEFT = Direction(Stick.LEFT, 135, showName='UP_LEFT')
-# Right stick for ease of use
-Direction.R_UP = Direction(Stick.RIGHT, 90, showName='UP')
-Direction.R_RIGHT = Direction(Stick.RIGHT, 0, showName='RIGHT')
-Direction.R_DOWN = Direction(Stick.RIGHT, -90, showName='DOWN')
-Direction.R_LEFT = Direction(Stick.RIGHT, -180, showName='LEFT')
-Direction.R_UP_RIGHT = Direction(Stick.RIGHT, 45, showName='UP_RIGHT')
-Direction.R_DOWN_RIGHT = Direction(Stick.RIGHT, -45, showName='DOWN_RIGHT')
-Direction.R_DOWN_LEFT = Direction(Stick.RIGHT, -135, showName='DOWN_LEFT')
-Direction.R_UP_LEFT = Direction(Stick.RIGHT, 135, showName='UP_LEFT')
+        return " ".join(filter(None, full_command))  # 空要素を除去して結合
 
 
 # handles serial input to Joystick.c
 class KeyPress:
-    def __init__(self, ser):
+    """Handles controller input and serial communication."""
 
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
-
-        self.q = queue.Queue()
+    def __init__(self, ser: Sender.Sender):
+        """Initialize with serial sender instance."""
+        self.queue: Queue = Queue()
         self.ser = ser
         self.format = SendFormat()
-        self.holdButton = []
-        self.btn_name2 = ['LEFT', 'RIGHT', 'UP', 'DOWN', 'UP_LEFT', 'UP_RIGHT', 'DOWN_LEFT', 'DOWN_RIGHT']
-
-        self.pushing_to_show = None
-        self.pushing = None
-        self.pushing2 = None
-        self._pushing = None
-        self._chk_neutral = None
-        self.NEUTRAL = dict(self.format.format)
-
-        self.input_time_0 = time.perf_counter()
-        self.input_time_1 = time.perf_counter()
-        self.inputEnd_time_0 = time.perf_counter()
+        self.hold_buttons: List[ControlInput] = []
+        self.neutral_state = dict(self.format.format)
+        self.input_start_time = time.perf_counter()
         self.was_neutral = True
+        self.input_times: Dict[ControlInput, float] = {}  # 入力が押された時刻
 
-    def input(self, btns, ifPrint=True):
-        self._pushing = dict(self.format.format)
-        if not isinstance(btns, list):
-            btns = [btns]
+    def input(
+        self,
+        inputs: Union[List[ControlInput], ControlInput],
+        ifPrint: bool = False,
+    ) -> None:
+        """Send input to controller."""
+        if not isinstance(inputs, list):
+            inputs = [inputs]
 
-        for btn in self.holdButton:
-            if not btn in btns:
-                btns.append(btn)
+        # Include any held buttons
+        inputs.extend(self.hold_buttons)
+        current_time = time.perf_counter()
+        # Print press information and store input times
+        for inp in inputs:
+            if inp not in self.input_times:
+                self.input_times[inp] = current_time
+                if ifPrint:
+                    if isinstance(inp, Button):
+                        print(f"[ PRESS ] {Button(inp).name}")
+                    if isinstance(inp, Hat):
+                        print(f"[ PRESS ] {Hat(inp).name}")
+                    if isinstance(inp, Direction):
+                        print(f"[ PRESS ] {inp}")
 
-        self.format.setButton([btn for btn in btns if type(btn) is Button])
-        self.format.setHat([btn for btn in btns if type(btn) is Hat])
-        self.format.setAnyDirection([btn for btn in btns if type(btn) is Direction])
+        # Process different input types
+        self.format.set_button([i for i in inputs if isinstance(i, Button)])
+        self.format.set_hat([i for i in inputs if isinstance(i, Hat)])
+        self.format.set_any_direction([i for i in inputs if isinstance(i, Direction)])
 
         self.ser.writeRow(self.format.convert2str())
-        self.input_time_0 = time.perf_counter()
+        self.input_start_time = time.perf_counter()
 
-        # self._logger.debug(f": {list(map(str,self.format.format.values()))}")
+    def inputEnd(
+        self,
+        inputs: Union[List[ControlInput], ControlInput],
+        ifPrint: bool = False,
+        unset_hat: bool = True,
+    ) -> None:
+        """End specified inputs."""
+        if not isinstance(inputs, list):
+            inputs = [inputs]
 
-    def inputEnd(self, btns, ifPrint=True, unset_hat=True):
-        # self._logger.debug(f"input end: {btns}")
-        self.pushing2 = dict(self.format.format)
+        current_time = time.perf_counter()
 
-        self.ed = time.perf_counter()
-        if not isinstance(btns, list):
-            btns = [btns]
-        # self._logger.debug(btns)
-
-        # get tilting direction from angles
+        # Get tilt directions from Direction inputs
         tilts = []
-        for dir in [btn for btn in btns if type(btn) is Direction]:
-            tiltings = dir.getTilting()
-            for tilting in tiltings:
-                tilts.append(tilting)
-        # self._logger.debug(tilts)
+        for direction in [i for i in inputs if isinstance(i, Direction)]:
+            tilts.extend(direction.get_tilting())
 
-        self.format.unsetButton([btn for btn in btns if type(btn) is Button])
+        self.format.unset_button([i for i in inputs if isinstance(i, Button)])
         if unset_hat:
-            self.format.unsetHat()
-        self.format.unsetDirection(tilts)
+            self.format.unset_hat()
+        self.format.unset_direction(tilts)
+
+        # Print release info and duration
+        for inp in inputs:
+            if inp in self.input_times:
+                duration = current_time - self.input_times[inp]
+                if ifPrint:
+                    if isinstance(inp, Button):
+                        print(f"[RELEASE] {Button(inp).name} after {duration:.3f}s")
+                    if isinstance(inp, Hat):
+                        print(f"[RELEASE] {Hat(inp).name} after {duration:.3f}s")
+                    if isinstance(inp, Direction):
+                        print(f"[RELEASE] {(inp)} after {duration:.3f}s")
+                del self.input_times[inp]
+
         self.ser.writeRow(self.format.convert2str())
 
-    def hold(self, btns):
-        if not isinstance(btns, list):
-            btns = [btns]
+    def hold(self, inputs: Union[List[ControlInput], ControlInput]) -> None:
+        """Hold inputs until explicitly released."""
+        if not isinstance(inputs, list):
+            inputs = [inputs]
 
-        for btn in btns:
-            if btn in self.holdButton:
-                print('Warning: ' + btn.name + ' is already in holding state')
-                self._logger.warning(f"Warning: {btn.name} is already in holding state")
+        for inp in inputs:
+            if inp in self.hold_buttons:
+                name = getattr(inp, "name", getattr(inp, "show_name", str(inp)))
+                logger.warning(f"{name} is already in holding state")
                 return
 
-            self.holdButton.append(btn)
-        self.input(btns)
+        self.hold_buttons.extend(inputs)
+        self.input(inputs)
 
-    def holdEnd(self, btns):
-        if not isinstance(btns, list):
-            btns = [btns]
+    def holdEnd(self, inputs: Union[List[ControlInput], ControlInput]) -> None:
+        """Release held inputs."""
+        if not isinstance(inputs, list):
+            inputs = [inputs]
 
-        for btn in btns:
-            self.holdButton.remove(btn)
+        for inp in inputs:
+            self.hold_buttons.remove(inp)
 
-        self.inputEnd(btns)
+        self.inputEnd(inputs)
 
-    def end(self):
-        self.ser.writeRow('end')
+    def neutral(self) -> None:
+        inputs = self.hold_buttons
+        self.hold_buttons = []
+        self.format.reset_all_buttons()
+        self.format.reset_all_directions()
+        self.inputEnd(inputs, unset_hat=True)
 
-    def serialcommand_direct_send(self, serialcommands: list, waittime: list):
-        for wtime, row in zip(waittime, serialcommands):
-            time.sleep(wtime)
-            self.ser.writeRow_wo_perf_counter(row, is_show=False)
+    def end(self) -> None:
+        """End all controller inputs."""
+        self.neutral()
+        self.ser.writeRow("end")
+
+    def serialcommand_direct_send(
+        self, commands: List[str], wait_times: List[float]
+    ) -> None:
+        """Send raw serial commands with specified wait times between them."""
+        for wait_time, command in zip(wait_times, commands):
+            time.sleep(wait_time)
+            self.ser.writeRow_wo_perf_counter(command, is_show=False)
