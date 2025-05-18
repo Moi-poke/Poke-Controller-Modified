@@ -1,6 +1,6 @@
 [project]
 name = "Poke-Controller-Modified"
-version = "3.2.0beta"
+version = "3.2.1beta"
 description = "Automation NS by using python and Arduino"
 readme = "README.md"
 requires-python = ">=3.10.0"
