@@ -45,36 +45,6 @@ from pygubu.widgets.scrollbarhelper import ScrollbarHelper
 MAX_RECENT_COMMANDS = 20
 
 
-@dataclass
-class RecentCommandInfo:
-    id: int
-    name: str
-    last_executed: datetime
-    file_path: str
-    hash: str = ""  # コマンドスクリプトのハッシュ値
-
-    def to_dict(self) -> dict:
-        """JSONシリアライズのためのdict変換メソッド"""
-        return {
-            "id": self.id,
-            "name": self.name,
-            "last_executed": self.last_executed.isoformat(),
-            "file_path": self.file_path,
-            "hash": self.hash,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "RecentCommandInfo":
-        """dictからRecentCommandInfoを生成するクラスメソッド"""
-        return cls(
-            id=data["id"],
-            name=data["name"],
-            last_executed=datetime.fromisoformat(data["last_executed"]),
-            file_path=data["file_path"],
-            hash=data.get("hash", ""),  # 後方互換性のため
-        )
-
-
 def get_version() -> Any:
     """
     pyproject.tomlファイルからバージョン情報を取得する関数
@@ -1083,6 +1053,8 @@ class PokeControllerApp:
             if system != "Darwin":
                 self.root.bind("<FocusIn>", self.onFocusInController)
                 self.root.bind("<FocusOut>", self.onFocusOutController)
+                self.filter_entry.bind("<FocusIn>", self.on_focus_in_filter_entry)
+                self.filter_entry.bind("<FocusOut>", self.on_focus_out_filter_entry)
 
         else:
             # stop listening to keyboard events
@@ -1099,12 +1071,28 @@ class PokeControllerApp:
         if event.widget == self.root and self.keyboard is None:
             self.keyboard = SwitchKeyboardController(self.keyPress)
             self.keyboard.listen()
+            return
 
     def onFocusOutController(self, event: Any) -> None:
         # stop listening to keyboard events
         if event.widget == self.root and self.keyboard:
             self.keyboard.stop()
             self.keyboard = None
+            return
+
+    def on_focus_in_filter_entry(self, event: Any) -> None:
+        # stop listening to keyboard events
+        if event.widget == self.filter_entry and self.keyboard:
+            self.keyboard.stop()
+            self.keyboard = None
+            return
+
+    def on_focus_out_filter_entry(self, event: Any) -> None:
+        # enable Keyboard as controller
+        if event.widget == self.filter_entry and self.keyboard is None:
+            self.keyboard = SwitchKeyboardController(self.keyPress)
+            self.keyboard.listen()
+            return
 
     def loadCommands(self) -> None:
         self.py_loader = CommandLoader(
