@@ -1,39 +1,43 @@
-import traceback
-from typing import Any
-import cv2
+# import traceback
 import tkinter as tk
+from typing import TYPE_CHECKING, Optional
 
-from KeyConfig import PokeKeycon
-from LineNotify import Line_Notify
-from get_pokestatistics import GetFromHomeGUI
+import cv2
 import DiscordNotify
+
+# from LineNotify import Line_Notify
+from get_pokestatistics import GetFromHomeGUI
+from KeyConfig import PokeKeycon
 from loguru import logger
+
+if TYPE_CHECKING:
+    from .Window_old import PokeControllerApp
 
 
 class PokeController_Menubar(tk.Menu):
     def __init__(self, master, **kw):  # type: ignore
-        self.master = master
+        self.master: PokeControllerApp = master  # type:ignore
         self.root = self.master.root
         self.ser = self.master.ser
         self.preview = self.master.preview
-        self.show_size_cb = self.master.show_size_cb
+        self.show_size_cb = self.master.show_size_combobox
         self.keyboard = self.master.keyboard
         self.settings = self.master.settings
         self.camera = self.master.camera
-        self.poke_treeview = None
-        self.key_config = None
+        self.poke_treeview: Optional[GetFromHomeGUI] = None  # type:ignore
+        self.key_config: Optional[PokeKeycon] = None  # type:ignore
         self.line = None
 
         tk.Menu.__init__(self, self.root, **kw)
-        self.menu = tk.Menu(self, tearoff="false")
-        self.menu_command = tk.Menu(self, tearoff="false")
-        self.add(tk.CASCADE, menu=self.menu, label="メニュー")
-        self.menu.add(tk.CASCADE, menu=self.menu_command, label="コマンド")
+        self.menu = tk.Menu(self, tearoff=False)
+        self.menu_command = tk.Menu(self, tearoff=False)
+        self.add(tk.CASCADE, menu=self.menu, label="メニュー")  # type:ignore
+        self.menu.add(tk.CASCADE, menu=self.menu_command, label="コマンド")  # type:ignore
 
-        self.menu.add("separator")
-        self.menu.add("command", label="設定(dummy)")
+        self.menu.add("separator")  # type:ignore
+        self.menu.add("command", label="設定(dummy)")  # type:ignore
         # TODO: setup command_id_arg 'false' for menuitem.
-        self.menu.add("command", command=self.exit, label="終了")
+        self.menu.add("command", command=self.exit, label="終了")  # type:ignore
 
         self.AssignMenuCommand()
         # self.LineTokenSetting()
@@ -46,16 +50,16 @@ class PokeController_Menubar(tk.Menu):
         #     "command", command=self.LineTokenSetting, label="LINE Token Check"
         # )
         # TODO: setup command_id_arg 'false' for menuitem.
-        self.menu_command.add(
+        self.menu_command.add(  # type:ignore
             "command", command=self.OpenPokeHomeCoop, label="Pokemon Home 連携"
         )
-        self.menu_command.add(
+        self.menu_command.add(  # type:ignore
             "command", command=self.OpenKeyConfig, label="キーコンフィグ"
         )
-        self.menu_command.add(
+        self.menu_command.add(  # type:ignore
             "command", command=self.ResetWindowSize, label="画面サイズのリセット"
         )
-        self.menu_command.add(
+        self.menu_command.add(  # type:ignore
             "command",
             command=self.open_discord_notify_setting,
             label="Discord通知の設定",
@@ -77,20 +81,21 @@ class PokeController_Menubar(tk.Menu):
 
     def closingGetFromHome(self) -> None:
         logger.debug("Close Pokemon home cooperate window")
-        self.poke_treeview.destroy()
+        if self.poke_treeview:
+            self.poke_treeview.destroy()
         self.poke_treeview = None
 
-    def LineTokenSetting(self) -> None:
-        try:
-            logger.debug("Show line API")
-            if self.line is None:
-                self.line = Line_Notify(self.camera)
-            print(self.line)
-            self.line.getRateLimit()
-            # LINE.send_text_n_image("CAPTURE")
-        except Exception as E:
-            logger.error(E)
-            logger.error(traceback.format_exc())
+    # def LineTokenSetting(self) -> None:
+    #     try:
+    #         logger.debug("Show line API")
+    #         if self.line is None:
+    #             self.line = Line_Notify(self.camera)
+    #         print(self.line)
+    #         self.line.getRateLimit()
+    #         # LINE.send_text_n_image("CAPTURE")
+    #     except Exception as E:
+    #         logger.error(E)
+    #         logger.error(traceback.format_exc())
 
     def OpenKeyConfig(self) -> None:
         logger.debug("Open KeyConfig window")
@@ -104,7 +109,8 @@ class PokeController_Menubar(tk.Menu):
 
     def closingKeyConfig(self) -> None:
         logger.debug("Close KeyConfig window")
-        self.key_config.destroy()
+        if self.key_config:
+            self.key_config.destroy()
         self.key_config = None
 
     def ResetWindowSize(self) -> None:

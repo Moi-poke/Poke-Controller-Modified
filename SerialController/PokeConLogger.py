@@ -7,6 +7,7 @@ from logging import Formatter, handlers, StreamHandler, getLogger, DEBUG
 import logging
 import datetime as dt
 import os
+import traceback
 from loguru import logger
 
 now = dt.datetime.now()
@@ -45,12 +46,15 @@ def root_logger():  # type: ignore
 
     try:
         if "SerialController" in os.listdir():
-            path = ".\log"
+            path = os.path.join(".", "log")  # または path = "./log"
         else:
-            path = "..\log"
-        os.makedirs(path)
-    except FileExistsError:
-        pass
+            path = os.path.join("..", "log")  # または path = "../log"
+
+        os.makedirs(path, exist_ok=True)  # exist_ok=TrueでFileExistsErrorを回避
+    except OSError:
+        logger.error(traceback.format_exc())
+    except Exception:
+        logger.error(traceback.format_exc())
 
     # ファイルハンドラを作成
     rh = logging.FileHandler(

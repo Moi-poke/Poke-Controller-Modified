@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from typing import Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import cv2
 import threading
@@ -17,15 +17,23 @@ from os import path
 import tkinter as tk
 import tkinter.ttk as ttk
 
+from Camera import Camera
+
+# from GuiAssets import CaptureArea
+from Commands import Sender
+
 import Settings
 from LineNotify import Line_Notify
 from DiscordNotify import Discord_Notify
 from Commands import CommandBase
-from .Keys import Button, Direction, KeyPress
+from .Keys import Button, Direction, Hat, KeyPress
 
 import traceback
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from GuiAssets import CaptureArea
 
 
 # the class For notifying stop signal is sent from Main window
@@ -35,28 +43,28 @@ class StopThread(Exception):
 
 # Python command
 class PythonCommand(CommandBase.Command):
-    def __init__(self):
+    def __init__(self) -> None:
         super(PythonCommand, self).__init__()
-        self.keys = None
-        self.thread = None
+        self.keys: KeyPress | None = None
+        self.thread: threading.Thread | None = None
         self.alive: bool = True
-        self.postProcess = None
-        self.message_dialogue = None
+        self.postProcess: Any = None
+        self.message_dialogue: tk.Toplevel | None = None
 
         self.traceback_limit = 5
 
-    def __post_init__(self):
-        self.Line = Line_Notify()
+    def __post_init__(self) -> None:
+        # self.Line = Line_Notify() #EOL
         self.Discord = Discord_Notify()
         pass
 
     # @abstractclassmethod
-    @classmethod
+    # @classmethod
     @abstractmethod
-    def do(self):
+    def do(self) -> None:
         pass
 
-    def do_safe(self, ser):
+    def do_safe(self, ser: Sender) -> None:
         self.__post_init__()
 
         if self.keys is None:
@@ -82,7 +90,7 @@ class PythonCommand(CommandBase.Command):
             self.keys.end()
             self.alive = False
 
-    def start(self, ser, postProcess=None):
+    def start(self, ser: Sender, postProcess: Any = None) -> None:
         self.alive = True
         self.postProcess = postProcess
 
@@ -90,22 +98,31 @@ class PythonCommand(CommandBase.Command):
             self.thread = threading.Thread(target=self.do_safe, args=(ser,))
             self.thread.start()
 
-    def end(self, ser):
+    def end(self, ser: Sender) -> None:
         self.sendStopRequest()
 
-    def sendStopRequest(self):
+    def sendStopRequest(self) -> None:
         if self.checkIfAlive():  # try if we can stop now
             self.alive = False
             print("-- sent a stop request. --")
             logger.info("Sending stop request")
 
     # NOTE: Use this function if you want to get out from a command loop by yourself
-    def finish(self):
+    def finish(self) -> None:
         self.alive = False
-        self.end(self.keys.ser)
+        if self.keys:
+            self.end(self.keys.ser)
 
     # press button at duration times(s)
-    def press(self, buttons, duration=0.1, wait=0.1):
+    def press(
+        self,
+        buttons: Button | Direction | Hat,
+        duration: float | int = 0.1,
+        wait: float | int = 0.1,
+    ) -> None:
+        if not self.keys:
+            self.checkIfAlive()
+            return
         self.keys.input(buttons)
         self.wait(duration)
         self.keys.inputEnd(buttons)
@@ -113,30 +130,41 @@ class PythonCommand(CommandBase.Command):
         self.checkIfAlive()
 
     # press button at duration times(s) repeatedly
-    def pressRep(self, buttons, repeat, duration=0.1, interval=0.1, wait=0.1):
+    def pressRep(
+        self,
+        buttons: Button | Direction | Hat,
+        repeat: int,
+        duration: float | int = 0.1,
+        interval: float | int = 0.1,
+        wait: float | int = 0.1,
+    ) -> None:
         for i in range(0, repeat):
             self.press(buttons, duration, 0 if i == repeat - 1 else interval)
         self.wait(wait)
 
     # add hold buttons
-    def hold(self, buttons, wait=0.1):
+    def hold(self, buttons: Button | Direction | Hat, wait: float | int = 0.1) -> None:
+        if not self.keys:
+            return
         self.keys.hold(buttons)
         self.wait(wait)
 
     # release holding buttons
-    def holdEnd(self, buttons):
+    def holdEnd(self, buttons: Button | Direction | Hat) -> None:
+        if not self.keys:
+            return
         self.keys.holdEnd(buttons)
         self.checkIfAlive()
 
     # do nothing at wait time(s)
-    def short_wait(self, wait):
+    def short_wait(self, wait: float | int) -> None:
         current_time = time.perf_counter()
         while time.perf_counter() < current_time + wait:
             pass
         self.checkIfAlive()
 
     # do nothing at wait time(s)
-    def wait(self, wait):
+    def wait(self, wait: float | int) -> None:
         if float(wait) > 0.1:
             sleep(wait)
         else:
@@ -145,10 +173,11 @@ class PythonCommand(CommandBase.Command):
                 pass
         self.checkIfAlive()
 
-    def checkIfAlive(self):
+    def checkIfAlive(self) -> bool:
         if not self.alive:
-            self.keys.end()
-            self.keys = None
+            if self.keys:
+                self.keys.end()
+                self.keys = None
             self.thread = None
 
             if self.postProcess is not None:
@@ -182,7 +211,8 @@ class PythonCommand(CommandBase.Command):
     # Use time glitch
 
     # Controls the system time and get every-other-day bonus without any punishments
-    def timeLeap(self, is_go_back=True):
+    # NEED Maintenance
+    def timeLeap(self, is_go_back: bool = True) -> None:
         self.press(Button.HOME, wait=1)
         self.press(Direction.DOWN)
         self.press(Direction.RIGHT)
@@ -228,7 +258,7 @@ class PythonCommand(CommandBase.Command):
         self.press(Button.HOME, wait=1)
 
     @deprecated(reason="Use discord instead")
-    def LINE_text(self, txt="", token="token"):
+    def LINE_text(self, txt: str = "", token: str = "token") -> None:
         print("LINE通知は2025/3/31にサービスが終了しました。")
         logger.error("LINE通知は2025/3/31にサービスが終了しました。")
         try:
@@ -271,7 +301,9 @@ class PythonCommand(CommandBase.Command):
             return False
 
     # direct serial
-    def direct_serial(self, serialcommands: list, waittime: list):
+    def direct_serial(self, serialcommands: list, waittime: list) -> None:
+        if not self.keys:
+            return
         # 余計なものが付いている可能性があるので確認して削除する
         checkedcommands = []
         for row in serialcommands:
@@ -279,7 +311,10 @@ class PythonCommand(CommandBase.Command):
         self.keys.serialcommand_direct_send(checkedcommands, waittime)
 
     # Reload COM port (temporary function)
-    def reload_com_port(self):
+    def reload_com_port(self) -> None:
+        if not self.keys:
+            logger.warning("No KeyPress Object")
+            return
         if self.keys.ser.isOpened():
             print("Port is already opened and being closed.")
             self.keys.ser.closeSerial()
@@ -305,7 +340,9 @@ class PythonCommand(CommandBase.Command):
 
 
 class PokeConDialogue(object):
-    def __init__(self, parent, title: str, message: int | str | list, mode: int = 0):
+    def __init__(
+        self, parent: tk.Toplevel, title: str, message: int | str | list, mode: int = 0
+    ):
         """
         pokecon用ダイアログ生成関数(注意:mode=0と1でmessageの取り扱いが大きく異なる。)
         mode | int: 0のときEntryのみ、1のとき6種類のwidgetに対応
@@ -323,8 +360,8 @@ class PokeConDialogue(object):
         digit | int : 有効桁数
         return : なし
         """
-        self._ls = None
-        self.isOK = None
+        self._ls: list | None = None
+        self.isOK: bool | None = None
 
         self.message_dialogue = parent
         self.message_dialogue.title(title)
@@ -339,7 +376,7 @@ class PokeConDialogue(object):
             column=0, columnspan=2, ipadx="10", ipady="10", row=0, sticky="nsew"
         )
 
-        self.dialogue_ls = {}
+        self.dialogue_ls: dict = {}
         x = self.message_dialogue.master.winfo_x()
         w = self.message_dialogue.master.winfo_width()
         y = self.message_dialogue.master.winfo_y()
@@ -371,7 +408,7 @@ class PokeConDialogue(object):
         self.main_frame.pack()
         self.message_dialogue.master.wait_window(self.message_dialogue)
 
-    def mode0(self, message: list | str):
+    def mode0(self, message: list | str) -> None:
         if type(message) is not list:
             message = [message]
         n = len(message)
@@ -383,17 +420,17 @@ class PokeConDialogue(object):
             label.grid(column=0, row=i, sticky="nsew", padx=3, pady=3)
             entry.grid(column=1, row=i, sticky="nsew", padx=3, pady=3)
 
-    def mode1(self, dialogue_list: list):
+    def mode1(self, dialogue_list: list) -> None:
         n = len(dialogue_list)
         frame = []
 
-        scale_label_list = []  # scaleの値を表示するlabelを格納するリスト
-        scale_index_list = []  # scaleが何番目のwidgetなのかを格納するリスト
-        scale_digit_list = []  # scaleの有効桁数を格納するリスト
+        scale_label_list: list = []  # scaleの値を表示するlabelを格納するリスト
+        scale_index_list: list = []  # scaleが何番目のwidgetなのかを格納するリスト
+        scale_digit_list: list = []  # scaleの有効桁数を格納するリスト
 
         def change_scale_value(
-            event=None,
-        ):  # scaleのバーを動かしたときにlabelの値を変更するための関数
+            event: tk.Event | None = None,
+        ) -> None:  # scaleのバーを動かしたときにlabelの値を変更するための関数
             for i, (index, fmt) in enumerate(zip(scale_index_list, scale_digit_list)):
                 if fmt != 0:
                     val = round(self.dialogue_ls[dialogue_list[index][1]].get(), fmt)
@@ -407,6 +444,15 @@ class PokeConDialogue(object):
         for i in range(n):
             # widgetはすべてframeの中に入れる。scaleの場合、値を示すlabelもフレームの中に入れる。
             frame.append(ttk.LabelFrame(self.inputs, text=dialogue_list[i][1]))
+
+            widget: (
+                ttk.Checkbutton
+                | ttk.Combobox
+                | ttk.Entry
+                | ttk.Radiobutton
+                | ttk.Scale
+                | ttk.Spinbox
+            )
 
             # Checkbox
             if dialogue_list[i][0].casefold() == "check".casefold():
@@ -514,28 +560,30 @@ class PokeConDialogue(object):
             else:
                 frame[i].grid_columnconfigure(0, weight=1)
 
-    def ret_value(self, need: type) -> list | dict:
+    def ret_value(self, need: type) -> list | dict | bool:
+        if not self._ls:
+            return False
         if self.isOK:
-            if need == dict:
+            if need is dict:
                 return {k: v.get() for k, v in self.dialogue_ls.items()}
-            elif need == list:
+            elif need is list:
                 return self._ls
             else:
-                print(f"Wrong arg. Try Return list.")
+                print("Wrong args. Try Return list.")
                 return self._ls
         else:
             return False
 
-    def close_window(self):
+    def close_window(self) -> None:
         self.message_dialogue.destroy()
         self.isOK = False
 
-    def ok_command(self):
+    def ok_command(self) -> None:
         self._ls = [v.get() for k, v in self.dialogue_ls.items()]
         self.message_dialogue.destroy()
         self.isOK = True
 
-    def cancel_command(self):
+    def cancel_command(self) -> None:
         self.message_dialogue.destroy()
         self.isOK = False
 
@@ -559,8 +607,8 @@ def _get_template_filespec(template_path: str) -> str:
 
 
 class ImageProcPythonCommand(PythonCommand):
-    def __init__(self, cam, gui=None):
-        super(ImageProcPythonCommand, self).__init__()
+    def __init__(self, cam: Camera, gui: Optional[CaptureArea] = None):
+        super().__init__()
 
         # self._logger = getLogger(__name__)
         # self._logger.addHandler(NullHandler())
@@ -573,13 +621,25 @@ class ImageProcPythonCommand(PythonCommand):
 
         self.gui = gui
 
-        self.gsrc = cv2.cuda_GpuMat()
-        self.gtmpl = cv2.cuda_GpuMat()
-        self.gresult = cv2.cuda_GpuMat()
+        try:
+            self.gsrc = cv2.cuda_GpuMat()
+            self.gtmpl = cv2.cuda_GpuMat()
+            self.gresult = cv2.cuda_GpuMat()
+        except Exception:
+            self.gsrc = None
+            self.gtmpl = None
+            self.gresult = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.Line = Line_Notify(self.camera)
         self.Discord = Discord_Notify(camera=self.camera)
+
+    def readFrame(self) -> Optional[cv2.Mat]:
+        if self.camera is not None:
+            return self.camera.readFrame()
+        else:
+            logger.error("Camera is not reloaded")
+            return None
 
     # Judge if current screenshot contains an image using template matching
     # It's recommended that you use gray_scale option unless the template color wouldn't be cared for performace
@@ -587,16 +647,16 @@ class ImageProcPythonCommand(PythonCommand):
     # 色の違いを考慮しないのであればパフォーマンスの点からuse_grayをTrueにしてグレースケール画像を使うことを推奨します
     def isContainTemplate(
         self,
-        template_path,
-        threshold=0.7,
-        use_gray=True,
-        show_value=False,
-        show_position=True,
-        show_only_true_rect=True,
-        ms=2000,
-        crop=[],
-        mask_path=None,
-    ):
+        template_path: str,
+        threshold: float = 0.7,
+        use_gray: bool = True,
+        show_value: bool = False,
+        show_position: bool = True,
+        show_only_true_rect: bool = True,
+        ms: int = 2000,
+        crop: list[int] = [],
+        mask_path: Optional[str] = None,
+    ) -> bool:
         src = self.camera.readFrame()
         src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if use_gray else src
 
@@ -609,7 +669,7 @@ class ImageProcPythonCommand(PythonCommand):
         )
 
         # mask用画像読み込み
-        if mask_path == None:
+        if mask_path is None:
             mask = None
             method = cv2.TM_CCOEFF_NORMED
         else:
@@ -647,15 +707,15 @@ class ImageProcPythonCommand(PythonCommand):
     # 色の違いを考慮しないのであればパフォーマンスの点からuse_grayをTrueにしてグレースケール画像を使うことを推奨します
     def isContainTemplate_max(
         self,
-        template_path_list,
-        threshold=0.7,
-        use_gray=True,
-        show_value=False,
-        show_position=True,
-        show_only_true_rect=True,
-        ms=2000,
-        crop=[],
-    ):
+        template_path_list: list[str],
+        threshold: float = 0.7,
+        use_gray: bool = True,
+        show_value: bool = False,
+        show_position: bool = True,
+        show_only_true_rect: bool = True,
+        ms: int = 2000,
+        crop: list[int] = [],
+    ) -> tuple[int, list[float], list[bool]]:
         src = self.camera.readFrame()
         src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if use_gray else src
 
@@ -758,7 +818,7 @@ class ImageProcPythonCommand(PythonCommand):
         return mask
 
     @deprecated(reason="Use discord instead")
-    def LINE_image(self, txt="", token="token"):
+    def LINE_image(self, txt: str = "", token: str = "token") -> None:
         try:
             self.Line.send_text_n_image(txt, token)
         except Exception:

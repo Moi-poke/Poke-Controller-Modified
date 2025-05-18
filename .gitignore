@@ -121,3 +121,4 @@ venv.bak/
 # mypy
 .mypy_cache/
 SerialController/discord.yml
+plugin/*

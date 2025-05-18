@@ -6,11 +6,10 @@ import time
 from collections import OrderedDict
 from enum import Enum, IntEnum, IntFlag, auto
 from queue import Queue
-from typing import Any, Optional, Self, Union, List, Dict, Tuple, TypeVar
-
-from loguru import logger
+from typing import Any, Dict, List, Optional, Self, Tuple, TypeVar, Union
 
 from Commands import Sender
+from loguru import logger
 
 # Type aliases
 T = TypeVar("T")
@@ -225,6 +224,62 @@ for name, (stick, angle) in DIRECTION_DEFINITIONS.items():
     setattr(Direction, name, Direction.from_angle(stick, angle, name))
 
 
+try:
+    from numba import config, njit
+
+    config.DEBUG = False
+    config.DEBUG_JIT = False
+
+    @njit
+    def _format_cmd_parts_jit(
+        btn_value: int,
+        lx: int,
+        ly: int,
+        rx: int,
+        ry: int,
+        left_changed: bool,
+        right_changed: bool,
+    ) -> tuple:
+        """スティックデータのフォーマット処理をJIT化した純粋関数"""
+        parts_values = []
+        send_btn = btn_value << 2
+
+        if left_changed:
+            send_btn |= 0x2
+            parts_values.extend([lx, ly])
+
+        if right_changed:
+            send_btn |= 0x1
+            parts_values.extend([rx, ry])
+
+        return send_btn, parts_values
+
+except ImportError:
+
+    def _format_cmd_parts_jit(
+        btn_value: int,
+        lx: int,
+        ly: int,
+        rx: int,
+        ry: int,
+        left_changed: bool,
+        right_changed: bool,
+    ) -> tuple:
+        """スティックデータのフォーマット処理を通常の関数として定義"""
+        parts_values = []
+        send_btn = btn_value << 2
+
+        if left_changed:
+            send_btn |= 0x2
+            parts_values.extend([lx, ly])
+
+        if right_changed:
+            send_btn |= 0x1
+            parts_values.extend([rx, ry])
+
+        return send_btn, parts_values
+
+
 class SendFormat:
     """Formats controller input data for serial transmission."""
 
@@ -328,39 +383,31 @@ class SendFormat:
         self.Hat_pos = Hat.CENTER
 
     def convert2str(self) -> str:
-        # ビットフラグ用の定数
-        LEFT_STICK_FLAG = 0x2
-        RIGHT_STICK_FLAG = 0x1
+        """コントローラー入力をシリアル送信用の文字列に変換"""
+        # JIT関数を直接呼び出し
+        send_btn, values = _format_cmd_parts_jit(
+            int(self.format["btn"]),
+            self.format["lx"],
+            self.format["ly"],
+            self.format["rx"],
+            self.format["ry"],
+            self.L_stick_changed,
+            self.R_stick_changed,
+        )
 
-        # 送信データの構成要素を格納するリスト
-        parts: List[str] = []
-        # space = " "
+        # 値を16進数に変換
+        parts = [format(val, "02x") for val in values]
 
-        # ボタンデータの処理（2ビット左シフト + スティックフラグ）
-        send_btn = int(self.format["btn"]) << 2
-
-        # 左スティックのデータ処理
-        if self.L_stick_changed:
-            send_btn |= LEFT_STICK_FLAG
-            lx = format(self.format["lx"], "02x")  # 2桁の16進数にフォーマット
-            ly = format(self.format["ly"], "02x")
-            parts.extend([lx, ly])
-
-        # 右スティックのデータ処理
-        if self.R_stick_changed:
-            send_btn |= RIGHT_STICK_FLAG
-            rx = format(self.format["rx"], "02x")
-            ry = format(self.format["ry"], "02x")
-            parts.extend([rx, ry])
-
-        # ヘッダー部分の構築
+        # ヘッダーの構築
         header = [
             format(send_btn, "#06x"),  # 0x付き4桁16進数
             str(int(self.format["hat"])),
         ]
 
-        # 最終的な文字列の組み立て
-        full_command = [" ".join(header), " ".join(parts)]
+        # 最終文字列の組み立て
+        full_command = [" ".join(header)]
+        if parts:
+            full_command.append(" ".join(parts))
 
         # フラグリセット
         self.L_stick_changed = False

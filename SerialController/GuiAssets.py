@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
+
 import datetime
 import logging
 import os
@@ -9,26 +10,24 @@ import platform
 import time
 import tkinter as tk
 from collections import deque
-from logging import DEBUG, INFO, NullHandler, StreamHandler, getLogger
+from logging import DEBUG, StreamHandler
 from logging.handlers import RotatingFileHandler
 from tkinter.scrolledtext import ScrolledText
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Deque,
-    Dict,
     List,
     Optional,
     Tuple,
     Union,
-    TYPE_CHECKING,
 )
 
 import cv2
 import numpy as np
 from Camera import Camera
-from Commands import StickCommand, UnitCommand
-from Commands.Keys import Button, Direction, KeyPress, Stick
+from Commands import UnitCommand
 from Commands.PythonCommandBase import PythonCommand
 from Commands.Sender import Sender
 from loguru import logger
@@ -36,7 +35,7 @@ from PIL import Image, ImageTk
 from serial import Serial
 
 if TYPE_CHECKING:
-    from Window import LabelframeWithStickVar
+    from SerialController.Window import PokeControllerApp
 
 
 isTakeLog = False
@@ -86,10 +85,12 @@ class CaptureArea(tk.Canvas):
     def __init__(
         self,
         camera: Camera,
-        fps: int = DEFAULT_FPS,
-        is_show: Optional[tk.BooleanVar] = None,
-        ser: Sender = None,
-        master: Optional[LabelframeWithStickVar] = None,
+        fps: int,  # DEFAULT_FPS
+        is_show: tk.BooleanVar,
+        ser: Sender,
+        master: PokeControllerApp,
+        left_stick_mouse_var: tk.BooleanVar,
+        right_stick_mouse_var: tk.BooleanVar,
         show_width: int = DEFAULT_DISPLAY_SIZE[0],
         show_height: int = DEFAULT_DISPLAY_SIZE[1],
     ) -> None:
@@ -111,11 +112,14 @@ class CaptureArea(tk.Canvas):
             width=show_width,
             height=show_height,
         )
+
         # Validate and initialize parameters
         if master is None:
             return
 
-        self.master: LabelframeWithStickVar = master
+        self.master: PokeControllerApp = master
+        self.left_stick_mouse_var: tk.BooleanVar = left_stick_mouse_var
+        self.right_stick_mouse_var: tk.BooleanVar = right_stick_mouse_var
         self.camera = camera
         self.ser = ser
         self.is_show_var = is_show
@@ -213,14 +217,14 @@ class CaptureArea(tk.Canvas):
 
     def ApplyLStickMouse(self) -> None:
         """Enable or disable left stick mouse controls based on settings."""
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.BindLeftClick()
         else:
             self.UnbindLeftClick()
 
     def ApplyRStickMouse(self) -> None:
         """Enable or disable right stick mouse controls based on settings."""
-        if self.master.is_use_right_stick_mouse.get():
+        if self.right_stick_mouse_var.get():
             self.BindRightClick()
         else:
             self.UnbindRightClick()
@@ -234,9 +238,9 @@ class CaptureArea(tk.Canvas):
         self.ss = self.camera.readFrame()
 
         # Temporarily unbind stick controls if active
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.UnbindLeftClick()
-        if self.master.is_use_right_stick_mouse.get():
+        if self.right_stick_mouse_var.get():
             self.UnbindRightClick()
 
         # Initialize selection area
@@ -263,9 +267,9 @@ class CaptureArea(tk.Canvas):
         logger.info(position_info)
 
         # Rebind stick controls if they were active
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.BindLeftClick()
-        if self.master.is_use_right_stick_mouse.get():
+        if self.right_stick_mouse_var.get():
             self.BindRightClick()
 
     def MotionRangeSS(self, event: tk.Event) -> None:
@@ -325,9 +329,9 @@ class CaptureArea(tk.Canvas):
         self.after(250, lambda: self.delete("SelectArea"))
 
         # Rebind stick controls if they were active
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.BindLeftClick()
-        if self.master.is_use_right_stick_mouse.get():
+        if self.right_stick_mouse_var.get():
             self.BindRightClick()
 
     def setFps(self, fps: int) -> None:
@@ -363,7 +367,7 @@ class CaptureArea(tk.Canvas):
         """
         _img = cv2.cvtColor(self.camera.readFrame(), cv2.COLOR_BGR2RGB)
 
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.UnbindLeftClick()
 
         x, y = event.x, event.y
@@ -394,7 +398,7 @@ class CaptureArea(tk.Canvas):
         Args:
             event: Mouse event
         """
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.BindLeftClick()
 
     def mouseLeftPress(self, event: tk.Event, ser: Sender) -> None:
@@ -404,7 +408,7 @@ class CaptureArea(tk.Canvas):
             event: Mouse event containing press position
             ser: Serial communication object
         """
-        if self.master.is_use_right_stick_mouse.get():
+        if self.right_stick_mouse_var.get():
             self.UnbindRightClick()
 
         self.config(cursor="dot")
@@ -493,7 +497,7 @@ class CaptureArea(tk.Canvas):
         self.delete("lcircle")
         self.delete("lcircle2")
 
-        if self.master.is_use_right_stick_mouse.get():
+        if self.right_stick_mouse_var.get():
             self.BindRightClick()
 
         # Finalize logging if enabled
@@ -512,7 +516,7 @@ class CaptureArea(tk.Canvas):
             event: Mouse event containing press position
             ser: Serial communication object
         """
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.UnbindLeftClick()
 
         self.config(cursor="dot")
@@ -603,7 +607,7 @@ class CaptureArea(tk.Canvas):
         self.delete("rcircle")
         self.delete("rcircle2")
 
-        if self.master.is_use_left_stick_mouse.get():
+        if self.left_stick_mouse_var.get():
             self.BindLeftClick()
 
         # Finalize logging if enabled

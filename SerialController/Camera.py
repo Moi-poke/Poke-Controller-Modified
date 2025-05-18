@@ -77,6 +77,7 @@ class CameraController:
         fps: Synchronized,
         cameraId: int = 0,
         capture_size: tuple = (1280, 720),
+        # capture_size: tuple = (1920, 1080),
     ):
         self.camera: cv2.VideoCapture | None = None
 
@@ -86,7 +87,9 @@ class CameraController:
 
         self.shared_memory = shared_memory.SharedMemory(name="camera_image")
         self.image: np.ndarray = np.ndarray(
-            (720, 1280, 3), dtype=np.uint8, buffer=self.shared_memory.buf
+            (capture_size[1], capture_size[0], 3),
+            dtype=np.uint8,
+            buffer=self.shared_memory.buf,
         )
         ic(self.shared_memory.size)
 
@@ -153,11 +156,11 @@ class CustomQueue(queue.Queue):
         self.last_frame: Any = None  # 最新フレーム
 
     def put(self, frame: Any, block: bool = True, timeout: float | None = None) -> None:
-        if self.full():
-            try:
+        try:
+            if self.full():
                 self.get_nowait()  # キューが満杯なら古いフレームを取り出す
-            except Exception as e:
-                logger.error(e)
+        except Exception:
+            pass
         super().put(frame, block, timeout)
         self.last_frame = frame
 
@@ -172,18 +175,23 @@ class Camera:
         self.camera: VideoCaptureWrapper | cv2.VideoCapture | None = None
         self.fps = int(fps)
         self.capture_size = (1280, 720)
+        # self.capture_size = (1920, 1080)
         self.capture_dir = "Captures"
-        self.frame_queue: CustomQueue = CustomQueue()
+        # self.frame_queue: CustomQueue = CustomQueue()
+        self.camera_thread_alive: bool = False
+        self.cycle: float = 0.00
+        self.read_lock: threading.Lock = threading.Lock()
+        self._image_bgr: cv2.Mat | None = None
 
     def openCamera(self, cameraId: int) -> None:
-        self.frame_queue = CustomQueue()
+        # self.frame_queue = CustomQueue()
         if self.camera is not None and self.camera.isOpened():
             logger.debug("Camera is already opened")
             self.destroy()
 
         if os.name == "nt":
             logger.debug("NT OS")
-            self.camera = cv2.VideoCapture(cameraId)
+            self.camera = cv2.VideoCapture(cameraId, cv2.CAP_DSHOW)
             # self.camera = VideoCaptureWrapper(cameraId, cv2.CAP_DSHOW) # マルチプロセスにする場合
         else:
             logger.debug("Not NT OS")
@@ -200,8 +208,8 @@ class Camera:
         # self.camera.set(cv2.CAP_PROP_FPS, 60)
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_size[0])
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_size[1])
+        _, self._image_bgr = self.camera.read()
         self.camera_thread_start()
-        # self.camera_update()
 
     # self.camera.set(cv2.CAP_PROP_SETTINGS, 0)
 
@@ -219,14 +227,13 @@ class Camera:
         if isinstance(self.camera, VideoCaptureWrapper) or isinstance(
             self.camera, cv2.VideoCapture
         ):
-            if self.frame_queue:
-                frame = self.frame_queue.get()
-                if frame is None:
-                    return None
-                return frame.copy()
+            self.read_lock.acquire()
+            if self._image_bgr is None:
+                frame = None
             else:
-                logger.debug("Frame queue is empty")
-                return None
+                frame = self._image_bgr.copy()
+            self.read_lock.release()
+            return frame
         else:
             return None
 
@@ -238,7 +245,7 @@ class Camera:
         img: cv2.Mat | None = None,
     ) -> None:
         if crop_ax is None:
-            crop_ax = [0, 0, 1280, 720]
+            crop_ax = [0, 0, self.capture_size[0], self.capture_size[1]]
         else:
             pass
             # print(crop_ax)
@@ -285,10 +292,10 @@ class Camera:
 
     def destroy(self) -> None:
         if self.camera is not None and self.camera.isOpened():
+            self.camera_thread_stop()
             self.camera.release()
             self.camera = None
 
-            self.camera_thread_stop()
             logger.debug("Camera destroyed")
 
     def camera_thread_start(self) -> None:
@@ -296,17 +303,17 @@ class Camera:
             logger.error("Camera is not opened")
             return
         logger.debug("Camera thread starting")
+        self.camera_thread_alive = True
         self.thread = threading.Thread(target=self.camera_update, name="CameraThread")
         self.thread.start()
 
     def camera_thread_stop(self) -> None:
-        if self.camera is None:
-            logger.error("Camera is not opened")
+        if not self.camera_thread_alive:
+            logger.error("Camera thread stopped")
             return
         logger.debug("Camera thread stopping")
+        self.camera_thread_alive = False
         self.thread.join()
-        self.camera.release()
-        self.camera = None
         logger.debug("Camera thread stopped")
 
     def camera_update(self) -> None:
@@ -314,10 +321,12 @@ class Camera:
             logger.error("Camera is not opened")
             return
         logger.debug("Camera update thread started")
-        while self.camera.isOpened():
+        while self.camera_thread_alive:
             _, frame = self.camera.read()
-            self.frame_queue.put(frame)
-            sleep(1 / self.fps)
+            self.read_lock.acquire()
+            self._image_bgr = frame
+            self.read_lock.release()
+            sleep(self.cycle)
             if self.camera is None:
                 break
 
@@ -362,14 +371,7 @@ class CameraQueue:
             logger.debug("Camera is already opened")
             self.finish_flag.value = True
             self.camera_process.join()
-            # self.camera_process.terminate()
             self.camera_process = None
-
-        # try:
-        #     self.init_shared_memory()
-        # except Exception:
-        #     logger.error("Shared Memory Error")
-        #     pass
 
         self.camera_process = multiprocessing.Process(
             target=CameraController,
