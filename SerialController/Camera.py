@@ -17,7 +17,6 @@ import os
 
 # from deprecated import deprecated
 import numpy as np  # noqa: F401
-from logging import getLogger, DEBUG, NullHandler
 from loguru import logger
 from icecream import ic
 from video_capture_wrapper import VideoCaptureWrapper
@@ -27,11 +26,7 @@ from video_capture_wrapper import VideoCaptureWrapper
 multiprocessing.freeze_support()
 
 
-def imwrite(filename: str, img: cv2.Mat, params: Any = None) -> bool:
-    _logger = getLogger(__name__)
-    _logger.addHandler(NullHandler())
-    _logger.setLevel(DEBUG)
-    _logger.propagate = True
+def imwrite(filename: str, img: cv2.typing.MatLike, params: Any = None) -> bool:
     try:
         ext = os.path.splitext(filename)[1]
         result, n = cv2.imencode(ext, img, params)
@@ -227,12 +222,12 @@ class Camera:
         if isinstance(self.camera, VideoCaptureWrapper) or isinstance(
             self.camera, cv2.VideoCapture
         ):
-            self.read_lock.acquire()
+            # self.read_lock.acquire()
             if self._image_bgr is None:
                 frame = None
             else:
                 frame = self._image_bgr.copy()
-            self.read_lock.release()
+            # self.read_lock.release()
             return frame
         else:
             return None
