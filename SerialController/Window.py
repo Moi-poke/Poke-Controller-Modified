@@ -15,7 +15,6 @@ import tomllib
 import traceback
 
 # from get_pokestatistics import GetFromHomeGUI
-from dataclasses import dataclass
 from datetime import datetime
 from logging import DEBUG, NullHandler, StreamHandler, getLogger  # noqa: F401
 from tkinter import Tk
@@ -149,9 +148,6 @@ class PokeControllerApp:
             self.show_size_combobox["values"].index(self.show_size_var.get())
         )
 
-        # 最近使用したコマンド履歴を読み込む
-        self._load_recent_commands()
-
         if platform.system() != "Linux":
             try:
                 self.locateCameraCmbbox()
@@ -223,6 +219,10 @@ class PokeControllerApp:
         logger.debug("Bind F6 key to execute commands")
         self.root.bind("<Key-Escape>", self.StopCommandWithEsc)
         logger.debug("Bind Escape key to stop commands")
+
+        self.python_command_tree.bind("<Double-1>", self.startPlay)
+        self.mcu_command_tree.bind("<Double-1>", self.startPlay)
+        self.recent_python_command_tree.bind("<Double-1>", self.startPlay)
 
         # Main widget
         self.mainwindow = self.root
@@ -1656,13 +1656,23 @@ class PokeControllerApp:
 
         # ツリービューに追加
         for cmd_info in recent_commands:
+            _id = next(
+                (
+                    i
+                    for i, c in enumerate(self.py_classes)
+                    if self.py_loader.class_hashes.get(c, "") == cmd_info.hash
+                ),
+                None,  # hashが一致しない場合はNoneを返す
+            )
+            if not _id:
+                continue
             self.recent_python_command_tree.insert(
                 "",
                 "end",
                 cmd_info.hash
                 or f"{cmd_info.id}_{cmd_info.name}",  # hash値またはID+名前をiidとして使用
                 values=(
-                    cmd_info.id,
+                    _id,
                     cmd_info.name,
                     cmd_info.last_executed.strftime("%Y-%m-%d %H:%M:%S"),
                 ),
