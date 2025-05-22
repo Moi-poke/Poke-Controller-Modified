@@ -152,20 +152,7 @@ class PokeControllerApp:
             try:
                 self.locateCameraCmbbox()
                 self.camera_id_entry.configure(state="disabled")
-
-                self.com_port_combobox.configure(
-                    state="readonly",
-                    textvariable=self.com_name_var,
-                    values=[port.device for port in serial.tools.list_ports.comports()],
-                )
-                self.com_port_entry.configure(state="disabled")
-                self.com_port_combobox.current(
-                    self.com_port_combobox["values"].index(
-                        f"COM{self.com_port_entry.get()}"
-                    )
-                )
-            except Exception as e:
-                logger.error(f"An error occurred: {e}")
+            except Exception:
                 logger.error(traceback.format_exc())
                 # Locate an entry instead whenever dll is not imported successfully
                 self.camera_name_var.set(
@@ -175,9 +162,28 @@ class PokeControllerApp:
                     "An error occurred when displaying the camera name in the Win/Mac environment."
                 )
                 self.camera_name_combobox.configure(state="disabled")
+            try:
+                self.com_port_combobox.configure(
+                    state="readonly",
+                    textvariable=self.com_name_var,
+                    values=[port.device for port in serial.tools.list_ports.comports()],
+                )
+                if self.com_port_entry.get() not in self.com_port_combobox["values"]:
+                    self.com_port_combobox.current(0)
+                else:
+                    self.com_port_combobox.current(
+                        self.com_port_combobox["values"].index(
+                            f"COM{self.com_port_entry.get()}"
+                        )
+                    )
+                self.com_port_entry.configure(state="disabled")
+
+            except Exception:
+                logger.error(traceback.format_exc())
                 self.com_port_combobox.configure(
                     state="disabled",
                 )
+
         elif platform.system() != "Linux":
             self.camera_name_var.set("Camera name detection is not supported on Linux")
             self.camera_name_combobox.config(state="disable")
@@ -406,7 +412,7 @@ class PokeControllerApp:
             column=0, padx=5, pady=5, row=0, rowspan=2, sticky="ew"
         )
         self.com_port_entry = ttk.Entry(self.serial_tab_frame, name="com_port_entry")
-        self.com_port_var = tk.StringVar()
+        self.com_port_var = tk.StringVar(value="1")
         self.com_port_entry.configure(textvariable=self.com_port_var)
         self.com_port_entry.grid(column=1, padx=5, pady=5, row=0, sticky="w")
         self.com_port_combobox = ttk.Combobox(

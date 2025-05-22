@@ -128,7 +128,7 @@ class GuiSettings:
         # default
         self.setting["General Setting"] = {
             "camera_id": "0",
-            "com_port": "0",
+            "com_port": "1",
             "com_port_name": "",
             "baud_rate": "9600",
             "fps": "45",
