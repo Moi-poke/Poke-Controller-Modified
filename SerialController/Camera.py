@@ -170,13 +170,14 @@ class Camera:
         self.camera: VideoCaptureWrapper | cv2.VideoCapture | None = None
         self.fps = int(fps)
         self.capture_size = (1280, 720)
-        # self.capture_size = (1920, 1080)
         self.capture_dir = "Captures"
-        # self.frame_queue: CustomQueue = CustomQueue()
         self.camera_thread_alive: bool = False
-        self.cycle: float = 0.00
+        self.cycle: float = 1 / self.fps
         self.read_lock: threading.Lock = threading.Lock()
-        self._image_bgr: cv2.Mat | None = None
+
+        # ダブルバッファ
+        self._image_bgr: cv2.typing.MatLike | None = None  # 読み込み用
+        self._back_buffer: cv2.typing.MatLike | None = None  # 書き込み用
 
     def openCamera(self, cameraId: int) -> None:
         # self.frame_queue = CustomQueue()
@@ -185,57 +186,49 @@ class Camera:
             self.destroy()
 
         if os.name == "nt":
-            logger.debug("NT OS")
+            logger.debug("NT OS detected")
             self.camera = cv2.VideoCapture(cameraId, cv2.CAP_DSHOW)
-            # self.camera = VideoCaptureWrapper(cameraId, cv2.CAP_DSHOW) # マルチプロセスにする場合
         else:
-            logger.debug("Not NT OS")
-            # self.camera = VideoCaptureWrapper(cameraId) # マルチプロセスにする場合
+            logger.debug("Non-NT OS detected")
             self.camera = cv2.VideoCapture(cameraId)
 
         if not self.camera.isOpened():
             print("Camera ID " + str(cameraId) + " can't open.")
             logger.error(f"Camera ID {cameraId} cannot open.")
             return
+
         print("Camera ID " + str(cameraId) + " opened successfully")
         logger.debug(f"Camera ID {cameraId} opened successfully.")
-        # print(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         # self.camera.set(cv2.CAP_PROP_FPS, 60)
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_size[0])
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_size[1])
-        _, self._image_bgr = self.camera.read()
+        _, frame = self.camera.read()
+        with self.read_lock:
+            self._image_bgr = frame
+            self._back_buffer = frame
+
         self.camera_thread_start()
 
     # self.camera.set(cv2.CAP_PROP_SETTINGS, 0)
 
     def isOpened(self) -> bool:
-        logger.debug("Camera is opened")
-        if self.camera is None:
-            return False
-        if isinstance(self.camera, VideoCaptureWrapper) or isinstance(
-            self.camera, cv2.VideoCapture
-        ):
-            return bool(self.camera.isOpened())
-        return False
+        return self.camera.isOpened() if self.camera is not None else False
 
-    def readFrame(self) -> cv2.Mat | None:
+    def readFrame(self) -> cv2.typing.MatLike | None:
         if isinstance(self.camera, VideoCaptureWrapper) or isinstance(
             self.camera, cv2.VideoCapture
         ):
-            # self.read_lock.acquire()
-            if self._image_bgr is None:
-                frame = None
-            else:
-                frame = self._image_bgr.copy()
-            # self.read_lock.release()
-            return frame
+            with self.read_lock:
+                if self._image_bgr is None:
+                    return None
+                return self._image_bgr.copy()
         else:
             return None
 
     def saveCapture(
         self,
         filename: str | None = None,
-        crop: list | None = None,
+        crop: int | str | None = None,
         crop_ax: list | None = None,
         img: cv2.Mat | None = None,
     ) -> None:
@@ -243,7 +236,6 @@ class Camera:
             crop_ax = [0, 0, self.capture_size[0], self.capture_size[1]]
         else:
             pass
-            # print(crop_ax)
 
         dt_now = datetime.datetime.now()
         if filename is None or filename == "":
@@ -257,12 +249,16 @@ class Camera:
         if crop is None:
             image = image_bgr
         elif crop == 1 or crop == "1":
-            image = image_bgr[crop_ax[1] : crop_ax[3], crop_ax[0] : crop_ax[2]]
+            x1, y1, x2, y2 = crop_ax
+            # image = image_bgr[crop_ax[1] : crop_ax[3], crop_ax[0] : crop_ax[2]]
+            image = image_bgr[y1:y2, x1:x2]
         elif crop == 2 or crop == "2":
-            image = image_bgr[
-                crop_ax[1] : crop_ax[1] + crop_ax[3],
-                crop_ax[0] : crop_ax[0] + crop_ax[2],
-            ]
+            x, y, w, h = crop_ax
+            # image = image_bgr[
+            #     crop_ax[1] : crop_ax[1] + crop_ax[3],
+            #     crop_ax[0] : crop_ax[0] + crop_ax[2],
+            # ]
+            image = image_bgr[y : y + h, x : x + w]
         elif img is not None:
             image = img
         else:
@@ -317,10 +313,10 @@ class Camera:
             return
         logger.debug("Camera update thread started")
         while self.camera_thread_alive:
-            _, frame = self.camera.read()
-            self.read_lock.acquire()
-            self._image_bgr = frame
-            self.read_lock.release()
+            ret, frame = self.camera.read()
+            with self.read_lock:
+                self._back_buffer = frame
+                self._image_bgr, self._back_buffer = self._back_buffer, self._image_bgr
             sleep(self.cycle)
             if self.camera is None:
                 break
