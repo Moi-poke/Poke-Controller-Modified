@@ -11,27 +11,30 @@ from loguru import logger
 
 class Line_Notify:
     def __init__(self, camera: Optional[Any] = None, token_name: str = "token"):
-        self.res: list[requests.Response] | requests.Response | None = None
-        self.token_file = configparser.ConfigParser(
-            comment_prefixes="#", allow_no_value=True
-        )
-        self.open_file_with_utf8()
-        self.camera = camera
-        self.token_list = {
-            key: self.token_file["LINE"][key] for key in self.token_file["LINE"]
-        }
-        self.token_num = len(self.token_list)
-        # self.line_notify_token = self.token_file['LINE'][token_name]
-        self.headers = [
-            {"Authorization": f"Bearer {token}"}
-            for key, token in self.token_list.items()
-        ]
-        self.res = [
-            requests.get("https://notify-api.line.me/api/status", headers=head)
-            for head in self.headers
-        ]
-        self.status = [responses.status_code for responses in self.res]
-        self.chk_token_json = [responses.json() for responses in self.res]
+        try:
+            self.res: list[requests.Response] | requests.Response | None = None
+            self.token_file = configparser.ConfigParser(
+                comment_prefixes="#", allow_no_value=True
+            )
+            self.open_file_with_utf8()
+            self.camera = camera
+            self.token_list = {
+                key: self.token_file["LINE"][key] for key in self.token_file["LINE"]
+            }
+            self.token_num = len(self.token_list)
+            # self.line_notify_token = self.token_file['LINE'][token_name]
+            self.headers = [
+                {"Authorization": f"Bearer {token}"}
+                for key, token in self.token_list.items()
+            ]
+            self.res = [
+                requests.get("https://notify-api.line.me/api/status", headers=head)
+                for head in self.headers
+            ]
+            self.status = [responses.status_code for responses in self.res]
+            self.chk_token_json = [responses.json() for responses in self.res]
+        except Exception:
+            pass
 
     def open_file_with_utf8(self) -> None:
         """
