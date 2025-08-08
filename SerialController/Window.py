@@ -1,614 +1,113 @@
-# import argparse
-# import time
-from typing import Any  # noqa: F401
+from typing import Any
 import cv2
 import os
 import sys
 import tkinter.ttk as ttk
 import tkinter.messagebox as tkmsg
-from logging import StreamHandler, getLogger, DEBUG, NullHandler  # noqa: F401
 from tkinter import Tk
-import subprocess
-import platform
 from loguru import logger
 import queue
-# import threading
-
-from pygubu.widgets.scrollbarhelper import ScrollbarHelper
 
 import Settings
-import Utility as util
-from Camera import Camera  # , CameraQueue
-from CommandLoader import CommandLoader
-from Commands import McuCommandBase, PythonCommandBase, Sender
-import PokeConLogger
-from Commands.Keys import KeyPress
-from GuiAssets import CaptureArea, ControllerGUI
-from Keyboard import SwitchKeyboardController
+from GuiAssets import CaptureArea
 from Menubar import PokeController_Menubar
-
-# from get_pokestatistics import GetFromHomeGUI
+from UI import UI
+from managers.camera_manager import CameraManager
+from managers.serial_manager import SerialManager
+from managers.command_manager import CommandManager
+from managers.controller_manager import ControllerManager
+import PokeConLogger
 
 NAME = "Poke-Controller"
-VERSION = "v3.1.3 Modified"  # based on 1.0-beta3(custom by @dragonite303)
-
-
-"""
-Todo:
-・デバッグ用にPoke-Controller本体にコントローラーを接続して動かしたい
-
-・keyboardからHatを動かせないから、Hatを動かせるようにしたい
-→モンハンのメニューの選択はHatで選ばれる
----> Done
-
-・画像認識の時の枠を設定でON/OFFできると嬉しい
-"""
-
+VERSION = "v3.1.3 Modified"
 
 class PokeControllerApp:
     def __init__(self, master: Tk | None = None):
-        # Baud Rateを変更する場合は"readonly"に変更してください。
         self.baud_rate_state = "disabled"
 
         if master is None:
             master = Tk()
         self.root = master
         self.root.title(NAME + " " + VERSION)
-        # self.root.resizable(0, 0)
+
         self.controller = None
         self.poke_treeview = None
         self.keyPress = None
         self.keyboard = None
+        self.cur_command = None
 
-        self.camera_dic: dict | None = None
+        # Create managers
+        self.camera_manager = CameraManager(self, None)
+        self.serial_manager = SerialManager(self)
+        self.command_manager = CommandManager(self)
+        self.controller_manager = ControllerManager(self)
 
-        """
-        ここから
-        """
-        # build ui
-        # Todo: 変数名を適切にする
-        self.frame_1 = ttk.Frame(master)
-        self.camera_lf = ttk.Labelframe(self.frame_1)
-        self.label_1 = ttk.Label(self.camera_lf)
-        self.label_1.config(anchor="center", text="Camera ID:")
-        self.label_1.grid(padx="5", sticky="ew")
-        self.camera_entry = ttk.Entry(self.camera_lf)
-        self.camera_id = tk.IntVar()
-        self.camera_entry.config(state="normal", textvariable=self.camera_id)
-        self.camera_entry.grid(column="1", padx="5", row="0", sticky="ew")
-        self.camera_entry.columnconfigure("1", uniform="0")
-        self.reloadButton = ttk.Button(self.camera_lf)
-        self.reloadButton.config(text="Reload Camera")
-        self.reloadButton.grid(column="2", padx="5", row="0", sticky="ew")
-        self.reloadButton.configure(command=self.openCamera)
-        self.separator_1 = ttk.Separator(self.camera_lf)
-        self.separator_1.config(orient="vertical")
-        self.separator_1.grid(column="3", row="0", sticky="ns")
-        self.cb1 = ttk.Checkbutton(self.camera_lf)
-        self.is_show_realtime = tk.BooleanVar()
-        self.cb1.config(text="Show Realtime", variable=self.is_show_realtime)
-        self.cb1.grid(column="4", row="0")
-        self.separator_2 = ttk.Separator(self.camera_lf)
-        self.separator_2.config(orient="vertical")
-        self.separator_2.grid(column="5", row="0", sticky="ns")
-        self.capture_f = ttk.Frame(self.camera_lf)
-        self.captureButton = ttk.Button(self.capture_f)
-        self.captureButton.config(text="Capture")
-        self.captureButton.grid(column="0", row="0")
-        self.captureButton.configure(command=self.saveCapture)
-        self.open_folder_img = tk.PhotoImage(file="./assets/icons8-OpenDir-16.png")
-        # self.bg = self.bg.subsample(3, 3)
-        self.OpencaptureButton = ttk.Button(self.capture_f)
-        self.OpencaptureButton.config(image=self.open_folder_img)
-        self.OpencaptureButton.grid(column="1", row="0")
-        self.OpencaptureButton.configure(command=self.OpenCaptureDir)
+        # Create UI
+        self.ui = UI(self.root, self, self.camera_manager, self.serial_manager, self.command_manager, self.controller_manager)
+        self.ui.setup_ui()
 
-        self.capture_f.grid(column="6", row="0", sticky="ns")
-        self.camera_f2 = ttk.Frame(self.camera_lf)
-        self.label3 = ttk.Label(self.camera_f2)
-        self.label3.config(text="FPS:")
-        self.label3.grid(padx="5", sticky="ew")
-        self.fps_cb = ttk.Combobox(self.camera_f2)
-        self.fps = tk.StringVar()
-        self.fps_cb.config(
-            justify="right",
-            state="readonly",
-            textvariable=self.fps,
-            values=[60, 45, 30, 15, 5],
-        )
-        self.fps_cb.config(width="5")
-        self.fps_cb.grid(column="1", padx="10", row="0", sticky="ew")
-        self.fps_cb.bind("<<ComboboxSelected>>", self.applyFps, add="")
-        self.separator_3 = ttk.Separator(self.camera_f2)
-        self.separator_3.config(orient="vertical")
-        self.separator_3.grid(column="2", row="0", sticky="ns")
-        self.show_size_label = ttk.Label(self.camera_f2)
-        self.show_size_label.config(text="Show Size:")
-        self.show_size_label.grid(column="3", padx="5", row="0", sticky="ew")
-        self.show_size_cb = ttk.Combobox(self.camera_f2)
-        self.show_size = tk.StringVar()
-        self.show_size_cb.config(
-            textvariable=self.show_size,
-            state="readonly",
-            values="640x360 1280x720 1920x1080",
-        )
-        self.show_size_cb.grid(column="4", padx="10", row="0", sticky="ew")
-        self.show_size_cb.bind("<<ComboboxSelected>>", self.applyWindowSize, add="")
-        self.camera_f2.grid(column="0", columnspan="7", row="3", sticky="nsew")
-        self.camera_name_l = ttk.Label(self.camera_lf)
-        self.camera_name_l.config(anchor="center", text="Camera Name: ")
-        self.camera_name_l.grid(column="0", padx="5", row="1", sticky="ew")
-        self.Camera_Name = ttk.Combobox(self.camera_lf)
-        self.camera_name_fromDLL = tk.StringVar()
-        self.Camera_Name.config(state="readonly", textvariable=self.camera_name_fromDLL)
-        self.Camera_Name.grid(
-            column="1", columnspan="6", padx="5", row="1", sticky="ew"
-        )
-        self.Camera_Name.bind("<<ComboboxSelected>>", self.set_cameraid, add="")
-        self.frame_1_2 = ttk.Frame(self.camera_lf)
-        self.frame_1_2.config(height="360", relief="groove", width="640")
-        self.frame_1_2.grid(column="0", columnspan="7", row="2")
-        self.camera_lf.config(height="200", text="Camera", width="200")
-        self.camera_lf.grid(columnspan="3", padx="5", sticky="ew")
-        self.serial_lf = ttk.Labelframe(self.frame_1)
-        self.label2 = ttk.Label(self.serial_lf)
-        self.label2.config(text="COM Port: ")
-        self.label2.grid(padx="5", sticky="ew")
-        self.label2.rowconfigure("0", uniform="None", weight="0")
-        self.entry2 = ttk.Entry(self.serial_lf)
-        self.com_port = tk.IntVar()
-        self.com_port_name = tk.StringVar()
-        self.entry2.config(textvariable=self.com_port, width="5")
-        self.entry2.grid(column="1", padx="5", row="0", sticky="ew")
-        self.entry2.rowconfigure("0", uniform="None", weight="0")
-
-        self.baud_rate_label = ttk.Label(self.serial_lf)
-        self.baud_rate_label.config(text="Baud Rate: ")
-        self.baud_rate_label.grid(column="2", padx="5", row="0", sticky="ew")
-
-        self.baud_rate_cb = ttk.Combobox(self.serial_lf)
-        self.baud_rate = tk.StringVar()
-        self.baud_rate_cb.config(
-            justify="right",
-            state=self.baud_rate_state,
-            textvariable=self.baud_rate,
-            values=[9600, 4800],
-        )
-        self.baud_rate_cb.config(width="6")
-        self.baud_rate_cb.grid(column="3", padx="5", row="0", sticky="ew")
-        self.baud_rate_cb.bind("<<ComboboxSelected>>", self.applyBaudRate, add="")
-
-        self.reloadComPort = ttk.Button(self.serial_lf)
-        self.reloadComPort.config(text="Reload Port")
-        self.reloadComPort.grid(column="4", padx="5", row="0")
-        self.reloadComPort.rowconfigure("0", uniform="None", weight="0")
-        self.reloadComPort.configure(command=self.activateSerial)
-
-        self.disconnectComPort = ttk.Button(self.serial_lf)
-        self.disconnectComPort.config(text="Disconnect Port")
-        self.disconnectComPort.grid(column="5", padx="5", row="0")
-        self.disconnectComPort.rowconfigure("0", uniform="None", weight="0")
-        self.disconnectComPort.configure(command=self.inactivateSerial)
-
-        self.separator_4 = ttk.Separator(self.serial_lf)
-        self.separator_4.config(orient="vertical")
-        self.separator_4.grid(column="6", padx="5", row="0", sticky="ns")
-        self.separator_4.rowconfigure("0", uniform="None", weight="0")
-        self.separator_4.columnconfigure("3", uniform="None", weight="0")
-        self.checkbutton_2 = ttk.Checkbutton(self.serial_lf)
-        self.is_show_serial = tk.BooleanVar()
-        self.checkbutton_2.config(text="Show Serial", variable=self.is_show_serial)
-        self.checkbutton_2.grid(
-            column="7", columnspan="2", padx="5", row="0", sticky="ew"
-        )
-        self.checkbutton_2.rowconfigure("0", uniform="None", weight="0")
-        self.serial_lf.config(text="Serial Settings")
-        self.serial_lf.grid(
-            column="0", columnspan="2", padx="5", row="1", sticky="nsew"
-        )
-        self.control_lf = ttk.Labelframe(self.frame_1)
-        self.cb_use_keyboard = ttk.Checkbutton(self.control_lf)
-        self.cb_left_stick_mouse = ttk.Checkbutton(self.control_lf)
-        self.cb_right_stick_mouse = ttk.Checkbutton(self.control_lf)
-        self.is_use_keyboard = tk.BooleanVar()
-        self.camera_lf.is_use_left_stick_mouse = tk.BooleanVar()
-        self.camera_lf.is_use_right_stick_mouse = tk.BooleanVar()
-        self.cb_use_keyboard.config(text="Use Keyboard", variable=self.is_use_keyboard)
-        self.cb_use_keyboard.grid(column="0", padx="10", pady="5", sticky="ew")
-        self.cb_use_keyboard.rowconfigure("0", weight="1")
-        self.cb_use_keyboard.columnconfigure("0", weight="1")
-        self.cb_use_keyboard.configure(command=self.activateKeyboard)
-        self.cb_left_stick_mouse.config(
-            text="Use LStick Mouse", variable=self.camera_lf.is_use_left_stick_mouse
-        )
-        self.cb_left_stick_mouse.grid(
-            column="1", row="0", padx="10", pady="5", sticky="ew"
-        )
-        self.cb_left_stick_mouse.rowconfigure("0", weight="1")
-        self.cb_left_stick_mouse.columnconfigure("0", weight="1")
-        self.cb_left_stick_mouse.configure(command=self.activate_Left_stick_mouse)
-        self.cb_right_stick_mouse.config(
-            text="Use RStick Mouse", variable=self.camera_lf.is_use_right_stick_mouse
-        )
-        self.cb_right_stick_mouse.grid(
-            column="1", row="1", padx="10", pady="5", sticky="ew"
-        )
-        self.cb_right_stick_mouse.rowconfigure("0", weight="1")
-        self.cb_right_stick_mouse.columnconfigure("0", weight="1")
-        self.cb_right_stick_mouse.configure(command=self.activate_Right_stick_mouse)
-        self.simpleConButton = ttk.Button(self.control_lf)
-        self.simpleConButton.config(text="Controller")
-        self.simpleConButton.grid(column="0", padx="10", pady="5", row="1", sticky="ew")
-        self.simpleConButton.rowconfigure("1", weight="1")
-        self.simpleConButton.columnconfigure("0", weight="1")
-        self.simpleConButton.configure(command=self.createControllerWindow)
-        self.control_lf.config(height="200", text="Controller")
-        # self.control_lf.grid(column='0', padx='5', row='2', sticky='nsew')
-        self.control_lf.grid(
-            column="0", padx="5", row="2", columnspan="2", sticky="nsew"
-        )
-        # self.Poke_statistic_lf = ttk.Labelframe(self.frame_1)
-        # self.OpenPokeButton = ttk.Button(self.Poke_statistic_lf)
-        # self.OpenPokeButton.config(text='技統計')
-        # self.OpenPokeButton.grid(padx='10', pady='10', sticky='nsew')
-        # self.OpenPokeButton.rowconfigure('0', pad='0', uniform='1', weight='1')
-        # self.OpenPokeButton.columnconfigure('0', pad='0', uniform='1', weight='1')
-        # self.OpenPokeButton.configure(command=self.createGetFromHomeWindow)
-        # self.Poke_statistic_lf.config(height='200', text='PokemonHome連携', width='200')
-        # self.Poke_statistic_lf.grid(column='1', padx='5', row='2', sticky='nsew')
-        self.lf = ttk.Labelframe(self.frame_1)
-
-        self.Commands_f = ttk.Frame(self.lf)
-        self.Commands_2_f = ttk.Frame(self.lf)
-        self.Command_nb = ttk.Notebook(self.Commands_f)
-        self.py_cb = ttk.Combobox(self.Command_nb)
-        self.py_name = tk.StringVar()
-        self.py_cb.config(state="readonly", textvariable=self.py_name)
-        self.py_cb.pack(side="top")
-        self.Command_nb.add(self.py_cb, padding="5", text="Python Command")
-        self.mcu_cb = ttk.Combobox(self.Command_nb)
-        self.mcu_name = tk.StringVar()
-        self.mcu_cb.config(state="readonly", textvariable=self.mcu_name)
-        self.mcu_cb.pack(side="top")
-        self.Command_nb.add(self.mcu_cb, padding="5", text="Mcu Command")
-        self.Command_nb.pack(fill="both", expand=True, padx="5", pady="5", side="left")
-
-        self.OpenCommandDirButton = ttk.Button(self.Commands_f)
-        self.OpenCommandDirButton.config(image=self.open_folder_img)
-        self.OpenCommandDirButton.pack(
-            fill="y", expand=False, side="left", ipadx="5", pady="15"
-        )
-        self.OpenCommandDirButton.configure(command=self.OpenCommandDir)
-
-        self.reloadCommandButton = ttk.Button(self.Commands_2_f)
-        self.reloadCommandButton.config(text="Reload")
-        self.reloadCommandButton.grid(
-            column="0", padx="5", pady="5", row="1", sticky="ew"
-        )
-        self.reloadCommandButton.configure(command=self.reloadCommands)
-        self.startButton = ttk.Button(self.Commands_2_f)
-        self.startButton.config(text="Start")
-        self.startButton.grid(column="1", padx="5", pady="5", row="1", sticky="ew")
-        self.startButton.configure(command=self.startPlay)
-
-        self.Commands_f.pack(
-            fill="both", expand=True, padx="5", pady="5", anchor=tk.E, side="top"
-        )
-        self.Commands_2_f.pack(
-            fill=None, expand=True, padx="5", pady="5", anchor=tk.E, side="top"
-        )
-        self.lf.config(height="200", text="Command")
-        self.lf.grid(column="2", padx="5", row="1", rowspan="2", sticky="nsew")
-        self.log_scroll = ScrollbarHelper(self.frame_1, scrolltype="both")
-        self.logArea = tk.Text(self.log_scroll.container)
-        self.logArea.config(
-            blockcursor="true", height="10", insertunfocussed="none", maxundo="0"
-        )
-        self.logArea.config(relief="flat", state="disabled", undo="false", width="50")
-        self.logArea.pack(expand="true", fill="both", side="top")
-        self.log_scroll.add_child(self.logArea)
-        self.log_scroll.config(borderwidth="1", padding="1", relief="sunken")
-        # TODO - self.log_scroll: code for custom option 'usemousewheel' not implemented.
-        self.log_scroll.grid(
-            column="3", padx="5", pady="5", row="0", rowspan="3", sticky="nsew"
-        )
-        self.frame_1.config(height="720", padding="5", relief="flat", width="1280")
-        self.frame_1.pack(expand="true", fill="both", side="top")
-        self.frame_1.columnconfigure("3", weight="1")
-        """
-        ここまで
-        """
-
-        # 仮置フレームを削除
-        self.frame_1_2.destroy()
-
-        # 標準出力をログにリダイレクト
+        # Standard output redirection
         sys.stdout = QueueStdoutRedirector(self.logArea)
         self.logArea.after(100, self.display_text)
-        # th_text = threading.Thread(target=self.display_text)
-        # th_text.start()
 
-        # load settings file
+        # Load settings
         self.loadSettings()
-        # 各tk変数に設定値をセット(コピペ簡単のため)
-        self.is_show_realtime.set(self.settings.is_show_realtime.get())
-        self.is_show_serial.set(self.settings.is_show_serial.get())
-        self.is_use_keyboard.set(self.settings.is_use_keyboard.get())
-        self.fps.set(self.settings.fps.get())
-        self.show_size.set(self.settings.show_size.get())
-        self.com_port.set(self.settings.com_port.get())
-        self.com_port_name.set(self.settings.com_port_name.get())
-        self.baud_rate.set(self.settings.baud_rate.get())
-        self.camera_id.set(self.settings.camera_id.get())
-        # 各コンボボックスを現在の設定値に合わせて表示
-        self.fps_cb.current(self.fps_cb["values"].index(self.fps.get()))
-        self.show_size_cb.current(
-            self.show_size_cb["values"].index(self.show_size.get())
-        )
+        self.apply_settings_to_ui()
 
-        if platform.system() != "Linux":
-            try:
-                self.locateCameraCmbbox()
-                self.camera_entry.config(state="disable")
-            except Exception as e:
-                logger.error(f"An error occurred: {e}")
-                # Locate an entry instead whenever dll is not imported successfully
-                self.camera_name_fromDLL.set(
-                    "An error occurred when displaying the camera name in the Win/Mac "
-                    "environment."
-                )
-                logger.warning(
-                    "An error occurred when displaying the camera name in the Win/Mac environment."
-                )
-                self.Camera_Name.config(state="disable")
-        elif platform.system() != "Linux":
-            self.camera_name_fromDLL.set(
-                "Linux environment. So that cannot show Camera name."
-            )
-            self.Camera_Name.config(state="disable")
-            self.cb_use_keyboard.config(state="disable")
-            return
-        else:
-            self.camera_name_fromDLL.set(
-                "Unknown environment. Cannot show Camera name."
-            )
-            self.Camera_Name.config(state="disable")
-        # open up a camera
-        self.camera = Camera(self.fps.get())
-        # self.camera = CameraQueue(self.fps.get(), self.camera_id.get())
-        self.openCamera()
-        # activate serial communication
-        self.ser = Sender.Sender(self.is_show_serial)
-        self.activateSerial()
-        self.activateKeyboard()
+        # Initialize
         self.preview = CaptureArea(
-            self.camera,
-            self.fps.get(),
-            self.is_show_realtime,
-            self.ser,
-            self.camera_lf,
-            *list(map(int, self.show_size.get().split("x"))),
+            None,
+            self.settings.fps.get(),
+            self.settings.is_show_realtime,
+            None,
+            self.camera_manager.camera_lf,
+            *list(map(int, self.settings.show_size.get().split("x"))),
         )
+        self.camera_manager.preview = self.preview
+        self.camera_manager.initialize_camera()
+        self.preview.camera = self.camera_manager.camera
         self.preview.config(cursor="crosshair")
-        self.preview.grid(
-            column="0", columnspan="7", row="2", padx="5", pady="5", sticky=tk.NSEW
-        )
-        self.loadCommands()
+        self.preview.grid(column="0", columnspan=7, row=2, padx="5", pady="5", sticky=tk.NSEW)
 
-        self.show_size_tmp = self.show_size_cb["values"].index(self.show_size_cb.get())
-        self.root.bind("<Key-F5>", self.ReloadCommandWithF5)
-        logger.debug("Bind F5 key to reload commands")
-        self.root.bind("<Key-F6>", self.StartCommandWithF6)
-        logger.debug("Bind F6 key to execute commands")
-        self.root.bind("<Key-Escape>", self.StopCommandWithEsc)
-        logger.debug("Bind Escape key to stop commands")
+        self.serial_manager.initialize_serial()
+        self.controller_manager.activateKeyboard()
+        self.command_manager.loadCommands()
 
-        # Main widget
+        self.root.bind("<Key-F5>", self.command_manager.reloadCommands)
+        self.root.bind("<Key-F6>", self.command_manager.startPlay)
+        self.root.bind("<Key-Escape>", lambda e: self.command_manager.stopPlay())
+
         self.mainwindow = self.frame_1
-
         self.root.protocol("WM_DELETE_WINDOW", self.exit)
         self.preview.startCapture()
 
         self.menu = PokeController_Menubar(self)
         self.root.config(menu=self.menu)
 
-        # logging.debug(f'python version: {sys.version}')
+    def apply_settings_to_ui(self):
+        s = self.settings
+        self.controller_manager.app.is_use_keyboard.set(s.is_use_keyboard.get())
 
-    def openCamera(self) -> None:
-        self.camera.openCamera(self.camera_id.get())
+        self.camera_manager.app.camera_id.set(s.camera_id.get())
+        self.camera_manager.app.fps.set(s.fps.get())
+        self.camera_manager.app.show_size.set(s.show_size.get())
+        self.camera_manager.app.is_show_realtime.set(s.is_show_realtime.get())
+        self.camera_manager.fps_cb.set(s.fps.get())
+        self.camera_manager.show_size_cb.set(s.show_size.get())
 
-    def assignCamera(self, event: Any) -> None:
-        if platform.system() != "Linux":
-            self.camera_name_fromDLL.set(self.camera_dic[self.camera_id.get()])  # type: ignore
-
-    def locateCameraCmbbox(self) -> None:
-        if platform.system() == "Windows":
-            import clr
-
-            clr.AddReference(r"..\DirectShowLib\DirectShowLib-2005")
-            from DirectShowLib import DsDevice, FilterCategory
-
-            # Get names of detected camera devices
-            captureDevices = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice)
-            self.camera_dic = {
-                cam_id: device.Name for cam_id, device in enumerate(captureDevices)
-            }
-
-            self.camera_dic[str(max(list(self.camera_dic.keys())) + 1)] = "Disable"
-            self.Camera_Name["values"] = [device for device in self.camera_dic.values()]
-            logger.debug(
-                f"Camera list: {[device for device in self.camera_dic.values()]}"
-            )
-            dev_num = len(self.camera_dic)
-
-        elif platform.system() == "Darwin":
-            cmd = 'system_profiler SPCameraDataType | grep "^    [^ ]" | sed "s/    //" | sed "s/://" '
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, shell=True)
-            # 出力結果の加工
-            ret = res.stdout.decode("utf-8")
-            cam_list = list(filter(lambda a: a != "", ret.split("\n")))
-            self.camera_dic = {
-                cam_id: camera_name for cam_id, camera_name in enumerate(cam_list)
-            }
-            dev_num = len(self.Camera_Name["values"])
-            self.camera_dic[str(max(list(self.camera_dic.keys())) + 1)] = "Disable"
-            self.Camera_Name["values"] = [device for device in self.camera_dic.values()]
-        else:
-            return None
-        if self.camera_id.get() > dev_num - 1:
-            print("Inappropriate camera ID! -> set to 0")
-            logger.debug("Inappropriate camera ID! -> set to 0")
-            self.camera_id.set(0)
-            if dev_num == 0:
-                print("No camera devices can be found.")
-                logger.debug("No camera devices can be found.")
-        #
-        self.camera_entry.bind("<KeyRelease>", self.assignCamera)
-        self.Camera_Name.current(self.camera_id.get())
-
-    def saveCapture(self) -> None:
-        self.camera.saveCapture()
-
-    def OpenCaptureDir(self) -> None:
-        directory = "Captures"
-        logger.debug(f"Open folder: '{directory}'")
-        if platform.system() == "Windows":
-            subprocess.call(f'explorer "{directory}"')
-        elif platform.system() == "Darwin":
-            command = f'open "{directory}"'
-            subprocess.run(command, shell=True)
-
-    def OpenCommandDir(self) -> None:
-        if self.Command_nb.index("current") == 0:  # type: ignore
-            directory = os.path.join("Commands", "PythonCommands")
-        else:
-            directory = os.path.join("Commands", "McuCommands")
-        logger.debug(f"Open folder: '{directory}'")
-        if platform.system() == "Windows":
-            subprocess.call(f'explorer "{directory}"')
-        elif platform.system() == "Darwin":
-            command = f'open "{directory}"'
-            subprocess.run(command, shell=True)
-
-    def set_cameraid(self, event: Any = None) -> None:
-        if self.camera_dic is None:
-            return
-        keys = [k for k, v in self.camera_dic.items() if v == self.Camera_Name.get()]
-        if keys:
-            ret = keys[0]
-        else:
-            ret = None
-        self.camera_id.set(ret)
-
-    def applyFps(self, event: Any = None) -> None:
-        print("changed FPS to: " + self.fps.get() + " [fps]")
-        self.preview.setFps(self.fps.get())
-
-    def applyBaudRate(self, event: Any = None) -> None:
-        # 未実装
-        pass
-
-    def applyWindowSize(self, event: Any = None) -> None:
-        width, height = map(int, self.show_size.get().split("x"))
-        self.preview.setShowsize(height, width)
-        if self.show_size_tmp != self.show_size_cb["values"].index(
-            self.show_size_cb.get()
-        ):
-            ret = tkmsg.askokcancel("確認", "この画面サイズに変更しますか？")
-        else:
-            return
-
-        if ret:
-            self.show_size_tmp = self.show_size_cb["values"].index(
-                self.show_size_cb.get()
-            )
-        else:
-            self.show_size_cb.current(self.show_size_tmp)
-            width_bef, height_bef = map(int, self.show_size.get().split("x"))
-            self.preview.setShowsize(height_bef, width_bef)
-            # self.show_size_tmp = self.show_size_cb['values'].index(self.show_size_cb.get())
-
-    def activateSerial(self) -> None:
-        if self.baud_rate.get() == "4800":
-            ret = tkmsg.askquestion(
-                "確認",
-                "Baud Rateを4800にすると動かなくなる可能性があります。\n変更しますか？",
-            )
-            if ret != "yes":
-                self.baud_rate_cb.set(value=9600)
-                return
-        if self.ser.isOpened():
-            print("Port is already opened and being closed.")
-            self.ser.closeSerial()
-            self.keyPress = None
-            self.activateSerial()
-        else:
-            if self.ser.openSerial(
-                self.com_port.get(), self.com_port_name.get(), self.baud_rate.get()
-            ):
-                print(
-                    "COM Port " + str(self.com_port.get()) + " connected successfully"
-                )
-                logger.debug(
-                    "COM Port " + str(self.com_port.get()) + " connected successfully"
-                )
-                self.keyPress = KeyPress(self.ser)
-                self.settings.com_port.set(self.com_port.get())
-                self.settings.baud_rate.set(self.baud_rate.get())
-                self.settings.save()
-
-    def inactivateSerial(self) -> None:
-        if self.ser.isOpened():
-            print("Port is already opened and being closed.")
-            self.ser.closeSerial()
-            self.keyPress = None
-
-    def activateKeyboard(self) -> None:
-        is_windows = platform.system() == "Windows"
-
-        if self.is_use_keyboard.get():
-            # enable Keyboard as controller
-            if self.keyboard is None:
-                self.keyboard = SwitchKeyboardController(self.keyPress)
-                self.keyboard.listen()
-
-            # bind focus
-            if not is_windows:
-                return
-            self.root.bind("<FocusIn>", self.onFocusInController)
-            self.root.bind("<FocusOut>", self.onFocusOutController)
-
-        else:
-            if not is_windows:
-                return
-            if self.keyboard is not None:
-                # stop listening to keyboard events
-                self.keyboard.stop()
-                self.keyboard = None
-
-            self.root.bind("<FocusIn>", lambda _: None)
-            self.root.bind("<FocusOut>", lambda _: None)
+        self.serial_manager.app.com_port.set(s.com_port.get())
+        self.serial_manager.app.com_port_name.set(s.com_port_name.get())
+        self.serial_manager.app.baud_rate.set(s.baud_rate.get())
+        self.serial_manager.app.is_show_serial.set(s.is_show_serial.get())
+        self.serial_manager.baud_rate_cb.set(s.baud_rate.get())
 
     def onFocusInController(self, event: Any) -> None:
-        # enable Keyboard as controller
         if event.widget == self.root and self.keyboard is None:
-            self.keyboard = SwitchKeyboardController(self.keyPress)
-            self.keyboard.listen()
+            self.keyboard = self.controller_manager.activateKeyboard()
 
     def onFocusOutController(self, event: Any) -> None:
-        # stop listening to keyboard events
         if event.widget == self.root and self.keyboard is not None:
-            self.keyboard.stop()
-            self.keyboard = None
-
-    def createControllerWindow(self) -> None:
-        if self.controller is not None:
-            self.controller.focus_force()
-            return
-
-        window = ControllerGUI(self.root, self.ser)
-        window.protocol("WM_DELETE_WINDOW", self.closingController)
-        self.controller = window
+            self.keyboard = self.controller_manager.activateKeyboard()
 
     def activate_Left_stick_mouse(self) -> None:
         self.preview.ApplyLStickMouse()
@@ -616,134 +115,28 @@ class PokeControllerApp:
     def activate_Right_stick_mouse(self) -> None:
         self.preview.ApplyRStickMouse()
 
-    # def createGetFromHomeWindow(self):
-    #     if self.poke_treeview is not None:
-    #         self.poke_treeview.focus_force()
-    #         return
-    #
-    #     window2 = GetFromHomeGUI(self.root, self.settings.season, self.settings.is_SingleBattle)
-    #     window2.protocol("WM_DELETE_WINDOW", self.closingGetFromHome)
-    #     self.poke_treeview = window2
-
-    def loadCommands(self) -> None:
-        self.py_loader = CommandLoader(
-            util.ospath("Commands/PythonCommands"), PythonCommandBase.PythonCommand
-        )  # コマンドの読み込み
-        self.mcu_loader = CommandLoader(
-            util.ospath("Commands/McuCommands"), McuCommandBase.McuCommand
-        )
-        self.py_classes = self.py_loader.load()
-        self.mcu_classes = self.mcu_loader.load()
-        self.setCommandItems()
-        self.assignCommand()
-
-    def setCommandItems(self) -> None:
-        self.py_cb["values"] = [c.NAME for c in self.py_classes]
-        self.py_cb.current(0)
-        self.mcu_cb["values"] = [c.NAME for c in self.mcu_classes]
-        self.mcu_cb.current(0)
-
-    def assignCommand(self) -> None:
-        # 選択されているコマンドを取得する
-        self.mcu_cur_command = self.mcu_classes[
-            self.mcu_cb.current()
-        ]()  # MCUコマンドについて
-
-        # pythonコマンドは画像認識を使うかどうかで分岐している
-        cmd_class = self.py_classes[self.py_cb.current()]
-        if issubclass(cmd_class, PythonCommandBase.ImageProcPythonCommand):
-            try:  # 画像認識の際に認識位置を表示する引数追加。互換性のため従来のはexceptに。
-                self.py_cur_command = cmd_class(self.camera, self.preview)
-            except TypeError:
-                self.py_cur_command = cmd_class(self.camera)
-            except Exception as e:
-                logger.warning(f"Old Command Style: {e}")
-                self.py_cur_command = cmd_class(self.camera)
-
-        else:
-            self.py_cur_command = cmd_class()
-
-        if self.Command_nb.index(self.Command_nb.select()) == 0:  # type: ignore
-            self.cur_command = self.py_cur_command
-        else:
-            self.cur_command = self.mcu_cur_command
-
-    def reloadCommands(self) -> None:
-        # 表示しているタブを読み取って、どのコマンドを表示しているか取得、リロード後もそれが選択されるようにする
-        oldval_mcu = self.mcu_cb.get()
-        oldval_py = self.py_cb.get()
-
-        self.py_classes = self.py_loader.reload()
-        self.mcu_classes = self.mcu_loader.reload()
-
-        # Restore the command selecting state if possible
-        self.setCommandItems()
-        if oldval_mcu in self.mcu_cb["values"]:
-            self.mcu_cb.set(oldval_mcu)
-        if oldval_py in self.py_cb["values"]:
-            self.py_cb.set(oldval_py)
-        self.assignCommand()
-        print("Finished reloading command modules.")
-        logger.info("Reloaded commands.")
-
-    def startPlay(self, *event: Any) -> None:
-        if self.cur_command is None:
-            print("No commands have been assigned yet.")
-            logger.info("No commands have been assigned yet.")
-
-        # set and init selected command
-        self.assignCommand()
-
-        print(self.startButton["text"] + " " + self.cur_command.NAME)
-        logger.info(self.startButton["text"] + " " + self.cur_command.NAME)
-        self.cur_command.start(self.ser, self.stopPlayPost)
-
-        self.startButton["text"] = "Stop"
-        self.startButton["command"] = self.stopPlay
-        self.reloadCommandButton["state"] = "disabled"
-
-    def stopPlay(self) -> None:
-        print(self.startButton["text"] + " " + self.cur_command.NAME)
-        logger.info(self.startButton["text"] + " " + self.cur_command.NAME)
-        self.startButton["state"] = "disabled"
-        self.cur_command.end(self.ser)
-
-    def stopPlayPost(self) -> None:
-        self.startButton["text"] = "Start"
-        self.startButton["command"] = self.startPlay
-        self.startButton["state"] = "normal"
-        self.reloadCommandButton["state"] = "normal"
-
     def run(self) -> None:
         logger.debug("Start Poke-Controller")
         self.mainwindow.mainloop()
 
     def exit(self) -> None:
-        ret = tkmsg.askyesno("確認", "Poke Controllerを終了しますか？")
-        if ret:
-            if self.ser.isOpened():
-                self.ser.closeSerial()
-                print("Serial disconnected")
-                # logger.info("Serial disconnected")
-
-            # stop listening to keyboard events
+        if tkmsg.askyesno("確認", "Poke Controllerを終了しますか？"):
+            self.serial_manager.destroy()
             if self.keyboard is not None:
                 self.keyboard.stop()
-                self.keyboard = None
 
-            # save settings
-            self.settings.is_show_realtime.set(self.is_show_realtime.get())
-            self.settings.is_show_serial.set(self.is_show_serial.get())
-            self.settings.is_use_keyboard.set(self.is_use_keyboard.get())
-            self.settings.fps.set(self.fps.get())
-            self.settings.show_size.set(self.show_size.get())
-            self.settings.com_port.set(self.com_port.get())
-            self.settings.baud_rate.set(self.baud_rate.get())
-            self.settings.camera_id.set(self.camera_id.get())
+            s = self.settings
+            s.is_show_realtime.set(self.camera_manager.app.is_show_realtime.get())
+            s.is_show_serial.set(self.serial_manager.app.is_show_serial.get())
+            s.is_use_keyboard.set(self.controller_manager.app.is_use_keyboard.get())
+            s.fps.set(self.camera_manager.app.fps.get())
+            s.show_size.set(self.camera_manager.app.show_size.get())
+            s.com_port.set(self.serial_manager.app.com_port.get())
+            s.baud_rate.set(self.serial_manager.app.baud_rate.get())
+            s.camera_id.set(self.camera_manager.app.camera_id.get())
+            s.save()
 
-            self.settings.save()
-
-            self.camera.destroy()
+            self.camera_manager.destroy()
             cv2.destroyAllWindows()
             logger.debug("Stop Poke Controller")
             self.root.destroy()
@@ -753,55 +146,29 @@ class PokeControllerApp:
             self.controller.destroy()
             self.controller = None
 
-    # def closingGetFromHome(self):
-    #     self.poke_treeview.destroy()
-    #     self.poke_treeview = None
-
     def loadSettings(self) -> None:
         self.settings = Settings.GuiSettings()
         self.settings.load()
 
-    def ReloadCommandWithF5(self, *event: Any) -> None:
-        self.reloadCommands()
-
-    def StartCommandWithF6(self, *event: Any) -> None:
-        if self.startButton["text"] == "Stop":
-            print("Command is now working!")
-            logger.debug("Command is now working!")
-        elif self.startButton["text"] == "Start":
-            self.startPlay()
-
-    def StopCommandWithEsc(self, *event: Any) -> None:
-        if self.startButton["text"] == "Stop":
-            self.stopPlay()
-
     def display_text(self) -> None:
         batch = ""
-        num = 0
-        while not text_queue.empty() and num <= 64:
-            message = text_queue.get()
-            batch += message
-            num += 1
-
+        while not text_queue.empty():
+            try:
+                batch += text_queue.get_nowait()
+            except queue.Empty:
+                break
         if batch:
             self.logArea.configure(state="normal")
             self.logArea.insert("end", batch)
             self.logArea.see("end")
             self.logArea.configure(state="disabled")
             self.logArea.update_idletasks()
+        self.logArea.after(100, self.display_text)
 
-        self.logArea.after(1000 // 60, self.display_text)
-
-
-class QueueStdoutRedirector(object):
-    """
-    高速な標準出力リダイレクト用クラス
-    バッファに出力を蓄積し、一定間隔でまとめてテキストウィジェットに反映します。
-    """
-
-    def __init__(self, text_widget: Any, flush_interval: int = 1000 // 60):
+class QueueStdoutRedirector:
+    def __init__(self, text_widget: Any):
         self.text_widget = text_widget
-        self.buffer: queue.Queue = text_queue
+        self.buffer: queue.Queue = queue.Queue()
 
     def write(self, string: str) -> None:
         self.buffer.put(string)
@@ -809,39 +176,13 @@ class QueueStdoutRedirector(object):
     def flush(self) -> None:
         pass
 
-
-class StdoutRedirector(object):
-    """
-    標準出力をtextウィジェットにリダイレクトするクラス
-    重いので止めました →# update_idletasks()で出力のたびに随時更新(従来はfor loopのときなどにまとめて出力されることがあった)
-    """
-
-    def __init__(self, text_widget: Any) -> None:
-        self.text_space = text_widget
-
-    def write(self, string: str) -> None:
-        self.text_space.configure(state="normal")
-        self.text_space.insert("end", string)
-        self.text_space.see("end")
-        # self.text_space.update_idletasks()
-        self.text_space.configure(state="disabled")
-
-    def flush(self) -> None:
-        pass
-
-
 if __name__ == "__main__":
-    # もし実行階層でlsした結果にSerialControllerフォルダがある場合はそこに移動する
     if "SerialController" in os.listdir():
         os.chdir("SerialController")
     import tkinter as tk
-
     logger = PokeConLogger.root_logger()
-    # logger = logger
     logger.info("The root logger is created.")
-
     text_queue: queue.Queue = queue.Queue()
-
     root = tk.Tk()
     app = PokeControllerApp(root)
     app.run()

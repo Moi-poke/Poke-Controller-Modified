@@ -117,22 +117,8 @@ class PokeController_Menubar(tk.Menu):
         DiscordNotify.WebhookGUI(self.root, webhook=webhook)
 
     def exit(self) -> None:
-        logger.debug("Close Menubar")
-        if self.ser.isOpened():
-            self.ser.closeSerial()
-            print("serial disconnected")
-
-        # stop listening to keyboard events
-        if self.keyboard is not None:
-            self.keyboard.stop()
-            self.keyboard = None
-
-        # save settings
-        self.settings.save()
-
-        self.camera.destroy()
-        cv2.destroyAllWindows()
-        self.master.destroy()
+        logger.debug("Exit from menubar")
+        self.master.exit()
 
 
 if __name__ == "__main__":
