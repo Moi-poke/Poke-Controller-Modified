@@ -1,124 +1,172 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""GuiAssets.py - Poke-Controller Modified の GUI 部品.
 
-from typing import Any
-import cv2
+CaptureArea    : カメラ映像を描画する Canvas。マウスでのスティック操作も担う。
+ControllerGUI  : Switch コントローラを模した簡易操作ウィンドウ。
+MouseStick     : マウス操作をコマンドとして扱うための最小の PythonCommand。
+MyScrolledText : flush を持つ ScrolledText（標準出力のリダイレクト先用）。
+"""
+
+from __future__ import annotations
+
+import datetime
+import math
 import os
+import re
 import time
 import tkinter as tk
-from tkinter.scrolledtext import ScrolledText
-import numpy as np
-import datetime
 from collections import deque
+from tkinter.scrolledtext import ScrolledText
+from typing import Any
 
+import cv2
+import numpy as np
 from PIL import Image, ImageTk
+from loguru import logger
 
 from Commands import UnitCommand
-from Commands import StickCommand
-from Commands.Keys import Direction, Stick, Button, Direction, KeyPress
-
-import logging
-from logging import INFO, StreamHandler, getLogger, DEBUG, NullHandler
-from Commands.PythonCommandBase import PythonCommand, StopThread
-from loguru import logger
+from Commands.PythonCommandBase import PythonCommand
 
 
 isTakeLog = False
-# logger_stick = getLogger(__name__)
-nowtime = datetime.datetime.fromtimestamp(time.time()).strftime("%Y%m%d_%H%M%S")
+# True にするとスティック操作の軌跡を log/ に CSV で書き出す。
+
+nowtime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+# 相対パスだとカレントディレクトリ次第で読めなくなるため、
+# このファイルの場所を基準に解決する。
+DISABLED_IMAGE_PATH = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "Images", "disabled.png"
+    )
+)
+
+STICK_LOG_INTERVAL = 0.05  # スティック値を記録・送信する最小間隔(秒)
+STICK_SEND_INTERVAL = 0.05  # スティック値をシリアルへ送る最小間隔(秒)
+STICK_SEND_MAG_STEP = 0.25  # これ以上倒し量が変われば間隔を無視して送る
+IDLE_INTERVAL_MS = 200  # 映像を表示しないあいだの描画ループ周期(ms)
+LOG_DIR = "log"
 
 
-# press button at duration times(s)
+class _StickRecorder:
+    """スティック操作の軌跡を CSV に書き出す（isTakeLog が True のときだけ使う）."""
+
+    def __init__(self, side: str) -> None:
+        self.path = os.path.join(LOG_DIR, f"{nowtime}_{side}Stick.log")
+        self.dq: deque = deque()
+        self.calc_time: float | None = None
+
+    def start(self) -> None:
+        """押し始め。前回からの経過を1件だけ残してバッファを空にする。"""
+        now = time.perf_counter()
+        if self.calc_time is not None:
+            self.dq.clear()
+            self.dq.append([0, 0, now - self.calc_time])
+        else:
+            self.dq.clear()
+        self.calc_time = now
+
+    def add(self, angle: float, mag: float) -> bool:
+        """一定時間経っていれば記録する。記録したら True を返す。"""
+        now = time.perf_counter()
+        if self.calc_time is None:
+            self.calc_time = now
+            return False
+        if now - self.calc_time <= STICK_LOG_INTERVAL:
+            return False
+        self.dq.append([angle, mag, now - self.calc_time])
+        self.calc_time = now
+        return True
+
+    def flush(self, angle: float | None, mag: float | None) -> None:
+        """離した時点の値を足してファイルへ書き出す。
+
+        押しただけで動かさずに離すと angle / mag が None のまま来る。
+        そのまま書くと CSV に 'None,None,0.12' という行が混ざり、
+        読み込む側が数値として解釈できずに落ちる。中立(0,0)として
+        記録する（実際に倒していないので意味も合う）。
+        """
+        if self.calc_time is not None:
+            elapsed = time.perf_counter() - self.calc_time
+            self.dq.append([angle or 0.0, mag or 0.0, elapsed])
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8") as f:
+                for row in self.dq:
+                    print(",".join(map(str, row)), file=f)
+        except OSError as e:
+            logger.warning(f"stick log write failed: {e}")
+        self.dq.clear()
 
 
 class MouseStick(PythonCommand):
-    NAME = "MOUSEスティック"
+    """マウス操作をコマンド経由で扱うための最小実装."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
+    NAME = "MOUSEスティック"
 
     def do(self) -> None:
         pass
 
     def stick(self, buttons: Any, duration: float = 0.1, wait: float = 0.1) -> None:
+        """指定時間だけ入力を保持する。"""
         self.keys.input(buttons, ifPrint=False)
         self.wait(duration)
         self.wait(wait)
 
-    # press button at duration times(s)
     def stickEnd(self, buttons: Any) -> None:
+        """入力を解除する。"""
         self.keys.inputEnd(buttons)
 
 
 class CaptureArea(tk.Canvas):
+    """カメラ映像を表示し、マウスでスティック操作を行う Canvas.
+
+    描画は PhotoImage を1枚だけ作って paste で中身を差し替える。
+    毎フレーム PhotoImage を作り直すと GC で周期的にカクつくため。
+    """
+
     def __init__(
-        self, camera, fps, is_show, ser, master=None, show_width=640, show_height=360
+        self,
+        camera: Any,
+        fps: Any,
+        is_show: Any,
+        ser: Any,
+        master: Any = None,
+        show_width: int = 640,
+        show_height: int = 360,
+        take_stick_log: bool | None = None,
     ) -> None:
         super().__init__(
             master, borderwidth=0, cursor="tcross", width=show_width, height=show_height
         )
-
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
-
         self.master = master
-        self.radius = 60  # 描画する円の半径
         self.camera = camera
-        # self.show_size = (640, 360)
+        self.ser = ser
+        self.keys = None
+        self.is_show_var = is_show
+
+        self.radius = 60  # 描画するスティック円の半径
         self.show_width = int(show_width)
         self.show_height = int(show_height)
         self.show_size = (self.show_width, self.show_height)
-        self.is_show_var = is_show
+
         self.lx_init, self.ly_init = 0, 0
         self.rx_init, self.ry_init = 0, 0
         self.min_x, self.min_y = 0, 0
         self.max_x, self.max_y = 0, 0
-        self.keys = None
-        self.ser = ser
-        self.lcircle = None
-        self.lcircle2 = None
-        self.rcircle = None
-        self.rcircle2 = None
-        self.LStick = None
-        self.RStick = None
-        self.calc_time = None
         self.ss = None
-        self.dq = None
-        self._langle = None
-        self._lmag = None
-        self._rangle = None
-        self._rmag = None
 
-        self.stick_handler = StreamHandler()
-        self.stick_logging_level = DEBUG
-        self.stick_handler.setLevel(self.stick_logging_level)
-        # self._logger.setLevel(self.stick_logging_level)
-        # self._logger.addHandler(self.stick_handler)
-        # self._logger.propagate = False
-        if isTakeLog:
-            filename_base = os.path.join("log", f"{nowtime}")
-            self.LS = logging.FileHandler(
-                filename=f"{filename_base}_LStick.log", encoding="utf-8"
-            )
-            self.LS.setLevel(logging.DEBUG)
-            self.LSTICK_logger = logging.getLogger("L_STICK")
-            self.LSTICK_logger.setLevel(logging.DEBUG)
-            self.LSTICK_logger.addHandler(self.LS)
+        self._langle: float | None = None
+        self._lmag: float | None = None
+        self._rangle: float | None = None
+        self._rmag: float | None = None
 
-            self.RS = logging.FileHandler(
-                filename=f"{filename_base}_RStick.log", encoding="utf-8"
-            )
-            self.RS.setLevel(logging.DEBUG)
-            self.RSTICK_logger = logging.getLogger("R_STICK")
-            self.RSTICK_logger.setLevel(logging.DEBUG)
-            self.RSTICK_logger.addHandler(self.RS)
-        # self.circle =
+        # 呼び出し側（Window）が settings.ini の値を渡す。未指定なら
+        # 従来どおりモジュール定数 isTakeLog を見る。
+        take_log = isTakeLog if take_stick_log is None else bool(take_stick_log)
+        self._lrec = _StickRecorder("L") if take_log else None
+        self._rrec = _StickRecorder("R") if take_log else None
 
         self.setFps(fps)
 
@@ -128,28 +176,209 @@ class CaptureArea(tk.Canvas):
         self.bind("<Control-Shift-Button1-Motion>", self.MotionRangeSS)
         self.bind("<Control-Shift-ButtonRelease-1>", self.ReleaseRangeSS)
 
-        # Set disabled image first
-        disabled_img = cv2.imread("../Images/disabled.png", cv2.IMREAD_GRAYSCALE)
-        disabled_pil = Image.fromarray(disabled_img)
-        self.disabled_tk = ImageTk.PhotoImage(disabled_pil)
+        # 描画ループの制御用。stopCapture() で after を確実に止める
+        self._capturing = False
+        self._after_id: str | None = None
+
+        # スティック送信の間引き用。最後に送った時刻
+        self._last_sent = 0.0
+        self._last_sent_mag = 0.0
+
+        # 画像認識の枠は1組だけ作って使い回す
+        self._rect_created = False
+        self._rect_after_id: str | None = None
+
+        # 描画の作業バッファ（毎フレームの確保を避ける）
+        self._allocBuffers()
+
+        # 映像用の PhotoImage は1枚だけ作って使い回す
+        self._photo = ImageTk.PhotoImage(Image.new("RGB", self.show_size))
+        self.disabled_tk = self._loadDisabledImage()
         self.im = self.disabled_tk
-        # self.configure(image=self.disabled_tk)  # labelからキャンバスに変更したので微修正
         self.im_ = self.create_image(0, 0, image=self.disabled_tk, anchor=tk.NW)
 
-    def ApplyLStickMouse(self):
-        if self.master.is_use_left_stick_mouse.get():
-            self.BindLeftClick()
+    # ------------------------------------------------------------------
+    # 映像描画
+    # ------------------------------------------------------------------
+    def _loadDisabledImage(self) -> ImageTk.PhotoImage:
+        """カメラ停止中に出す画像。読めなければ黒画像で代用する。"""
+        img = cv2.imread(DISABLED_IMAGE_PATH, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            logger.warning(f"disabled image not found: {DISABLED_IMAGE_PATH}")
+            pil = Image.new("L", self.show_size)
         else:
-            self.UnbindLeftClick()
+            pil = Image.fromarray(
+                cv2.resize(img, self.show_size, interpolation=cv2.INTER_AREA)
+            )
+        return ImageTk.PhotoImage(pil)
 
-    def ApplyRStickMouse(self):
-        if self.master.is_use_right_stick_mouse.get():
-            self.BindRightClick()
-        else:
-            self.UnbindRightClick()
+    def startCapture(self) -> None:
+        """描画ループを開始する。"""
+        self._capturing = True
+        self.capture()
 
-    def StartRangeSS(self, event):
-        self.ss = self.camera.readFrame()
+    def stopCapture(self) -> None:
+        """描画ループを止める。camera.destroy() より先に必ず呼ぶ。
+
+        止めずに破棄すると、解放済みのカメラ/共有メモリへ readFrame() が
+        走ってクラッシュする。
+        """
+        self._capturing = False
+        if self._after_id is not None:
+            self.after_cancel(self._after_id)
+            self._after_id = None
+
+    def capture(self) -> None:
+        """1フレーム描画し、次回を予約する。例外が出ても止まらないようにする。
+
+        次回の予約は「処理が終わってから interval 待つ」のではなく、
+        「このフレームの開始時刻から interval 経過した時点」を狙う。
+        前者だと実処理時間の分だけ毎フレーム遅れが積み上がり、
+        30fps 指定でも 30fps に届かず、実機からどんどん遅延していく。
+        """
+        if not self._capturing:
+            return
+
+        started = time.perf_counter()
+        showing = True
+        try:
+            showing = bool(self.is_show_var.get())
+            if showing:
+                self._drawFrame(self.camera.readFrame())
+        except Exception as e:
+            logger.error(f"capture failed: {e}")
+        finally:
+            if self._capturing:
+                self._after_id = self.after(
+                    self._next_delay(started, showing), self.capture
+                )
+
+    def _next_delay(self, started: float, showing: bool = True) -> int:
+        """フレーム開始時刻を基準に、次フレームまでの待ち時間(ms)を求める。
+
+        「映像を表示しない」あいだは描く物が無いので 1/fps では回さず、
+        IDLE_INTERVAL_MS まで間隔を空ける（60fps 指定なら毎秒60回だった
+        空回りが5回になる）。表示へ戻せば次の1回で通常周期に復帰する。
+
+        遅れているときに下限1ms で詰めると、遅いフレームほど高頻度に
+        capture() が積まれてイベントループが飽和し、後追いで悪化する。
+        interval を超えた分は「1フレーム捨てて次の周期へ合わせる」形
+        （残り = interval - 経過 % interval）にする。映像は間引かれるが
+        GUI の応答は保たれ、平均周期も維持される。
+        """
+        if not showing:
+            return IDLE_INTERVAL_MS
+
+        interval = self.next_frames
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if elapsed_ms < interval:
+            return max(1, int(round(interval - elapsed_ms)))
+        return max(1, int(round(interval - (elapsed_ms % interval))))
+
+    def _allocBuffers(self) -> None:
+        """描画の作業バッファを確保する（表示サイズ変更時に作り直す）。"""
+        h, w = self.show_height, self.show_width
+        self._resize_buf = np.empty((h, w, 3), np.uint8)
+        self._rgb_buf = np.empty((h, w, 3), np.uint8)
+
+    def _drawFrame(self, frame: Any) -> None:
+        """BGR フレームを Canvas へ反映する。
+
+        resize / cvtColor は dst を指定して確保済みバッファへ書く。
+        毎フレーム新しい配列を作ると 640x360 で約1.4MB/フレーム
+        （30fps なら 42MB/s）になり、GC が周期的に走ってカクつく。
+        PhotoImage を1枚使い回している対策と理由は同じ。
+        """
+        if frame is None:
+            self._showDisabled()
+            return
+        # 先に縮小してから色変換すると変換対象が減って軽い
+        cv2.resize(
+            frame,
+            self.show_size,
+            dst=self._resize_buf,
+            interpolation=cv2.INTER_AREA,
+        )
+        cv2.cvtColor(self._resize_buf, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+        # frombuffer は fromarray と違い配列を複製しない
+        self._photo.paste(
+            Image.frombuffer("RGB", self.show_size, self._rgb_buf, "raw", "RGB", 0, 1)
+        )
+        if self.im is not self._photo:
+            self.im = self._photo
+            self.itemconfig(self.im_, image=self._photo)
+
+    def _showDisabled(self) -> None:
+        """停止中の画像に切り替える（既に表示中なら何もしない）。"""
+        if self.im is not self.disabled_tk:
+            self.im = self.disabled_tk
+            self.itemconfig(self.im_, image=self.disabled_tk)
+
+    def setFps(self, fps: Any) -> None:
+        """描画間隔を設定する。
+
+        interval は float (ms) で保持する。int(1000/fps) で切り捨てると
+        30fps→33ms(=30.3fps) のように端数が失われ、そのぶん実機とずれる。
+        実際の待ち時間は _next_delay() が経過時間を差し引いて毎回丸める。
+
+        なお Windows のタイマー分解能は約 15.6ms のため、after(16) 相当の
+        60fps 指定では1フレームごとの揺れは避けられない。フレーム開始基準に
+        することで「揺れても平均周期は保たれる」状態にしている。
+        """
+        fps_value = max(1, int(fps))
+        self.next_frames = 1000.0 / fps_value
+        logger.info(f"FPS set to {fps_value} (interval {self.next_frames:.1f} ms)")
+
+    def setShowsize(self, show_height: int, show_width: int) -> None:
+        """表示サイズを変更する。PhotoImage も作り直す。"""
+        self.show_width = int(show_width)
+        self.show_height = int(show_height)
+        self.show_size = (self.show_width, self.show_height)
+        self.config(width=self.show_width, height=self.show_height)
+
+        self._allocBuffers()
+        self._photo = ImageTk.PhotoImage(Image.new("RGB", self.show_size))
+        self.disabled_tk = self._loadDisabledImage()
+        self.im = self.disabled_tk
+        self.itemconfig(self.im_, image=self.disabled_tk)
+        logger.info(f"Show size set to {self.show_width} x {self.show_height}")
+
+    def saveCapture(self) -> None:
+        """現在のフレームを画像として保存する。"""
+        self.camera.saveCapture()
+
+    # ------------------------------------------------------------------
+    # 座標変換
+    # ------------------------------------------------------------------
+    def _captureRatio(self) -> tuple[float, float]:
+        """表示座標 → キャプチャ座標 の倍率を返す。
+
+        カメラ未接続時は capture_size が 0 になることがあり、
+        そのまま割るとゼロ除算で落ちる。倍率1（等倍）で返して
+        座標変換だけは成立させ、描画や保存の呼び出しを止めない。
+        """
+        return self._ratio(self.camera.capture_size, self.show_size)
+
+    def _showRatio(self) -> tuple[float, float]:
+        """キャプチャ座標 → 表示座標 の倍率を返す（_captureRatio の逆）。"""
+        return self._ratio(self.show_size, self.camera.capture_size)
+
+    @staticmethod
+    def _ratio(numer: Any, denom: Any) -> tuple[float, float]:
+        """要素ごとに割り算する。0 で割りそうなときは 1.0 を返す。"""
+
+        def one(a: float, b: float) -> float:
+            return float(a) / float(b) if b else 1.0
+
+        return one(numer[0], denom[0]), one(numer[1], denom[1])
+
+    # ------------------------------------------------------------------
+    # 範囲スクリーンショット (Ctrl+Shift+ドラッグ)
+    # ------------------------------------------------------------------
+    def StartRangeSS(self, event: Any) -> None:
+        """範囲選択を開始する。"""
+        # 選択中フレームを保持するのでコピーを受け取る
+        self.ss = self.camera.readFrame(copy=True)
         if self.master.is_use_left_stick_mouse.get():
             self.UnbindLeftClick()
         if self.master.is_use_right_stick_mouse.get():
@@ -166,16 +395,7 @@ class CaptureArea(tk.Canvas):
             tag="SelectArea",
         )
 
-        ratio_x = float(self.camera.capture_size[0] / self.show_size[0])
-        ratio_y = float(self.camera.capture_size[1] / self.show_size[1])
-        print(
-            "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
-                self.min_x,
-                self.min_y,
-                int(self.min_x * ratio_x),
-                int(self.min_y * ratio_y),
-            )
-        )
+        ratio_x, ratio_y = self._captureRatio()
         logger.info(
             "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
                 self.min_x,
@@ -190,34 +410,17 @@ class CaptureArea(tk.Canvas):
         if self.master.is_use_right_stick_mouse.get():
             self.BindRightClick()
 
-    def MotionRangeSS(self, event):
-        if event.x < 0:
-            self.max_x = 0
-        else:
-            self.max_x = min(self.show_width, event.x)
-        if event.y < 0:
-            self.max_y = 0
-        else:
-            self.max_y = min(self.show_height, event.y)
+    def MotionRangeSS(self, event: Any) -> None:
+        """ドラッグ中の選択枠を追従させる。"""
+        self.max_x = min(self.show_width, max(0, event.x))
+        self.max_y = min(self.show_height, max(0, event.y))
         self.coords(
             "SelectArea", self.min_x, self.min_y, self.max_x + 1, self.max_y + 1
         )
-        self.coords(
-            "SelectAreaFilled", self.min_x, self.min_y, self.max_x + 1, self.max_y + 1
-        )
 
-    def ReleaseRangeSS(self, event):
-        # self.max_x, self.max_y = event.x, event.y
-        ratio_x = float(self.camera.capture_size[0] / self.show_size[0])
-        ratio_y = float(self.camera.capture_size[1] / self.show_size[1])
-        print(
-            "Mouse up: Show ({}, {}) / Capture ({}, {})".format(
-                self.max_x,
-                self.max_y,
-                int(self.max_x * ratio_x),
-                int(self.max_y * ratio_y),
-            )
-        )
+    def ReleaseRangeSS(self, event: Any) -> None:
+        """選択範囲を切り出して保存する。"""
+        ratio_x, ratio_y = self._captureRatio()
         logger.info(
             "Mouse up: Show ({}, {}) / Capture ({}, {})".format(
                 self.max_x,
@@ -235,509 +438,447 @@ class CaptureArea(tk.Canvas):
             crop=1,
             crop_ax=[
                 int(self.min_x * ratio_x),
-                int(self.min_y * ratio_x),
+                int(self.min_y * ratio_y),
                 int(self.max_x * ratio_x),
-                int(self.max_y * ratio_x),
+                int(self.max_y * ratio_y),
             ],
         )
 
-        t = 0
-        self.after(250, self.delete("SelectArea"))
+        # after には呼び出し可能オブジェクトを渡す（直接呼ぶと即時実行になる）
+        self.after(250, lambda: self.delete("SelectArea"))
 
         if self.master.is_use_left_stick_mouse.get():
             self.BindLeftClick()
         if self.master.is_use_right_stick_mouse.get():
             self.BindRightClick()
 
-    def setFps(self, fps):
-        # self.next_frames = int(16 * (60 / int(fps)))
-        self.next_frames = int(1000 / int(fps))
-        logger.info(f"FPS set to {fps}")
-
-    def setShowsize(self, show_height, show_width):
-        self.show_width = int(show_width)
-        self.show_height = int(show_height)
-        self.show_size = (self.show_width, self.show_height)
-        self.config(width=self.show_width, height=self.show_height)
-        print("Show size set to {0} x {1}".format(self.show_width, self.show_height))
-        logger.info(
-            "Show size set to {0} x {1}".format(self.show_width, self.show_height)
-        )
-
-    def mouseCtrlLeftPress(self, event):
-        _img = cv2.cvtColor(self.camera.readFrame(), cv2.COLOR_BGR2RGB)
+    # ------------------------------------------------------------------
+    # 色取得 (Ctrl+左クリック)
+    # ------------------------------------------------------------------
+    def mouseCtrlLeftPress(self, event: Any) -> None:
+        """クリック位置の座標と色を表示する。"""
+        frame = self.camera.readFrame()
+        if frame is None:
+            logger.warning("no frame available")
+            return
         if self.master.is_use_left_stick_mouse.get():
             self.UnbindLeftClick()
-        x, y = event.x, event.y
-        ratio_x = float(self.camera.capture_size[0] / self.show_size[0])
-        ratio_y = float(self.camera.capture_size[1] / self.show_size[1])
-        print(
-            "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
-                x, y, int(x * ratio_x), int(y * ratio_y)
-            )
-        )
-        print(
-            f"Color [R: {_img[int(y * ratio_y), int(x * ratio_x)][0]}, "
-            f"G: {_img[int(y * ratio_y), int(x * ratio_x)][1]}, "
-            f"B: {_img[int(y * ratio_y), int(x * ratio_x)][2]}]"
-        )
-        hsv = cv2.cvtColor(_img, cv2.COLOR_RGB2HSV)
-        h = hsv[int(y * ratio_y), int(x * ratio_x)][0]
-        s = hsv[int(y * ratio_y), int(x * ratio_x)][1]
-        v = hsv[int(y * ratio_y), int(x * ratio_x)][2]
-        print(f"HSV [H: {h}, S: {s}, V: {v}]")
+
+        # 1画素の色を見るためだけに 1280x720 全体を BGR→RGB, RGB→HSV と
+        # 2回変換すると約5.5MB を走査することになり、クリックのたびに
+        # 数十ms 止まる。先に座標を求め、その 1x1 だけを変換する。
+        ratio_x, ratio_y = self._captureRatio()
+        px = min(max(int(event.x * ratio_x), 0), frame.shape[1] - 1)
+        py = min(max(int(event.y * ratio_y), 0), frame.shape[0] - 1)
+        pixel = frame[py : py + 1, px : px + 1]
+        rgb = cv2.cvtColor(pixel, cv2.COLOR_BGR2RGB)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        r, g, b = rgb[0, 0]
+        h, s, v = hsv[0, 0]
         logger.info(
             "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
-                x, y, int(x * ratio_x), int(y * ratio_y)
+                event.x, event.y, px, py
             )
         )
+        logger.info(f"Color [R: {r}, G: {g}, B: {b}] / HSV [H: {h}, S: {s}, V: {v}]")
 
-    def mouseCtrlLeftRelease(self, event):
+    def mouseCtrlLeftRelease(self, event: Any) -> None:
+        """左スティック操作のバインドを戻す。"""
         if self.master.is_use_left_stick_mouse.get():
             self.BindLeftClick()
 
-    def mouseLeftPress(self, event, ser):
+    # ------------------------------------------------------------------
+    # スティック操作の共通処理
+    # ------------------------------------------------------------------
+    def _angleMag(self, event: Any, x_init: int, y_init: int) -> tuple[float, float]:
+        """中心からの角度(度)と 0〜1 に丸めた倒し量を返す。
+
+        スカラー1個の計算に numpy を使うと ufunc のディスパッチが乗り
+        math の5〜10倍遅い。ここはマウス Motion のたびに呼ばれるので
+        math を使う（numpy は画像処理側だけで使う）。
+        """
+        dx = event.x - x_init
+        dy = y_init - event.y
+        angle = math.degrees(math.atan2(dy, dx))
+        mag = math.hypot(dx, dy) / self.radius
+        return angle, min(max(mag, 0.0), 1.0)
+
+    def _stickHex(self, angle: float, mag: float) -> str:
+        """角度と倒し量を、シリアルに流す x y の16進表記に変換する。"""
+        rad = math.radians(angle)
+        x = hex(int(128 + mag * 127.5 * math.cos(rad)))
+        y = hex(int(128 - mag * 127.5 * math.sin(rad)))
+        return f"{x} {y}"
+
+    def _sendStick(self, side: str, angle: float, mag: float) -> None:
+        """片側のスティック値を送る。もう片方は中立(80)のまま。"""
+        xy = self._stickHex(angle, mag)
+        row = f"3 8 {xy} 80 80" if side == "L" else f"3 8 80 80 {xy}"
+        self.ser.writeRow(row, is_show=False)
+
+    def _drawStick(self, x: int, y: int, color: str, tag: str) -> None:
+        """スティックの外周円とノブを描く。"""
+        r = self.radius
+        k = r // 10
+        self.create_oval(x - r, y - r, x + r, y + r, outline=color, tag=tag)
+        self.create_oval(x - k, y - k, x + k, y + k, fill=color, tag=tag + "2")
+
+    def _moveKnob(
+        self, event: Any, x_init: int, y_init: int, angle: float, mag: float, tag: str
+    ) -> None:
+        """ノブを移動する。振り切っているときは円周上に貼り付ける。"""
+        k = self.radius // 10
+        if mag >= 1:
+            d = self.radius + self.radius // 11
+            rad = math.radians(angle)
+            cx = x_init + d * math.cos(rad)
+            cy = y_init - d * math.sin(rad)
+        else:
+            cx, cy = event.x, event.y
+        self.coords(tag, cx - k, cy - k, cx + k, cy + k)
+
+    def _pressing(
+        self,
+        event: Any,
+        side: str,
+        x_init: int,
+        y_init: int,
+        prev_angle: float | None,
+        prev_mag: float | None,
+        rec: _StickRecorder | None,
+        tag: str,
+    ) -> tuple[float, float]:
+        """ドラッグ中の共通処理。今回の角度と倒し量を返す。
+
+        送信の間引きは記録(rec)の有無と切り離す。旧実装は条件が逆で、
+        ログ無効（既定 isTakeLog=False）のときに間引き無しで毎回送って
+        いた。マウスの Motion は毎秒100回以上届くのに 9600bps では1行
+        約19ms かかるため、通常運用でシリアルが詰まり操作が数百ms遅れて
+        効く状態になっていた。
+        """
+        angle, mag = self._angleMag(event, x_init, y_init)
+
+        if self._shouldSend(mag, prev_angle, prev_mag):
+            self._sendStick(side, angle, mag)
+        if rec is not None and prev_angle is not None and prev_mag is not None:
+            rec.add(angle, mag)
+
+        self._moveKnob(event, x_init, y_init, angle, mag, tag)
+        return angle, mag
+
+    def _shouldSend(
+        self,
+        mag: float,
+        prev_angle: float | None,
+        prev_mag: float | None,
+    ) -> bool:
+        """送ってよいかを判定する。間引きつつ、大きな変化は取りこぼさない。
+
+        比較の相手は「直前のフレーム」ではなく「最後に実際に送った値」に
+        する。直前フレームと比べると、中立ちょうどで手が微動したときに
+        毎フレーム「中立へ戻った」と判定され、間引きが効かなくなる。
+
+        一定間隔で間引くだけだと、振り切った瞬間や中立へ戻した瞬間が
+        最大 STICK_SEND_INTERVAL ぶん遅れて効く。そこで値が大きく動いた
+        ときだけ間隔を無視して即送る。
+        """
+        now = time.perf_counter()
+        if prev_angle is None or prev_mag is None:
+            self._markSent(now, mag)
+            return True
+
+        last = self._last_sent_mag
+        # 大きく動いた／振り切った／中立へ戻した ときは即送る
+        if abs(mag - last) >= STICK_SEND_MAG_STEP:
+            self._markSent(now, mag)
+            return True
+        if mag >= 1.0 and last < 1.0:
+            self._markSent(now, mag)
+            return True
+        if mag <= 0.0 and last > 0.0:
+            self._markSent(now, mag)
+            return True
+
+        if now - self._last_sent < STICK_SEND_INTERVAL:
+            return False
+        self._markSent(now, mag)
+        return True
+
+    def _markSent(self, now: float, mag: float) -> None:
+        """送信した時刻と倒し量を控える（次回の判定に使う）。"""
+        self._last_sent = now
+        self._last_sent_mag = mag
+
+    # ------------------------------------------------------------------
+    # 左スティック (左ドラッグ)
+    # ------------------------------------------------------------------
+    def mouseLeftPress(self, event: Any, ser: Any = None) -> None:
+        """左スティックの操作を開始する。"""
         if self.master.is_use_right_stick_mouse.get():
             self.UnbindRightClick()
         self.config(cursor="dot")
         self.lx_init, self.ly_init = event.x, event.y
-        self.lcircle = self.create_oval(
-            self.lx_init - self.radius,
-            self.ly_init - self.radius,
-            self.lx_init + self.radius,
-            self.ly_init + self.radius,
-            outline="cyan",
-            tag="lcircle",
-        )
-        self.lcircle2 = self.create_oval(
-            self.lx_init - self.radius // 10,
-            self.ly_init - self.radius // 10,
-            self.lx_init + self.radius // 10,
-            self.ly_init + self.radius // 10,
-            fill="cyan",
-            tag="lcircle2",
-        )
-        # self.LStick = StickCommand.StickLeft()
-        # self.LStick.start(ser)
-        if isTakeLog:
-            if self.dq is None:
-                self.dq = deque()
-            else:
-                self.dq.clear()
+        self._drawStick(self.lx_init, self.ly_init, "cyan", "lcircle")
+        self._langle = None
+        self._lmag = None
+        if self._lrec is not None:
+            self._lrec.start()
 
-            if self.calc_time is None:
-                self.calc_time = time.perf_counter()
-            else:
-                # LSTICK_logger.debug(f"{0},{0},{time.perf_counter() - self.calc_time}")
-                self.dq.append([0, 0, time.perf_counter() - self.calc_time])
-            self._langle = None
-            self._lmag = None
-
-    def mouseLeftPressing(self, event, ser, angle=0):
-        # _time = self.calc_time
-        langle = np.rad2deg(np.arctan2(self.ly_init - event.y, event.x - self.lx_init))
-        mag = (
-            np.sqrt((self.ly_init - event.y) ** 2 + (event.x - self.lx_init) ** 2)
-            / self.radius
-        )
-        if mag <= 0:
-            mag = 0
-        elif mag >= 1:
-            mag = 1
-
-        if (self._langle and self._lmag) is not None and isTakeLog:
-            _time = time.perf_counter()
-            if _time - self.calc_time > 0.05:
-                # thread_1 = threading.Thread(target=self.LStick.LStick,
-                #                             args=(langle,),
-                #                             kwargs={'r': mag, 'duration': _time - self.calc_time})
-                # thread_1.start()
-                self.ser.writeRow(
-                    f"3 8 "
-                    f"{hex(int(128 + mag * 127.5 * np.cos(np.deg2rad(langle))))} "
-                    f"{hex(int(128 - mag * 127.5 * np.sin(np.deg2rad(langle))))} "
-                    f"80 80",
-                    is_show=False,
-                )
-                self.dq.append([langle, mag, _time - self.calc_time])
-                self.calc_time = _time
-        elif not isTakeLog:
-            self.ser.writeRow(
-                f"3 8 "
-                f"{hex(int(128 + mag * 127.5 * np.cos(np.deg2rad(langle))))} "
-                f"{hex(int(128 - mag * 127.5 * np.sin(np.deg2rad(langle))))}"
-                f" 80 80",
-                is_show=False,
-            )
-
-        if mag >= 1:
-            center_x = (self.radius + self.radius // 11) * np.cos(np.deg2rad(langle))
-            center_y = (self.radius + self.radius // 11) * np.sin(np.deg2rad(langle))
-            circ_x_1 = self.lx_init + center_x - self.radius // 10
-            circ_x_2 = self.lx_init + center_x + self.radius // 10
-            circ_y_1 = self.ly_init - center_y - self.radius // 10
-            circ_y_2 = self.ly_init - center_y + self.radius // 10
-        else:
-            circ_x_1 = event.x - self.radius // 10
-            circ_x_2 = event.x + self.radius // 10
-            circ_y_1 = event.y - self.radius // 10
-            circ_y_2 = event.y + self.radius // 10
-
-        self.coords(
+    def mouseLeftPressing(self, event: Any, ser: Any = None, angle: float = 0) -> None:
+        """左スティックを倒す。"""
+        self._langle, self._lmag = self._pressing(
+            event,
+            "L",
+            self.lx_init,
+            self.ly_init,
+            self._langle,
+            self._lmag,
+            self._lrec,
             "lcircle2",
-            circ_x_1,
-            circ_y_1,
-            circ_x_2,
-            circ_y_2,
         )
-        self._langle = langle
-        self._lmag = mag
 
-    def mouseLeftRelease(self, ser):
+    def mouseLeftRelease(self, ser: Any = None) -> None:
+        """左スティックを離して中立へ戻す。"""
         self.config(cursor="tcross")
-        self.ser.writeRow(f"3 8 80 80", is_show=False)
+        self.ser.writeRow("3 8 80 80 80 80", is_show=False)
+        # 中立行は「スティックだけの変化」なので Sender の間引きに
+        # 引っかかりうる。離した状態が届かないと倒したままになるため、
+        # ここは必ず送り切る。
+        flush = getattr(self.ser, "flushPending", None)
+        if callable(flush):
+            flush()
         self.delete("lcircle")
         self.delete("lcircle2")
         if self.master.is_use_right_stick_mouse.get():
             self.BindRightClick()
-        # self.event_generate('<Motion>', warp=True, x=self.lx_init, y=self.ly_init)
-        if isTakeLog:
-            self.dq.append(
-                [self._langle, self._lmag, time.perf_counter() - self.calc_time]
-            )
-            for _ in self.dq:
-                self.LSTICK_logger.debug(",".join(list(map(str, _))))
+        if self._lrec is not None:
+            self._lrec.flush(self._langle, self._lmag)
 
-    def mouseRightPress(self, event, ser):
+    # ------------------------------------------------------------------
+    # 右スティック (右ドラッグ)
+    # ------------------------------------------------------------------
+    def mouseRightPress(self, event: Any, ser: Any = None) -> None:
+        """右スティックの操作を開始する。"""
         if self.master.is_use_left_stick_mouse.get():
             self.UnbindLeftClick()
         self.config(cursor="dot")
         self.rx_init, self.ry_init = event.x, event.y
-        self.rcircle = self.create_oval(
-            self.rx_init - self.radius,
-            self.ry_init - self.radius,
-            self.rx_init + self.radius,
-            self.ry_init + self.radius,
-            outline="red",
-            tag="rcircle",
-        )
-        self.rcircle2 = self.create_oval(
-            self.rx_init - self.radius // 10,
-            self.ry_init - self.radius // 10,
-            self.rx_init + self.radius // 10,
-            self.ry_init + self.radius // 10,
-            fill="red",
-            tag="rcircle2",
-        )
-
-        # self.RStick = StickCommand.StickRight()
-        # self.RStick.start(ser)
-        if isTakeLog:
-            if self.dq is None:
-                self.dq = deque()
-            else:
-                self.dq.clear()
-
-            if self.calc_time is None:
-                self.calc_time = time.perf_counter()
-            else:
-                # LSTICK_logger.debug(f"{0},{0},{time.perf_counter() - self.calc_time}")
-                self.dq.append([0, 0, time.perf_counter() - self.calc_time])
+        self._drawStick(self.rx_init, self.ry_init, "red", "rcircle")
         self._rangle = None
         self._rmag = None
+        if self._rrec is not None:
+            self._rrec.start()
 
-    def mouseRightPressing(self, event, ser, angle=0):
-        rangle = np.rad2deg(np.arctan2(self.ry_init - event.y, event.x - self.rx_init))
-        mag = (
-            np.sqrt((self.ry_init - event.y) ** 2 + (event.x - self.rx_init) ** 2)
-            / self.radius
-        )
-        if mag <= 0:
-            mag = 0
-        elif mag >= 1:
-            mag = 1
-        if (self._langle and self._lmag) is not None and isTakeLog:
-            _time = time.perf_counter()
-            if _time - self.calc_time > 0.05:
-                # thread_1 = threading.Thread(target=self.RStick.RStick,
-                #                             args=(rangle,),
-                #                             kwargs={'r': mag, 'duration': _time - self.calc_time})
-                # thread_1.start()
-                # self.RStick.RStick(rangle, r=mag)
-                self.ser.writeRow(
-                    f"3 8 80 80 "
-                    f"{hex(int(128 + mag * 127.5 * np.cos(np.deg2rad(rangle))))} "
-                    f"{hex(int(128 - mag * 127.5 * np.sin(np.deg2rad(rangle))))}",
-                    is_show=False,
-                )
-                self.dq.append([rangle, mag, _time - self.calc_time])
-                self.calc_time = _time
-        elif not isTakeLog:
-            self.ser.writeRow(
-                f"3 8 80 80 "
-                f"{hex(int(128 + mag * 127.5 * np.cos(np.deg2rad(rangle))))} "
-                f"{hex(int(128 - mag * 127.5 * np.sin(np.deg2rad(rangle))))}",
-                is_show=False,
-            )
-        if mag >= 1:
-            center_x = (self.radius + self.radius // 11) * np.cos(np.deg2rad(rangle))
-            center_y = (self.radius + self.radius // 11) * np.sin(np.deg2rad(rangle))
-            circ_x_1 = self.rx_init + center_x - self.radius // 10
-            circ_x_2 = self.rx_init + center_x + self.radius // 10
-            circ_y_1 = self.ry_init - center_y - self.radius // 10
-            circ_y_2 = self.ry_init - center_y + self.radius // 10
-        else:
-            circ_x_1 = event.x - self.radius // 10
-            circ_x_2 = event.x + self.radius // 10
-            circ_y_1 = event.y - self.radius // 10
-            circ_y_2 = event.y + self.radius // 10
-
-        self.coords(
+    def mouseRightPressing(self, event: Any, ser: Any = None, angle: float = 0) -> None:
+        """右スティックを倒す。"""
+        self._rangle, self._rmag = self._pressing(
+            event,
+            "R",
+            self.rx_init,
+            self.ry_init,
+            self._rangle,
+            self._rmag,
+            self._rrec,
             "rcircle2",
-            circ_x_1,
-            circ_y_1,
-            circ_x_2,
-            circ_y_2,
         )
-        self._rangle = rangle
-        self._rmag = mag
 
-    def mouseRightRelease(self, ser):
+    def mouseRightRelease(self, ser: Any = None) -> None:
+        """右スティックを離して中立へ戻す。"""
         self.config(cursor="tcross")
-        self.ser.writeRow(f"3 8 80 80 80 80", is_show=False)
+        self.ser.writeRow("3 8 80 80 80 80", is_show=False)
+        # 中立行は「スティックだけの変化」なので Sender の間引きに
+        # 引っかかりうる。離した状態が届かないと倒したままになるため、
+        # ここは必ず送り切る。
+        flush = getattr(self.ser, "flushPending", None)
+        if callable(flush):
+            flush()
         self.delete("rcircle")
         self.delete("rcircle2")
         if self.master.is_use_left_stick_mouse.get():
             self.BindLeftClick()
+        if self._rrec is not None:
+            self._rrec.flush(self._rangle, self._rmag)
 
-        # self.event_generate('<Motion>', warp=True, x=self.rx_init, y=self.ry_init)
-        if isTakeLog:
-            self.dq.append(
-                [self._rangle, self._rmag, time.perf_counter() - self.calc_time]
-            )
-            for _ in self.dq:
-                self.RSTICK_logger.debug(",".join(list(map(str, _))))
+    # ------------------------------------------------------------------
+    # 画像認識の枠表示
+    # ------------------------------------------------------------------
+    # 画像認識の枠は固定タグ1組だけを作り、以後は位置と色を更新する。
+    # 呼び出しのたびにユニークな tag で作ると、判定をループで回した分
+    # だけキャンバスアイテムが積み上がり Canvas の再描画が線形に重くなる。
+    RECT_TAG_OUTER = "ImgRectOuter"
+    RECT_TAG_INNER = "ImgRectInner"
 
-    def startCapture(self):
-        self.capture()
+    def ImgRect(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        outline: str,
+        tag: str = "",
+        ms: int = 2000,
+    ) -> None:
+        """キャプチャ座標で指定された矩形を表示座標に直して描く。
 
-    def capture(self):
-        if self.is_show_var.get():
-            image_bgr = self.camera.readFrame()
-        else:
-            self.after(self.next_frames, self.capture)
-            return
-
-        if image_bgr is not None:
-            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-            image_pil = Image.fromarray(image_rgb).resize(self.show_size)
-            image_tk = ImageTk.PhotoImage(image_pil)
-
-            self.im = image_tk
-            # self.configure( image=image_tk)
-            self.itemconfig(self.im_, image=image_tk)
-        else:
-            self.im = self.disabled_tk
-            # self.configure(image=self.disabled_tk)
-            self.itemconfig(self.im_, image=self.disabled_tk)
-
-        self.after(self.next_frames, self.capture)
-
-    def saveCapture(self):
-        self.camera.saveCapture()
-
-    def ImgRect(self, x1, y1, x2, y2, outline, tag, ms):
-        ratio_x = float(self.show_size[0] / self.camera.capture_size[0])
-        ratio_y = float(self.show_size[1] / self.camera.capture_size[1])
-        self.create_rectangle(
+        tag は後方互換のため受け取るが、枠は固定タグ1組を使い回すので
+        参照しない。消去の予約も after_cancel で前回分を取り消してから
+        入れ直すため、予約が積み上がることはない。
+        """
+        ratio_x, ratio_y = self._showRatio()
+        outer = (
             (x1 - 1.0) * ratio_x,
             (y1 - 1.0) * ratio_y,
             (x2 + 1.0) * ratio_x,
             (y2 + 1.0) * ratio_y,
-            width=4.5,
-            outline="white",
-            tag=tag,
         )
-        self.create_rectangle(
-            x1 * ratio_x,
-            y1 * ratio_y,
-            x2 * ratio_x,
-            y2 * ratio_y,
-            width=2.5,
-            outline=outline,
-            tag=tag,
-        )
-        self.after(ms, self.deleteImageRect, tag)
+        inner = (x1 * ratio_x, y1 * ratio_y, x2 * ratio_x, y2 * ratio_y)
 
-    def deleteImageRect(self, tag):
-        self.delete(tag)
+        if not self._rect_created:
+            self.create_rectangle(
+                *outer, width=4.5, outline="white", tag=self.RECT_TAG_OUTER
+            )
+            self.create_rectangle(
+                *inner, width=2.5, outline=outline, tag=self.RECT_TAG_INNER
+            )
+            self._rect_created = True
+        else:
+            self.coords(self.RECT_TAG_OUTER, *outer)
+            self.coords(self.RECT_TAG_INNER, *inner)
+            self.itemconfig(self.RECT_TAG_OUTER, state="normal")
+            self.itemconfig(self.RECT_TAG_INNER, state="normal", outline=outline)
 
-    def BindLeftClick(self):
+        if self._rect_after_id is not None:
+            self.after_cancel(self._rect_after_id)
+        self._rect_after_id = self.after(ms, self.deleteImageRect)
+
+    def deleteImageRect(self, tag: str = "") -> None:
+        """ImgRect で描いた枠を隠す（アイテムは消さずに使い回す）。"""
+        self._rect_after_id = None
+        if self._rect_created:
+            self.itemconfig(self.RECT_TAG_OUTER, state="hidden")
+            self.itemconfig(self.RECT_TAG_INNER, state="hidden")
+
+    # ------------------------------------------------------------------
+    # バインド管理
+    # ------------------------------------------------------------------
+    def ApplyLStickMouse(self) -> None:
+        """設定に合わせて左スティック操作の有効・無効を切り替える。"""
+        if self.master.is_use_left_stick_mouse.get():
+            self.BindLeftClick()
+        else:
+            self.UnbindLeftClick()
+
+    def ApplyRStickMouse(self) -> None:
+        """設定に合わせて右スティック操作の有効・無効を切り替える。"""
+        if self.master.is_use_right_stick_mouse.get():
+            self.BindRightClick()
+        else:
+            self.UnbindRightClick()
+
+    def BindLeftClick(self) -> None:
+        """左ドラッグを左スティックに割り当てる。"""
         self.bind("<ButtonPress-1>", lambda ev: self.mouseLeftPress(ev, self.ser))
         self.bind("<Button1-Motion>", lambda ev: self.mouseLeftPressing(ev, self.ser))
         self.bind("<ButtonRelease-1>", lambda ev: self.mouseLeftRelease(self.ser))
-        logger.debug("Bind <ButtonPress-1>")
-        logger.debug("Bind <Button1-Motion>")
-        logger.debug("Bind <ButtonRelease-1>")
+        logger.debug("Bind left click")
 
-    def BindRightClick(self):
+    def BindRightClick(self) -> None:
+        """右ドラッグを右スティックに割り当てる。"""
         self.bind("<ButtonPress-3>", lambda ev: self.mouseRightPress(ev, self.ser))
         self.bind("<Button3-Motion>", lambda ev: self.mouseRightPressing(ev, self.ser))
         self.bind("<ButtonRelease-3>", lambda ev: self.mouseRightRelease(self.ser))
-        logger.debug("Bind <ButtonPress-3>")
-        logger.debug("Bind <Button3-Motion>")
-        logger.debug("Bind <ButtonRelease-3>")
+        logger.debug("Bind right click")
 
-    def UnbindLeftClick(self):
-        self.unbind("<ButtonPress-1>")
-        self.unbind("<Button1-Motion>")
-        self.unbind("<ButtonRelease-1>")
-        logger.debug("Unbind <ButtonPress-1>")
-        logger.debug("Unbind <Button1-Motion>")
-        logger.debug("Unbind <ButtonRelease-1>")
+    def UnbindLeftClick(self) -> None:
+        """左ドラッグの割り当てを外す。"""
+        for seq in ("<ButtonPress-1>", "<Button1-Motion>", "<ButtonRelease-1>"):
+            self.unbind(seq)
+        logger.debug("Unbind left click")
 
-    def UnbindRightClick(self):
-        self.unbind("<ButtonPress-3>")
-        self.unbind("<Button3-Motion>")
-        self.unbind("<ButtonRelease-3>")
-        logger.debug("Unbind <ButtonPress-3>")
-        logger.debug("Unbind <Button3-Motion>")
-        logger.debug("Unbind <ButtonRelease-3>")
+    def UnbindRightClick(self) -> None:
+        """右ドラッグの割り当てを外す。"""
+        for seq in ("<ButtonPress-3>", "<Button3-Motion>", "<ButtonRelease-3>"):
+            self.unbind(seq)
+        logger.debug("Unbind right click")
 
 
 # GUI of switch controller simulator
 class ControllerGUI:
-    def __init__(self, root, ser):
-        self._logger = getLogger(__name__)
-        self._logger.addHandler(NullHandler())
-        self._logger.setLevel(DEBUG)
-        self._logger.propagate = True
+    """Switch コントローラを模した操作ウィンドウ."""
 
+    JOYCON_L_COLOR = "#95f1ff"
+    JOYCON_R_COLOR = "#ff6b6b"
+    BUTTON_BG = "#343434"
+    BUTTON_FG = "#fff"
+
+    # (表示名, UnitCommand の属性名, row, column)
+    ABXY = (
+        ("A", "A", 1, 2),
+        ("B", "B", 2, 1),
+        ("X", "X", 0, 1),
+        ("Y", "Y", 1, 0),
+    )
+    HAT = (
+        ("UP", "UP", 0, 1),
+        ("", "UP_RIGHT", 0, 2),
+        ("RIGHT", "RIGHT", 1, 2),
+        ("", "DOWN_RIGHT", 2, 2),
+        ("DOWN", "DOWN", 2, 1),
+        ("", "DOWN_LEFT", 2, 0),
+        ("LEFT", "LEFT", 1, 0),
+        ("", "UP_LEFT", 0, 0),
+    )
+    # (表示名, UnitCommand の属性名, width, x, y)
+    JOYCON_L = (
+        ("L", "L", 20, 30, 30),
+        ("ZL", "ZL", 20, 30, 0),
+        ("LCLICK", "LCLICK", 7, 120, 120),
+        ("MINUS", "MINUS", 5, 220, 70),
+        ("CAP", "CAPTURE", 5, 200, 270),
+    )
+    JOYCON_R = (
+        ("R", "R", 20, 120, 30),
+        ("ZR", "ZR", 20, 120, 0),
+        ("RCLICK", "RCLICK", 7, 120, 205),
+        ("PLUS", "PLUS", 5, 35, 70),
+        ("HOME", "HOME", 5, 50, 270),
+    )
+
+    def __init__(self, root: Any, ser: Any) -> None:
+        self.ser = ser
         self.window = tk.Toplevel(root)
         self.window.title("Switch Controller Simulator")
-        root_geometry = root.geometry().split("+")
-        root_x = int(root_geometry[1])
-        root_y = int(root_geometry[2])
+        # 親ウィンドウの位置から少しずらして出す。geometry の座標は
+        # マルチモニタで左/上の画面へ動かすと負になり '600x300-10+20'
+        # の形になる。'+' で split すると要素が足りず IndexError で
+        # 落ちるため、符号込みで正規表現から取り出す。
+        pos = re.search(r"([+-]\d+)([+-]\d+)$", root.geometry())
+        root_x = int(pos.group(1)) if pos else 0
+        root_y = int(pos.group(2)) if pos else 0
         self.window.geometry("%dx%d%+d%+d" % (600, 300, 250 + root_x, 125 + root_y))
         self.window.resizable(False, False)
 
-        joycon_L_color = "#95f1ff"
-        joycon_R_color = "#ff6b6b"
-
         joycon_L_frame = tk.Frame(
-            self.window, width=300, height=300, relief="flat", bg=joycon_L_color
+            self.window, width=300, height=300, relief="flat", bg=self.JOYCON_L_COLOR
         )
         joycon_R_frame = tk.Frame(
-            self.window, width=300, height=300, relief="flat", bg=joycon_R_color
+            self.window, width=300, height=300, relief="flat", bg=self.JOYCON_R_COLOR
         )
-        hat_frame = tk.Frame(joycon_L_frame, relief="flat", bg=joycon_L_color)
-        abxy_frame = tk.Frame(joycon_R_frame, relief="flat", bg=joycon_R_color)
+        hat_frame = tk.Frame(joycon_L_frame, relief="flat", bg=self.JOYCON_L_COLOR)
+        abxy_frame = tk.Frame(joycon_R_frame, relief="flat", bg=self.JOYCON_R_COLOR)
 
-        # ABXY
-        tk.Button(
-            abxy_frame, text="A", command=lambda: UnitCommand.A().start(ser)
-        ).grid(row=1, column=2)
-        tk.Button(
-            abxy_frame, text="B", command=lambda: UnitCommand.B().start(ser)
-        ).grid(row=2, column=1)
-        tk.Button(
-            abxy_frame, text="X", command=lambda: UnitCommand.X().start(ser)
-        ).grid(row=0, column=1)
-        tk.Button(
-            abxy_frame, text="Y", command=lambda: UnitCommand.Y().start(ser)
-        ).grid(row=1, column=0)
+        for text, name, row, column in self.ABXY:
+            self._makeButton(abxy_frame, text, name).grid(row=row, column=column)
         abxy_frame.place(relx=0.2, rely=0.3)
 
-        # HAT
-        tk.Button(
-            hat_frame, text="UP", command=lambda: UnitCommand.UP().start(ser)
-        ).grid(row=0, column=1)
-        tk.Button(
-            hat_frame, text="", command=lambda: UnitCommand.UP_RIGHT().start(ser)
-        ).grid(row=0, column=2)
-        tk.Button(
-            hat_frame, text="RIGHT", command=lambda: UnitCommand.RIGHT().start(ser)
-        ).grid(row=1, column=2)
-        tk.Button(
-            hat_frame, text="", command=lambda: UnitCommand.DOWN_RIGHT().start(ser)
-        ).grid(row=2, column=2)
-        tk.Button(
-            hat_frame, text="DOWN", command=lambda: UnitCommand.DOWN().start(ser)
-        ).grid(row=2, column=1)
-        tk.Button(
-            hat_frame, text="", command=lambda: UnitCommand.DOWN_LEFT().start(ser)
-        ).grid(row=2, column=0)
-        tk.Button(
-            hat_frame, text="LEFT", command=lambda: UnitCommand.LEFT().start(ser)
-        ).grid(row=1, column=0)
-        tk.Button(
-            hat_frame, text="", command=lambda: UnitCommand.UP_LEFT().start(ser)
-        ).grid(row=0, column=0)
+        for text, name, row, column in self.HAT:
+            self._makeButton(hat_frame, text, name).grid(row=row, column=column)
         hat_frame.place(relx=0.2, rely=0.6)
 
-        # L side
-        tk.Button(
-            joycon_L_frame,
-            text="L",
-            width=20,
-            command=lambda: UnitCommand.L().start(ser),
-        ).place(x=30, y=30)
-        tk.Button(
-            joycon_L_frame,
-            text="ZL",
-            width=20,
-            command=lambda: UnitCommand.ZL().start(ser),
-        ).place(x=30, y=0)
-        tk.Button(
-            joycon_L_frame,
-            text="LCLICK",
-            width=7,
-            command=lambda: UnitCommand.LCLICK().start(ser),
-        ).place(x=120, y=120)
-        tk.Button(
-            joycon_L_frame,
-            text="MINUS",
-            width=5,
-            command=lambda: UnitCommand.MINUS().start(ser),
-        ).place(x=220, y=70)
-        tk.Button(
-            joycon_L_frame,
-            text="CAP",
-            width=5,
-            command=lambda: UnitCommand.CAPTURE().start(ser),
-        ).place(x=200, y=270)
-
-        # R side
-        tk.Button(
-            joycon_R_frame,
-            text="R",
-            width=20,
-            command=lambda: UnitCommand.R().start(ser),
-        ).place(x=120, y=30)
-        tk.Button(
-            joycon_R_frame,
-            text="ZR",
-            width=20,
-            command=lambda: UnitCommand.ZR().start(ser),
-        ).place(x=120, y=0)
-        tk.Button(
-            joycon_R_frame,
-            text="RCLICK",
-            width=7,
-            command=lambda: UnitCommand.RCLICK().start(ser),
-        ).place(x=120, y=205)
-        tk.Button(
-            joycon_R_frame,
-            text="PLUS",
-            width=5,
-            command=lambda: UnitCommand.PLUS().start(ser),
-        ).place(x=35, y=70)
-        tk.Button(
-            joycon_R_frame,
-            text="HOME",
-            width=5,
-            command=lambda: UnitCommand.HOME().start(ser),
-        ).place(x=50, y=270)
+        for text, name, width, x, y in self.JOYCON_L:
+            self._makeButton(joycon_L_frame, text, name, width=width).place(x=x, y=y)
+        for text, name, width, x, y in self.JOYCON_R:
+            self._makeButton(joycon_R_frame, text, name, width=width).place(x=x, y=y)
 
         joycon_L_frame.grid(row=0, column=0)
         joycon_R_frame.grid(row=0, column=1)
@@ -747,40 +888,51 @@ class ControllerGUI:
             self.applyButtonSetting(button)
         for button in hat_frame.winfo_children():
             self.applyButtonSetting(button)
-        for button in [
-            b for b in joycon_L_frame.winfo_children() if type(b) is tk.Button
-        ]:
-            self.applyButtonColor(button)
-        for button in [
-            b for b in joycon_R_frame.winfo_children() if type(b) is tk.Button
-        ]:
-            self.applyButtonColor(button)
+        for frame in (joycon_L_frame, joycon_R_frame):
+            for button in frame.winfo_children():
+                if isinstance(button, tk.Button):
+                    self.applyButtonColor(button)
 
         logger.debug("Create GUI controller")
 
-    def applyButtonSetting(self, button):
+    def _makeButton(
+        self, parent: Any, text: str, name: str, **kwargs: Any
+    ) -> tk.Button:
+        """UnitCommand の名前からボタンを作る。"""
+        return tk.Button(
+            parent,
+            text=text,
+            command=lambda n=name: getattr(UnitCommand, n)().start(self.ser),
+            **kwargs,
+        )
+
+    def applyButtonSetting(self, button: Any) -> None:
+        """幅と配色をまとめて適用する。"""
         button["width"] = 7
         self.applyButtonColor(button)
 
-    def applyButtonColor(self, button):
-        button["bg"] = "#343434"
-        button["fg"] = "#fff"
+    def applyButtonColor(self, button: Any) -> None:
+        """ボタンの配色を適用する。"""
+        button["bg"] = self.BUTTON_BG
+        button["fg"] = self.BUTTON_FG
 
-    def bind(self, event, func):
+    def bind(self, event: str, func: Any) -> None:
         self.window.bind(event, func)
 
-    def protocol(self, event, func):
+    def protocol(self, event: str, func: Any) -> None:
         self.window.protocol(event, func)
 
-    def focus_force(self):
+    def focus_force(self) -> None:
         self.window.focus_force()
 
-    def destroy(self):
+    def destroy(self) -> None:
         self.window.destroy()
         logger.debug("GUI controller destroyed")
 
 
 # To avoid the error says 'ScrolledText' object has no attribute 'flush'
 class MyScrolledText(ScrolledText):
-    def flush(self):
+    """標準出力のリダイレクト先に使うため flush を持たせた ScrolledText."""
+
+    def flush(self) -> None:
         pass

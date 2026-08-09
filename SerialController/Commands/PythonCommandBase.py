@@ -1,31 +1,63 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from typing import Optional
 
-import cv2
-import threading
 from abc import abstractmethod
-from time import sleep
-import random
-import time
-
-# from logging import getLogger, DEBUG, NullHandler
-from deprecated import deprecated
-from loguru import logger
 from os import path
+import atexit
+import functools
+import os
+from typing import Any, Callable, Dict, List, Optional
+import random
+import threading
+import time
 import tkinter as tk
 import tkinter.ttk as ttk
+import traceback
+
+import cv2
+import numpy as np
+from deprecated import deprecated
+from loguru import logger
 
 import Settings
 from LineNotify import Line_Notify
 from DiscordNotify import Discord_Notify
+
+# 旧: from .Keys import ... （ここだけ相対 import で、パッケージとして
+# import された場合と単体実行の場合で ImportError になる側が変わっていた）。
+# 他の Commands 配下と同じ絶対 import に統一する。
 from Commands import CommandBase
-from .Keys import Button, Direction, KeyPress
+from Commands.Keys import Button, Direction, KeyPress
 
-import traceback
+# LINE Notify は 2025/3/31 にサービス終了済み。メッセージを1箇所に集約する。
+LINE_EOL_MESSAGE = "LINE通知は2025/3/31にサービスが終了しました。"
 
-import numpy as np
+# テンプレート画像のキャッシュ件数。判定ループでは同じ画像を毎秒数十回
+# 読み直すことになるため、読み込み結果を使い回す。
+IMREAD_CACHE_SIZE = 128
+
+
+def _begin_timer_period() -> None:
+    """Windows のタイマー分解能を 1ms に上げる。
+
+    既定は約15.6ms で、time.sleep / Event.wait がその粒度でしか効かない。
+    分解能を上げておくと _SPIN_MARGIN を 5ms から 1ms へ下げられ、
+    ビジーループの時間を 1/5 にできる。プロセス全体に効く設定なので
+    import 時に1度だけ呼び、終了時に戻す。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.winmm.timeBeginPeriod(1)
+        atexit.register(ctypes.windll.winmm.timeEndPeriod, 1)
+    except Exception:
+        logger.warning("timeBeginPeriod is unavailable; timer stays coarse")
+
+
+_begin_timer_period()
 
 
 # the class For notifying stop signal is sent from Main window
@@ -35,28 +67,33 @@ class StopThread(Exception):
 
 # Python command
 class PythonCommand(CommandBase.Command):
-    def __init__(self):
+    def __init__(self) -> None:
         super(PythonCommand, self).__init__()
         self.keys = None
         self.thread = None
         self.alive: bool = True
+        # 停止要求。wait() はこれで待つので、長い待ちの最中でも
+        # Stop を押せば即座に起きる（例外を投げるのは checkIfAlive）
+        self._stop_event = threading.Event()
         self.postProcess = None
         self.message_dialogue = None
 
+        # __post_init__ は do_safe 経由でしか呼ばれない。do() を直接呼ぶ
+        # 使い方をされたときに AttributeError にならないよう None で初期化する。
+        self.Line = None
+        self.Discord = None
+
         self.traceback_limit = 5
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.Line = Line_Notify()
         self.Discord = Discord_Notify()
-        pass
 
-    # @abstractclassmethod
-    @classmethod
     @abstractmethod
-    def do(self):
+    def do(self) -> None:
         pass
 
-    def do_safe(self, ser):
+    def do_safe(self, ser: Any) -> None:
         self.__post_init__()
 
         if self.keys is None:
@@ -70,42 +107,131 @@ class PythonCommand(CommandBase.Command):
             print("-- finished successfully. --")
             logger.info("Command finished successfully")
         except Exception:
-            if self.keys is None:
-                self.keys = KeyPress(ser)
             print("例外が発生しました。")
             print("--------------------------------")
 
             print(traceback.format_exc(limit=self.traceback_limit))
             logger.error(traceback.format_exc(limit=self.traceback_limit))
             print("--------------------------------")
-            self.finish()
-            self.keys.end()
+
+            # ここで finish() を呼ぶと self.keys.ser を触るため、
+            # 既に checkIfAlive が keys=None にしていた場合に二次例外となり、
+            # 本来の例外が握り潰される。後始末は _cleanup に一本化する。
             self.alive = False
+            # 待機中のスレッドを即座に起こす
+            self._stop_event.set()
+            self._cleanup(ser)
+        finally:
+            # 例外で終わった場合もスレッド参照を必ず捨てる。
+            # ここを怠ると start() の生存判定に引っかかり、
+            # 一度エラーで落ちたコマンドが二度と起動しなくなる。
+            self.thread = None
 
-    def start(self, ser, postProcess=None):
+    def _cleanup(self, ser: Any = None) -> None:
+        """コマンド終了時の後始末。二重に呼ばれても安全にする。"""
+        keys = self.keys
+        if keys is None and ser is not None:
+            # 途中で keys を捨てられていてもボタンは必ず離す
+            keys = KeyPress(ser)
+        if keys is not None:
+            try:
+                keys.end()
+            except Exception:
+                logger.error(f"Failed to release keys: {traceback.format_exc()}")
+        self.keys = None
+
+        postProcess, self.postProcess = self.postProcess, None
+        if postProcess is not None:
+            postProcess()
+
+    def start(self, ser: Any, postProcess: Optional[Callable[[], None]] = None) -> None:
+        # 前回のスレッドが残っていても、既に終了していれば起動を許可する。
+        if self.thread is not None and self.thread.is_alive():
+            print("-- command is already running. --")
+            logger.warning("Command is already running")
+            return
+
         self.alive = True
+        self._stop_event.clear()
         self.postProcess = postProcess
+        self.thread = threading.Thread(target=self.do_safe, args=(ser,))
+        self.thread.start()
 
-        if not self.thread:
-            self.thread = threading.Thread(target=self.do_safe, args=(ser,))
-            self.thread.start()
-
-    def end(self, ser):
+    def end(self, ser: Any = None) -> None:
         self.sendStopRequest()
 
-    def sendStopRequest(self):
-        if self.checkIfAlive():  # try if we can stop now
+    def sendStopRequest(self) -> None:
+        """停止を要求する。呼び出し元のスレッドでは例外を投げない。
+
+        これは GUI スレッドからも呼ばれる。以前は checkIfAlive() を
+        経由していたため StopThread が GUI 側へ飛んでいた。実際の
+        後始末と脱出は、ワーカースレッドが次に checkIfAlive() を
+        通ったときに行われる。
+        """
+        if self.alive:
             self.alive = False
+            # 待機中のスレッドを即座に起こす。以前は次に checkIfAlive を
+            # 通るまで最大 wait 秒かかっていた。
+            self._stop_event.set()
             print("-- sent a stop request. --")
             logger.info("Sending stop request")
 
     # NOTE: Use this function if you want to get out from a command loop by yourself
-    def finish(self):
+    def finish(self) -> None:
         self.alive = False
-        self.end(self.keys.ser)
+        self.checkIfAlive()
+
+    # -- 出力先の使い分け ---------------------------------------------------
+
+    def print2(self, *args: Any, sep: str = " ", end: str = "\n") -> None:
+        """ログタブの「下側」へ出す。print と同じ書き方で使える。
+
+        print は常時流れる進捗に使い、こちらは「後で見返したい結果」に
+        使う。欄が分かれていれば、進捗がいくら流れても結果は残る。
+        例) print("探索中...") / print2("見つかった: 色違い 3体目")
+
+        出力先の解決には注意が要る。Window.py は起動時に __main__ と
+        して実行されるため、ここで import Window とすると Python は
+        同じファイルをもう一度読み込み、別モジュールとして扱う。
+        その結果 sub_log_queue が2つでき、こちらが入れたキューを
+        GUI 側は見ないまま（＝画面に何も出ないまま）になる。
+        そこで実行中の __main__ を先に見て、そこに sub_log_queue が
+        あればそれを使う。GUI が無い場合は通常の print へ落とす。
+        """
+        text = sep.join(str(a) for a in args) + end
+        queue = self._subLogQueue()
+        if queue is None:
+            # GUI が無い（CUI 実行・テスト）。標準出力へ出しておけば失われない
+            print(text, end="")
+            return
+        queue.put(text)
+
+    @staticmethod
+    def _subLogQueue() -> Optional[Any]:
+        """副ログ用のキューを返す。GUI が無ければ None。
+
+        Window.py が __main__ として実行されている場合、import Window は
+        同じファイルの2つ目のモジュールを作ってしまい、キューが別物に
+        なる。実行中の __main__ を先に調べるのはこのため。
+        """
+        import sys
+
+        main = sys.modules.get("__main__")
+        queue = getattr(main, "sub_log_queue", None)
+        if queue is not None:
+            return queue
+        try:
+            import Window
+        except Exception:
+            return None
+        return getattr(Window, "sub_log_queue", None)
+
+    def log2(self, *args: Any, sep: str = " ", end: str = "\n") -> None:
+        """print2 の別名。ログとして残す意図を明示したいとき用。"""
+        self.print2(*args, sep=sep, end=end)
 
     # press button at duration times(s)
-    def press(self, buttons, duration=0.1, wait=0.1):
+    def press(self, buttons: Any, duration: float = 0.1, wait: float = 0.1) -> None:
         self.keys.input(buttons)
         self.wait(duration)
         self.keys.inputEnd(buttons)
@@ -113,47 +239,80 @@ class PythonCommand(CommandBase.Command):
         self.checkIfAlive()
 
     # press button at duration times(s) repeatedly
-    def pressRep(self, buttons, repeat, duration=0.1, interval=0.1, wait=0.1):
+    def pressRep(
+        self,
+        buttons: Any,
+        repeat: int,
+        duration: float = 0.1,
+        interval: float = 0.1,
+        wait: float = 0.1,
+    ) -> None:
         for i in range(0, repeat):
             self.press(buttons, duration, 0 if i == repeat - 1 else interval)
         self.wait(wait)
 
     # add hold buttons
-    def hold(self, buttons, wait=0.1):
+    def hold(self, buttons: Any, wait: float = 0.1) -> None:
         self.keys.hold(buttons)
         self.wait(wait)
 
     # release holding buttons
-    def holdEnd(self, buttons):
+    def holdEnd(self, buttons: Any) -> None:
         self.keys.holdEnd(buttons)
         self.checkIfAlive()
 
+    # sleep では保証できない精度が要るときだけスピンする幅(秒)。
+    # Windows では起動時に timeBeginPeriod(1) を呼んでタイマー分解能を
+    # 1ms にしてあるので、5ms もスピンする必要がない。
+    _SPIN_MARGIN = 0.001
+
+    def _precise_sleep(self, wait: float) -> None:
+        """指定時間だけ待つ。停止要求が来たら待ち切らずに戻る。
+
+        全区間をスピンさせると1コアを100%消費する。press() の既定が
+        duration=0.1 / wait=0.1 のため、旧実装ではコマンド実行中ずっと
+        CPU を焼き続けていた。大半は Event.wait で明け渡し、末尾の
+        _SPIN_MARGIN だけスピンして精度を確保する。
+
+        Event.wait で待つのは停止要求のためでもある。以前は待機中に
+        停止を見ていなかったので、wait(10) の最中に Stop を押しても
+        最大10秒止まらなかった。
+
+        起動時に timeBeginPeriod(1) を呼んでタイマー分解能を 1ms に
+        してあるため、スピン幅は 5ms → 1ms で足りる（Switch の操作
+        精度は数ms あれば十分）。
+        """
+        deadline = time.perf_counter() + wait
+        rest = wait - self._SPIN_MARGIN
+        if rest > 0 and self._stop_event.wait(rest):
+            return  # 停止要求。残りは待たない
+        while time.perf_counter() < deadline:
+            if self._stop_event.is_set():
+                return
+
     # do nothing at wait time(s)
-    def short_wait(self, wait):
-        current_time = time.perf_counter()
-        while time.perf_counter() < current_time + wait:
-            pass
+    def short_wait(self, wait: float) -> None:
+        self._precise_sleep(float(wait))
         self.checkIfAlive()
 
     # do nothing at wait time(s)
-    def wait(self, wait):
-        if float(wait) > 0.1:
-            sleep(wait)
-        else:
-            current_time = time.perf_counter()
-            while time.perf_counter() < current_time + wait:
-                pass
+    def wait(self, wait: float) -> None:
+        """指定秒待つ。停止要求が来たら即座に起きる。
+
+        役割分担は「wait は起きるだけ／checkIfAlive が StopThread を
+        投げる」を保つ。
+        """
+        wait = float(wait)
+        if wait > 0:
+            self._precise_sleep(wait)
         self.checkIfAlive()
 
-    def checkIfAlive(self):
+    def checkIfAlive(self) -> bool:
         if not self.alive:
-            self.keys.end()
-            self.keys = None
-            self.thread = None
-
-            if self.postProcess is not None:
-                self.postProcess()
-                self.postProcess = None
+            # thread の後始末は do_safe の finally が行う。ここで None に
+            # すると、実行中のスレッド自身が start() の生存判定を消して
+            # しまい二重起動を招く。
+            self._cleanup()
 
             # raise exception for exit working thread
             logger.info("Exit from command successfully")
@@ -164,25 +323,74 @@ class PythonCommand(CommandBase.Command):
     def dialogue(
         self, title: str, message: int | str | list, need: type = list
     ) -> list | dict:
-        self.message_dialogue = tk.Toplevel()
-        ret = PokeConDialogue(self.message_dialogue, title, message).ret_value(need)
-        self.message_dialogue = None
-        return ret
+        """入力ダイアログを出し、閉じられるまで待って結果を返す。"""
+        return self._runDialogue(title, message, need, mode=0)
 
     def dialogue6widget(
         self, title: str, dialogue_list: list, need: type = list
     ) -> list | dict:
-        self.message_dialogue = tk.Toplevel()
-        ret = PokeConDialogue(
-            self.message_dialogue, title, dialogue_list, mode=1
-        ).ret_value(need)
-        self.message_dialogue = None
-        return ret
+        """6種のウィジェットに対応した入力ダイアログ版。"""
+        return self._runDialogue(title, dialogue_list, need, mode=1)
+
+    def _runDialogue(self, title: str, message: Any, need: type, mode: int) -> Any:
+        """ダイアログの生成を GUI スレッドへ委譲し、結果を受け取る。
+
+        tkinter はスレッドセーフではなく、GUI スレッド以外から widget を
+        生成するとフリーズやクラッシュの原因になる。コマンドはワーカー
+        スレッドで動くので、生成そのものを after(0) でメインスレッドへ
+        渡し、こちらは Event で結果を待つ。
+
+        待ちには _stop_event を併用する。ダイアログを開いたまま Stop を
+        押したときに、コマンド側が永久に待ち続けないようにするため。
+        呼び出し規約（戻り値）は従来と同じなので既存コマンドは無修正で動く。
+        """
+        done = threading.Event()
+        box = {}
+
+        def build() -> None:
+            # ここは GUI スレッド。widget の生成と mainloop 的な待ちは
+            # すべてこの中で完結する。
+            try:
+                self.message_dialogue = tk.Toplevel()
+                dlg = PokeConDialogue(self.message_dialogue, title, message, mode=mode)
+                box["value"] = dlg.ret_value(need)
+            except Exception:
+                box["error"] = traceback.format_exc()
+            finally:
+                self.message_dialogue = None
+                done.set()
+
+        root = self._guiRoot()
+        if root is None:
+            # GUI が無い（CUI 実行・テスト）ときは従来どおり直に作る
+            build()
+        else:
+            root.after(0, build)
+
+        while not done.wait(0.1):
+            if self._stop_event.is_set():
+                # 停止要求。ダイアログは GUI スレッド側に残るが、
+                # ここで待ち続けるとコマンドが終われなくなる。
+                logger.warning("Stop requested while a dialogue is open")
+                self.checkIfAlive()
+                return [] if need is list else {}
+
+        if "error" in box:
+            raise RuntimeError(f"dialogue failed:\n{box['error']}")
+        return box.get("value")
+
+    def _guiRoot(self) -> Optional[Any]:
+        """ダイアログを載せる tk のルートを返す。無ければ None。"""
+        gui = getattr(self, "gui", None)
+        for obj in (gui, getattr(gui, "master", None)):
+            if obj is not None and hasattr(obj, "after"):
+                return obj
+        return None
 
     # Use time glitch
 
     # Controls the system time and get every-other-day bonus without any punishments
-    def timeLeap(self, is_go_back=True):
+    def timeLeap(self, is_go_back: bool = True) -> None:
         self.press(Button.HOME, wait=1)
         self.press(Direction.DOWN)
         self.press(Direction.RIGHT)
@@ -228,13 +436,15 @@ class PythonCommand(CommandBase.Command):
         self.press(Button.HOME, wait=1)
 
     @deprecated(reason="Use discord instead")
-    def LINE_text(self, txt="", token="token"):
-        print("LINE通知は2025/3/31にサービスが終了しました。")
-        logger.error("LINE通知は2025/3/31にサービスが終了しました。")
-        try:
-            self.Line.send_text(txt, token)
-        except Exception:
-            pass
+    def LINE_text(self, txt: str = "", token: str = "token") -> bool:
+        """LINE Notify は 2025/3/31 にサービス終了。送信は行わない。
+
+        以前は「終了しました」と出力した直後に送信を試み、例外を pass で
+        握り潰していた（LINE_image は逆に except 側で出力しており非対称）。
+        deprecated である以上、送信自体を行わず False を返す形に統一した。
+        """
+        logger.error(LINE_EOL_MESSAGE)
+        return False
 
     def discord_text(
         self, content: str = "", index: int = 0, name: Optional[str] = None
@@ -271,7 +481,7 @@ class PythonCommand(CommandBase.Command):
             return False
 
     # direct serial
-    def direct_serial(self, serialcommands: list, waittime: list):
+    def direct_serial(self, serialcommands: List[str], waittime: List[float]) -> None:
         # 余計なものが付いている可能性があるので確認して削除する
         checkedcommands = []
         for row in serialcommands:
@@ -279,33 +489,46 @@ class PythonCommand(CommandBase.Command):
         self.keys.serialcommand_direct_send(checkedcommands, waittime)
 
     # Reload COM port (temporary function)
-    def reload_com_port(self):
-        if self.keys.ser.isOpened():
-            print("Port is already opened and being closed.")
-            self.keys.ser.closeSerial()
-            # self.keyPress = None (ここでNoneはNGなはず)
-            self.reload_com_port()
-        else:
+    def reload_com_port(self, retry: int = 3) -> bool:
+        """COM ポートを開き直す。
+
+        旧実装は closeSerial 後に自分自身を再帰呼び出ししていたため、
+        切断に失敗して isOpened() が True を返し続けると RecursionError で
+        落ちた。回数上限つきのループに置き換える。
+        """
+        settings = Settings.GuiSettings()
+
+        for _ in range(max(1, retry)):
+            if self.keys.ser.isOpened():
+                print("Port is already opened and being closed.")
+                self.keys.ser.closeSerial()
+                if self.keys.ser.isOpened():
+                    logger.warning("Failed to close the port. retrying...")
+                    self.wait(0.5)
+                    continue
+
             if self.keys.ser.openSerial(
-                Settings.GuiSettings().com_port.get(),
-                Settings.GuiSettings().com_port_name.get(),
-                Settings.GuiSettings().baud_rate.get(),
+                settings.com_port.get(),
+                settings.com_port_name.get(),
+                settings.baud_rate.get(),
             ):
-                print(
-                    "COM Port "
-                    + str(Settings.GuiSettings().com_port.get())
-                    + " connected successfully"
-                )
-                logger.debug(
-                    "COM Port "
-                    + str(Settings.GuiSettings().com_port.get())
-                    + " connected successfully"
-                )
-                # self.keyPress = None (ここでNoneはNGなはず)
+                msg = f"COM Port {settings.com_port.get()} connected successfully"
+                print(msg)
+                logger.debug(msg)
+                return True
+
+            self.wait(0.5)
+
+        msg = f"COM Port {settings.com_port.get()} failed to reconnect"
+        print(msg)
+        logger.error(msg)
+        return False
 
 
 class PokeConDialogue(object):
-    def __init__(self, parent, title: str, message: int | str | list, mode: int = 0):
+    def __init__(
+        self, parent: Any, title: str, message: int | str | list, mode: int = 0
+    ) -> None:
         """
         pokecon用ダイアログ生成関数(注意:mode=0と1でmessageの取り扱いが大きく異なる。)
         mode | int: 0のときEntryのみ、1のとき6種類のwidgetに対応
@@ -340,10 +563,14 @@ class PokeConDialogue(object):
         )
 
         self.dialogue_ls = {}
-        x = self.message_dialogue.master.winfo_x()
-        w = self.message_dialogue.master.winfo_width()
-        y = self.message_dialogue.master.winfo_y()
-        h = self.message_dialogue.master.winfo_height()
+        # winfo_width()/height() は最初の描画前だと 1 を返すため、
+        # update_idletasks() でジオメトリを確定させてから読む。
+        self.message_dialogue.update_idletasks()
+        master = self.message_dialogue.master
+        x = master.winfo_x()
+        w = master.winfo_width()
+        y = master.winfo_y()
+        h = master.winfo_height()
         w_ = self.message_dialogue.winfo_width()
         h_ = self.message_dialogue.winfo_height()
         self.message_dialogue.geometry(
@@ -371,19 +598,24 @@ class PokeConDialogue(object):
         self.main_frame.pack()
         self.message_dialogue.master.wait_window(self.message_dialogue)
 
-    def mode0(self, message: list | str):
+    def mode0(self, message: list | str) -> None:
         if type(message) is not list:
             message = [message]
         n = len(message)
 
         for i in range(n):
-            self.dialogue_ls[message[i]] = tk.StringVar()
-            label = ttk.Label(self.inputs, text=message[i])
-            entry = ttk.Entry(self.inputs, textvariable=self.dialogue_ls[message[i]])
+            key = message[i]
+            if key in self.dialogue_ls:
+                # キーがラベル文字列そのものなので、同じラベルを2つ渡すと
+                # 後勝ちで上書きされ widget 数と戻り値の数が食い違っていた。
+                raise ValueError(f"Duplicated label in dialogue message: {key!r}")
+            self.dialogue_ls[key] = tk.StringVar()
+            label = ttk.Label(self.inputs, text=key)
+            entry = ttk.Entry(self.inputs, textvariable=self.dialogue_ls[key])
             label.grid(column=0, row=i, sticky="nsew", padx=3, pady=3)
             entry.grid(column=1, row=i, sticky="nsew", padx=3, pady=3)
 
-    def mode1(self, dialogue_list: list):
+    def mode1(self, dialogue_list: list) -> None:
         n = len(dialogue_list)
         frame = []
 
@@ -453,6 +685,14 @@ class PokeConDialogue(object):
                     widget.grid(column=j, row=0, sticky="nsew", padx=3, pady=3)
             # Scale
             elif dialogue_list[i][0].casefold() == "scale".casefold():
+                # scale は [種別, キー, 最小, 最大, 初期値, 有効桁数] の6要素が必須。
+                # 検証せずに [5] を参照していたため、短いリストで IndexError になっていた。
+                if len(dialogue_list[i]) < 6:
+                    raise ValueError(
+                        f"'scale' requires 6 elements "
+                        f"[type, key, from, to, value, digit], "
+                        f"but got {len(dialogue_list[i])}: {dialogue_list[i]}"
+                    )
                 scale_index_list.append(i)
                 scale_digit_list.append(dialogue_list[i][5])
                 if dialogue_list[i][5] != 0:  # 浮動小数点数
@@ -514,28 +754,34 @@ class PokeConDialogue(object):
             else:
                 frame[i].grid_columnconfigure(0, weight=1)
 
-    def ret_value(self, need: type) -> list | dict:
-        if self.isOK:
-            if need == dict:
-                return {k: v.get() for k, v in self.dialogue_ls.items()}
-            elif need == list:
-                return self._ls
-            else:
-                print(f"Wrong arg. Try Return list.")
-                return self._ls
-        else:
-            return False
+    def ret_value(self, need: type) -> list | dict | None:
+        """入力結果を返す。Cancel / ウィンドウを閉じた場合は None。
 
-    def close_window(self):
+        以前は Cancel 時に False を返していたため、呼び出し側が dict を前提に
+        .get() すると AttributeError になっていた。None を返すことで
+        `if result is None:` の素直な分岐で扱えるようにした。
+        """
+        if not self.isOK:
+            return None
+
+        if need is dict:
+            return {k: v.get() for k, v in self.dialogue_ls.items()}
+        if need is list:
+            return self._ls
+
+        self._logger.warning(f"Wrong arg: {need}. Returns list instead.")
+        return self._ls
+
+    def close_window(self) -> None:
         self.message_dialogue.destroy()
         self.isOK = False
 
-    def ok_command(self):
+    def ok_command(self) -> None:
         self._ls = [v.get() for k, v in self.dialogue_ls.items()]
         self.message_dialogue.destroy()
         self.isOK = True
 
-    def cancel_command(self):
+    def cancel_command(self) -> None:
         self.message_dialogue.destroy()
         self.isOK = False
 
@@ -558,8 +804,40 @@ def _get_template_filespec(template_path: str) -> str:
         return path.join(TEMPLATE_PATH, template_path)
 
 
+@functools.lru_cache(maxsize=IMREAD_CACHE_SIZE)
+def _imread_or_raise(template_path: str, flags: int) -> np.ndarray:
+    """テンプレート画像を読み込む。失敗したら理由の分かる例外にする。
+
+    cv2.imread はファイルが無い・壊れている場合に例外ではなく None を返す。
+    そのまま .shape を触ると TypeError になり、原因がパスだと分からない。
+
+    判定ループでは毎秒数十回、同じファイルを読んでデコードすることになり、
+    matchTemplate 本体より重くなることがある。引数は path と flags だけで
+    副作用が無いため lru_cache で包める。
+
+    ★規約: 返る配列はキャッシュで共有される。呼び出し側で書き換えない
+    こと（書き換えると以降の判定すべてに影響する）。テンプレート画像を
+    差し替えたときは clear_template_cache() を呼ぶ。
+    """
+    filespec = _get_template_filespec(template_path)
+    image = cv2.imread(filespec, flags)
+    if image is None:
+        raise FileNotFoundError(f"テンプレート画像を読み込めませんでした: {filespec}")
+    image.flags.writeable = False  # 共有配列を誤って書き換えないための保険
+    return image
+
+
+def clear_template_cache() -> None:
+    """テンプレート画像のキャッシュを捨てる。
+
+    実行中にテンプレート画像を差し替えたときに呼ぶ。os.path.getmtime を
+    キーへ含める案もあるが、判定のたびに stat が走るので採らなかった。
+    """
+    _imread_or_raise.cache_clear()
+
+
 class ImageProcPythonCommand(PythonCommand):
-    def __init__(self, cam, gui=None):
+    def __init__(self, cam: Any, gui: Any = None) -> None:
         super(ImageProcPythonCommand, self).__init__()
 
         # self._logger = getLogger(__name__)
@@ -573,11 +851,68 @@ class ImageProcPythonCommand(PythonCommand):
 
         self.gui = gui
 
-        self.gsrc = cv2.cuda_GpuMat()
-        self.gtmpl = cv2.cuda_GpuMat()
-        self.gresult = cv2.cuda_GpuMat()
+        # cv2.cuda_GpuMat() は CUDA 無効ビルドでは AttributeError になる。
+        # ここで無条件に生成すると、GPU を使わない全コマンドまで起動不能に
+        # なるため、実際に GPU 版を呼んだときだけ確保する。
+        self.gsrc = None
+        self.gtmpl = None
+        self.gresult = None
 
-    def __post_init__(self):
+        # GPU 版のキャッシュ。matcher は (dtype, method)、テンプレートは
+        # (path, use_gray) をキーにする
+        self._cuda_matchers: dict = {}
+        self._cuda_templates: dict = {}
+
+    def _ensure_cuda(self) -> bool:
+        """CUDA が使えるかを判定し、使えれば GpuMat を用意する。"""
+        if self.gsrc is not None:
+            return True
+        if not hasattr(cv2, "cuda_GpuMat") or not hasattr(cv2, "cuda"):
+            return False
+        try:
+            if cv2.cuda.getCudaEnabledDeviceCount() < 1:
+                return False
+            self.gsrc = cv2.cuda_GpuMat()
+            self.gtmpl = cv2.cuda_GpuMat()
+            self.gresult = cv2.cuda_GpuMat()
+        except Exception:
+            logger.warning(f"CUDA is unavailable: {traceback.format_exc(limit=1)}")
+            return False
+        return True
+
+    def _cudaMatcher(self, dtype: int, method: int) -> Any:
+        """テンプレートマッチャを (dtype, method) 単位でキャッシュする。
+
+        呼び出しのたびに createTemplateMatching すると、GPU 版の利点
+        （生成と転送の削減）を自分で打ち消すことになる。
+        """
+        key = (dtype, method)
+        matcher = self._cuda_matchers.get(key)
+        if matcher is None:
+            matcher = cv2.cuda.createTemplateMatching(dtype, method)
+            self._cuda_matchers[key] = matcher
+        return matcher
+
+    def _cudaTemplate(self, template_path: str, use_gray: bool) -> Any:
+        """テンプレートを GpuMat にしてキャッシュする（転送を1度だけにする）。"""
+        key = (template_path, bool(use_gray))
+        gtmpl = self._cuda_templates.get(key)
+        if gtmpl is None:
+            template = _imread_or_raise(
+                template_path,
+                cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
+            )
+            gtmpl = cv2.cuda_GpuMat()
+            gtmpl.upload(template)
+            self._cuda_templates[key] = gtmpl
+        return gtmpl
+
+    def clearCudaCache(self) -> None:
+        """GPU 側のキャッシュを捨てる（テンプレート差し替え時に呼ぶ）。"""
+        self._cuda_matchers.clear()
+        self._cuda_templates.clear()
+
+    def __post_init__(self) -> None:
         self.Line = Line_Notify(self.camera)
         self.Discord = Discord_Notify(camera=self.camera)
 
@@ -594,31 +929,38 @@ class ImageProcPythonCommand(PythonCommand):
         show_position=True,
         show_only_true_rect=True,
         ms=2000,
-        crop=[],
+        crop=None,
         mask_path=None,
     ):
+        # crop を先に切ってから色変換する。逆にすると使わない領域まで
+        # 変換することになり、crop が全体の 1/9 でも 1280x720 全面を
+        # 変換してしまう（判定ループでは毎回この無駄が乗る）。
+        crop = crop or []
         src = self.camera.readFrame()
-        src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if use_gray else src
-
         if len(crop) == 4:
             src = src[crop[1] : crop[3], crop[0] : crop[2]]
+        if use_gray:
+            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
 
-        template = cv2.imread(
-            _get_template_filespec(template_path),
+        template = _imread_or_raise(
+            template_path,
             cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
         )
 
         # mask用画像読み込み
-        if mask_path == None:
+        if mask_path is None:
             mask = None
             method = cv2.TM_CCOEFF_NORMED
         else:
-            mask = cv2.imread(_get_template_filespec(mask_path), 0)
+            mask = _imread_or_raise(mask_path, 0)
             method = cv2.TM_CCORR_NORMED
 
         w, h = template.shape[1], template.shape[0]
 
         res = cv2.matchTemplate(src, template, method, mask)
+        # マスク併用の TM_CCORR_NORMED は分母0の領域で NaN を返しうる。
+        # NaN が混じると minMaxLoc の結果が不定になるため潰しておく。
+        res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
         if show_value:
@@ -654,19 +996,33 @@ class ImageProcPythonCommand(PythonCommand):
         show_position=True,
         show_only_true_rect=True,
         ms=2000,
-        crop=[],
+        crop=None,
+        break_on_hit=False,
     ):
-        src = self.camera.readFrame()
-        src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if use_gray else src
+        """複数テンプレートのうち相関が最大のものを返す。
 
+        break_on_hit=True にすると、閾値を超えたものを見つけた時点で
+        残りを評価せずに返す。「どれか1つに一致したか」を見たいだけの
+        用途では全件回す必要がないため。戻り値の互換のため既定は False
+        （既定のままなら従来どおり全件を評価し、最大値を返す）。
+        打ち切った場合、未評価のテンプレートの相関値は 0.0 で埋める。
+        """
+        if not template_path_list:
+            raise ValueError("template_path_list が空です。")
+
+        # crop を先に切ってから色変換する（isContainTemplate と同じ理由）
+        crop = crop or []
+        src = self.camera.readFrame()
         if len(crop) == 4:
             src = src[crop[1] : crop[3], crop[0] : crop[2]]
+        if use_gray:
+            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
 
         max_val_list = []
         judge_threshold_list = []
         for template_path in template_path_list:
-            template = cv2.imread(
-                _get_template_filespec(template_path),
+            template = _imread_or_raise(
+                template_path,
                 cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
             )
             w, h = template.shape[1], template.shape[0]
@@ -697,54 +1053,58 @@ class ImageProcPythonCommand(PythonCommand):
                         *top_left, *bottom_right, outline="red", tag=tag, ms=ms
                     )
 
+            if break_on_hit and judge_threshold_list[-1]:
+                # 一致が1つ見つかれば十分な用途では、残りを評価しない。
+                # 戻り値の形を保つため、未評価分は 0.0 / False で埋める。
+                rest = len(template_path_list) - len(max_val_list)
+                max_val_list.extend([0.0] * rest)
+                judge_threshold_list.extend([False] * rest)
+                break
+
         return np.argmax(max_val_list), max_val_list, judge_threshold_list
 
-    try:
-
-        def isContainTemplateGPU(
-            self,
-            template_path,
-            threshold=0.7,
-            use_gray=True,
-            show_value=False,
-            not_show_false=True,
-        ):
-            src = self.camera.readFrame()
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if use_gray else src
-
-            self.gsrc.upload(src)
-
-            template = cv2.imread(
-                _get_template_filespec(template_path),
-                cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
+    def isContainTemplateGPU(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        show_value=False,
+        not_show_false=True,
+    ):
+        """CUDA を使ったテンプレートマッチング。"""
+        if not self._ensure_cuda():
+            raise RuntimeError(
+                "CUDA 対応の OpenCV が見つかりません。"
+                "isContainTemplate() を使ってください。"
             )
-            self.gtmpl.upload(template)
 
-            method = cv2.TM_CCOEFF_NORMED
-            matcher = cv2.cuda.createTemplateMatching(cv2.CV_8UC1, method)
-            gresult = matcher.match(self.gsrc, self.gtmpl)
-            resultg = gresult.download()
-            _, max_val, _, max_loc = cv2.minMaxLoc(resultg)
+        src = self.camera.readFrame()
+        src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if use_gray else src
 
-            if show_value:
-                print(template_path + " ZNCC value: " + str(max_val))
+        self.gsrc.upload(src)
 
-            if max_val >= threshold:
-                # if use_gray:
-                #     src = cv2.cvtColor(src, cv2.COLOR_GRAY2BGR)
-                #
-                # top_left = max_loc
-                # bottom_right = (top_left[0] + w, top_left[1] + h)
-                # cv2.rectangle(src, top_left, bottom_right, (255, 0, 255), 2)
-                return True
-            else:
-                return False
-    except ModuleNotFoundError:
-        pass
+        gtmpl = self._cudaTemplate(template_path, use_gray)
+
+        method = cv2.TM_CCOEFF_NORMED
+        matcher = self._cudaMatcher(cv2.CV_8UC1, method)
+        gresult = matcher.match(self.gsrc, gtmpl)
+        resultg = gresult.download()
+        _, max_val, _, max_loc = cv2.minMaxLoc(resultg)
+
+        if show_value:
+            print(template_path + " ZNCC value: " + str(max_val))
+
+        return bool(max_val >= threshold)
 
     # Get interframe difference binarized image
     # フレーム間差分により2値化された画像を取得
-    def getInterframeDiff(self, frame1, frame2, frame3, threshold):
+    def getInterframeDiff(
+        self,
+        frame1: np.ndarray,
+        frame2: np.ndarray,
+        frame3: np.ndarray,
+        threshold: float,
+    ) -> np.ndarray:
         diff1 = cv2.absdiff(frame1, frame2)
         diff2 = cv2.absdiff(frame2, frame3)
 
@@ -758,12 +1118,10 @@ class ImageProcPythonCommand(PythonCommand):
         return mask
 
     @deprecated(reason="Use discord instead")
-    def LINE_image(self, txt="", token="token"):
-        try:
-            self.Line.send_text_n_image(txt, token)
-        except Exception:
-            print("LINE通知は2025/3/31にサービスが終了しました。")
-            logger.error("LINE通知は2025/3/31にサービスが終了しました。")
+    def LINE_image(self, txt: str = "", token: str = "token") -> bool:
+        """LINE Notify は 2025/3/31 にサービス終了。送信は行わない。"""
+        logger.error(LINE_EOL_MESSAGE)
+        return False
 
     def discord_image(
         self, content: str = "", index: int = 0, name: Optional[str] = None
