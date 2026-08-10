@@ -7,8 +7,9 @@ from os import path
 import atexit
 import functools
 import os
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import random
+import re
 import threading
 import time
 import tkinter as tk
@@ -75,6 +76,12 @@ class PythonCommand(CommandBase.Command):
         # 停止要求。wait() はこれで待つので、長い待ちの最中でも
         # Stop を押せば即座に起きる（例外を投げるのは checkIfAlive）
         self._stop_event = threading.Event()
+        # 一時停止。set されている間が「実行中」で、clear すると
+        # 待ち・操作の手前で足止めする（停止とは別の仕組み）。
+        self._resume_event = threading.Event()
+        self._resume_event.set()  # 既定は実行中
+        self._paused_total = 0.0  # 通算の一時停止秒数
+        self._pause_started = 0.0
         self.postProcess = None
         self.message_dialogue = None
 
@@ -153,6 +160,10 @@ class PythonCommand(CommandBase.Command):
 
         self.alive = True
         self._stop_event.clear()
+        # 一時停止の状態は毎回まっさらにする。前回の一時停止が残ると、
+        # 次の実行が最初の待ちで固まる。
+        self._resume_event.set()
+        self._paused_total = 0.0
         self.postProcess = postProcess
         self.thread = threading.Thread(target=self.do_safe, args=(ser,))
         self.thread.start()
@@ -175,6 +186,67 @@ class PythonCommand(CommandBase.Command):
             self._stop_event.set()
             print("-- sent a stop request. --")
             logger.info("Sending stop request")
+
+    # -- 一時停止 -----------------------------------------------------------
+    #
+    # 停止（Stop）は「最初からやり直し」になるため、長いスクリプトの
+    # 途中で少しだけ手を離したい場面では使えない。そこで、状態を保った
+    # まま足止めするだけの仕組みを別に用意する。
+    #
+    # 停止と一時停止は別の Event で持つ。1つの旗で兼ねると「止まって
+    # いる理由」が区別できず、再開すべき場面で終了してしまう。
+
+    def pause(self) -> None:
+        """一時停止する。押しているボタンはそのまま保つ。
+
+        ここでボタンを離すと、再開時に押し直しが要るうえ、ゲーム側の
+        状態も変わってしまう（hold で移動し続けている最中など）。
+        足止めするだけにして、状態には手を触れない。
+        """
+        if not self.alive:
+            return
+        if self._resume_event.is_set():
+            self._resume_event.clear()
+            self._pause_started = time.perf_counter()
+            print("-- paused. --")
+            logger.info("Command paused")
+
+    def resume(self) -> None:
+        """一時停止を解除する。"""
+        if not self._resume_event.is_set():
+            elapsed = time.perf_counter() - self._pause_started
+            self._paused_total += elapsed
+            self._resume_event.set()
+            print(f"-- resumed. ({elapsed:.1f}s paused) --")
+            logger.info(f"Command resumed after {elapsed:.1f}s")
+
+    def togglePause(self) -> bool:
+        """一時停止と再開を切り替える。切り替え後が一時停止なら True。"""
+        if self._resume_event.is_set():
+            self.pause()
+        else:
+            self.resume()
+        return not self._resume_event.is_set()
+
+    def isPaused(self) -> bool:
+        """いま一時停止中かどうか。"""
+        return not self._resume_event.is_set()
+
+    @property
+    def paused_total(self) -> float:
+        """通算で一時停止していた秒数。一時停止中は現在進行分も含む。"""
+        return self._pausedSeconds()
+
+    def _pausedSeconds(self) -> float:
+        """通算の一時停止秒数。一時停止中は現在進行分も足して返す。
+
+        待ちの締切を補正するのに使う。resume したときだけ加算する
+        作りだと、一時停止している最中は 0 のままになり、待ちの
+        途中で参照しても補正できない。"""
+        total = self._paused_total
+        if not self._resume_event.is_set():
+            total += time.perf_counter() - self._pause_started
+        return total
 
     # NOTE: Use this function if you want to get out from a command loop by yourself
     def finish(self) -> None:
@@ -232,6 +304,7 @@ class PythonCommand(CommandBase.Command):
 
     # press button at duration times(s)
     def press(self, buttons: Any, duration: float = 0.1, wait: float = 0.1) -> None:
+        self._gate()
         self.keys.input(buttons)
         self.wait(duration)
         self.keys.inputEnd(buttons)
@@ -248,13 +321,16 @@ class PythonCommand(CommandBase.Command):
         wait: float = 0.1,
     ) -> None:
         for i in range(0, repeat):
+            self._gate()
             self.press(buttons, duration, 0 if i == repeat - 1 else interval)
         self.wait(wait)
 
     # add hold buttons
     def hold(self, buttons: Any, wait: float = 0.1) -> None:
+        self._gate()
         self.keys.hold(buttons)
         self.wait(wait)
+        self.checkIfAlive()
 
     # release holding buttons
     def holdEnd(self, buttons: Any) -> None:
@@ -282,13 +358,57 @@ class PythonCommand(CommandBase.Command):
         してあるため、スピン幅は 5ms → 1ms で足りる（Switch の操作
         精度は数ms あれば十分）。
         """
-        deadline = time.perf_counter() + wait
+        start = time.perf_counter()
+        paused0 = self._pausedSeconds()
         rest = wait - self._SPIN_MARGIN
-        if rest > 0 and self._stop_event.wait(rest):
+        if rest > 0 and self._wait_or_stop(rest):
             return  # 停止要求。残りは待たない
-        while time.perf_counter() < deadline:
+        while (time.perf_counter() - start - (self._pausedSeconds() - paused0)) < wait:
             if self._stop_event.is_set():
                 return
+
+    def _wait_or_stop(self, timeout: float) -> bool:
+        """timeout 秒待つ。停止要求が来たら True を返して即座に戻る。
+
+        一時停止の最中は、その時間を待ち時間として数えない。止めている
+        あいだに時計が進むと、再開した直後に「待ち終わったこと」にされ、
+        次の操作が即座に飛ぶ。押下時間や画面遷移の待ちが飛ぶと、
+        再開してすぐ手順がずれる。止まっているあいだは時間も止める。
+        """
+        while True:
+            start = time.perf_counter()
+            if self._stop_event.wait(timeout):
+                return True
+            if self._resume_event.is_set():
+                return False
+            # 一時停止中。経過した分を引き、解除されるまで待ち直す
+            timeout -= time.perf_counter() - start
+            if timeout <= 0:
+                timeout = 0.0
+            self._waitResume()
+
+    def _waitResume(self) -> None:
+        """一時停止が解除されるまで待つ。停止要求が来たらすぐ戻る。"""
+        while not self._resume_event.wait(0.05):
+            if self._stop_event.is_set():
+                return
+
+    def _gate(self) -> None:
+        """操作を送る手前の関所。停止なら抜け、一時停止なら足止めする。
+
+        待ちの最中だけを見ていると、待ち時間0の連続操作（pressRep など）
+        が素通りする。送信の直前に必ずここを通す。
+
+        self.keys が None のときも捨てる。停止時の後始末（_cleanup）が
+        keys を None にするため、停止直後に操作へ入ると None を触って
+        AttributeError になり、本来の停止が別の例外に化けていた。
+        """
+        self.checkIfAlive()
+        if not self._resume_event.is_set():
+            self._waitResume()
+            self.checkIfAlive()
+        if self.keys is None:
+            raise StopThread("keys are already released")
 
     # do nothing at wait time(s)
     def short_wait(self, wait: float) -> None:
@@ -1116,6 +1236,369 @@ class ImageProcPythonCommand(PythonCommand):
         # remove noise
         mask = cv2.medianBlur(img_th, 3)
         return mask
+
+    # -- 待つ・探す（出現待ち / 停止待ち / 位置取得） -----------------------
+
+    def _matchOnce(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        show_value=False,
+    ):
+        """1回だけ照合し、(判定, 相関値, 中心座標) をまとめて返す。
+
+        readFrame → crop → 色変換 → matchTemplate までの手順は
+        isContainTemplate と同じ。同じ前処理が方々へ散らばると、crop と
+        色変換の順序を入れ替えたときのような修正が、その全部に要る。
+        ここへ寄せて、公開メソッドはこれを呼ぶだけにする。
+
+        中心座標は crop の左上を足して画面全体の座標へ直して返す。
+        切り出した中の座標のまま返すと、呼び出し側が毎回 crop[0] を
+        足すことになり、足し忘れがいつか必ず起きる。
+        """
+        crop = crop or []
+        src = self.camera.readFrame()
+        if len(crop) == 4:
+            src = src[crop[1] : crop[3], crop[0] : crop[2]]
+        if use_gray:
+            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+
+        template = _imread_or_raise(
+            template_path,
+            cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
+        )
+        if mask_path is None:
+            mask = None
+            method = cv2.TM_CCOEFF_NORMED
+        else:
+            mask = _imread_or_raise(mask_path, 0)
+            method = cv2.TM_CCORR_NORMED
+
+        h, w = template.shape[0], template.shape[1]
+        res = cv2.matchTemplate(src, template, method, mask)
+        res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+
+        if show_value:
+            print(f"{template_path} ZNCC value: {max_val}")
+
+        dx = crop[0] if len(crop) == 4 else 0
+        dy = crop[1] if len(crop) == 4 else 0
+        center = (int(max_loc[0] + dx + w / 2), int(max_loc[1] + dy + h / 2))
+        return bool(max_val >= threshold), float(max_val), center
+
+    def waitTemplate(
+        self,
+        template_path,
+        timeout=10.0,
+        interval=0.2,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        show_value=False,
+    ) -> bool:
+        """現れるまで待つ。見つかれば True、時間切れなら False。
+
+        while not self.isContainTemplate(...): self.wait(0.5) と自前で
+        書く形との違いは3つ。①必ず打ち切るので、想定外の画面へ入っても
+        永久に回り続けない ②wait 経由なので停止要求で即座に抜ける
+        ③時間切れを例外ではなく False で返すので、見つからなかった
+        ときの分岐を呼び出し側で普通に書ける。
+        """
+        limit = time.perf_counter() + float(timeout)
+        while True:
+            hit, _, _ = self._matchOnce(
+                template_path, threshold, use_gray, crop, mask_path, show_value
+            )
+            if hit:
+                return True
+            if time.perf_counter() >= limit:
+                logger.debug(f"waitTemplate timeout: {template_path}")
+                return False
+            self.wait(interval)
+
+    def waitTemplateGone(
+        self,
+        template_path,
+        timeout=10.0,
+        interval=0.2,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+    ) -> bool:
+        """消えるまで待つ。消えれば True、時間切れなら False。
+
+        ロード中の表示やメッセージ枠が抜けきるのを待つ用途。出現待ちと
+        対で用意しておかないと、消える側の while だけが各コマンドへ
+        残ることになる。
+        """
+        limit = time.perf_counter() + float(timeout)
+        while True:
+            hit, _, _ = self._matchOnce(
+                template_path, threshold, use_gray, crop, mask_path
+            )
+            if not hit:
+                return True
+            if time.perf_counter() >= limit:
+                logger.debug(f"waitTemplateGone timeout: {template_path}")
+                return False
+            self.wait(interval)
+
+    def waitStable(
+        self,
+        quiet=0.5,
+        timeout=10.0,
+        threshold=20,
+        interval=0.1,
+        crop=None,
+        ratio=0.001,
+    ) -> bool:
+        """画面の動きが止まるまで待つ。止まれば True、時間切れは False。
+
+        テンプレート画像を1枚も用意せずに使えるのが利点。安全側に倒して
+        self.wait(3.0) と固定で置いてある箇所を実際の停止検知へ替えると、
+        1周あたりの待ちが実測ぶんまで縮む。
+
+        getInterframeDiff は3枚から「動いた画素」だけを残すので、残った
+        画素の割合が ratio 未満の状態が quiet 秒続いたら停止とみなす。
+        1画素でも残ったら動きとみなす作りにすると、キャプチャのノイズで
+        永久に止まらない。
+        """
+        crop = crop or []
+
+        def gray() -> np.ndarray:
+            """現在のフレームを crop してグレースケールで返す。"""
+            frame = self.camera.readFrame()
+            if len(crop) == 4:
+                frame = frame[crop[1] : crop[3], crop[0] : crop[2]]
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        limit = time.perf_counter() + float(timeout)
+        f1, f2 = gray(), gray()
+        quiet_from = None
+        while True:
+            self.wait(interval)
+            f3 = gray()
+            mask = self.getInterframeDiff(f1, f2, f3, threshold)
+            moved = float(np.count_nonzero(mask)) / float(mask.size)
+            if moved < ratio:
+                if quiet_from is None:
+                    quiet_from = time.perf_counter()
+                elif time.perf_counter() - quiet_from >= float(quiet):
+                    return True
+            else:
+                quiet_from = None
+            if time.perf_counter() >= limit:
+                logger.debug(f"waitStable timeout: moved={moved:.4f}")
+                return False
+            f1, f2 = f2, f3
+
+    def getTemplatePosition(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        show_value=False,
+    ) -> Optional[Tuple[int, int]]:
+        """一致位置の中心 (x, y) を画面全体の座標で返す。無ければ None。
+
+        isContainTemplate も内部では max_loc を出しているが、GUI へ矩形を
+        描くためだけに使って捨てている。戻り値の互換を壊さずに位置を
+        取れるよう、別名のメソッドとして分ける。
+        """
+        hit, _, center = self._matchOnce(
+            template_path, threshold, use_gray, crop, mask_path, show_value
+        )
+        return center if hit else None
+
+    def preloadTemplates(
+        self, template_paths: List[str], use_gray: bool = True
+    ) -> List[str]:
+        """先読みして、読めなかったパスの一覧を返す。
+
+        _imread_or_raise が FileNotFoundError を投げるのは判定の瞬間なので、
+        数時間走ったあとの分岐で初めてパスの打ち間違いが分かる。開始直後に
+        読んでおけば、落ちるものは1秒で落ちる。lru_cache が効くため、
+        そのまま暖機にもなる。
+        """
+        flags = cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR
+        missing = []
+        for template_path in template_paths:
+            try:
+                _imread_or_raise(template_path, flags)
+            except FileNotFoundError:
+                missing.append(template_path)
+        if missing:
+            logger.warning(f"読み込めないテンプレート: {missing}")
+        return missing
+
+    # -- 記録・複数検出・色 -------------------------------------------------
+
+    def saveFrame(self, name: str = "frame", crop=None, folder: str = "Debug") -> str:
+        """いまの画面を日時つきで保存し、保存先のパスを返す。
+
+        show_value=True は print するだけなので、放置運用ではログが
+        流れて消える。閾値を割ったときの画面が残っていれば、実機を
+        止めずに机上で閾値を詰められる。
+
+        名前には日時をミリ秒まで入れる。同じ判定が連続で外れたとき、
+        秒までだと後の1枚が前の1枚を上書きしてしまう。
+        """
+        crop = crop or []
+        frame = self.camera.readFrame()
+        if len(crop) == 4:
+            frame = frame[crop[1] : crop[3], crop[0] : crop[2]]
+
+        os.makedirs(folder, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        stamp += f"_{int((time.time() % 1) * 1000):03d}"
+        safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(name))
+        filespec = path.join(folder, f"{stamp}_{safe}.png")
+
+        # cv2.imwrite は非 ASCII のパスで静かに False を返す。書けたかを
+        # 戻り値で見ておかないと「保存したはずの画像が無い」になる。
+        if not cv2.imwrite(filespec, frame):
+            logger.warning(f"画面を保存できませんでした: {filespec}")
+            return ""
+        return filespec
+
+    def isContainTemplateDump(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        folder: str = "Debug",
+    ) -> bool:
+        """判定し、外れたときだけ相関値つきで画面を保存する。
+
+        isContainTemplate と戻り値も使い方も同じ。外れた回の画面が残る
+        ので、閾値が渋いのか画面そのものが違うのかを後から切り分け
+        られる。当たった回まで保存すると1周で数百枚になり使えない。
+        """
+        hit, val, _ = self._matchOnce(
+            template_path, threshold, use_gray, crop, mask_path
+        )
+        if not hit:
+            stem = path.splitext(path.basename(str(template_path)))[0]
+            saved = self.saveFrame(f"{stem}_{val:.3f}", crop, folder)
+            logger.debug(f"NG {template_path} val={val:.3f} -> {saved}")
+        return hit
+
+    def findAllTemplates(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        max_count: int = 20,
+        show_value=False,
+    ) -> List[Tuple[int, int]]:
+        """閾値を超えた箇所すべての中心座標を、相関の高い順に返す。
+
+        minMaxLoc は最大の1件しか返さないため、「並んでいる数」を数える
+        用途には使えない。ここでは閾値を超えた点を全部拾う。
+
+        ただし素直に拾うと、1つの対象に対して隣接する画素が数十件
+        ヒットする。個数を数えるのが目的なら、これを間引かなければ
+        答えが桁で狂う。テンプレートの幅・高さの半分より近い点は同じ
+        対象とみなし、相関の高いほうだけを残す。
+        """
+        crop = crop or []
+        src = self.camera.readFrame()
+        if len(crop) == 4:
+            src = src[crop[1] : crop[3], crop[0] : crop[2]]
+        if use_gray:
+            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+
+        template = _imread_or_raise(
+            template_path,
+            cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
+        )
+        h, w = template.shape[0], template.shape[1]
+        res = cv2.matchTemplate(src, template, cv2.TM_CCOEFF_NORMED)
+        res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+
+        ys, xs = np.where(res >= threshold)
+        if len(xs) == 0:
+            return []
+
+        order = np.argsort(res[ys, xs])[::-1]  # 相関の高い順に見る
+        dx = crop[0] if len(crop) == 4 else 0
+        dy = crop[1] if len(crop) == 4 else 0
+        near_x, near_y = max(1, w // 2), max(1, h // 2)
+
+        found: List[Tuple[int, int]] = []
+        for i in order:
+            x, y = int(xs[i]), int(ys[i])
+            if any(abs(x - px) < near_x and abs(y - py) < near_y for px, py in found):
+                continue
+            found.append((x, y))
+            if len(found) >= max_count:
+                break
+
+        if show_value:
+            print(f"{template_path} hits: {len(found)}")
+        return [(x + dx + w // 2, y + dy + h // 2) for x, y in found]
+
+    def countTemplate(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        max_count: int = 20,
+    ) -> int:
+        """閾値を超えた箇所の個数を返す（findAllTemplates の件数）。"""
+        return len(
+            self.findAllTemplates(template_path, threshold, use_gray, crop, max_count)
+        )
+
+    def getColorRatio(self, crop, lower_hsv, upper_hsv) -> float:
+        """指定領域で、その色が占める割合(0.0〜1.0)を返す。
+
+        「画面が暗転した」「HPバーが赤い」「背景が白い（ロード中）」は、
+        テンプレート画像を作るまでもない。HSV なら明るさの揺れに強く、
+        グレースケールのテンプレートマッチより壊れにくい。
+
+        色相は環状なので、赤のように 0 をまたぐ範囲は下限のほうが大きい
+        値になる。その場合は2つに割って足す（そのまま inRange へ渡すと
+        常に0件になり、「赤が無い」と誤判定する）。
+        """
+        crop = crop or []
+        frame = self.camera.readFrame()
+        if len(crop) == 4:
+            frame = frame[crop[1] : crop[3], crop[0] : crop[2]]
+        if frame.size == 0:
+            return 0.0
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        lo = np.array(lower_hsv, dtype=np.uint8)
+        hi = np.array(upper_hsv, dtype=np.uint8)
+        if int(lo[0]) <= int(hi[0]):
+            mask = cv2.inRange(hsv, lo, hi)
+        else:
+            lo1 = np.array([lo[0], lo[1], lo[2]], dtype=np.uint8)
+            hi1 = np.array([179, hi[1], hi[2]], dtype=np.uint8)
+            lo2 = np.array([0, lo[1], lo[2]], dtype=np.uint8)
+            hi2 = np.array([hi[0], hi[1], hi[2]], dtype=np.uint8)
+            mask = cv2.bitwise_or(
+                cv2.inRange(hsv, lo1, hi1), cv2.inRange(hsv, lo2, hi2)
+            )
+        total = float(mask.shape[0] * mask.shape[1])
+        return float(np.count_nonzero(mask)) / total
+
+    def isSimilarColor(self, crop, lower_hsv, upper_hsv, ratio: float = 0.6) -> bool:
+        """指定領域が、おおむねその色で占められているかを返す。"""
+        return self.getColorRatio(crop, lower_hsv, upper_hsv) >= float(ratio)
 
     @deprecated(reason="Use discord instead")
     def LINE_image(self, txt: str = "", token: str = "token") -> bool:

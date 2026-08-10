@@ -158,6 +158,7 @@ class PokeControllerApp:
         # どの台のウィンドウか一目で分かるようタイトルに出す。
         self.profile = Settings.GuiSettings.sanitize_profile(profile)
         self._running_command = ""  # タイトルに出す実行中コマンド名
+        self._paused = False  # 一時停止中か（タイトル表示に使う）
         self.root.title(f"{NAME} {VERSION}")  # UI 構築後に詳細版へ更新する
 
         self._init_state()
@@ -480,6 +481,14 @@ class PokeControllerApp:
         self.startButton.config(text="Start", command=self.startPlay)
         self.startButton.grid(column="1", padx="5", pady="5", row="1", sticky="ew")
 
+        # 一時停止。Start/Stop の隣に置く。停止と紛らわしくならないよう
+        # 実行中だけ押せる状態にする。
+        self.pauseButton = ttk.Button(self.Commands_2_f)
+        self.pauseButton.config(
+            text="Pause", command=self.togglePause, state="disabled"
+        )
+        self.pauseButton.grid(column="2", padx="5", pady="5", row="1", sticky="ew")
+
         self.Commands_f.pack(
             fill="both", expand=True, padx="5", pady="5", anchor=tk.E, side="top"
         )
@@ -746,7 +755,8 @@ class PokeControllerApp:
         self.root.bind("<Key-F5>", self.ReloadCommandWithF5)
         self.root.bind("<Key-F6>", self.StartCommandWithF6)
         self.root.bind("<Key-Escape>", self.StopCommandWithEsc)
-        logger.debug("Bind F5 / F6 / Escape keys")
+        self.root.bind("<Key-F7>", self.PauseCommandWithF7)
+        logger.debug("Bind F5 / F6 / F7 / Escape keys")
 
     # ------------------------------------------------------------------
     # カメラ
@@ -1039,7 +1049,8 @@ class PokeControllerApp:
             name = self._running_command
             if len(name) > TITLE_COMMAND_MAX:
                 name = name[: TITLE_COMMAND_MAX - 1] + "…"
-            parts.append(f"▶{name}")
+            mark = "⏸" if self._paused else "▶"
+            parts.append(f"{mark}{name}")
 
         head = " ".join(parts)
         self.root.title(f"{head} - {NAME} {VERSION}")
@@ -1344,6 +1355,7 @@ class PokeControllerApp:
         self.startButton["text"] = "Stop"
         self.startButton["command"] = self.stopPlay
         self.reloadCommandButton["state"] = "disabled"
+        self.pauseButton["state"] = "normal"
         self._running_command = str(getattr(self.cur_command, "NAME", ""))
         self._update_title()
 
@@ -1361,6 +1373,9 @@ class PokeControllerApp:
         self.startButton["command"] = self.startPlay
         self.startButton["state"] = "normal"
         self.reloadCommandButton["state"] = "normal"
+        self.pauseButton["text"] = "Pause"
+        self.pauseButton["state"] = "disabled"
+        self._paused = False
         self._running_command = ""
         self._update_title()
 
@@ -1377,6 +1392,29 @@ class PokeControllerApp:
     def StopCommandWithEsc(self, *event: Any) -> None:
         if self.startButton["text"] == "Stop":
             self.stopPlay()
+
+    def togglePause(self) -> None:
+        """実行中のコマンドを一時停止／再開する。
+
+        停止（Stop）はコマンドを終わらせるため、次に動かすときは最初
+        からやり直しになる。長い手順の途中で少し手を離したいだけの
+        ときに使えないので、状態を保ったまま足止めする口を分けて置く。
+        """
+        cmd = self.cur_command
+        if cmd is None or not getattr(cmd, "alive", False):
+            return
+        if not hasattr(cmd, "togglePause"):
+            # MCU コマンドなど、一時停止に対応しない種類
+            print("This command does not support pause.")
+            return
+        paused = cmd.togglePause()
+        self.pauseButton["text"] = "Resume" if paused else "Pause"
+        self._paused = paused
+        self._update_title()
+
+    def PauseCommandWithF7(self, *event: Any) -> None:
+        if self.startButton["text"] == "Stop":
+            self.togglePause()
 
     # ------------------------------------------------------------------
     # ログ表示
