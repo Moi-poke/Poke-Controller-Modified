@@ -167,7 +167,7 @@ def save_capture(
         logger.error(f"Capture Failed: {e}")
         return False
 
-    logger.debug(f"Capture succeeded: {save_path}")
+    logger.info(f"Capture succeeded: {save_path}")
     return True
 
 
@@ -350,9 +350,9 @@ class Camera:
         crop: Any = None,
         crop_ax: list | None = None,
         img: np.ndarray | None = None,
-    ) -> None:
+    ) -> bool:
         image = img if img is not None else self.readFrame(copy=True)
-        save_capture(image, filename, crop, crop_ax)
+        return save_capture(image, filename, crop, crop_ax)
 
     def setFps(self, fps: int) -> None:
         """取得FPSを変更する。取得スレッドは次の周期から新しい間隔で回る。"""
@@ -717,9 +717,9 @@ class CameraQueue:
         crop: Any = None,
         crop_ax: list | None = None,
         img: np.ndarray | None = None,
-    ) -> None:
+    ) -> bool:
         image = img if img is not None else self.readFrame(copy=True)
-        save_capture(image, filename, crop, crop_ax)
+        return save_capture(image, filename, crop, crop_ax)
 
     def _stop_process(self) -> None:
         if self.camera_process is None:

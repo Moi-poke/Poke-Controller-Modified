@@ -2,24 +2,25 @@
 # -*- coding: utf-8 -*-
 """Window.py - Poke-Controller Modified のメインウィンドウ.
 
-PokeControllerApp      : アプリ本体。UI 構築・カメラ・シリアル・コマンド実行を束ねる。
-QueueStdoutRedirector  : print() をキューへ流し、GUI 側が一定間隔でまとめて描画する。
+PokeControllerApp : アプリ本体。UI 構築・カメラ・シリアル・コマンド実行を束ねる。
 
 UI 構築は __init__ に全部書くと追えなくなるので _build_*_frame に分けている。
+
+画面の状態に依存しない処理は、次のモジュールへ分離してある。
+
+    CommandTags : コマンドのタグ（tags.json / クラス属性 / フォルダ名の合成）
+    CommandStats: コマンドの使用履歴（実行回数 / 最終実行日時）
+    LogPane     : ログ欄への描画とキュー（print のリダイレクトを含む）
+    WindowUtils : COMポート列挙・識別子生成など、self を見ない小道具
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
-import inspect
 import platform
-import re
-import queue
 import subprocess
 import sys
-import threading
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
@@ -39,22 +40,22 @@ from Commands import McuCommandBase, PythonCommandBase, Sender
 from Commands.Keys import KeyPress
 from GuiAssets import CaptureArea, ControllerGUI
 from Keyboard import SwitchKeyboardController
+import CommandTags
+import CommandStats
+import LogPane
+import WindowUtils
+import WindowGeometry
+from CommandTags import TAG_ALL, TAG_UNCLASSIFIED
 from Menubar import PokeController_Menubar
 
 
 NAME = "Poke-Controller"
-VERSION = "v3.1.3 Modified"  # based on 1.0-beta3(custom by @dragonite303)
+VERSION = "v3.4.0 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
+
 
 # タイトルに出すコマンド名の上限。長い名前でウィンドウ名が埋まるのを防ぐ
 TITLE_COMMAND_MAX = 20
 
-# ログ描画の間隔。初回も再帰も同じ値を使う（別々にすると挙動が読めない）
-# ログ描画の間隔。README!C61 の知見どおり、映像(33ms)と文字情報は周期を
-# 分ける。16ms だとキューが空でも毎秒60回 after が回り、映像描画と競合する。
-LOG_FLUSH_INTERVAL_MS = 200
-LOG_FLUSH_MAX_LINES = 512  # 1回の描画で取り出す上限（周期を伸ばした分増やす）
-LOG_MAX_LINES = 5000  # ログ欄に残す行数。Text は行数に比例して重くなる
-LOG_QUEUE_MAX = 20000  # 未描画の行を溜める上限。超えた分は古い方から捨てる
 
 # 相対パスだとカレントディレクトリ次第で読めなくなるため、
 # このファイルの場所を基準に解決する（GuiAssets.py と同じ方針）。
@@ -70,81 +71,6 @@ FPS_VALUES = [60, 45, 30, 15, 5]
 BAUD_RATE_VALUES = [9600, 4800]
 SHOW_SIZE_VALUES = ["640x360", "1280x720", "1920x1080"]
 COM_PORT_NOT_FOUND = "(ポートが見つかりません)"
-
-
-# print() の内容を受け渡すキュー。
-# __main__ の中で定義するとモジュールとして import した時に NameError になるため
-# モジュールのトップレベルに置く。
-class _DropOldestQueue(queue.Queue):
-    """満杯なら古い方を捨てて入れ替えるキュー。
-
-    無制限キューだと、print を大量に出すコマンドで GUI の取り出し速度
-    （LOG_FLUSH_MAX_LINES / LOG_FLUSH_INTERVAL_MS）を超えた分が際限なく
-    溜まり、メモリを食ったままコマンド停止後も延々と流れ続ける。
-    新しい行のほうが知りたい情報なので、捨てるのは古い方にする。
-    捨てた件数は数えておき、描画時に「... N行省略 ...」として1行で出す。
-    """
-
-    def __init__(self, maxsize: int = LOG_QUEUE_MAX) -> None:
-        super().__init__(maxsize=maxsize)
-        self._dropped = 0
-        self._drop_lock = threading.Lock()
-
-    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        """満杯なら最古の1件を捨ててから入れる。書き手は待たせない。"""
-        while True:
-            try:
-                # put_nowait / get_nowait は内部で self.put / self.get を
-                # 呼ぶ実装のため、put を上書きした本クラスでは無限再帰に
-                # なる。基底の put / get を block=False で直に呼ぶ。
-                super().put(item, block=False)
-                return
-            except queue.Full:
-                try:
-                    super().get(block=False)
-                except queue.Empty:
-                    continue
-                with self._drop_lock:
-                    self._dropped += 1
-
-    def take_dropped(self) -> int:
-        """前回の呼び出し以降に捨てた件数を返して 0 に戻す。"""
-        with self._drop_lock:
-            dropped, self._dropped = self._dropped, 0
-        return dropped
-
-
-# print() の内容を受け渡すキュー。
-text_queue: queue.Queue = _DropOldestQueue()
-
-# 入力ログ専用のキュー。print と混ぜないことで、コマンドの出力が
-# 入力ログに押し流されるのを防ぐ。上限も別に持たせ、入力ログが
-# 溢れてもコマンドの出力は失われないようにする。
-input_log_queue: queue.Queue = _DropOldestQueue()
-
-# 副ログ（ログタブの下側）用のキュー。print と混ぜないことで、
-# 「残しておきたい結果」が通常の進捗表示に押し流されないようにする。
-# 上側と同じ _DropOldestQueue なので、溢れても新しい行が残る。
-sub_log_queue: queue.Queue = _DropOldestQueue()
-
-
-class QueueStdoutRedirector:
-    """print() をキューに積むだけの標準出力リダイレクタ.
-
-    ウィジェットへの書き込みは GUI スレッド側（display_text）がまとめて行う。
-    write のたびに描画すると print が多いコマンドで極端に重くなる。
-    """
-
-    def __init__(self, text_widget: Any = None) -> None:
-        # text_widget は使わないが、旧コードとの互換のため引数だけ残す
-        self.text_widget = text_widget
-        self.buffer: queue.Queue = text_queue
-
-    def write(self, string: str) -> None:
-        self.buffer.put(string)
-
-    def flush(self) -> None:
-        pass
 
 
 class PokeControllerApp:
@@ -165,8 +91,8 @@ class PokeControllerApp:
         self._build_ui()
 
         # 標準出力をログエリアにリダイレクト
-        sys.stdout = QueueStdoutRedirector(self.logArea)
-        self.logArea.after(LOG_FLUSH_INTERVAL_MS, self.display_text)
+        sys.stdout = LogPane.QueueStdoutRedirector(self.logArea)
+        self.logArea.after(LogPane.FLUSH_INTERVAL_MS, self.display_text)
 
         self.loadSettings()
         self._apply_settings_to_widgets()
@@ -207,6 +133,22 @@ class PokeControllerApp:
         self.cur_command: Any = None
         self.py_cur_command: Any = None
         self.mcu_cur_command: Any = None
+        # 表示名 → クラスの対応表。UI 構築より前に空で用意する
+        self.py_map: dict[str, type] = {}
+        self.mcu_map: dict[str, type] = {}
+        # 表示名 → タグ一覧。絞り込みと表示の前置に使う
+        self.py_tags: dict[str, list[str]] = {}
+        self.mcu_tags: dict[str, list[str]] = {}
+        self.py_all_names: list[str] = []  # 絞り込み前の全件（検索の母集合）
+        self.mcu_all_names: list[str] = []
+        # Combobox ごとの「表示(タグ前置つき) → 素の名前」。引くのは素の名前
+        self._shown_names: dict[Any, dict[str, str]] = {}
+        # タグ編集の小窓。二重に開かないよう参照を持つ
+        self._tag_editor: tk.Toplevel | None = None
+        # 使用履歴（実行回数 / 最終実行日時）。書き出しは終了時に1回だけ
+        self.command_stats: dict[str, dict] = CommandStats.load()
+        # 履歴が実行によって変わったか。変わっていなければ終了時に書かない
+        self._stats_dirty = False
         self.camera_dic: dict[int, str] | None = None
         # cam_id -> 表示名 / cam_id -> 識別子。同型ボードの区別に使う
         self.camera_keys: dict[int, str] = {}
@@ -461,14 +403,52 @@ class PokeControllerApp:
         self.mcu_cb.config(state="readonly", textvariable=self.mcu_name)
         self.mcu_cb.pack(side="top")
         self.Command_nb.add(self.mcu_cb, padding="5", text="Mcu Command")
-        self.Command_nb.pack(fill="both", expand=True, padx="5", pady="5", side="left")
 
-        self.OpenCommandDirButton = ttk.Button(self.Commands_f)
+        # 検索とタグの絞り込み。コマンドの Notebook の真上へ置く。
+        # 探す→選ぶ が上から下へ並ぶので、視線が戻らない。
+        # 絞り込みは名前引きの上で動くため、表示が変わっても起動する
+        # コマンドは取り違えない。
+        self.filter_f = ttk.Frame(self.Commands_f)
+        self.search_name = tk.StringVar()
+        self.search_entry = ttk.Entry(self.filter_f, textvariable=self.search_name)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx="2")
+        # 打つそばから絞る。確定を待つと、目当てが出るまで見えない。
+        self.search_entry.bind("<KeyRelease>", self.onCommandFilterChanged, add="")
+        # Enter で入力を終えて検索欄から抜ける。フォーカスが残ったままだと
+        # キーボード操作でコントローラを動かす打鍵が検索欄へ入ってしまう。
+        self.search_entry.bind("<Return>", self._leaveSearchBox, add="")
+        self.search_entry.bind("<KP_Enter>", self._leaveSearchBox, add="")
+        # Esc は絞り込みを解除して抜ける。迷子になったときの戻り道。
+        self.search_entry.bind("<Escape>", self.clearCommandFilter, add="")
+
+        self.tag_name = tk.StringVar(value=TAG_ALL)
+        self.tag_cb = ttk.Combobox(self.filter_f, width=12)
+        self.tag_cb.config(state="readonly", textvariable=self.tag_name)
+        self.tag_cb["values"] = [TAG_ALL]
+        self.tag_cb.pack(side="left", padx="2")
+        self.tag_cb.bind("<<ComboboxSelected>>", self.onCommandFilterChanged, add="")
+
+        # タグの編集。選択中のコマンドに対して開く。タグは絞り込みの
+        # すぐ隣にあるほうが「絞れない→付ける」の流れが切れない。
+        self.tagEditButton = ttk.Button(self.filter_f)
+        self.tagEditButton.config(text="タグ", width=5, command=self.openTagEditor)
+        self.tagEditButton.pack(side="left", padx="2")
+
+        # コマンドフォルダを開くボタン。Notebook を縦積みにしたので、
+        # 横に並べる置き場所は絞り込みの段しかない。右端へ寄せる。
+        self.OpenCommandDirButton = ttk.Button(self.filter_f)
         self.OpenCommandDirButton.config(
             image=self.open_folder_img, command=self.OpenCommandDir
         )
-        self.OpenCommandDirButton.pack(
-            fill="y", expand=False, side="left", ipadx="5", pady="15"
+        self.OpenCommandDirButton.pack(side="left", padx="2")
+
+        # Notebook より先に pack して、絞り込みを上の段に置く。
+        self.filter_f.pack(fill="x", expand=False, padx="5", pady="2", side="top")
+        self.Command_nb.pack(fill="both", expand=True, padx="5", pady="5", side="top")
+
+        # タブを切り替えたら、そのタブ側の一覧へ絞り込みをかけ直す。
+        self.Command_nb.bind(
+            "<<NotebookTabChanged>>", self.onCommandFilterChanged, add=""
         )
 
         self.reloadCommandButton = ttk.Button(self.Commands_2_f)
@@ -518,19 +498,19 @@ class PokeControllerApp:
         self.log_pane = ttk.PanedWindow(self.log_nb, orient="vertical")
 
         self.log_scroll = ScrollbarHelper(self.log_pane, scrolltype="both")
-        self.logArea = self._make_log_text(self.log_scroll)
+        self.logArea = WindowUtils.makeLogText(self.log_scroll)
         # weight を付けておくと、ウィンドウを広げた分が両方へ配分される
         self.log_pane.add(self.log_scroll, weight=3)
 
         self.sub_scroll = ScrollbarHelper(self.log_pane, scrolltype="both")
-        self.subLogArea = self._make_log_text(self.sub_scroll)
+        self.subLogArea = WindowUtils.makeLogText(self.sub_scroll)
         self.log_pane.add(self.sub_scroll, weight=2)
 
         self.log_nb.add(self.log_pane, text="ログ")
 
         # 「入力」= シリアルへ送った操作のログ
         self.input_scroll = ScrollbarHelper(self.log_nb, scrolltype="both")
-        self.inputLogArea = self._make_log_text(self.input_scroll)
+        self.inputLogArea = WindowUtils.makeLogText(self.input_scroll)
         self.log_nb.add(self.input_scroll, text="入力")
 
         self.log_nb.grid(
@@ -541,21 +521,6 @@ class PokeControllerApp:
         # 仕切り位置の復元は、ウィジェットの大きさが確定してからでないと
         # 効かない（構築直後は高さが1のため sashpos が無視される）。
         self.root.after_idle(self._restore_sash)
-
-    def _make_log_text(self, holder: Any) -> tk.Text:
-        """ログ表示用の Text を作る（2つの欄で同じ設定を使う）。"""
-        # wrap を既定の "char" のままにすると、長い行が来るたびに折り返し
-        # 計算でレイアウトを取り直す。横スクロールは holder が
-        # scrolltype="both" なので既にある。
-        text = tk.Text(holder.container, wrap="none")
-        text.config(
-            blockcursor="true", height="10", insertunfocussed="none", maxundo="0"
-        )
-        text.config(relief="flat", state="disabled", undo="false", width="50")
-        text.pack(expand="true", fill="both", side="top")
-        holder.add_child(text)
-        holder.config(borderwidth="1", padding="1", relief="sunken")
-        return text
 
     def _build_log_toolbar(self) -> None:
         """ログ欄の下に、表示の絞り込みと消去を置く。
@@ -594,15 +559,8 @@ class PokeControllerApp:
         self._on_setting_changed()
 
     def clearLog(self) -> None:
-        """いま見えているタブのログを消す。
-
-        「ログ」タブは上下2枚あるので両方を消す。片方だけ残ると、
-        どちらを消したのか分からず紛らわしい。
-        """
-        for target in self._active_log_areas():
-            target.configure(state="normal")
-            target.delete("1.0", "end")
-            target.configure(state="disabled")
+        """いま見えているタブのログを消す。"""
+        LogPane.clearAreas(self._active_log_areas())
 
     def _active_log_areas(self) -> list:
         """選択中のタブに対応する Text を返す（ログタブは2枚）。"""
@@ -622,42 +580,19 @@ class PokeControllerApp:
     def _restore_sash(self) -> None:
         """ログ欄の仕切り位置を前回の値へ戻す。
 
-        sashpos は「上端からの画素数」なので、ウィンドウの高さが変わると
-        意味が変わってしまう。割合(0.0〜1.0)で持っておき、実際の高さを
-        掛けて戻す。極端な値だと片方が潰れて操作できなくなるため、
-        1割〜9割の範囲に収める。
+        実寸がまだ決まっていない間は False が返るので、次の空き時間に
+        再挑戦する。after を呼ぶのは root を持つこちら側の仕事。
         """
-        try:
-            ratio = float(self.settings.log_sash_ratio.get())
-        except (TypeError, ValueError):
-            ratio = 0.6
-        ratio = min(0.9, max(0.1, ratio))
-        try:
-            height = self.log_pane.winfo_height()
-            if height <= 1:
-                # まだ実寸が決まっていない。次の空き時間に再挑戦する
-                self.root.after(100, self._restore_sash)
-                return
-            self.log_pane.sashpos(0, int(height * ratio))
-        except tk.TclError:
-            logger.debug("Failed to restore the log sash position")
+        if not WindowGeometry.restoreSash(self.log_pane, self.settings):
+            self.root.after(100, self._restore_sash)
+            return
         # 動かされたら覚える。<ButtonRelease> はドラッグの確定時に来る
         self.log_pane.bind("<ButtonRelease-1>", self._remember_sash, add="+")
 
     def _remember_sash(self, *event: Any) -> None:
         """仕切りを動かしたら割合として控える。"""
-        try:
-            height = self.log_pane.winfo_height()
-            if height <= 1:
-                return
-            ratio = self.log_pane.sashpos(0) / height
-        except (tk.TclError, ZeroDivisionError):
-            return
-        ratio = min(0.9, max(0.1, ratio))
-        if abs(ratio - float(self.settings.log_sash_ratio.get() or 0)) < 0.01:
-            return  # 誤差程度の変化で毎回書きに行かない
-        self.settings.log_sash_ratio.set(round(ratio, 3))
-        self._on_setting_changed()
+        if WindowGeometry.rememberSash(self.log_pane, self.settings):
+            self._on_setting_changed()
 
     # ------------------------------------------------------------------
     # 設定の反映
@@ -689,8 +624,8 @@ class PokeControllerApp:
         # 入力ログの表示。settings.ini の [Input Log] enabled と対にする
         self.show_input_log.set(self.settings.input_log_enabled.get())
 
-        self._select_combobox(self.fps_cb, self.fps.get())
-        self._select_combobox(self.show_size_cb, self.show_size.get())
+        WindowUtils.selectCombobox(self.fps_cb, self.fps.get())
+        WindowUtils.selectCombobox(self.show_size_cb, self.show_size.get())
         self.show_size_tmp = self.show_size_cb["values"].index(self.show_size_cb.get())
 
         # 旧 settings.ini は com_port(番号) しか持たないことがある。
@@ -706,16 +641,6 @@ class PokeControllerApp:
         # ここまでは「設定を GUI へ流し込む」段階なので保存してはいけない。
         # 以降の変更（＝利用者の操作）だけを保存対象にする。
         self._settings_ready = True
-
-    @staticmethod
-    def _select_combobox(combobox: ttk.Combobox, value: str) -> None:
-        """設定値が候補に無くても落ちないようにする。"""
-        values = list(combobox["values"])
-        if value in values:
-            combobox.current(values.index(value))
-        else:
-            logger.warning(f"'{value}' is not in {values}. fallback to the first item.")
-            combobox.current(0)
 
     def _setup_camera_name(self) -> None:
         """OS ごとにカメラ名コンボボックスの扱いを切り替える。
@@ -814,7 +739,7 @@ class PokeControllerApp:
         name = self.camera_dic.get(cam_id)
         if name is not None:
             key = self.camera_keys.get(cam_id, "")
-            self.camera_name_fromDLL.set(self._camera_label(cam_id, name, key))
+            self.camera_name_fromDLL.set(WindowUtils.cameraLabel(cam_id, name, key))
 
     def locateCameraCmbbox(self) -> None:
         """接続されているカメラを列挙してコンボボックスへ入れる。
@@ -835,7 +760,7 @@ class PokeControllerApp:
             for device in captureDevices:
                 # DevicePath は USB のポートごとに異なる。差し直さない限り不変
                 path = getattr(device, "DevicePath", "") or ""
-                devices.append((device.Name, self._device_key(path)))
+                devices.append((device.Name, WindowUtils.deviceKey(path)))
 
         elif self.os_name == "Darwin":
             cmd = (
@@ -858,7 +783,7 @@ class PokeControllerApp:
 
         # 表示名は必ず一意にする。番号が入るので同名でも取り違えない
         self._camera_labels = [
-            self._camera_label(i, name, self.camera_keys[i])
+            WindowUtils.cameraLabel(i, name, self.camera_keys[i])
             for i, name in self.camera_dic.items()
         ]
         self.Camera_Name["values"] = self._camera_labels
@@ -890,23 +815,6 @@ class PokeControllerApp:
         self.camera_entry.bind("<KeyRelease>", self.assignCamera)
         self.Camera_Name.current(matched)
 
-    @staticmethod
-    def _device_key(device_path: str) -> str:
-        """DevicePath から短い識別子を作る。
-
-        DevicePath は100文字を超えることがあり、そのままでは一覧に出せない。
-        USB のインスタンス ID を含めてハッシュし、先頭6桁だけを使う。
-        """
-        if not device_path:
-            return ""
-        digest = hashlib.md5(device_path.encode("utf-8", "ignore")).hexdigest()
-        return digest[:6]
-
-    @staticmethod
-    def _camera_label(cam_id: int, name: str, key: str) -> str:
-        """'0: ボード名 [a1b2c3]' の形にする。同名でも見分けられる。"""
-        return f"{cam_id}: {name}" + (f" [{key}]" if key else "")
-
     def set_cameraid(self, event: Any = None) -> None:
         """コンボボックスの選択位置からカメラ ID を決める。
 
@@ -918,15 +826,29 @@ class PokeControllerApp:
             return
         index = self.Camera_Name.current()
         if index < 0 or index not in self.camera_dic:
-            logger.warning("Camera selection is invalid. keep the current ID.")
+            message = "カメラの選択が不正です。現在のカメラを使い続けます"
+            print(message)
+            logger.warning(message)
             return
         self.camera_id.set(index)
         self.camera_key.set(self.camera_keys.get(index, ""))
         self._on_setting_changed()
 
     def saveCapture(self) -> None:
-        if self.camera is not None:
-            self.camera.saveCapture()
+        """画面の1枚を保存し、結果をログ欄へ知らせる。
+
+        押した本人に成否が伝わらないと「効いていない」と区別が付かない。
+        loguru は stderr へ書くのでログ欄には出ない。ここは print を使う
+        （sys.stdout が LogPane 経由でログ欄へ流れている）。
+        """
+        if self.camera is None or not self.camera.isOpened():
+            print("キャプチャできません: カメラが開いていません")
+            return
+        if self.camera.saveCapture():
+            saved_to = getattr(self.camera, "capture_dir", "Captures")
+            print(f"キャプチャを保存しました: {saved_to}")
+        else:
+            print("キャプチャに失敗しました（詳細はターミナルのログ）")
 
     # ------------------------------------------------------------------
     # 各種設定の変更
@@ -965,65 +887,18 @@ class PokeControllerApp:
             self.preview.setShowsize(height_bef, width_bef)
 
     def OpenCaptureDir(self) -> None:
-        self._open_directory("Captures")
+        WindowUtils.openDirectory("Captures", self.os_name)
 
     def OpenCommandDir(self) -> None:
         if self.Command_nb.index("current") == 0:  # type: ignore
             directory = os.path.join("Commands", "PythonCommands")
         else:
             directory = os.path.join("Commands", "McuCommands")
-        self._open_directory(directory)
-
-    def _open_directory(self, directory: str) -> None:
-        """OS のファイラでフォルダを開く。"""
-        logger.debug(f"Open folder: '{directory}'")
-        if not os.path.isdir(directory):
-            logger.warning(f"Directory not found: '{directory}'")
-            return
-        if self.os_name == "Windows":
-            subprocess.call(["explorer", directory])
-        elif self.os_name == "Darwin":
-            subprocess.run(["open", directory])
-        else:
-            subprocess.run(["xdg-open", directory])
+        WindowUtils.openDirectory(directory, self.os_name)
 
     # ------------------------------------------------------------------
     # シリアル / キーボード
     # ------------------------------------------------------------------
-
-    def listComPorts(self) -> list[tuple[str, str]]:
-        """接続されているシリアルポートを (デバイス名, 表示名) で返す。
-
-        pyserial 同梱の list_ports を使う。カメラ名の列挙と違って
-        OS ごとの分岐が要らず、Windows / macOS / Linux で同じに書ける。
-        """
-        try:
-            from serial.tools import list_ports
-        except ImportError:
-            logger.error("pyserial の list_ports が見つかりません")
-            return []
-
-        ports = []
-        for port in sorted(list_ports.comports(), key=lambda p: p.device):
-            desc = (port.description or "").strip()
-            # 説明が device と同じだと 'COM3: COM3' と重複するので省く
-            if desc and desc != port.device:
-                label = f"{port.device}: {desc}"
-            else:
-                label = port.device
-            ports.append((port.device, label))
-        return ports
-
-    @staticmethod
-    def _port_to_number(device: str) -> int:
-        """'COM3' から 3 を取り出す。COM 形式でなければ 0。
-
-        settings.ini の com_port(int) を保つためだけの変換。
-        /dev/tty.usbserial-A5 のような名前から末尾の数字を取ると
-        別のデバイスを指してしまうため、COM<数字> のときだけ変換する。
-        """
-        matched = re.fullmatch(r"COM(\d+)", (device or "").strip(), re.IGNORECASE)
-        return int(matched.group(1)) if matched else 0
 
     def _update_title(self) -> None:
         """ウィンドウ名を今の状態に合わせて組み立て直す。
@@ -1058,7 +933,7 @@ class PokeControllerApp:
     def refreshComPorts(self, keep_current: bool = True) -> None:
         """ポート一覧を取り直して Combobox へ入れる。"""
         before = self.com_port_name.get()
-        ports = self.listComPorts()
+        ports = WindowUtils.listComPorts()
         self._com_port_map = {label: device for device, label in ports}
         labels = [label for _, label in ports] or [COM_PORT_NOT_FOUND]
         self.com_port_cb["values"] = labels
@@ -1077,7 +952,7 @@ class PokeControllerApp:
         """選択中の表示名から、実際に開くデバイス名と番号を決める。"""
         device = self._com_port_map.get(self.com_port_text.get(), "")
         self.com_port_name.set(device)
-        self.com_port.set(self._port_to_number(device))
+        self.com_port.set(WindowUtils.portToNumber(device))
         self._update_title()
 
     def onComPortSelected(self, event: Any = None) -> None:
@@ -1087,16 +962,6 @@ class PokeControllerApp:
         """一覧を取り直してから接続し直す（Reload Port ボタン）。"""
         self.refreshComPorts()
         self.activateSerial()
-
-    @staticmethod
-    def _emit_input_log(text: str) -> None:
-        """入力ログ1行を専用キューへ積む。
-
-        呼び出し元はコマンドのスレッドやシリアル送信の経路なので、ここで
-        ウィジェットを触ってはいけない（tkinter はスレッドセーフでない）。
-        キューへ入れるだけにして、描画は GUI スレッドの display_text が行う。
-        """
-        input_log_queue.put(text + "\n")
 
     def _apply_input_log_settings(self) -> None:
         """入力ログの設定を Sender へ反映する。
@@ -1120,13 +985,15 @@ class PokeControllerApp:
             self.ser.setInputLogEnabled(self.settings.input_log_enabled.get())
             self.ser.setInputLogStickChange(self.settings.input_log_stick_change.get())
         except Exception as e:
-            logger.warning(f"入力ログの設定を適用できませんでした: {e}")
+            message = f"入力ログの設定を適用できませんでした: {e}"
+            print(message)
+            logger.warning(message)
 
     def _start_serial(self) -> None:
         # 入力ログは print と混ぜず、専用のキューへ流す。同じ経路だと
         # 入力ログが上限を食い尽くしてコマンドの出力が捨てられる。
         self.ser = Sender.Sender(
-            self.is_show_serial, input_log_emit=self._emit_input_log
+            self.is_show_serial, input_log_emit=LogPane.emitInputLog
         )
         self._apply_input_log_settings()
         self.activateSerial()
@@ -1164,6 +1031,12 @@ class PokeControllerApp:
             # すると元へ戻る、という形で表面化していた）。常に全項目を
             # 集めてから書く _on_setting_changed() に一本化する。
             self._on_setting_changed()
+        else:
+            # 失敗しても何も出ないと、タイトルが(未接続)のままな理由が
+            # 分からない。開けなかったことをその場で知らせる。
+            message = f"COM Port {self.com_port_name.get()} を開けませんでした"
+            print(message)
+            logger.warning(message)
         self._update_title()
 
     def inactivateSerial(self) -> None:
@@ -1180,7 +1053,9 @@ class PokeControllerApp:
             # keyPress が None のまま生成すると、キーを押した瞬間に
             # AttributeError になる（Keyboard.py 側に None チェックが無い）
             if self.keyPress is None:
-                logger.warning("シリアル未接続のためキーボード操作を有効化できません")
+                message = "シリアル未接続のためキーボード操作を有効にできません"
+                print(message)  # チェックが勝手に外れる理由を画面にも出す
+                logger.warning(message)
                 self.is_use_keyboard.set(False)
                 return
 
@@ -1266,25 +1141,335 @@ class PokeControllerApp:
         self.assignCommand()
 
     def setCommandItems(self) -> None:
-        self.py_cb["values"] = [c.NAME for c in self.py_classes]
-        if self.py_classes:
-            self.py_cb.current(0)
-        self.mcu_cb["values"] = [c.NAME for c in self.mcu_classes]
-        if self.mcu_classes:
-            self.mcu_cb.current(0)
+        """対応表とタグを作り直し、絞り込みの選択肢を整える。
+
+        表示位置(current())でクラスを引くと、並び替えや絞り込みを入れた
+        瞬間に「選んだものと違うコマンドが起動する」ことになる。しかも
+        画面には正しい名前が出たままなので気づけない。名前を鍵にする。
+        """
+        self.py_map = CommandTags.buildCommandMap(self.py_classes)
+        self.mcu_map = CommandTags.buildCommandMap(self.mcu_classes)
+
+        overrides = CommandTags.loadOverrides()
+        self.py_tags = {
+            name: CommandTags.collectTags(cls, name, overrides)
+            for name, cls in self.py_map.items()
+        }
+        self.mcu_tags = {
+            name: CommandTags.collectTags(cls, name, overrides)
+            for name, cls in self.mcu_map.items()
+        }
+
+        self.py_all_names = list(self.py_map.keys())
+        self.mcu_all_names = list(self.mcu_map.keys())
+
+        self._refreshTagChoices()
+        self.applyCommandFilter(keep_selection=False)
+
+    def _refreshTagChoices(self) -> None:
+        """絞り込みの選択肢を作り直す。並びは CommandTags 側で決める。"""
+        choices = CommandTags.sortTagChoices([self.py_tags, self.mcu_tags])
+        # 履歴由来の仮想タグ（最近使った / よく使う）を後ろへ足す。
+        # 実体のタグではないので保存も編集もされず、コマンド側に何も
+        # 書かなくても効く。該当が無いときは選択肢に出さない。
+        choices = choices + CommandStats.choices(self.command_stats)
+        self.tag_cb["values"] = choices
+        if self.tag_name.get() not in choices:
+            self.tag_name.set(TAG_ALL)
+
+    def applyCommandFilter(self, keep_selection: bool = True) -> None:
+        """検索語とタグで一覧を絞り込み、名前順に並べ替えて反映する。
+
+        両方のタブを毎回そろえて更新する。片方だけ直すと、もう一方は
+        古い一覧のまま残り、タブを切り替えた瞬間に表示と対応表が食い違う。
+        絞り込んだ結果と表示位置は連動しないが、クラスは名前で引くので
+        取り違えは起きない（それが名前引きへ変えた理由でもある）。
+        """
+        keyword = self.search_name.get().strip().lower()
+        tag = self.tag_name.get() or TAG_ALL
+
+        for combo, names, tag_table in (
+            (self.py_cb, self.py_all_names, self.py_tags),
+            (self.mcu_cb, self.mcu_all_names, self.mcu_tags),
+        ):
+            shown: list[tuple[str, str]] = []
+            for name in names:
+                tags = tag_table.get(name, [])
+                # 絞り込みの判定にだけ仮想タグを混ぜる。表示の前置は
+                # 実体のタグだけにして、履歴で見た目が変わらないようにする。
+                matched = tags + CommandStats.virtualTags(self.command_stats, name)
+                if tag != TAG_ALL and tag not in matched:
+                    continue
+                label = CommandTags.displayName(name, tags)
+                # 使用履歴を名前の後ろへ添える。前置しないのは、並べ替えが
+                # タグ順であることを崩さないため。検索は label 全体を見るので、
+                # 日付や回数でも絞り込める（副次的だが実用になる）。
+                used = CommandStats.summary(self.command_stats, name)
+                if used:
+                    label = f"{label}  — {used}"
+                if keyword and keyword not in label.lower():
+                    continue
+                shown.append((label, name))
+
+            shown.sort(key=lambda pair: pair[0])
+            # 選択の維持は素の名前で行う。表示名には使用履歴（前回・回数）
+            # を添えており、実行するたびに文字列が変わる。表示名で突き合わせ
+            # ると、走らせた直後に選択が先頭へ飛んでしまう。
+            before_name = self._selectedName(combo)
+            self._shown_names[combo] = dict(shown)
+            combo["values"] = [label for label, _ in shown]
+            # 素の名前 → 新しい表示名。選び直しに使う
+            relabel = {name: label for label, name in shown}
+
+            # 走行中は選択を動かさない。いま走っているコマンドと画面の
+            # 表示が食い違うと、Stop が何に対する操作なのか分からなくなる。
+            if self._isCommandBusy():
+                if before_name in relabel:
+                    combo.set(relabel[before_name])
+            elif keep_selection and before_name in relabel:
+                combo.set(relabel[before_name])
+            elif shown:
+                combo.current(0)
+            else:
+                # 0件でも前の表示が残ると「選べているのに動かない」に
+                # 見える。空にして、選べていないことを見た目に出す。
+                combo.set("")
+
+        self.assignCommand()
+
+    def onCommandFilterChanged(self, *event: Any) -> None:
+        """検索欄・タグ・タブの切り替えから呼ばれる。"""
+        self.applyCommandFilter()
+
+    def clearCommandFilter(self, *event: Any) -> None:
+        """検索語とタグを既定へ戻し、検索欄から抜ける。
+
+        Esc は停止(StopCommandWithEsc)にも割り当ててある。検索欄に
+        いるあいだは絞り込みの解除として使い、"break" を返して停止側へ
+        伝わらないようにする。打ち間違いで走行中のコマンドが止まると
+        困るため、ここで確実に止める。
+        """
+        self.search_name.set("")
+        self.tag_name.set(TAG_ALL)
+        self.applyCommandFilter()
+        self._leaveSearchBox()
+        return "break"
+
+    def _leaveSearchBox(self, *event: Any) -> Any:
+        """検索欄からフォーカスを外す。
+
+        入れっぱなしだと、キーボード操作でコントローラを動かすつもりの
+        打鍵が検索欄へ入ってしまう。Enter で「入力を終える」操作として
+        抜けられるようにした。
+        """
+        self.Command_nb.focus_set()
+        return "break"
+
+    def openTagEditor(self, *event: Any) -> None:
+        """選択中のコマンドのタグを編集する小窓を開く。
+
+        タグはコード(TAGS)・フォルダ名・JSON の3つから来るが、
+        画面から変えられるのは JSON だけ。ここで保存すると、その
+        コマンドは以後 JSON の内容が優先される（上書きになる）。
+        それを画面にも明記しないと、コードを直したのに反映されない
+        という分かりにくい状態になる。
+        """
+        combo = self.py_cb
+        table = self.py_tags
+        if self.Command_nb.index(self.Command_nb.select()) != 0:  # type: ignore
+            combo = self.mcu_cb
+            table = self.mcu_tags
+
+        name = self._selectedName(combo)
+        if not name:
+            print("No command is selected.")
+            logger.warning("No command is selected.")
+            return
+
+        # 開いている最中に本体を触られると、保存時に食い違う。
+        if self._tag_editor is not None:
+            self._tag_editor.lift()
+            self._tag_editor.focus_force()
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(f"タグの編集 - {name}")
+        win.transient(self.root)
+        win.resizable(True, False)
+        self._tag_editor = win
+
+        frame = ttk.Frame(win, padding=10)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text=name).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="タグをカンマ区切りで入力します（空にすると指定を取り消します）",
+        ).pack(anchor="w", pady=(4, 0))
+
+        current_tags = [t for t in table.get(name, []) if t != TAG_UNCLASSIFIED]
+        entry_var = tk.StringVar(value=", ".join(current_tags))
+        entry = ttk.Entry(frame, textvariable=entry_var, width=48)
+        entry.pack(fill="x", pady=6)
+        entry.focus_set()
+
+        # いま何が効いているかを出す。JSON で上書きされているのか、
+        # コードやフォルダ由来なのかが分からないと直す場所を誤る。
+        overrides = CommandTags.loadOverrides()
+        if name in overrides:
+            source = "現在: Commands/tags.json の指定が効いています"
+        else:
+            source = "現在: コードの TAGS とフォルダ名から決まっています"
+        ttk.Label(frame, text=source).pack(anchor="w")
+
+        # 既存のタグはチェックで付け外しできるようにする。手で打ち直すと
+        # 表記ゆれ（半角/全角・送り仮名）で別のタグが増えていくため。
+        # 入力欄は残す。ここにしか無い新しいタグを足す口が要る。
+        known = sorted(
+            {t for tags in table.values() for t in tags if t != TAG_UNCLASSIFIED}
+        )
+        checked = {t: tk.BooleanVar(value=t in current_tags) for t in known}
+        # 入力欄とチェックは互いを更新するので、再入を止める必要がある。
+        # リストで持つのは、入れ子の関数から書き換えるため（nonlocal 相当）。
+        syncing = []
+
+        def syncFromChecks() -> None:
+            """チェックの状態を入力欄へ反映する。
+
+            入力欄を正とし、チェックはその編集手段という位置づけにする。
+            2つを別々に読むと、保存時にどちらが正か決められなくなる。
+            チェックに無い自由入力のタグは、そのまま後ろへ残す。
+            """
+            if syncing:
+                return
+            syncing.append(True)
+            picked = [t for t in known if checked[t].get()]
+            extra = [
+                t.strip()
+                for t in entry_var.get().replace("、", ",").split(",")
+                if t.strip() and t.strip() not in known
+            ]
+            entry_var.set(", ".join(picked + extra))
+            syncing.clear()
+
+        if known:
+            ttk.Label(frame, text="既にあるタグ（クリックで付け外し）").pack(
+                anchor="w", pady=(6, 0)
+            )
+            # 数が増えても縦に伸び続けないよう、折り返して並べる
+            known_f = ttk.Frame(frame)
+            known_f.pack(fill="x")
+            for pos, name_tag in enumerate(known):
+                ttk.Checkbutton(
+                    known_f,
+                    text=name_tag,
+                    variable=checked[name_tag],
+                    command=syncFromChecks,
+                ).grid(row=pos // 4, column=pos % 4, sticky="w", padx=2)
+
+        def syncToChecks(*_event: Any) -> None:
+            """入力欄を直接編集したとき、チェックの側を追従させる。
+
+            片方だけ更新すると、見えている状態と保存される内容が食い違う。
+            対になっているものは同時に更新する。
+            """
+            if syncing:
+                return
+            syncing.append(True)
+            now = {
+                t.strip()
+                for t in entry_var.get().replace("、", ",").split(",")
+                if t.strip()
+            }
+            for t in known:
+                if checked[t].get() != (t in now):
+                    checked[t].set(t in now)
+            syncing.clear()
+
+        entry_var.trace_add("write", lambda *_a: syncToChecks())
+
+        button_f = ttk.Frame(frame)
+        button_f.pack(fill="x", pady=(10, 0))
+
+        def close() -> None:
+            self._tag_editor = None
+            win.destroy()
+
+        def save() -> None:
+            tags = [t.strip() for t in entry_var.get().replace("、", ",").split(",")]
+            tags = [t for t in tags if t]
+            current = CommandTags.loadOverrides()
+            if tags:
+                current[name] = tags
+            else:
+                # 空で保存＝JSON の指定を消す。コードとフォルダ由来へ戻す。
+                current.pop(name, None)
+            if not CommandTags.saveOverrides(current):
+                tkmsg.showerror(
+                    "タグの保存", "書き込みに失敗しました。ログを確認してください。"
+                )
+                return
+            close()
+            # 収集からやり直す。ここで setCommandItems を通さないと、
+            # 保存はできているのに一覧のタグが古いままになる。
+            self.setCommandItems()
+
+        ttk.Button(button_f, text="保存", command=save).pack(side="right", padx=2)
+        ttk.Button(button_f, text="閉じる", command=close).pack(side="right", padx=2)
+
+        win.bind("<Return>", lambda _e: save())
+        win.bind("<Escape>", lambda _e: close())
+        win.protocol("WM_DELETE_WINDOW", close)
+
+    def _selectedName(self, combo: ttk.Combobox) -> str:
+        """Combobox の表示（タグ前置つき）から、素のコマンド名へ戻す。
+
+        表示と鍵を分けておかないと、タグを付け替えただけで別物として
+        扱われる。引くのは常に素の名前にする。
+        """
+        label = combo.get()
+        return self._shown_names.get(combo, {}).get(label, label)
+
+    def _restoreSelection(
+        self, combo: ttk.Combobox, mapping: dict[str, type], target: type | None
+    ) -> None:
+        """リロード前に選んでいたクラスと同じ名前のものを選び直す。"""
+        if target is None:
+            return
+        wanted = CommandTags.commandName(target)
+        for label, name in self._shown_names.get(combo, {}).items():
+            if name == wanted and label in combo["values"]:
+                combo.set(label)
+                return
 
     def assignCommand(self) -> None:
-        """選択中のコマンドを生成する。"""
-        if self.mcu_classes:
-            self.mcu_cur_command = self.mcu_classes[self.mcu_cb.current()]()
+        """選択中のコマンドを生成する。
 
-        if self.py_classes:
-            cmd_class = self.py_classes[self.py_cb.current()]
-            if issubclass(cmd_class, PythonCommandBase.ImageProcPythonCommand):
+        引くのは表示位置ではなく表示名。対応表に無ければ生成せず、
+        Start を押せない状態にする（押せてしまうと、何も起きない
+        理由が分からない）。
+
+        実行中・停止処理中は何もしない。ここで作り直すと、いま走って
+        いる実体と、停止を頼んだ相手が別物になる。Stop を押しても
+        止まらないうえ、後始末(stopPlayPost)も呼ばれないため、
+        ボタンが disabled のまま操作を受け付けなくなる。
+        """
+        if self._isCommandBusy():
+            return
+
+        if self.mcu_map:
+            mcu_class = self.mcu_map.get(self._selectedName(self.mcu_cb))
+            self.mcu_cur_command = None if mcu_class is None else mcu_class()
+
+        if self.py_map:
+            cmd_class = self.py_map.get(self._selectedName(self.py_cb))
+            if cmd_class is None:
+                self.py_cur_command = None
+            elif issubclass(cmd_class, PythonCommandBase.ImageProcPythonCommand):
                 # 旧: except TypeError で握っていたため、コマンド内部で起きた
                 # TypeError まで「古い形式」と誤判定し引数1つで再生成していた。
                 # シグネチャを見て渡せる引数の数を先に決める。
-                if self._accepts_gui_arg(cmd_class):
+                if WindowUtils.acceptsGuiArg(cmd_class):
                     self.py_cur_command = cmd_class(self.camera, self.preview)
                 else:
                     self.py_cur_command = cmd_class(self.camera)
@@ -1296,44 +1481,32 @@ class PokeControllerApp:
         else:
             self.cur_command = self.mcu_cur_command
 
-    @staticmethod
-    def _accepts_gui_arg(cmd_class: type) -> bool:
-        """__init__ が gui（認識位置表示用）を受け取れるかを判定する。"""
-        try:
-            params = inspect.signature(cmd_class.__init__).parameters
-        except (TypeError, ValueError):
-            return False
+        enabled = self.cur_command is not None
+        self.startButton["state"] = "normal" if enabled else "disabled"
 
-        # *args を持つなら何でも渡せる
-        if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values()):
-            return True
+    def _isCommandBusy(self) -> bool:
+        """コマンドが走っている、または停止処理の最中かを返す。
 
-        # self / cam を除いて、あと1つ以上受け取れるか
-        positional = [
-            p
-            for p in params.values()
-            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-        ]
-        return len(positional) >= 3
-
-        if self.Command_nb.index(self.Command_nb.select()) == 0:  # type: ignore
-            self.cur_command = self.py_cur_command
-        else:
-            self.cur_command = self.mcu_cur_command
+        Start 表示に戻るのは後始末(stopPlayPost)が終わったときなので、
+        「Start と表示されている」ことを空いている合図として使う。
+        """
+        return self.startButton["text"] != "Start"
 
     def reloadCommands(self) -> None:
-        """リロード後も同じコマンドが選ばれた状態に戻す。"""
-        oldval_mcu = self.mcu_cb.get()
-        oldval_py = self.py_cb.get()
+        """リロード後も同じコマンドが選ばれた状態に戻す。
+
+        復元は表示位置ではなく名前で行う。絞り込みや並び替えが入ると
+        位置は当てにならないうえ、タグを前置した表示名も変わりうる。
+        """
+        old_py = self.py_map.get(self._selectedName(self.py_cb))
+        old_mcu = self.mcu_map.get(self._selectedName(self.mcu_cb))
 
         self.py_classes = self.py_loader.reload()
         self.mcu_classes = self.mcu_loader.reload()
 
         self.setCommandItems()
-        if oldval_mcu in self.mcu_cb["values"]:
-            self.mcu_cb.set(oldval_mcu)
-        if oldval_py in self.py_cb["values"]:
-            self.py_cb.set(oldval_py)
+        self._restoreSelection(self.py_cb, self.py_map, old_py)
+        self._restoreSelection(self.mcu_cb, self.mcu_map, old_mcu)
         self.assignCommand()
         print("Finished reloading command modules.")
         logger.info("Reloaded commands.")
@@ -1350,6 +1523,20 @@ class PokeControllerApp:
         message = f"{self.startButton['text']} {self.cur_command.NAME}"
         print(message)
         logger.info(message)
+        # 前回の実行を先に読む。record より後だと今回の分で上書きされる。
+        cmd_name = str(self.cur_command.NAME)
+        before = CommandStats.summary(self.command_stats, cmd_name)
+        if before:
+            print(f"  ({before})")
+
+        # 使用履歴を数える。ファイルへ書くのは終了時にまとめて1回だけで、
+        # 短いコマンドを連続で回しても入出力が積み上がらないようにする。
+        CommandStats.record(self.command_stats, cmd_name)
+        self._stats_dirty = True
+        # 記録は辞書へ即時入るので、選択肢もその場で作り直せる。
+        # Reload を待つと「さっき使ったのに最近使ったに出ない」ことになる。
+        self._refreshTagChoices()
+
         self.cur_command.start(self.ser, self.stopPlayPost)
 
         self.startButton["text"] = "Stop"
@@ -1369,6 +1556,20 @@ class PokeControllerApp:
         self.cur_command.end(self.ser)
 
     def stopPlayPost(self) -> None:
+        """コマンド終了後の後始末。
+
+        呼び出し元は PythonCommandBase の _cleanup で、コマンドを走らせて
+        いるワーカースレッドから直接呼ばれる。tkinter はスレッドセーフで
+        ないので、ウィジェットを触る処理は after(0) で GUI スレッドへ渡す。
+        """
+        try:
+            self.root.after(0, self._stopPlayPostOnGui)
+        except tk.TclError:
+            # 終了処理の最中に終わった場合。画面はもう無いので何もしない
+            logger.debug("Window is already destroyed. skipped the post process")
+
+    def _stopPlayPostOnGui(self) -> None:
+        """後始末の本体。必ず GUI スレッドで動く。"""
         self.startButton["text"] = "Start"
         self.startButton["command"] = self.startPlay
         self.startButton["state"] = "normal"
@@ -1378,6 +1579,11 @@ class PokeControllerApp:
         self._paused = False
         self._running_command = ""
         self._update_title()
+        # 走行中は選択を動かさないため applyCommandFilter を見送っている。
+        # 空いたこの時点で一覧を見直し、「最近使った」「よく使う」の
+        # 並びと絞り込みを実際の履歴に合わせる。
+        self._refreshTagChoices()
+        self.applyCommandFilter()
 
     def ReloadCommandWithF5(self, *event: Any) -> None:
         self.reloadCommands()
@@ -1426,71 +1632,55 @@ class PokeControllerApp:
         「ログ」タブの上下2枚と「入力」の計3つの欄へ、それぞれの
         キューから流し込む。1回の after で全部を処理するので周期は1つ。
         """
-        self._flush_queue(text_queue, self.logArea)
-        self._flush_queue(sub_log_queue, self.subLogArea)
+        follow = self.log_autoscroll.get()
+        LogPane.flushQueue(LogPane.text_queue, self.logArea, follow)
+        LogPane.flushQueue(LogPane.sub_log_queue, self.subLogArea, follow)
 
         if self.show_input_log.get():
             # 集約の取り残し（最後の1回）を吐き出させてから描画する
             if self.ser is not None:
                 self.ser.flushInputLog()
-            self._flush_queue(input_log_queue, self.inputLogArea)
+            LogPane.flushQueue(LogPane.input_log_queue, self.inputLogArea, follow)
 
-        self.logArea.after(LOG_FLUSH_INTERVAL_MS, self.display_text)
-
-    def _flush_queue(self, q: queue.Queue, area: tk.Text) -> None:
-        """キューの内容を1つの Text へまとめて書き出す。
-
-        update_idletasks() は呼ばない。次の after で待ちに入れば tkinter
-        が自然に描くので不要で、映像描画の after と重なると描画が二重に
-        走る。see("end") もスクロール計算が乗るため、末尾を見ているときだけ
-        呼ぶ（過去ログを遡っている最中に勝手に飛ばされるのも防げる）。
-        """
-        lines = []
-        while len(lines) < LOG_FLUSH_MAX_LINES:
-            try:
-                lines.append(q.get_nowait())
-            except queue.Empty:
-                break
-
-        dropped = 0
-        if isinstance(q, _DropOldestQueue):
-            dropped = q.take_dropped()
-
-        if not lines and not dropped:
-            return
-
-        # 末尾を見ているか、書き換える前に判定する
-        at_bottom = area.yview()[1] >= 0.999
-
-        area.configure(state="normal")
-        if dropped:
-            area.insert("end", f"... {dropped} 行省略 ...\n")
-        if lines:
-            area.insert("end", "".join(lines))
-        self._trim(area)
-        if at_bottom and self.log_autoscroll.get():
-            area.see("end")
-        area.configure(state="disabled")
-
-    def _trim(self, area: tk.Text) -> None:
-        """ログ欄の行数に上限を設ける。
-
-        tk.Text は行数に比例して重くなる（README!C63）。上限が無いと
-        長時間実行した終盤ほど insert のたびの再描画が遅くなる。
-        超えた分は先頭から捨てる。state は呼び出し側で normal にしてある。
-        """
-        # "行.桁" 形式。末尾に空行が付くので実行数は -1
-        total = int(area.index("end-1c").split(".")[0])
-        if total > LOG_MAX_LINES:
-            area.delete("1.0", f"end-{LOG_MAX_LINES}l")
+        self.logArea.after(LogPane.FLUSH_INTERVAL_MS, self.display_text)
 
     def run(self) -> None:
         logger.debug("Start Poke-Controller")
         self.mainwindow.mainloop()
 
+    def _stopRunningCommand(self) -> None:
+        """終了に先立ってコマンドを止める。
+
+        止まりきるまでは待たない。長い wait や外部I/O の最中だと
+        いつ抜けるか読めず、待つと画面が固まったように見える。
+        スレッドは daemon なので、抜けきらなくてもプロセスは終わる。
+        ここでの目的は、閉じたシリアルへ書きに行くのを減らすこと。
+        """
+        cmd = self.cur_command
+        if cmd is None or not getattr(cmd, "alive", False):
+            return
+        try:
+            cmd.end(self.ser)
+        except Exception as e:
+            logger.warning(f"停止要求で例外: {e}")
+
+        # 後始末（キーを離す・postProcess）が走る余地を与える。待ちは
+        # 短く区切る。ここで長く待つと終了操作そのものが固まって見える。
+        thread = getattr(cmd, "thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+            if thread.is_alive():
+                print("コマンドが停止しないまま終了します")
+                logger.warning("Command did not stop in time. exiting anyway")
+
     def exit(self) -> None:
         if not tkmsg.askyesno("確認", "Poke Controllerを終了しますか？"):
             return
+
+        # 走っているコマンドを先に止める。止めずに destroy すると、
+        # ワーカースレッドが閉じたシリアルへ書きに行く。停止要求を
+        # 出したあと、後始末が走る余地を少しだけ与える。
+        self._stopRunningCommand()
 
         if self.ser is not None and self.ser.isOpened():
             self.ser.closeSerial()
@@ -1504,6 +1694,10 @@ class PokeControllerApp:
         # ウィンドウを壊す前に位置とサイズを控える（destroy 後は取れない）
         self._remember_geometry()
         self._save_settings()
+        # 使用履歴も同じ場所で書き出す。実行のたびに書きに行かない代わり、
+        # ここを通らないと記録が残らないので、設定の保存と並べておく。
+        if self._stats_dirty:
+            CommandStats.save(self.command_stats)
 
         # 破棄前に描画ループを止める。順序を逆にすると解放済みメモリを読む
         if self.preview is not None:
@@ -1545,51 +1739,12 @@ class PokeControllerApp:
         self.settings.save()
 
     def _remember_geometry(self) -> None:
-        """ウィンドウの位置とサイズを設定へ控える。
-
-        最大化・最小化された状態の geometry を保存すると、次回そのまま
-        復元されて使いにくい。通常状態(normal)のときだけ控える。
-        """
-        try:
-            if self.root.state() != "normal":
-                return
-            self.settings.window_geometry.set(self.root.geometry())
-        except tk.TclError:
-            # 破棄済みなど。位置の記憶は本質ではないので黙って諦める
-            logger.debug("Failed to read the window geometry")
+        """ウィンドウの位置とサイズを設定へ控える。"""
+        WindowGeometry.rememberGeometry(self.root, self.settings)
 
     def _restore_geometry(self) -> None:
         """前回のウィンドウ位置とサイズを復元する。"""
-        if not self.settings.restore_geometry.get():
-            return
-        geometry = self.settings.window_geometry.get()
-        if not geometry:
-            return
-        # 画面構成が変わって完全に画面外になっていたら復元しない
-        if not self._geometry_on_screen(geometry):
-            logger.warning(f"Saved geometry is off-screen. ignored: {geometry}")
-            return
-        try:
-            self.root.geometry(geometry)
-        except tk.TclError:
-            logger.warning(f"Invalid geometry in settings: {geometry}")
-
-    def _geometry_on_screen(self, geometry: str) -> bool:
-        """保存された位置が画面内に残っているかを判定する。
-
-        モニタを外した後などに画面外の座標を復元すると、ウィンドウが
-        どこにも見えず操作できなくなる。左上が画面内にあるかだけ見る
-        （厳密な多画面判定は tkinter では取れないので、これで十分）。
-        """
-        m = re.search(r"([+-]\d+)([+-]\d+)$", geometry)
-        if not m:
-            return True  # サイズだけの指定なら位置は変わらない
-        x, y = int(m.group(1)), int(m.group(2))
-        margin = 100  # タイトルバーが掴める程度は画面内に残っていること
-        return (
-            -margin <= x <= self.root.winfo_screenwidth() - margin
-            and -margin <= y <= self.root.winfo_screenheight() - margin
-        )
+        WindowGeometry.restoreGeometry(self.root, self.settings)
 
     def _on_setting_changed(self, *event: Any) -> None:
         """GUI の設定が変わったら即座に書き出す。

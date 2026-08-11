@@ -165,7 +165,12 @@ class PythonCommand(CommandBase.Command):
         self._resume_event.set()
         self._paused_total = 0.0
         self.postProcess = postProcess
-        self.thread = threading.Thread(target=self.do_safe, args=(ser,))
+        # daemon=True にしないと、GUI を閉じてもコマンドのスレッドが
+        # 生きているあいだプロセスが終わらない。画面だけ消えて残り続け、
+        # 利用者からは「終了できない」ように見える。停止要求は出すが、
+        # 長い wait の最中や外部I/O待ちでは即座に抜けられないため、
+        # 最後の逃げ道としてデーモンにしておく。
+        self.thread = threading.Thread(target=self.do_safe, args=(ser,), daemon=True)
         self.thread.start()
 
     def end(self, ser: Any = None) -> None:
