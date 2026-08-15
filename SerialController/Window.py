@@ -45,6 +45,7 @@ from Keyboard import SwitchKeyboardController
 import CommandTags
 import CommandStats
 import CommandPalette
+import TagEditor
 import LogPane
 import WindowUtils
 import WindowGeometry
@@ -1509,11 +1510,9 @@ class PokeControllerApp:
     def openTagEditor(self, *event: Any) -> None:
         """選択中のコマンドのタグを編集する小窓を開く。
 
-        タグはコード(TAGS)・フォルダ名・JSON の3つから来るが、
-        画面から変えられるのは JSON だけ。ここで保存すると、その
-        コマンドは以後 JSON の内容が優先される（上書きになる）。
-        それを画面にも明記しないと、コードを直したのに反映されない
-        という分かりにくい状態になる。
+        窓の中身は TagEditor.py へ切り出した。ここに残すのは「どの
+        タブが選ばれているか」「開いている窓を1つに保つ」という、
+        この画面にしか分からない判断だけにする。
         """
         combo = self.py_cb
         table = self.py_tags
@@ -1521,146 +1520,21 @@ class PokeControllerApp:
             combo = self.mcu_cb
             table = self.mcu_tags
 
-        name = self._selectedName(combo)
-        if not name:
-            print("No command is selected.")
-            logger.warning("No command is selected.")
-            return
-
         # 開いている最中に本体を触られると、保存時に食い違う。
         if self._tag_editor is not None:
             self._tag_editor.lift()
-            self._tag_editor.focus_force()
             return
 
-        win = tk.Toplevel(self.root)
-        win.title(f"タグの編集 - {name}")
-        win.transient(self.root)
-        win.resizable(True, False)
-        self._tag_editor = win
-
-        frame = ttk.Frame(win, padding=10)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text=name).pack(anchor="w")
-        ttk.Label(
-            frame,
-            text="タグをカンマ区切りで入力します（空にすると指定を取り消します）",
-        ).pack(anchor="w", pady=(4, 0))
-
-        current_tags = [t for t in table.get(name, []) if t != TAG_UNCLASSIFIED]
-        entry_var = tk.StringVar(value=", ".join(current_tags))
-        entry = ttk.Entry(frame, textvariable=entry_var, width=48)
-        entry.pack(fill="x", pady=6)
-        entry.focus_set()
-
-        # いま何が効いているかを出す。JSON で上書きされているのか、
-        # コードやフォルダ由来なのかが分からないと直す場所を誤る。
-        overrides = CommandTags.loadOverrides()
-        if name in overrides:
-            source = "現在: Commands/tags.json の指定が効いています"
-        else:
-            source = "現在: コードの TAGS とフォルダ名から決まっています"
-        ttk.Label(frame, text=source).pack(anchor="w")
-
-        # 既存のタグはチェックで付け外しできるようにする。手で打ち直すと
-        # 表記ゆれ（半角/全角・送り仮名）で別のタグが増えていくため。
-        # 入力欄は残す。ここにしか無い新しいタグを足す口が要る。
-        known = sorted(
-            {t for tags in table.values() for t in tags if t != TAG_UNCLASSIFIED}
-        )
-        checked = {t: tk.BooleanVar(value=t in current_tags) for t in known}
-        # 入力欄とチェックは互いを更新するので、再入を止める必要がある。
-        # リストで持つのは、入れ子の関数から書き換えるため（nonlocal 相当）。
-        syncing = []
-
-        def syncFromChecks() -> None:
-            """チェックの状態を入力欄へ反映する。
-
-            入力欄を正とし、チェックはその編集手段という位置づけにする。
-            2つを別々に読むと、保存時にどちらが正か決められなくなる。
-            チェックに無い自由入力のタグは、そのまま後ろへ残す。
-            """
-            if syncing:
-                return
-            syncing.append(True)
-            picked = [t for t in known if checked[t].get()]
-            extra = [
-                t.strip()
-                for t in entry_var.get().replace("、", ",").split(",")
-                if t.strip() and t.strip() not in known
-            ]
-            entry_var.set(", ".join(picked + extra))
-            syncing.clear()
-
-        if known:
-            ttk.Label(frame, text="既にあるタグ（クリックで付け外し）").pack(
-                anchor="w", pady=(6, 0)
-            )
-            # 数が増えても縦に伸び続けないよう、折り返して並べる
-            known_f = ttk.Frame(frame)
-            known_f.pack(fill="x")
-            for pos, name_tag in enumerate(known):
-                ttk.Checkbutton(
-                    known_f,
-                    text=name_tag,
-                    variable=checked[name_tag],
-                    command=syncFromChecks,
-                ).grid(row=pos // 4, column=pos % 4, sticky="w", padx=2)
-
-        def syncToChecks(*_event: Any) -> None:
-            """入力欄を直接編集したとき、チェックの側を追従させる。
-
-            片方だけ更新すると、見えている状態と保存される内容が食い違う。
-            対になっているものは同時に更新する。
-            """
-            if syncing:
-                return
-            syncing.append(True)
-            now = {
-                t.strip()
-                for t in entry_var.get().replace("、", ",").split(",")
-                if t.strip()
-            }
-            for t in known:
-                if checked[t].get() != (t in now):
-                    checked[t].set(t in now)
-            syncing.clear()
-
-        entry_var.trace_add("write", lambda *_a: syncToChecks())
-
-        button_f = ttk.Frame(frame)
-        button_f.pack(fill="x", pady=(10, 0))
-
-        def close() -> None:
+        def onClose() -> None:
             self._tag_editor = None
-            win.destroy()
 
-        def save() -> None:
-            tags = [t.strip() for t in entry_var.get().replace("、", ",").split(",")]
-            tags = [t for t in tags if t]
-            current = CommandTags.loadOverrides()
-            if tags:
-                current[name] = tags
-            else:
-                # 空で保存＝JSON の指定を消す。コードとフォルダ由来へ戻す。
-                current.pop(name, None)
-            if not CommandTags.saveOverrides(current):
-                tkmsg.showerror(
-                    "タグの保存", "書き込みに失敗しました。ログを確認してください。"
-                )
-                return
-            close()
-            # 収集からやり直す。ここで setCommandItems を通さないと、
-            # 保存はできているのに一覧のタグが古いままになる。
-            self.setCommandItems()
-
-        ttk.Button(button_f, text="保存", command=save).pack(side="right", padx=2)
-        ttk.Button(button_f, text="閉じる", command=close).pack(side="right", padx=2)
-
-        win.bind("<Return>", lambda _e: save())
-        win.bind("<Escape>", lambda _e: close())
-        win.protocol("WM_DELETE_WINDOW", close)
+        self._tag_editor = TagEditor.openEditor(
+            self.root,
+            self._selectedName(combo),
+            table,
+            self.setCommandItems,
+            onClose,
+        )
 
     def _selectedName(self, combo: ttk.Combobox) -> str:
         """Combobox の表示（タグ前置つき）から、素のコマンド名へ戻す。
@@ -2241,15 +2115,21 @@ class PokeControllerApp:
 
         self._stopKeyboard()
         self.closingController()
+        # 映像の描画ループをここで止める。CaptureArea のマウス操作
+        # （LStick / RStick Mouse）は self.ser へ書くため、シリアルを
+        # 閉じる前に「送る側」を止めておく。Unbind だけでは capture()
+        # の周回自体は生き続け、閉じた口を持ったまま回ることになる。
+        # 逆順にすると「閉じた先へ書きに行く」経路が残る（WIN-06）。
         if self.preview is not None:
-            # 映像は止めず、Sender を使うマウス操作の割り当てだけ外す。
-            # ここで stopCapture すると映像が先に消え、終了処理の
-            # 途中で画面が固まったように見える。
             try:
                 self.preview.UnbindLeftClick()
                 self.preview.UnbindRightClick()
             except Exception as e:
                 logger.warning(f"マウス操作の解除で例外: {e}")
+            try:
+                self.preview.stopCapture()
+            except Exception as e:
+                logger.warning(f"映像の停止で例外: {e}")
 
         if self.ser is not None and self.ser.isOpened():
             self.ser.closeSerial()
@@ -2263,9 +2143,7 @@ class PokeControllerApp:
         if self._stats_dirty:
             CommandStats.save(self.command_stats)
 
-        # 破棄前に描画ループを止める。順序を逆にすると解放済みメモリを読む
-        if self.preview is not None:
-            self.preview.stopCapture()
+        # 映像を止めたあとで解放する。順序を逆にすると解放済みメモリを読む
         if self.camera is not None:
             self.camera.destroy()
         cv2.destroyAllWindows()
