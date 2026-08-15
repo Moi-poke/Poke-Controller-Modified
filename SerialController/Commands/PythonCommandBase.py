@@ -21,7 +21,6 @@ import numpy as np
 from deprecated import deprecated
 from loguru import logger
 
-import Settings
 from LineNotify import Line_Notify
 from DiscordNotify import Discord_Notify
 
@@ -72,6 +71,7 @@ class PythonCommand(CommandBase.Command):
         super(PythonCommand, self).__init__()
         self.keys = None
         self.thread = None
+        self._running: bool = False  # start〜do_safe 終了までの実行中フラグ
         self.alive: bool = True
         # 停止要求。wait() はこれで待つので、長い待ちの最中でも
         # Stop を押せば即座に起きる（例外を投げるのは checkIfAlive）
@@ -84,6 +84,15 @@ class PythonCommand(CommandBase.Command):
         self._pause_started = 0.0
         self.postProcess = None
         self.message_dialogue = None
+        # ダイアログを GUI スレッドで作るためのルート。Window が生成時に
+        # 差し込む。CUI 実行やテストでは None のままで、その場合は従来
+        # どおり呼び出し元のスレッドで直に作る。
+        self.gui_root: Optional[Any] = None
+        # COM の設定は Window が Start の直前にここへ写す（通常の Python
+        # 値の辞書）。tk 変数を持たせるとワーカースレッドから Tcl を触る
+        # ことになるため、値だけを受け取る。無ければ reload_com_port は
+        # 理由を出して False を返す（設定ファイルを読み直さない）。
+        self.serial_config: Optional[Dict[str, Any]] = None
 
         # __post_init__ は do_safe 経由でしか呼ばれない。do() を直接呼ぶ
         # 使い方をされたときに AttributeError にならないよう None で初期化する。
@@ -101,12 +110,17 @@ class PythonCommand(CommandBase.Command):
         pass
 
     def do_safe(self, ser: Any) -> None:
-        self.__post_init__()
-
-        if self.keys is None:
-            self.keys = KeyPress(ser)
-
+        # 初期化も try の内側で行う。ここを外に置くと、Line_Notify /
+        # Discord_Notify のコンストラクタや KeyPress の生成で落ちたとき
+        # except にも finally にも入らず、後始末（_cleanup）が呼ばれない。
+        # postProcess が永久に呼ばれないため Window は実行中のまま固まり、
+        # しかもワーカー内の未捕捉例外は stderr へ出るのでログ欄にも出ない。
         try:
+            self.__post_init__()
+
+            if self.keys is None:
+                self.keys = KeyPress(ser)
+
             if self.alive:
                 self.do()
                 self.finish()
@@ -129,17 +143,24 @@ class PythonCommand(CommandBase.Command):
             self._stop_event.set()
             self._cleanup(ser)
         finally:
-            # 例外で終わった場合もスレッド参照を必ず捨てる。
-            # ここを怠ると start() の生存判定に引っかかり、
-            # 一度エラーで落ちたコマンドが二度と起動しなくなる。
-            self.thread = None
+            # 実行中フラグはここで下ろす。thread 参照は None にしない。
+            # finally はまだそのスレッドの中なので、None にすると
+            # start() のガードが生きているうちに外れ、Start 連打で
+            # 旧スレッドの末尾処理と新スレッドが同時に走る窓ができる。
+            self._running = False
 
     def _cleanup(self, ser: Any = None) -> None:
         """コマンド終了時の後始末。二重に呼ばれても安全にする。"""
         keys = self.keys
         if keys is None and ser is not None:
-            # 途中で keys を捨てられていてもボタンは必ず離す
-            keys = KeyPress(ser)
+            # 途中で keys を捨てられていてもボタンは必ず離す。ただし
+            # ここが失敗すると postProcess へ到達せず、Window が実行中の
+            # まま固まる。KeyPress の生成で落ちた流れではここも同じ例外に
+            # なるため、後始末の続行を優先して握る。
+            try:
+                keys = KeyPress(ser)
+            except Exception:
+                logger.error(f"Failed to recreate KeyPress: {traceback.format_exc()}")
         if keys is not None:
             try:
                 keys.end()
@@ -149,15 +170,28 @@ class PythonCommand(CommandBase.Command):
 
         postProcess, self.postProcess = self.postProcess, None
         if postProcess is not None:
-            postProcess()
+            # 後始末の失敗で本来の停止理由を上書きしない。ここで例外が
+            # 抜けると checkIfAlive が StopThread を投げられず、正常な
+            # 停止が do_safe の except Exception へ落ちて「異常終了」に
+            # 化ける。ログにだけ残して再送出はしない。
+            try:
+                postProcess()
+            except Exception:
+                logger.error(f"postProcess failed: {traceback.format_exc()}")
 
-    def start(self, ser: Any, postProcess: Optional[Callable[[], None]] = None) -> None:
-        # 前回のスレッドが残っていても、既に終了していれば起動を許可する。
-        if self.thread is not None and self.thread.is_alive():
+    def start(self, ser: Any, postProcess: Optional[Callable[[], None]] = None) -> bool:
+        # 実行中かどうかは _running で見る。thread.is_alive() だけだと、
+        # do_safe の finally がまだそのスレッドの中で走っている最中に
+        # 判定が通り、旧スレッドの末尾処理と新スレッドが同時に走る。
+        # 開始できたかどうかは戻り値で返す。呼び出し元（Window）は例外の
+        # 有無しか見られず、「何も開始していないのに実行中の表示になる」
+        # 状態を検出できなかった。
+        if self._running or (self.thread is not None and self.thread.is_alive()):
             print("-- command is already running. --")
             logger.warning("Command is already running")
-            return
+            return False
 
+        self._running = True
         self.alive = True
         self._stop_event.clear()
         # 一時停止の状態は毎回まっさらにする。前回の一時停止が残ると、
@@ -170,8 +204,22 @@ class PythonCommand(CommandBase.Command):
         # 利用者からは「終了できない」ように見える。停止要求は出すが、
         # 長い wait の最中や外部I/O待ちでは即座に抜けられないため、
         # 最後の逃げ道としてデーモンにしておく。
-        self.thread = threading.Thread(target=self.do_safe, args=(ser,), daemon=True)
-        self.thread.start()
+        # 生成と開始の失敗で状態を残さない。ここで落ちると _running が
+        # True のまま、postProcess も握ったままになり、以後この
+        # コマンドは二重起動ガードに阻まれて二度と起動できなくなる。
+        try:
+            self.thread = threading.Thread(
+                target=self.do_safe, args=(ser,), daemon=True
+            )
+            self.thread.start()
+        except Exception:
+            logger.error(f"Failed to start command thread: {traceback.format_exc()}")
+            print("コマンドのスレッドを開始できませんでした。")
+            self._running = False
+            self.thread = None
+            self.postProcess = None
+            return False
+        return True
 
     def end(self, ser: Any = None) -> None:
         self.sendStopRequest()
@@ -283,25 +331,34 @@ class PythonCommand(CommandBase.Command):
             return
         queue.put(text)
 
-    @staticmethod
-    def _subLogQueue() -> Optional[Any]:
-        """副ログ用のキューを返す。GUI が無ければ None。
+    def _subLogQueue(self) -> Optional[Any]:
+        """副ログ用のキューを返す。取れなければ None。
 
-        Window.py が __main__ として実行されている場合、import Window は
-        同じファイルの2つ目のモジュールを作ってしまい、キューが別物に
-        なる。実行中の __main__ を先に調べるのはこのため。
+        旧実装は __main__ → import Window の順に sub_log_queue を探して
+        いた。しかし Window.py はモジュール直下にこの名前を持たない
+        （実体は LogPane.sub_log_queue で、Window は描画のとき参照する
+        だけ）。そのため必ず None が返り、print2 / log2 は常に通常の
+        print へ落ちて副ログ欄は永久に空だった。例外が出ないぶん、
+        「動いているのに何も出ない」形で気づきにくい。
+
+        LogPane を直接見る。LogPane.py が import するのは queue /
+        threading / tkinter / typing だけで Commands を参照しないため
+        循環しない（import Window のほうが Window→Commands→本モジュール
+        の循環になっていた）。常に通常のモジュールとして読まれるので、
+        Window.py が __main__ として動くときにキューが2つできる問題も
+        起きない。CUI やテストでも読み込むだけで取れる。
+
+        self.sub_log_queue を先に見るのは差し替え用。Window から明示的に
+        注入したい場合や、テストで受け皿を差し込む場合に使う。
         """
-        import sys
-
-        main = sys.modules.get("__main__")
-        queue = getattr(main, "sub_log_queue", None)
+        queue = getattr(self, "sub_log_queue", None)
         if queue is not None:
             return queue
         try:
-            import Window
+            import LogPane
         except Exception:
             return None
-        return getattr(Window, "sub_log_queue", None)
+        return getattr(LogPane, "sub_log_queue", None)
 
     def log2(self, *args: Any, sep: str = " ", end: str = "\n") -> None:
         """print2 の別名。ログとして残す意図を明示したいとき用。"""
@@ -339,64 +396,118 @@ class PythonCommand(CommandBase.Command):
 
     # release holding buttons
     def holdEnd(self, buttons: Any) -> None:
+        """押しっぱなしを解放する。Pause では足止めしない。
+
+        _gate() を通さないのは意図的。一時停止は「押下状態を保ったまま
+        処理だけ止める」方針なので、解放をそこで足止めすると押した
+        ままで止まる。解放は常に許す。ただし keys が捨てられている
+        場合だけは AttributeError ではなく StopThread にする（停止
+        直後に呼ばれると、本来の停止が別の例外へ化けるため）。
+        """
+        self._gateRelease()
         self.keys.holdEnd(buttons)
         self.checkIfAlive()
 
-    # sleep では保証できない精度が要るときだけスピンする幅(秒)。
-    # Windows では起動時に timeBeginPeriod(1) を呼んでタイマー分解能を
-    # 1ms にしてあるので、5ms もスピンする必要がない。
+    def _gateRelease(self) -> None:
+        """解放系の関所。停止だけを見て、一時停止では足止めしない。"""
+        if self.keys is None:
+            raise StopThread("keys are already released")
+
+    # 待ちを刻む幅は _TICK 側で持つ。_SPIN_MARGIN はスピンを廃止した
+    # 現在は未使用だが、外部コマンドが参照している可能性があるため
+    # 名前だけ残す（削除すると AttributeError になりうる）。
     _SPIN_MARGIN = 0.001
 
     def _precise_sleep(self, wait: float) -> None:
         """指定時間だけ待つ。停止要求が来たら待ち切らずに戻る。
 
-        全区間をスピンさせると1コアを100%消費する。press() の既定が
-        duration=0.1 / wait=0.1 のため、旧実装ではコマンド実行中ずっと
-        CPU を焼き続けていた。大半は Event.wait で明け渡し、末尾の
-        _SPIN_MARGIN だけスピンして精度を確保する。
+        旧実装は末尾を _SPIN_MARGIN だけビジースピンして精度を
+        確保していた。press() の既定が duration=0.1 / wait=0.1 の
+        ため1操作あたり2回通り、実行中ずっと CPU を焼いていた。
 
-        Event.wait で待つのは停止要求のためでもある。以前は待機中に
-        停止を見ていなかったので、wait(10) の最中に Stop を押しても
-        最大10秒止まらなかった。
+        さらに一時停止ぶんの補正もこのスピンで消化していたため、
+        止めた秒数だけ Resume 直後に1コアが張り付き、GIL を握って
+        映像描画(33ms)とログ描画(200ms)まで巻き添えにしていた。
+        PCB-11 でスピンを廃止し、待ちは _wait_or_stop へ一本化した。
 
-        起動時に timeBeginPeriod(1) を呼んでタイマー分解能を 1ms に
-        してあるため、スピン幅は 5ms → 1ms で足りる（Switch の操作
-        精度は数ms あれば十分）。
+        停止要求は _wait_or_stop が _TICK 刻みで拾う。以前は待機中に
+        停止を見ておらず、wait(10) の最中に Stop を押しても最大10秒
+        止まらなかった。
         """
-        start = time.perf_counter()
-        paused0 = self._pausedSeconds()
-        rest = wait - self._SPIN_MARGIN
-        if rest > 0 and self._wait_or_stop(rest):
-            return  # 停止要求。残りは待たない
-        while (time.perf_counter() - start - (self._pausedSeconds() - paused0)) < wait:
-            if self._stop_event.is_set():
-                return
+        # 待ちの本体。停止・一時停止は _wait_or_stop が拾う。
+        # 末尾のスピンは PCB-11 で廃止した（補正ぶんを1コア全開で
+        # 消化し、Resume 直後に映像とログの描画を引きずっていた）。
+        self._wait_or_stop(wait)
+
+    _TICK = 0.05
 
     def _wait_or_stop(self, timeout: float) -> bool:
         """timeout 秒待つ。停止要求が来たら True を返して即座に戻る。
 
-        一時停止の最中は、その時間を待ち時間として数えない。止めている
-        あいだに時計が進むと、再開した直後に「待ち終わったこと」にされ、
-        次の操作が即座に飛ぶ。押下時間や画面遷移の待ちが飛ぶと、
-        再開してすぐ手順がずれる。止まっているあいだは時間も止める。
+        _TICK 刻みで待ち直す。旧実装は _stop_event.wait(timeout) で一息に
+        待っていたが、Pause は _resume_event.clear() で行うため、この
+        wait は起きない。結果、その待ちが満了するまで（wait(10) なら最大
+        10秒）足止めに入らなかった。刻んでおけば停止も一時停止も最大
+        _TICK で拾える。
+
+        刻んでも負荷は増えない。Event.wait は OS のタイマーで寝るので、
+        50ms 刻みなら毎秒20回起きるだけで、ビジースピンとは桁が違う。
+        旧実装では補正ぶんの時間がすべて末尾のスピンで消化され、Resume
+        直後にコアが張り付いて映像描画(33ms)とログ描画(200ms)を引きずって
+        いた。
+
+        一時停止の最中は残り時間を減らさない。止めているあいだに時計が
+        進むと、再開した直後に「待ち終わったこと」にされ、次の操作が
+        即座に飛ぶ。押下時間や画面遷移の待ちが飛ぶと手順がずれる。
         """
-        while True:
-            start = time.perf_counter()
-            if self._stop_event.wait(timeout):
+        remain = float(timeout)
+        while remain > 0:
+            if not self._resume_event.is_set():
+                # 一時停止中。remain は減らさない（時間も止める）
+                self._waitResume()
+                if self._stop_event.is_set():
+                    return True
+                continue
+            step = min(self._TICK, remain)
+            if self._stop_event.wait(step):
                 return True
-            if self._resume_event.is_set():
-                return False
-            # 一時停止中。経過した分を引き、解除されるまで待ち直す
-            timeout -= time.perf_counter() - start
-            if timeout <= 0:
-                timeout = 0.0
-            self._waitResume()
+            remain -= step
+        return False
 
     def _waitResume(self) -> None:
         """一時停止が解除されるまで待つ。停止要求が来たらすぐ戻る。"""
         while not self._resume_event.wait(0.05):
             if self._stop_event.is_set():
                 return
+
+    def _deadline(self, timeout: float) -> Callable[[], bool]:
+        """「時間切れか」を返す関数を作る。一時停止ぶんは数えない。
+
+        実時間の絶対期限（perf_counter() + timeout）にすると、Pause して
+        いるあいだも時計だけが進む。timeout より長く止めてから再開すると、
+        1回も追加の照合をしないまま時間切れと判定され、画面認識の分岐が
+        誤った側へ進む。「少し手を離すために止めた」だけで手順が壊れる。
+
+        補正式は _precise_sleep と同じ（経過 − 一時停止の増分）。待ちの
+        期限を測る場所はここへ寄せ、式が方々へ散らないようにする。
+        """
+        start = time.perf_counter()
+        paused0 = self._pausedSeconds()
+        limit = float(timeout)
+
+        def expired() -> bool:
+            elapsed = time.perf_counter() - start - (self._pausedSeconds() - paused0)
+            return elapsed >= limit
+
+        return expired
+
+    def _runElapsed(self) -> float:
+        """一時停止ぶんを除いた経過の目盛りを返す（差分だけに意味がある）。
+
+        「静止が quiet 秒続いたか」のように、2点間の間隔を測る用途で使う。
+        実時間で測ると、途中で一時停止した分まで「続いた」ことになる。
+        """
+        return time.perf_counter() - self._pausedSeconds()
 
     def _gate(self) -> None:
         """操作を送る手前の関所。停止なら抜け、一時停止なら足止めする。
@@ -447,15 +558,20 @@ class PythonCommand(CommandBase.Command):
 
     def dialogue(
         self, title: str, message: int | str | list, need: type = list
-    ) -> list | dict:
-        """入力ダイアログを出し、閉じられるまで待って結果を返す。"""
+    ) -> list | dict | None:
+        """入力ダイアログを出し、閉じられるまで待って結果を返す。Cancel は None。"""
         return self._runDialogue(title, message, need, mode=0)
 
     def dialogue6widget(
         self, title: str, dialogue_list: list, need: type = list
-    ) -> list | dict:
-        """6種のウィジェットに対応した入力ダイアログ版。"""
+    ) -> list | dict | None:
+        """6種のウィジェットに対応した入力ダイアログ版。Cancel は None。"""
         return self._runDialogue(title, dialogue_list, need, mode=1)
+
+    # 停止要求のあと、ダイアログが閉じ切るのを待つ上限(秒)。
+    _DIALOGUE_CLOSE_WAIT = 1.0
+    # ダイアログが開かないまま待ち続けたときに警告を出す間隔(秒)。
+    _DIALOGUE_OPEN_TIMEOUT = 30.0
 
     def _runDialogue(self, title: str, message: Any, need: type, mode: int) -> Any:
         """ダイアログの生成を GUI スレッドへ委譲し、結果を受け取る。
@@ -471,19 +587,39 @@ class PythonCommand(CommandBase.Command):
         """
         done = threading.Event()
         box = {}
+        holder = {}
 
         def build() -> None:
             # ここは GUI スレッド。widget の生成と mainloop 的な待ちは
-            # すべてこの中で完結する。
+            # すべてこの中で完結する。PokeConDialogue.__init__ の末尾は
+            # wait_window で、閉じられるまでここから戻らない。
             try:
-                self.message_dialogue = tk.Toplevel()
+                self.message_dialogue = tk.Toplevel(root)
+                holder["top"] = self.message_dialogue
                 dlg = PokeConDialogue(self.message_dialogue, title, message, mode=mode)
                 box["value"] = dlg.ret_value(need)
             except Exception:
                 box["error"] = traceback.format_exc()
             finally:
                 self.message_dialogue = None
+                holder.pop("top", None)
                 done.set()
+
+        def closeOnGui() -> None:
+            """ダイアログを閉じる。必ず GUI スレッドから呼ぶこと。
+
+            既に閉じられている・Window ごと壊れている場合があるので、
+            winfo_exists() を見てから destroy し、TclError は握る。
+            二重 destroy と、破棄後のアクセスを両方防ぐ。
+            """
+            top = holder.get("top")
+            if top is None:
+                return
+            try:
+                if top.winfo_exists():
+                    top.destroy()
+            except tk.TclError:
+                logger.debug("dialogue was already destroyed")
 
         root = self._guiRoot()
         if root is None:
@@ -492,20 +628,57 @@ class PythonCommand(CommandBase.Command):
         else:
             root.after(0, build)
 
+        waited = 0.0
         while not done.wait(0.1):
+            waited += 0.1
             if self._stop_event.is_set():
-                # 停止要求。ダイアログは GUI スレッド側に残るが、
-                # ここで待ち続けるとコマンドが終われなくなる。
+                # 停止要求。以前はここで抜けるだけだったため、ダイアログが
+                # 画面に残ったままになっていた。_stop_event はワーカー側の
+                # 待ちを解くだけで、GUI スレッドの wait_window には作用
+                # しない。build() の finally も走らないので message_dialogue
+                # も None に戻らない。UI は idle に戻るのにダイアログだけ
+                # 残り、Window を閉じたあとで OK を押すと TclError になる。
                 logger.warning("Stop requested while a dialogue is open")
+                if root is not None:
+                    # destroy は GUI スレッドへ依頼する。破棄されると
+                    # wait_window が解け、build() が finally まで進んで
+                    # done がセットされる。
+                    root.after(0, closeOnGui)
+                    done.wait(self._DIALOGUE_CLOSE_WAIT)
+                else:
+                    closeOnGui()
                 self.checkIfAlive()
+                # checkIfAlive は StopThread を送出するため通常ここへは
+                # 来ない。alive を落とさずに停止要求だけ来た場合の保険。
                 return [] if need is list else {}
+            if root is not None and waited >= self._DIALOGUE_OPEN_TIMEOUT:
+                # mainloop が回っていないと after(0, build) は実行されず、
+                # done が永久にセットされない。黙って待ち続けると停止も
+                # 終了もできなくなるので、気づけるよう定期的に知らせる。
+                logger.warning(
+                    f"dialogue is not responding for {self._DIALOGUE_OPEN_TIMEOUT}s"
+                    f" (title={title})"
+                )
+                waited = 0.0
 
         if "error" in box:
             raise RuntimeError(f"dialogue failed:\n{box['error']}")
         return box.get("value")
 
     def _guiRoot(self) -> Optional[Any]:
-        """ダイアログを載せる tk のルートを返す。無ければ None。"""
+        """ダイアログを載せる tk のルートを返す。無ければ None。
+
+        以前は gui（画像認識コマンドが受け取るプレビュー）しか見て
+        いなかった。通常の PythonCommand は cmd_class() で作られ gui を
+        持たないため、必ず None になり、ダイアログをワーカースレッドで
+        直接生成していた。スレッド安全化が画像認識コマンドにしか効いて
+        いなかったことになる。Window 側が生成時に渡す gui_root を先に
+        見ることで、すべての種類のコマンドで GUI スレッドへ渡せる。
+        """
+        root = getattr(self, "gui_root", None)
+        if root is not None and hasattr(root, "after"):
+            return root
+
         gui = getattr(self, "gui", None)
         for obj in (gui, getattr(gui, "master", None)):
             if obj is not None and hasattr(obj, "after"):
@@ -607,11 +780,34 @@ class PythonCommand(CommandBase.Command):
 
     # direct serial
     def direct_serial(self, serialcommands: List[str], waittime: List[float]) -> None:
+        """生の文字列をそのまま送る。1件ごとに停止・一時停止を見る。
+
+        旧実装はリストごと Keys 側へ丸投げしていたため、次の3つがあった。
+        ①送信の手前で _gate() を通らないので、Pause 中でも送信が始まり、
+        停止要求も見ない ②Keys 側の time.sleep は停止イベントを見ないため、
+        リストの途中で Stop しても全件を送り終えるまで止まらない（waittime
+        が長いとその間ずっと効かない）③zip が短い方に合わせて黙って
+        打ち切るので、数がずれると後ろが無言で送られない。
+
+        ループをこちら側へ持ち上げ、1件ごとに関所（_gate）と停止対応の
+        待ち（wait）を挟む。Keys.py は触らずに済む。self.keys が None の
+        場合も _gate が StopThread にするので、AttributeError にならない。
+        """
+        if len(serialcommands) != len(waittime):
+            raise ValueError(
+                f"serialcommands({len(serialcommands)}件)と"
+                f"waittime({len(waittime)}件)の数が違います。"
+            )
         # 余計なものが付いている可能性があるので確認して削除する
         checkedcommands = []
         for row in serialcommands:
             checkedcommands.append(row.replace("\r", "").replace("\n", ""))
-        self.keys.serialcommand_direct_send(checkedcommands, waittime)
+
+        for row, wtime in zip(checkedcommands, waittime):
+            self._gate()
+            self.wait(float(wtime))
+            # 待ちはこちらで済ませたので、Keys 側では待たせない
+            self.keys.serialcommand_direct_send([row], [0.0])
 
     # Reload COM port (temporary function)
     def reload_com_port(self, retry: int = 3) -> bool:
@@ -620,8 +816,28 @@ class PythonCommand(CommandBase.Command):
         旧実装は closeSerial 後に自分自身を再帰呼び出ししていたため、
         切断に失敗して isOpened() が True を返し続けると RecursionError で
         落ちた。回数上限つきのループに置き換える。
+
+        設定は Window が Start の直前に serial_config へ写した通常値だけを
+        使う。ここで tk 変数（settings.com_port など）を読んではいけない。
+        このメソッドはワーカースレッドで走るため、Tcl インタプリタを別の
+        スレッドから触ることになり Tkinter の制約に反する。設定ファイルの
+        読み直し（Settings.GuiSettings / configparser）も行わない。設定を
+        読む責務を Window とここの2箇所に置くと、画面に出ている値と実際に
+        繋ぐ先が食い違う経路ができる。
         """
-        settings = Settings.GuiSettings()
+        if self.keys is None or getattr(self.keys, "ser", None) is None:
+            msg = "シリアルが未接続のため COM ポートを開き直せません。"
+            print(msg)
+            logger.error(msg)
+            return False
+
+        config = self._serialConfig()
+        if config is None:
+            return False
+
+        port = config["com_port"]
+        name = config["com_port_name"]
+        baud = config["baud_rate"]
 
         for _ in range(max(1, retry)):
             if self.keys.ser.isOpened():
@@ -632,22 +848,53 @@ class PythonCommand(CommandBase.Command):
                     self.wait(0.5)
                     continue
 
-            if self.keys.ser.openSerial(
-                settings.com_port.get(),
-                settings.com_port_name.get(),
-                settings.baud_rate.get(),
-            ):
-                msg = f"COM Port {settings.com_port.get()} connected successfully"
+            if self.keys.ser.openSerial(port, name, baud):
+                msg = f"COM Port {name or port} connected successfully"
                 print(msg)
                 logger.debug(msg)
                 return True
 
             self.wait(0.5)
 
-        msg = f"COM Port {settings.com_port.get()} failed to reconnect"
+        msg = f"COM Port {name or port} failed to reconnect"
         print(msg)
         logger.error(msg)
         return False
+
+    def _serialConfig(self) -> Optional[Dict[str, Any]]:
+        """Window が写した COM 設定を検証して返す。不正なら None。
+
+        代わりの設定をここで作らないのが要点。無ければ「開き直せない」と
+        知らせて失敗する。黙って既定の settings.ini を読むと、プロファイル
+        起動中の台が別の台の COM 番号へ繋ぎに行く（launcher.py はプロファイル
+        ごとに別プロセスを起こすので、並列起動は現実的な運用）。
+        """
+        config = getattr(self, "serial_config", None)
+        if not isinstance(config, dict):
+            msg = "COM の設定を受け取っていないため開き直せません。"
+            print(msg)
+            logger.error(
+                f"serial_config is missing or invalid: {type(config).__name__}"
+            )
+            return None
+
+        try:
+            port = int(config["com_port"])
+            name = str(config["com_port_name"])
+            baud = int(config["baud_rate"])
+        except (KeyError, TypeError, ValueError) as e:
+            msg = f"COM の設定が不正なため開き直せません: {e}"
+            print(msg)
+            logger.error(msg)
+            return None
+
+        if not name and port <= 0:
+            msg = "COM の設定が空のため開き直せません。"
+            print(msg)
+            logger.error(msg)
+            return None
+
+        return {"com_port": port, "com_port_name": name, "baud_rate": baud}
 
 
 class PokeConDialogue(object):
@@ -894,7 +1141,11 @@ class PokeConDialogue(object):
         if need is list:
             return self._ls
 
-        self._logger.warning(f"Wrong arg: {need}. Returns list instead.")
+        # self._logger は存在しない（__init__ で作っていない）。ここが
+        # AttributeError になると、本来は警告を出して続行する経路が
+        # build() の except で拾われ、RuntimeError: dialogue failed へ
+        # 化けていた。引数の指定ミスがコマンド全体の異常終了になる。
+        logger.warning(f"Wrong arg: {need}. Returns list instead.")
         return self._ls
 
     def close_window(self) -> None:
@@ -911,7 +1162,9 @@ class PokeConDialogue(object):
         self.isOK = False
 
 
-TEMPLATE_PATH = "./Template/"
+TEMPLATE_PATH = path.normpath(
+    path.join(path.dirname(path.dirname(path.abspath(__file__))), "Template")
+)
 
 
 def _get_template_filespec(template_path: str) -> str:
@@ -953,7 +1206,11 @@ def _imread_or_raise(template_path: str, flags: int) -> np.ndarray:
 
 
 def clear_template_cache() -> None:
-    """テンプレート画像のキャッシュを捨てる。
+    """テンプレート画像のキャッシュ（CPU 側）を捨てる。
+
+    ★単独で呼ばないこと。GPU 側のキャッシュ（clearCudaCache）は別に
+    持っているため、片方だけ捨てると CPU は新しい画像・GPU は古い画像
+    で判定する。差し替え時は clearTemplateCaches() を使う。
 
     実行中にテンプレート画像を差し替えたときに呼ぶ。os.path.getmtime を
     キーへ含める案もあるが、判定のたびに stat が走るので採らなかった。
@@ -1033,13 +1290,118 @@ class ImageProcPythonCommand(PythonCommand):
         return gtmpl
 
     def clearCudaCache(self) -> None:
-        """GPU 側のキャッシュを捨てる（テンプレート差し替え時に呼ぶ）。"""
+        """GPU 側のキャッシュを捨てる。
+
+        ★単独で呼ばないこと。CPU 側（clear_template_cache）と
+        別管理のため、片方だけ捨てると両者で違う画像を使う。
+        差し替え時は clearTemplateCaches() を使う。
+        """
         self._cuda_matchers.clear()
         self._cuda_templates.clear()
+
+    def clearTemplateCaches(self) -> None:
+        """テンプレートのキャッシュを CPU・GPU まとめて捨てる。
+
+        実行中に画像を差し替えたときは必ずこちらを呼ぶ。片方だけ
+        捨てると、CPU 版は新しい画像・GPU 版は古い画像で判定し、
+        「差し替えたのに直らない」形でしか症状が出ない。
+        """
+        clear_template_cache()
+        self.clearCudaCache()
 
     def __post_init__(self) -> None:
         self.Line = Line_Notify(self.camera)
         self.Discord = Discord_Notify(camera=self.camera)
+
+    # -- 入力の検証（画像認識の共通前処理） ---------------------------------
+
+    def _readFrameOrRaise(self) -> np.ndarray:
+        """現在のフレームを返す。取得できなければ RuntimeError にする。
+
+        readFrame() は未接続・Disable 中・取得スレッド停止のいずれでも
+        None を返す。そのまま crop すると TypeError: NoneType is not
+        subscriptable、crop 無しなら cvtColor で cv2.error になり、
+        どちらもメッセージから原因（カメラなのか crop 指定なのか）が
+        読み取れない。ここで止めて言い切る。
+        """
+        camera = getattr(self, "camera", None)
+        if camera is None:
+            raise RuntimeError("カメラが割り当てられていません。")
+        frame = camera.readFrame()
+        if frame is None or getattr(frame, "size", 0) == 0:
+            raise RuntimeError(
+                "カメラから画像を取得できません"
+                "（未接続 / Disable / 取得スレッド停止）。"
+            )
+        return frame
+
+    @staticmethod
+    def _cropOrRaise(src: np.ndarray, crop: Any) -> np.ndarray:
+        """crop を検査してから切り出す。おかしければ ValueError。
+
+        numpy のスライスは範囲外でも例外を出さず、黙って狭い配列を返す。
+        crop の指定ミスが「別の場所を照合し続ける」形で表面化するため、
+        閾値をいくら下げても直らない。これがこの一連で最も危ない。
+        切り詰めて続行せず、その場で止めるのが要点。
+        """
+        if not crop:
+            return src
+        if len(crop) != 4:
+            raise ValueError(f"crop は [x1, y1, x2, y2] の4要素です: {crop}")
+        x1, y1, x2, y2 = (int(v) for v in crop)
+        height, width = src.shape[0], src.shape[1]
+        if x1 >= x2 or y1 >= y2:
+            raise ValueError(f"crop の左右または上下が逆です: {crop}")
+        if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
+            raise ValueError(f"crop が画面({width}x{height})の外を指しています: {crop}")
+        return src[y1:y2, x1:x2]
+
+    @staticmethod
+    def _checkTemplate(src: np.ndarray, template: Any, mask: Any = None) -> None:
+        """テンプレートとマスクの整合を見る。合わなければ ValueError。
+
+        いずれも cv2.error になる条件だが、cv2 のメッセージは行列の
+        次元しか語らないため、use_gray の指定漏れなのかテンプレートの
+        取り違えなのかが分からない。
+        """
+        if template is None or getattr(template, "size", 0) == 0:
+            raise ValueError("テンプレート画像が空です。")
+        if template.ndim != src.ndim:
+            raise ValueError(
+                f"色の形式が違います（画面 ndim={src.ndim} /"
+                f" テンプレート ndim={template.ndim}）。use_gray を揃えてください。"
+            )
+        if src.ndim == 3 and template.shape[2] != src.shape[2]:
+            # ndim が同じでもチャンネル数は違いうる。アルファ付き PNG を
+            # IMREAD_COLOR 以外で読むと 4ch になり、画面(3ch)と食い違う。
+            raise ValueError(
+                f"チャンネル数が違います（画面 {src.shape[2]}ch /"
+                f" テンプレート {template.shape[2]}ch）。"
+                "アルファ付きの画像は mask_path で渡してください。"
+            )
+        if template.shape[0] > src.shape[0] or template.shape[1] > src.shape[1]:
+            raise ValueError(
+                f"テンプレート({template.shape[1]}x{template.shape[0]})が"
+                f"照合範囲({src.shape[1]}x{src.shape[0]})より大きいです。"
+                "crop の指定を見直してください。"
+            )
+        if mask is not None and mask.shape[:2] != template.shape[:2]:
+            raise ValueError(
+                f"マスク({mask.shape[1]}x{mask.shape[0]})とテンプレート"
+                f"({template.shape[1]}x{template.shape[0]})の大きさが違います。"
+            )
+
+    def _prepareSrc(self, crop: Any = None, use_gray: bool = True) -> np.ndarray:
+        """readFrame → crop → 色変換 をまとめて行う（検証つき）。
+
+        crop を先に切ってから色変換する。逆にすると使わない領域まで
+        変換することになり、crop が全体の 1/9 でも 1280x720 の全面を
+        変換してしまう（判定ループでは毎回この無駄が乗る）。
+        """
+        src = self._cropOrRaise(self._readFrameOrRaise(), crop)
+        if use_gray:
+            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        return src
 
     # Judge if current screenshot contains an image using template matching
     # It's recommended that you use gray_scale option unless the template color wouldn't be cared for performace
@@ -1057,15 +1419,8 @@ class ImageProcPythonCommand(PythonCommand):
         crop=None,
         mask_path=None,
     ):
-        # crop を先に切ってから色変換する。逆にすると使わない領域まで
-        # 変換することになり、crop が全体の 1/9 でも 1280x720 全面を
-        # 変換してしまう（判定ループでは毎回この無駄が乗る）。
         crop = crop or []
-        src = self.camera.readFrame()
-        if len(crop) == 4:
-            src = src[crop[1] : crop[3], crop[0] : crop[2]]
-        if use_gray:
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        src = self._prepareSrc(crop, use_gray)
 
         template = _imread_or_raise(
             template_path,
@@ -1080,6 +1435,7 @@ class ImageProcPythonCommand(PythonCommand):
             mask = _imread_or_raise(mask_path, 0)
             method = cv2.TM_CCORR_NORMED
 
+        self._checkTemplate(src, template, mask)
         w, h = template.shape[1], template.shape[0]
 
         res = cv2.matchTemplate(src, template, method, mask)
@@ -1091,7 +1447,11 @@ class ImageProcPythonCommand(PythonCommand):
         if show_value:
             print(template_path + " ZNCC value: " + str(max_val))
 
-        top_left = max_loc
+        # crop したときは切り出した中の座標なので、画面全体の座標へ戻す。
+        # 足さないと矩形が crop の左上ぶん左上へずれて描かれる。
+        dx = crop[0] if len(crop) == 4 else 0
+        dy = crop[1] if len(crop) == 4 else 0
+        top_left = (max_loc[0] + dx, max_loc[1] + dy)
         bottom_right = (top_left[0] + w + 1, top_left[1] + h + 1)
         tag = str(time.perf_counter()) + str(random.random())
         if max_val >= threshold:
@@ -1135,13 +1495,12 @@ class ImageProcPythonCommand(PythonCommand):
         if not template_path_list:
             raise ValueError("template_path_list が空です。")
 
-        # crop を先に切ってから色変換する（isContainTemplate と同じ理由）
         crop = crop or []
-        src = self.camera.readFrame()
-        if len(crop) == 4:
-            src = src[crop[1] : crop[3], crop[0] : crop[2]]
-        if use_gray:
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        src = self._prepareSrc(crop, use_gray)
+        # crop したときは切り出した中の座標になるので、矩形を描く前に
+        # 画面全体の座標へ戻す。足さないと crop の左上ぶんずれる。
+        dx = crop[0] if len(crop) == 4 else 0
+        dy = crop[1] if len(crop) == 4 else 0
 
         max_val_list = []
         judge_threshold_list = []
@@ -1150,16 +1509,24 @@ class ImageProcPythonCommand(PythonCommand):
                 template_path,
                 cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
             )
+            self._checkTemplate(src, template)
             w, h = template.shape[1], template.shape[0]
 
             method = cv2.TM_CCOEFF_NORMED
             res = cv2.matchTemplate(src, template, method)
+            # 他の照合と同じく NaN を潰す。TM_CCOEFF_NORMED は分母に
+            # 「テンプレートの平均からの偏差の二乗和」を持つため、真っ白・
+            # 真っ黒など定数のテンプレートでは分母が 0 になり NaN が出る。
+            # minMaxLoc の結果が不定になるうえ、np.argmax は NaN を最大と
+            # 見なすので、1枚でも定数テンプレートが混ざるとそれが常に
+            # 勝者になり、他がどれだけ一致していても無視される。
+            res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
             if show_value:
                 print(template_path + " ZNCC value: " + str(max_val))
 
-            top_left = max_loc
+            top_left = (max_loc[0] + dx, max_loc[1] + dy)
             bottom_right = (top_left[0] + w + 1, top_left[1] + h + 1)
             tag = str(time.perf_counter()) + str(random.random())
             max_val_list.append(max_val)
@@ -1196,24 +1563,51 @@ class ImageProcPythonCommand(PythonCommand):
         show_value=False,
         not_show_false=True,
     ):
-        """CUDA を使ったテンプレートマッチング。"""
+        """CUDA を使ったテンプレートマッチング（グレースケール専用）。
+
+        マッチャを CV_8UC1 で作るため、カラー(3ch)の GpuMat を渡すと
+        アサーション失敗になる。CUDA の TM_CCOEFF_NORMED は多チャンネル
+        非対応で、dtype を変えるだけでは解決しない手法側の制約のため、
+        use_gray=False はここで断る。黙って誤った結果を返すより、
+        「この関数では出来ない」と言い切って CPU 版へ誘導する。
+
+        not_show_false は本体で参照していない（互換のため残置）。
+        """
+        if not use_gray:
+            raise ValueError(
+                "isContainTemplateGPU はグレースケールのみ対応です。"
+                "カラーで照合する場合は isContainTemplate() を"
+                "使ってください。"
+            )
         if not self._ensure_cuda():
             raise RuntimeError(
                 "CUDA 対応の OpenCV が見つかりません。"
                 "isContainTemplate() を使ってください。"
             )
 
-        src = self.camera.readFrame()
-        src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY) if use_gray else src
+        src = self._prepareSrc(None, use_gray)
 
         self.gsrc.upload(src)
 
+        # CPU 版と同じ入力検証を通す。GPU 側だけ検証が無いと、
+        # テンプレートが照合範囲より大きい場合に cv2 のアサーション
+        # メッセージだけが出て、原因が crop なのか画像なのか分からない。
+        # 検証には CPU 上のテンプレートが要るので、キャッシュと同じ
+        # 読み方でもう一度読む（lru_cache が効くので実費は無い）。
+        template = _imread_or_raise(
+            template_path,
+            cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
+        )
+        self._checkTemplate(src, template)
         gtmpl = self._cudaTemplate(template_path, use_gray)
 
         method = cv2.TM_CCOEFF_NORMED
         matcher = self._cudaMatcher(cv2.CV_8UC1, method)
         gresult = matcher.match(self.gsrc, gtmpl)
         resultg = gresult.download()
+        # CPU 版と同じく NaN を潰す。定数テンプレート（真っ白・真っ黒）
+        # では TM_CCOEFF_NORMED の分母が 0 になり NaN が出るため。
+        resultg = np.nan_to_num(resultg, nan=0.0, posinf=0.0, neginf=0.0)
         _, max_val, _, max_loc = cv2.minMaxLoc(resultg)
 
         if show_value:
@@ -1243,6 +1637,10 @@ class ImageProcPythonCommand(PythonCommand):
         return mask
 
     # -- 待つ・探す（出現待ち / 停止待ち / 位置取得） -----------------------
+    #
+    # 期限は必ず _deadline() で測る。実時間の絶対期限にすると、一時停止
+    # しているあいだも時計だけが進み、再開した直後に「時間切れ」と判定
+    # されて1回も照合せずに False を返す。
 
     def _matchOnce(
         self,
@@ -1265,11 +1663,7 @@ class ImageProcPythonCommand(PythonCommand):
         足すことになり、足し忘れがいつか必ず起きる。
         """
         crop = crop or []
-        src = self.camera.readFrame()
-        if len(crop) == 4:
-            src = src[crop[1] : crop[3], crop[0] : crop[2]]
-        if use_gray:
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        src = self._prepareSrc(crop, use_gray)
 
         template = _imread_or_raise(
             template_path,
@@ -1282,6 +1676,7 @@ class ImageProcPythonCommand(PythonCommand):
             mask = _imread_or_raise(mask_path, 0)
             method = cv2.TM_CCORR_NORMED
 
+        self._checkTemplate(src, template, mask)
         h, w = template.shape[0], template.shape[1]
         res = cv2.matchTemplate(src, template, method, mask)
         res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1314,14 +1709,14 @@ class ImageProcPythonCommand(PythonCommand):
         ③時間切れを例外ではなく False で返すので、見つからなかった
         ときの分岐を呼び出し側で普通に書ける。
         """
-        limit = time.perf_counter() + float(timeout)
+        expired = self._deadline(timeout)
         while True:
             hit, _, _ = self._matchOnce(
                 template_path, threshold, use_gray, crop, mask_path, show_value
             )
             if hit:
                 return True
-            if time.perf_counter() >= limit:
+            if expired():
                 logger.debug(f"waitTemplate timeout: {template_path}")
                 return False
             self.wait(interval)
@@ -1342,14 +1737,14 @@ class ImageProcPythonCommand(PythonCommand):
         対で用意しておかないと、消える側の while だけが各コマンドへ
         残ることになる。
         """
-        limit = time.perf_counter() + float(timeout)
+        expired = self._deadline(timeout)
         while True:
             hit, _, _ = self._matchOnce(
                 template_path, threshold, use_gray, crop, mask_path
             )
             if not hit:
                 return True
-            if time.perf_counter() >= limit:
+            if expired():
                 logger.debug(f"waitTemplateGone timeout: {template_path}")
                 return False
             self.wait(interval)
@@ -1378,12 +1773,9 @@ class ImageProcPythonCommand(PythonCommand):
 
         def gray() -> np.ndarray:
             """現在のフレームを crop してグレースケールで返す。"""
-            frame = self.camera.readFrame()
-            if len(crop) == 4:
-                frame = frame[crop[1] : crop[3], crop[0] : crop[2]]
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            return self._prepareSrc(crop, True)
 
-        limit = time.perf_counter() + float(timeout)
+        expired = self._deadline(timeout)
         f1, f2 = gray(), gray()
         quiet_from = None
         while True:
@@ -1393,12 +1785,15 @@ class ImageProcPythonCommand(PythonCommand):
             moved = float(np.count_nonzero(mask)) / float(mask.size)
             if moved < ratio:
                 if quiet_from is None:
-                    quiet_from = time.perf_counter()
-                elif time.perf_counter() - quiet_from >= float(quiet):
+                    # 静止し始めた時刻。実時間で持つと、一時停止していた
+                    # あいだも「静止が続いた」ことになり、再開した瞬間に
+                    # 停止とみなして早々に True を返す。
+                    quiet_from = self._runElapsed()
+                elif self._runElapsed() - quiet_from >= float(quiet):
                     return True
             else:
                 quiet_from = None
-            if time.perf_counter() >= limit:
+            if expired():
                 logger.debug(f"waitStable timeout: moved={moved:.4f}")
                 return False
             f1, f2 = f2, f3
@@ -1457,9 +1852,7 @@ class ImageProcPythonCommand(PythonCommand):
         秒までだと後の1枚が前の1枚を上書きしてしまう。
         """
         crop = crop or []
-        frame = self.camera.readFrame()
-        if len(crop) == 4:
-            frame = frame[crop[1] : crop[3], crop[0] : crop[2]]
+        frame = self._cropOrRaise(self._readFrameOrRaise(), crop)
 
         os.makedirs(folder, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -1518,16 +1911,13 @@ class ImageProcPythonCommand(PythonCommand):
         対象とみなし、相関の高いほうだけを残す。
         """
         crop = crop or []
-        src = self.camera.readFrame()
-        if len(crop) == 4:
-            src = src[crop[1] : crop[3], crop[0] : crop[2]]
-        if use_gray:
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+        src = self._prepareSrc(crop, use_gray)
 
         template = _imread_or_raise(
             template_path,
             cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
         )
+        self._checkTemplate(src, template)
         h, w = template.shape[0], template.shape[1]
         res = cv2.matchTemplate(src, template, cv2.TM_CCOEFF_NORMED)
         res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1579,11 +1969,7 @@ class ImageProcPythonCommand(PythonCommand):
         常に0件になり、「赤が無い」と誤判定する）。
         """
         crop = crop or []
-        frame = self.camera.readFrame()
-        if len(crop) == 4:
-            frame = frame[crop[1] : crop[3], crop[0] : crop[2]]
-        if frame.size == 0:
-            return 0.0
+        frame = self._cropOrRaise(self._readFrameOrRaise(), crop)
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         lo = np.array(lower_hsv, dtype=np.uint8)

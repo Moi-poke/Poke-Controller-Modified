@@ -202,33 +202,53 @@ class GuiSettings:
         return f"{root}.{profile}{ext}"
 
     def load(self) -> None:
-        """設定ファイルを読み込む。"""
-
+        """設定ファイルを読み込む。壊れていれば既定値補完へ渡す。"""
         if not os.path.isfile(self.setting_path):
             logger.warning(f"設定ファイルがありません: {self.setting_path}")
             return
-        loaded = self.setting.read(self.setting_path, encoding="utf-8")
+        try:
+            loaded = self.setting.read(self.setting_path, encoding="utf-8")
+        except (configparser.Error, OSError) as exc:
+            logger.error(f"設定ファイルを読めないため既定値を使います: {exc}")
+            self.setting.clear()
+            return
         if not loaded:
-            # 文字コード違いなどで読めないと、以降の参照が KeyError になる
             logger.error(f"設定ファイルを読み込めませんでした: {self.setting_path}")
-        else:
-            logger.debug("設定ファイルを読み込みました")
 
     def _complete_missing(self) -> None:
-        """旧版の settings.ini に無いセクション/キーを既定値で補う。"""
+        """不足項目と不正値を既定値へ補正する。"""
         defaults = self._default_sections()
-        added = []
+        changed: list[str] = []
         for section, values in defaults.items():
             if not self.setting.has_section(section):
                 self.setting[section] = {k: str(v) for k, v in values.items()}
-                added.append(section)
+                changed.append(section)
                 continue
             for key, value in values.items():
                 if key not in self.setting[section]:
                     self.setting[section][key] = str(value)
-                    added.append(f"{section}.{key}")
-        if added:
-            logger.info(f"不足していた設定を既定値で補いました: {added}")
+                    changed.append(f"{section}.{key}")
+        general = self.setting["General Setting"]
+        integer_rules = {
+            "camera_id": (0, lambda value: value >= 0),
+            "com_port": (0, lambda value: value >= 0),
+            "baud_rate": (9600, lambda value: value in (4800, 9600)),
+            "fps": (45, lambda value: value in (5, 15, 30, 45, 60)),
+        }
+        for key, (default, valid) in integer_rules.items():
+            try:
+                value = int(general.get(key, ""))
+            except (TypeError, ValueError):
+                value = None
+            if value is None or not valid(value):
+                general[key] = str(default)
+                changed.append(f"General Setting.{key}")
+        valid_sizes = ("640x360", "1280x720", "1920x1080")
+        if general.get("show_size", "") not in valid_sizes:
+            general["show_size"] = "640x360"
+            changed.append("General Setting.show_size")
+        if changed:
+            logger.info(f"設定を既定値で補正しました: {changed}")
             self._write_ini()
         self._migrate_legacy_keymap()
 

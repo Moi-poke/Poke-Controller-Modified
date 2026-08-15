@@ -10,6 +10,7 @@ UI 構築は __init__ に全部書くと追えなくなるので _build_*_frame 
 
     CommandTags : コマンドのタグ（tags.json / クラス属性 / フォルダ名の合成）
     CommandStats: コマンドの使用履歴（実行回数 / 最終実行日時）
+    CommandPalette: Ctrl+K のコマンド検索パレット
     LogPane     : ログ欄への描画とキュー（print のリダイレクトを含む）
     WindowUtils : COMポート列挙・識別子生成など、self を見ない小道具
 """
@@ -20,6 +21,7 @@ import argparse
 import os
 import platform
 import subprocess
+import traceback
 import sys
 import tkinter as tk
 import tkinter.messagebox as tkmsg
@@ -42,6 +44,7 @@ from GuiAssets import CaptureArea, ControllerGUI
 from Keyboard import SwitchKeyboardController
 import CommandTags
 import CommandStats
+import CommandPalette
 import LogPane
 import WindowUtils
 import WindowGeometry
@@ -50,27 +53,33 @@ from Menubar import PokeController_Menubar
 
 
 NAME = "Poke-Controller"
-VERSION = "v3.4.0 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
+VERSION = "v3.5.0 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
 
 
 # タイトルに出すコマンド名の上限。長い名前でウィンドウ名が埋まるのを防ぐ
 TITLE_COMMAND_MAX = 20
 
 
-# 相対パスだとカレントディレクトリ次第で読めなくなるため、
-# このファイルの場所を基準に解決する（GuiAssets.py と同じ方針）。
-OPEN_DIR_ICON_PATH = os.path.normpath(
-    os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "assets",
-        "icons8-OpenDir-16.png",
-    )
-)
+# すべてのパスをこの1点から解決する。起動する場所（カレント
+# ディレクトリ）が変わっても同じ場所を指すようにするため。
+# 相対パスのままだと、別ディレクトリから絶対パスで起動した場合や
+# パッケージ化した場合に、あるはずのフォルダを見つけられない。
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+OPEN_DIR_ICON_PATH = os.path.join(BASE_DIR, "assets", "icons8-OpenDir-16.png")
 
 FPS_VALUES = [60, 45, 30, 15, 5]
 BAUD_RATE_VALUES = [9600, 4800]
 SHOW_SIZE_VALUES = ["640x360", "1280x720", "1920x1080"]
 COM_PORT_NOT_FOUND = "(ポートが見つかりません)"
+
+# 停止を頼んでから、戻って来ないかを見に行く間隔(ms)。
+# 後始末が呼ばれない経路に入ったとき、操作だけは戻すために使う。
+STOP_WATCH_MS = 500
+
+# 停止しないことを知らせる間隔(ms)。500ms ごとの見張りで毎回出すと
+# ログが埋まるため、知らせるのはこの間隔だけにする。
+STOP_NOTIFY_MS = 5000
 
 
 class PokeControllerApp:
@@ -92,8 +101,9 @@ class PokeControllerApp:
 
         # 標準出力をログエリアにリダイレクト
         sys.stdout = LogPane.QueueStdoutRedirector(self.logArea)
-        self.logArea.after(LogPane.FLUSH_INTERVAL_MS, self.display_text)
-
+        self._display_after_id = self.logArea.after(
+            LogPane.FLUSH_INTERVAL_MS, self.display_text
+        )
         self.loadSettings()
         self._apply_settings_to_widgets()
         self._setup_camera_name()
@@ -101,7 +111,6 @@ class PokeControllerApp:
         self._start_camera()
         self._start_serial()
         self._build_preview()
-        # ポートが決まってからタイトルを組み立て直す
         self._update_title()
 
         self.loadCommands()
@@ -131,6 +140,15 @@ class PokeControllerApp:
         self.ser: Sender.Sender | None = None
         self.preview: CaptureArea | None = None
         self.cur_command: Any = None
+        # コマンドの実行状態。idle / running / stopping の3つ。
+        # 画面の表示ではなくこれを唯一の情報源にする（表示は結果）。
+        self._command_state = "idle"
+        # 実行の世代。Start のたびに1つ進める。後始末が「どの実行に対する
+        # ものか」を見分けるために使う（同じ番号のときだけ画面へ反映する）。
+        self._run_token = 0
+        # 停止を待っている秒数。0 なら待っていない。タイトルに出して
+        # 「終了するしかない」状態が見て分かるようにする。
+        self._stop_waited = 0
         self.py_cur_command: Any = None
         self.mcu_cur_command: Any = None
         # 表示名 → クラスの対応表。UI 構築より前に空で用意する
@@ -145,17 +163,22 @@ class PokeControllerApp:
         self._shown_names: dict[Any, dict[str, str]] = {}
         # タグ編集の小窓。二重に開かないよう参照を持つ
         self._tag_editor: tk.Toplevel | None = None
+        # コマンド検索パレット（Ctrl+K）。二重に開かないよう参照を持つ
+        self._palette: Any = None
         # 使用履歴（実行回数 / 最終実行日時）。書き出しは終了時に1回だけ
         self.command_stats: dict[str, dict] = CommandStats.load()
-        # 履歴が実行によって変わったか。変わっていなければ終了時に書かない
+        self._closing = False
         self._stats_dirty = False
         self.camera_dic: dict[int, str] | None = None
         # cam_id -> 表示名 / cam_id -> 識別子。同型ボードの区別に使う
         self.camera_keys: dict[int, str] = {}
         self._camera_labels: list[str] = []
         self.camera_key = tk.StringVar()
-        # 設定を GUI へ流し込み終えたか。True になるまで自動保存はしない
-        self._settings_ready = False
+        self._display_after_id: Any = None
+        self._sash_after_id: Any = None
+        # 停止の見張り（_watchStopped）の予約。終了時に取り消せるよう
+        self._watch_after_id: Any = None
+        self._sash_restore_attempts = 0
 
     # ------------------------------------------------------------------
     # UI 構築
@@ -520,7 +543,7 @@ class PokeControllerApp:
         self._build_log_toolbar()
         # 仕切り位置の復元は、ウィジェットの大きさが確定してからでないと
         # 効かない（構築直後は高さが1のため sashpos が無視される）。
-        self.root.after_idle(self._restore_sash)
+        self._sash_after_id = self.root.after_idle(self._restore_sash)
 
     def _build_log_toolbar(self) -> None:
         """ログ欄の下に、表示の絞り込みと消去を置く。
@@ -578,25 +601,24 @@ class PokeControllerApp:
     # -- 仕切り位置 ---------------------------------------------------------
 
     def _restore_sash(self) -> None:
-        """ログ欄の仕切り位置を前回の値へ戻す。
-
-        実寸がまだ決まっていない間は False が返るので、次の空き時間に
-        再挑戦する。after を呼ぶのは root を持つこちら側の仕事。
-        """
-        if not WindowGeometry.restoreSash(self.log_pane, self.settings):
-            self.root.after(100, self._restore_sash)
+        if self._closing:
             return
-        # 動かされたら覚える。<ButtonRelease> はドラッグの確定時に来る
+        self._sash_after_id = None
+        self._sash_restore_attempts += 1
+        try:
+            restored = WindowGeometry.restoreSash(self.log_pane, self.settings)
+            if not restored and self._sash_restore_attempts < 50:
+                self._sash_after_id = self.root.after(100, self._restore_sash)
+                return
+        except (tk.TclError, RuntimeError):
+            return
+        if not restored:
+            logger.warning("ログ欄の仕切り位置を復元できませんでした")
         self.log_pane.bind("<ButtonRelease-1>", self._remember_sash, add="+")
 
     def _remember_sash(self, *event: Any) -> None:
-        """仕切りを動かしたら割合として控える。"""
         if WindowGeometry.rememberSash(self.log_pane, self.settings):
             self._on_setting_changed()
-
-    # ------------------------------------------------------------------
-    # 設定の反映
-    # ------------------------------------------------------------------
 
     def loadSettings(self) -> None:
         self.settings = Settings.GuiSettings(self.profile)
@@ -681,19 +703,23 @@ class PokeControllerApp:
         self.root.bind("<Key-F6>", self.StartCommandWithF6)
         self.root.bind("<Key-Escape>", self.StopCommandWithEsc)
         self.root.bind("<Key-F7>", self.PauseCommandWithF7)
-        logger.debug("Bind F5 / F6 / F7 / Escape keys")
+        self.root.bind("<Control-k>", self.openCommandPalette)
+        self.root.bind("<Control-K>", self.openCommandPalette)
+        logger.debug("Bind F5 / F6 / F7 / Escape / Ctrl+K keys")
 
     # ------------------------------------------------------------------
     # カメラ
     # ------------------------------------------------------------------
 
     def _current_fps(self) -> int:
-        """StringVar なので必ず int に直してから使う。"""
         try:
-            return int(self.fps.get())
+            fps = int(self.fps.get())
         except (TypeError, ValueError):
-            logger.warning(f"Invalid fps: {self.fps.get()}. fallback to 45.")
-            return 45
+            fps = 45
+        if fps not in FPS_VALUES:
+            fps = 45
+        self.fps.set(str(fps))
+        return fps
 
     def _start_camera(self) -> None:
         self.camera = Camera(self._current_fps())
@@ -722,24 +748,63 @@ class PokeControllerApp:
         self.preview.ApplyLStickMouse()
         self.preview.ApplyRStickMouse()
 
-    def openCamera(self) -> None:
-        """カメラを開く。失敗しても落とさず、理由をログとカメラ名欄に出す。"""
+    def openCamera(self) -> bool:
+        """選択中のカメラへ切り替え、成功時だけ True を返す。"""
         if self.camera is None:
-            return
-        if not self.camera.openCamera(self.camera_id.get()):
-            message = f"Camera ID {self.camera_id.get()} cannot open."
-            print(message)
-            logger.error(message)
+            return False
+        try:
+            cam_id = self.camera_id.get()
+        except (tk.TclError, ValueError):
+            return False
+        if self.camera_dic is not None and self.camera_dic.get(cam_id) == "Disable":
+            self.camera.destroy()
+            print("カメラを無効にしました")
+            logger.info("Camera is disabled")
+            return True
+        if self.camera.openCamera(cam_id):
+            return True
+        message = f"Camera ID {cam_id} cannot open."
+        print(message)
+        logger.error(message)
+        return False
 
     def assignCamera(self, event: Any = None) -> None:
-        """ID 直接入力に合わせて、表示中のカメラ名を追随させる。"""
-        if self.camera_dic is None:
+        """入力途中のIDで表示名だけ追随させる。切替と保存は行わない。"""
+        try:
+            cam_id = int(self.camera_entry.get().strip())
+        except (TypeError, ValueError, tk.TclError):
             return
-        cam_id = self.camera_id.get()
-        name = self.camera_dic.get(cam_id)
-        if name is not None:
-            key = self.camera_keys.get(cam_id, "")
-            self.camera_name_fromDLL.set(WindowUtils.cameraLabel(cam_id, name, key))
+        if self.camera_dic is not None and cam_id in self.camera_dic:
+            self.Camera_Name.current(cam_id)
+
+    def applyCameraId(self, event: Any = None) -> str:
+        """Return/FocusOutでIDを検証し、切替成功時だけ保存する。"""
+        previous = self.settings.camera_id.get()
+        try:
+            cam_id = int(self.camera_entry.get().strip())
+        except (TypeError, ValueError, tk.TclError):
+            print("Camera IDが不正です。元の値へ戻します")
+            self.camera_id.set(previous)
+            self.assignCamera()
+            return "break"
+        if cam_id < 0 or (
+            self.camera_dic is not None and cam_id not in self.camera_dic
+        ):
+            print("Camera IDが範囲外です。元の値へ戻します")
+            self.camera_id.set(previous)
+            self.assignCamera()
+            return "break"
+        self.camera_id.set(cam_id)
+        self.camera_key.set(self.camera_keys.get(cam_id, ""))
+        self.assignCamera()
+        if self.openCamera():
+            self._on_setting_changed()
+            return "break"
+        self.camera_id.set(previous)
+        self.camera_key.set(self.camera_keys.get(previous, ""))
+        self.assignCamera()
+        self.openCamera()
+        return "break"
 
     def locateCameraCmbbox(self) -> None:
         """接続されているカメラを列挙してコンボボックスへ入れる。
@@ -753,7 +818,12 @@ class PokeControllerApp:
         if self.os_name == "Windows":
             import clr
 
-            clr.AddReference(r"..\DirectShowLib\DirectShowLib-2005")
+            # カレントディレクトリ基準の相対指定だと、起動場所が違うだけで
+            # 見つけられない。このファイルの場所から解決する。
+            dll_path = os.path.normpath(
+                os.path.join(BASE_DIR, "..", "DirectShowLib", "DirectShowLib-2005")
+            )
+            clr.AddReference(dll_path)
             from DirectShowLib import DsDevice, FilterCategory
 
             captureDevices = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice)
@@ -813,15 +883,12 @@ class PokeControllerApp:
         self.camera_id.set(matched)
         self.camera_key.set(self.camera_keys.get(matched, ""))
         self.camera_entry.bind("<KeyRelease>", self.assignCamera)
+        self.camera_entry.bind("<Return>", self.applyCameraId)
+        self.camera_entry.bind("<FocusOut>", self.applyCameraId)
         self.Camera_Name.current(matched)
 
     def set_cameraid(self, event: Any = None) -> None:
-        """コンボボックスの選択位置からカメラ ID を決める。
-
-        旧実装は表示名の文字列一致で ID を逆引きしていたため、同型ボードを
-        2枚挿すと名前が同じになり、どれを選んでも最初の1台に当たっていた。
-        選択位置(index)は一意なのでそれをそのまま ID とする。
-        """
+        """カメラ名の選択を検証し、成功した場合だけ設定へ保存する。"""
         if self.camera_dic is None:
             return
         index = self.Camera_Name.current()
@@ -830,9 +897,16 @@ class PokeControllerApp:
             print(message)
             logger.warning(message)
             return
+        previous = self.settings.camera_id.get()
         self.camera_id.set(index)
         self.camera_key.set(self.camera_keys.get(index, ""))
-        self._on_setting_changed()
+        if self.openCamera():
+            self._on_setting_changed()
+            return
+        self.camera_id.set(previous)
+        self.camera_key.set(self.camera_keys.get(previous, ""))
+        self.assignCamera()
+        self.openCamera()
 
     def saveCapture(self) -> None:
         """画面の1枚を保存し、結果をログ欄へ知らせる。
@@ -887,13 +961,13 @@ class PokeControllerApp:
             self.preview.setShowsize(height_bef, width_bef)
 
     def OpenCaptureDir(self) -> None:
-        WindowUtils.openDirectory("Captures", self.os_name)
+        WindowUtils.openDirectory(os.path.join(BASE_DIR, "Captures"), self.os_name)
 
     def OpenCommandDir(self) -> None:
         if self.Command_nb.index("current") == 0:  # type: ignore
-            directory = os.path.join("Commands", "PythonCommands")
+            directory = os.path.join(BASE_DIR, "Commands", "PythonCommands")
         else:
-            directory = os.path.join("Commands", "McuCommands")
+            directory = os.path.join(BASE_DIR, "Commands", "McuCommands")
         WindowUtils.openDirectory(directory, self.os_name)
 
     # ------------------------------------------------------------------
@@ -927,6 +1001,12 @@ class PokeControllerApp:
             mark = "⏸" if self._paused else "▶"
             parts.append(f"{mark}{name}")
 
+        # 停止を待っている間はそれを出す。ボタンが disabled のままな理由が
+        # 画面から分かるようにするため（待つ以外の手は終了しかない）。
+        waited = getattr(self, "_stop_waited", 0)
+        if waited:
+            parts.append(f"⏳停止待ち {waited // 1000}秒")
+
         head = " ".join(parts)
         self.root.title(f"{head} - {NAME} {VERSION}")
 
@@ -956,10 +1036,22 @@ class PokeControllerApp:
         self._update_title()
 
     def onComPortSelected(self, event: Any = None) -> None:
+        """ポートを選んだ時点で設定へ書く。
+
+        以前は接続に成功したときだけ保存していた。選んだが繋がなかった
+        場合・接続に失敗した場合・選んだ直後に落ちた場合は残らず、
+        他の設定が即時保存なのにここだけ挙動が違っていた。
+        """
         self._apply_selected_port()
+        self._on_setting_changed()
 
     def reloadSerialPort(self) -> None:
-        """一覧を取り直してから接続し直す（Reload Port ボタン）。"""
+        """一覧を取り直してから接続し直す（Reload Port ボタン）。
+
+        Keyboard の停止と再生成は activateSerial 側へ集約したので、
+        ここでは行わない。二重に止めても害は無いが、同じ手順が2か所に
+        あると片方だけ直す事故が起きる。
+        """
         self.refreshComPorts()
         self.activateSerial()
 
@@ -997,13 +1089,17 @@ class PokeControllerApp:
         )
         self._apply_input_log_settings()
         self.activateSerial()
-        self.activateKeyboard()
 
     def activateSerial(self) -> None:
-        """ポートを開く。既に開いていれば閉じてから開き直す。"""
+        """ポートを開く。既に開いていれば閉じてから開き直す。
+
+        Keyboard の停止と再生成もここで面倒を見る。開き直すと KeyPress
+        を作り直すが、Keyboard は生成時に渡された古い KeyPress を持ち
+        続けるため、押しっぱなしの記録も前の接続のまま残る。呼び出し元
+        へ任せると、入口が増えたときに片方だけ直す事故が起きる。
+        """
         if self.ser is None:
             return
-
         if self.baud_rate.get() == "4800":
             ret = tkmsg.askquestion(
                 "確認",
@@ -1013,12 +1109,17 @@ class PokeControllerApp:
                 self.baud_rate_cb.set(value=9600)
                 return
 
+        # 開き直す前に必ず止める。呼び出し元が止めているかどうかに
+        # 依存しない。チェックの状態は覚えておき、開けたときだけ戻す。
+        was_enabled = self.is_use_keyboard.get()
+        self._stopKeyboard()
+
         # 旧コードは自分自身を再帰呼び出ししていた。閉じてそのまま開けばよい。
         if self.ser.isOpened():
             print("Port is already opened and being closed.")
             self.ser.closeSerial()
-            self.keyPress = None
 
+        self.keyPress = None
         if self.ser.openSerial(
             self.com_port.get(), self.com_port_name.get(), int(self.baud_rate.get())
         ):
@@ -1026,25 +1127,58 @@ class PokeControllerApp:
             print(message)
             logger.debug(message)
             self.keyPress = KeyPress(self.ser)
+            # 新しい KeyPress で作り直す。開けたときだけ戻すので、
+            # 失敗時にチェックが入ったまま実体が無い状態にはならない。
+            if was_enabled:
+                self.is_use_keyboard.set(True)
+                self.activateKeyboard()
+
             # 一部だけ settings へ入れて save() すると、他の項目は起動時の
             # 古い値のまま書き戻される（Show Serial を切り替えてから接続
             # すると元へ戻る、という形で表面化していた）。常に全項目を
             # 集めてから書く _on_setting_changed() に一本化する。
             self._on_setting_changed()
         else:
-            # 失敗しても何も出ないと、タイトルが(未接続)のままな理由が
-            # 分からない。開けなかったことをその場で知らせる。
+            self.keyPress = None
+            self.is_use_keyboard.set(False)
             message = f"COM Port {self.com_port_name.get()} を開けませんでした"
             print(message)
             logger.warning(message)
         self._update_title()
 
     def inactivateSerial(self) -> None:
+        """ポートを閉じる（Disconnect Port ボタン）。
+
+        keyPress を捨てるだけでは Keyboard のリスナーが生き残る。
+        閉じたあとも打鍵を拾い、閉じた Sender へ書きに行く。さらに
+        Windows では FocusOut→FocusIn で keyPress=None のまま作り直す
+        経路があり、そこで例外になる。切断とキーボードは同時に止める。
+        """
+        self._stopKeyboard()
+        # 画面のチェックも外す。入ったままだと「有効なのに効かない」
+        # 状態になり、次に接続したとき勝手に動き出したように見える。
+        self.is_use_keyboard.set(False)
+
         if self.ser is not None and self.ser.isOpened():
             print("Port is closed.")
             self.ser.closeSerial()
-            self.keyPress = None
-            self._update_title()
+
+        self.keyPress = None
+        self._on_setting_changed()
+        self._update_title()
+
+    def _stopKeyboard(self) -> None:
+        """キーボード操作を止める。止まっていれば何もしない。
+
+        停止処理は切断・再接続・終了の3か所から呼ばれる。同じ手順を
+        3回書くと、片方だけ直したときに挙動が食い違う。
+        """
+        if self.keyboard is not None:
+            try:
+                self.keyboard.stop()
+            except Exception as e:
+                logger.warning(f"キーボードの停止で例外: {e}")
+            self.keyboard = None
 
     def activateKeyboard(self) -> None:
         is_windows = self.os_name == "Windows"
@@ -1068,18 +1202,28 @@ class PokeControllerApp:
             self.root.bind("<FocusOut>", self.onFocusOutController)
         else:
             # 旧コードは Windows 以外だと停止処理ごと素通りしていた
-            if self.keyboard is not None:
-                self.keyboard.stop()
-                self.keyboard = None
+            self._stopKeyboard()
             if not is_windows:
                 return
             self.root.unbind("<FocusIn>")
             self.root.unbind("<FocusOut>")
 
     def onFocusInController(self, event: Any) -> None:
-        if event.widget == self.root and self.keyboard is None:
-            self.keyboard = SwitchKeyboardController(self.keyPress)
-            self.keyboard.listen()
+        """Windows で窓に戻ったときキーボード操作を復帰させる。
+
+        復帰の条件を「keyboard が None」だけにすると、切断して
+        keyPress を捨てたあとでも作り直してしまう。Keyboard 側は
+        None を渡されると ValueError を投げるため、窓を切り替えた
+        だけで例外になる。接続とチェックの両方が生きているときに限る。
+        """
+        if event.widget != self.root:
+            return
+        if self.keyboard is not None:
+            return
+        if self.keyPress is None or not self.is_use_keyboard.get():
+            return
+        self.keyboard = SwitchKeyboardController(self.keyPress)
+        self.keyboard.listen()
 
     def onFocusOutController(self, event: Any) -> None:
         if event.widget == self.root and self.keyboard is not None:
@@ -1129,14 +1273,33 @@ class PokeControllerApp:
     # ------------------------------------------------------------------
 
     def loadCommands(self) -> None:
-        self.py_loader = CommandLoader(
-            util.ospath("Commands/PythonCommands"), PythonCommandBase.PythonCommand
-        )
-        self.mcu_loader = CommandLoader(
-            util.ospath("Commands/McuCommands"), McuCommandBase.McuCommand
-        )
+        """コマンドを読み込む。パスは import 名になるので相対で渡す。
+
+        Utility.getModuleNames は受け取ったパスの区切りを "." へ置き換えて
+        そのまま import 名にする。ここへ絶対パスを渡すと、Windows では
+        "c:.PokeCon.....Commands.PythonCommands.MashA" という名前になり、
+        先頭の "c:" をパッケージとして探しに行って全件が
+        ModuleNotFoundError になる。例外は Utility 側で握られるため
+        起動は成功し、「コマンドが1つも出ない」形でしか現れない。
+
+        import 名はカレントディレクトリからの相対でなければならない。
+        __main__ で os.chdir(BASE_DIR) しているので、ここは相対のまま
+        で BASE_DIR を指す。フォルダを開くボタン（絶対パスでよい）とは
+        用途が違うので、同じ書き方に揃えてはいけない。
+        """
+        python_dir = util.ospath("Commands/PythonCommands")
+        mcu_dir = util.ospath("Commands/McuCommands")
+        self.py_loader = CommandLoader(python_dir, PythonCommandBase.PythonCommand)
+        self.mcu_loader = CommandLoader(mcu_dir, McuCommandBase.McuCommand)
+
         self.py_classes = self.py_loader.load()
         self.mcu_classes = self.mcu_loader.load()
+        if not self.py_classes and not self.mcu_classes:
+            # 全滅は「壊れたコマンドが1つある」とは症状が違う。
+            # 黙って空の一覧を出すと原因に辿り着けないので知らせる。
+            message = f"コマンドを1つも読み込めませんでした（{python_dir} / {mcu_dir}）"
+            print(message)
+            logger.error(message)
         self.setCommandItems()
         self.assignCommand()
 
@@ -1264,6 +1427,84 @@ class PokeControllerApp:
         """
         self.Command_nb.focus_set()
         return "break"
+
+    def openCommandPalette(self, *event: Any) -> str:
+        """Ctrl+K でコマンドを検索して実行する小窓を開く。
+
+        Combobox を開いて目で探す操作を、キーボードだけで済ませる。
+        候補・表示名・並び順はすべて一覧側と同じ材料（タグと使用履歴）を
+        使う。ここで独自の規則を作ると、同じ名前で探しているのに一覧と
+        結果が違う、という分かりにくい状態になる。
+
+        走行中は開かない。選び直せてしまうと、いま走っているコマンドと
+        画面の表示が食い違い、Stop が何に対する操作か分からなくなる。
+        """
+        if self._isCommandBusy():
+            print("実行中はコマンドを切り替えられません")
+            return "break"
+
+        if self._palette is not None:
+            self._palette.lift()
+            return "break"
+
+        # いま見えているタブを対象にする。Python と Mcu で候補が別なので、
+        # 画面と違うタブのコマンドを出すと選んだあとに取り違える。
+        combo = self.py_cb
+        names = self.py_all_names
+        tag_table = self.py_tags
+        if self.Command_nb.index(self.Command_nb.select()) != 0:  # type: ignore
+            combo = self.mcu_cb
+            names = self.mcu_all_names
+            tag_table = self.mcu_tags
+
+        # 表示名は一覧と同じ組み立て方にする（タグ前置＋使用履歴）
+        labels = {}
+        for name in names:
+            tags = tag_table.get(name, [])
+            label = CommandTags.displayName(name, tags)
+            used = CommandStats.summary(self.command_stats, name)
+            labels[name] = f"{label}  — {used}" if used else label
+
+        def onClose() -> None:
+            self._palette = None
+
+        self._palette = CommandPalette.CommandPalette(
+            self.root,
+            list(names),
+            labels,
+            self.command_stats,
+            self._runFromPalette,
+            onClose,
+        )
+        return "break"
+
+    def _runFromPalette(self, name: str) -> None:
+        """パレットで選ばれたコマンドを一覧へ反映してから実行する。
+
+        ここで直接コマンドを生成せず、既存の経路（表示を合わせてから
+        startPlay）に通す。生成と開始を2か所に持つと、停止や一時停止の
+        状態管理が二重になり、どちらが正か決められなくなる。
+        """
+        combo = self.py_cb
+        if self.Command_nb.index(self.Command_nb.select()) != 0:  # type: ignore
+            combo = self.mcu_cb
+
+        # 絞り込みで一覧から外れていると選べないので、先に解除する。
+        # 検索欄に文字が残ったままだと、実行後の一覧が空に見えて戸惑う。
+        if self.search_name.get() or self.tag_name.get() != TAG_ALL:
+            self.clearCommandFilter()
+
+        # 素の名前 → いまの表示名。表示名は使用履歴で変わるため毎回引き直す
+        relabel = {n: lb for lb, n in self._shown_names.get(combo, {}).items()}
+        label = relabel.get(name)
+        if label is None:
+            print(f"コマンドが見つかりません: {name}")
+            logger.warning(f"Command not found in the list: {name}")
+            return
+
+        combo.set(label)
+        self.assignCommand()
+        self.startPlay()
 
     def openTagEditor(self, *event: Any) -> None:
         """選択中のコマンドのタグを編集する小窓を開く。
@@ -1443,54 +1684,135 @@ class PokeControllerApp:
                 return
 
     def assignCommand(self) -> None:
-        """選択中のコマンドを生成する。
-
-        引くのは表示位置ではなく表示名。対応表に無ければ生成せず、
-        Start を押せない状態にする（押せてしまうと、何も起きない
-        理由が分からない）。
-
-        実行中・停止処理中は何もしない。ここで作り直すと、いま走って
-        いる実体と、停止を頼んだ相手が別物になる。Stop を押しても
-        止まらないうえ、後始末(stopPlayPost)も呼ばれないため、
-        ボタンが disabled のまま操作を受け付けなくなる。
-        """
+        """選択クラスが変わった場合だけ、選択時インスタンスを作り直す。"""
         if self._isCommandBusy():
             return
 
-        if self.mcu_map:
-            mcu_class = self.mcu_map.get(self._selectedName(self.mcu_cb))
-            self.mcu_cur_command = None if mcu_class is None else mcu_class()
+        def ensure(current: Any, selected: Any) -> Any:
+            if selected is None:
+                return None
+            if current is not None and type(current) is selected:
+                return current
+            return self._buildCommand(selected)
 
-        if self.py_map:
-            cmd_class = self.py_map.get(self._selectedName(self.py_cb))
-            if cmd_class is None:
-                self.py_cur_command = None
-            elif issubclass(cmd_class, PythonCommandBase.ImageProcPythonCommand):
-                # 旧: except TypeError で握っていたため、コマンド内部で起きた
-                # TypeError まで「古い形式」と誤判定し引数1つで再生成していた。
-                # シグネチャを見て渡せる引数の数を先に決める。
-                if WindowUtils.acceptsGuiArg(cmd_class):
-                    self.py_cur_command = cmd_class(self.camera, self.preview)
-                else:
-                    self.py_cur_command = cmd_class(self.camera)
-            else:
-                self.py_cur_command = cmd_class()
+        mcu_class = self.mcu_map.get(self._selectedName(self.mcu_cb))
+        self.mcu_cur_command = ensure(self.mcu_cur_command, mcu_class)
+        py_class = self.py_map.get(self._selectedName(self.py_cb))
+        self.py_cur_command = ensure(self.py_cur_command, py_class)
 
         if self.Command_nb.index(self.Command_nb.select()) == 0:  # type: ignore
             self.cur_command = self.py_cur_command
         else:
             self.cur_command = self.mcu_cur_command
-
         enabled = self.cur_command is not None
         self.startButton["state"] = "normal" if enabled else "disabled"
+
+    def _buildCommand(self, cmd_class: Any) -> Any:
+        """コマンドを1つ生成する。失敗したら None を返す。
+
+        ダイアログを出すコマンドはワーカースレッドから tk を触ることに
+        なるため、生成した時点で GUI のルートを渡しておく。画像認識の
+        コマンドは gui（プレビュー）を受け取れるが、通常のコマンドは
+        受け取れず、渡し口が無いままだった。属性で渡せば全種類に効く。
+        """
+        if cmd_class is None:
+            return None
+        try:
+            if issubclass(cmd_class, PythonCommandBase.ImageProcPythonCommand):
+                # 旧: except TypeError で握っていたため、コマンド内部で起きた
+                # TypeError まで「古い形式」と誤判定し引数1つで再生成していた。
+                # シグネチャを見て渡せる引数の数を先に決める。
+                if WindowUtils.acceptsGuiArg(cmd_class):
+                    command = cmd_class(self.camera, self.preview)
+                else:
+                    command = cmd_class(self.camera)
+            else:
+                command = cmd_class()
+        except Exception:
+            name = getattr(cmd_class, "NAME", getattr(cmd_class, "__name__", "?"))
+            logger.error(traceback.format_exc())
+            print(f"コマンドの初期化に失敗しました: {name}")
+            return None
+
+        # ダイアログを GUI スレッドで作らせるための足がかり。
+        # PythonCommandBase._guiRoot がここを最初に見る。
+        # 代入できないコマンド（__slots__ や __setattr__ を持つもの）が
+        # あるため握る。渡せなくても従来どおり動く（ダイアログが
+        # 呼び出し元のスレッドで作られるだけで、これは以前と同じ）。
+        try:
+            command.gui_root = self.root
+        except Exception:
+            logger.debug(f"gui_root を渡せませんでした: {cmd_class}")
+        # 設定はここでは渡さない。以前は command.settings = self.settings と
+        # 参照ごと渡していたが、それでは reload_com_port が tk 変数の get()
+        # をワーカースレッドから呼ぶことになり、Tcl を別スレッドで触る形に
+        # なっていた（PCB-20 案C）。COM の設定は Start の直前に GUI スレッド
+        # で _snapshotSerialConfig() が通常の Python 値へ写す。生成から Start
+        # までに COM ポートを選び直される可能性があるため、渡す時点は生成時
+        # ではなく Start 直前でなければならない。
+
+        return command
+
+    def _snapshotSerialConfig(self, command: Any) -> None:
+        """COM の設定を通常の Python 値へ写してコマンドへ渡す。
+
+        必ず GUI スレッド（Start のコールバック）から呼ぶこと。tk 変数の
+        get() は Tcl インタプリタを呼ぶため、コマンド側のワーカー
+        スレッドから読むと Tkinter のスレッド制約に触れる。ここで int /
+        str へ落としてしまえば、以後は Tk と無関係な値になる。
+
+        写す時点が Start の直前であることも要点。コマンドの生成は選択時に
+        行われるので、生成時に渡すと、そのあと COM ポートを選び直しても
+        古い値のまま残る。Start のたびに上書きする。
+
+        値そのものは画面の変数（self.com_port など）から取る。settings は
+        起動時に読んだ内容で、画面で選び直した分は _on_setting_changed()
+        を通るまで入らない。いま繋いでいる先と一致するのは画面側。
+        """
+        try:
+            config = {
+                "com_port": int(self.com_port.get()),
+                "com_port_name": str(self.com_port_name.get()),
+                "baud_rate": int(self.baud_rate.get()),
+            }
+        except (tk.TclError, ValueError) as e:
+            # 空欄や未選択のときは変換に失敗する。ここで止めはしない
+            # （COM を使わないコマンドまで動かせなくなる）。渡さなければ
+            # reload_com_port が理由を出して False を返す。
+            logger.warning(f"COM の設定を写せませんでした: {e}")
+            return
+
+        try:
+            command.serial_config = config
+        except Exception:
+            # __slots__ や __setattr__ を持つコマンドには渡せない。
+            # gui_root と同じ扱いで、渡せなくても実行そのものは続ける。
+            logger.debug(f"serial_config を渡せませんでした: {type(command)}")
 
     def _isCommandBusy(self) -> bool:
         """コマンドが走っている、または停止処理の最中かを返す。
 
-        Start 表示に戻るのは後始末(stopPlayPost)が終わったときなので、
-        「Start と表示されている」ことを空いている合図として使う。
+        以前はボタンの表示文字（"Start" かどうか）で判定していた。
+        表示は状態を映すためのもので、状態そのものではない。文言を
+        変えた・開始の途中で例外が出た・外から表示を触った、のどれでも
+        判定が狂う。状態は _command_state だけで持つ。
         """
-        return self.startButton["text"] != "Start"
+        return self._command_state != "idle"
+
+    def _setCommandRunningUI(self) -> None:
+        """実行中の見た目にそろえる。状態の変更とセットで呼ぶ。"""
+        self.startButton["text"] = "Stop"
+        self.startButton["command"] = self.stopPlay
+        self.startButton["state"] = "normal"
+        self.reloadCommandButton["state"] = "disabled"
+        # 一時停止に対応しない種類（MCU コマンド）では押せないようにする。
+        # 押せるのに「対応していません」とだけ出るのは、壊れて見える。
+        supports_pause = callable(getattr(self.cur_command, "togglePause", None))
+        self.pauseButton["text"] = "Pause"
+        self.pauseButton["state"] = "normal" if supports_pause else "disabled"
+        self._running_command = str(getattr(self.cur_command, "NAME", ""))
+        self._paused = False
+        self._update_title()
 
     def reloadCommands(self) -> None:
         """リロード後も同じコマンドが選ばれた状態に戻す。
@@ -1498,6 +1820,15 @@ class PokeControllerApp:
         復元は表示位置ではなく名前で行う。絞り込みや並び替えが入ると
         位置は当てにならないうえ、タグを前置した表示名も変わりうる。
         """
+        # 実行中の再ロードを断る。ボタンは disabled にしてあるが、
+        # F5 のキーバインドは生きているため、ここで塞がないと通る。
+        # 走っているインスタンスは古いクラス定義を持ったまま、モジュール
+        # 側のグローバルやクラス変数だけが新しくなり、新旧が混在する。
+        if self._isCommandBusy():
+            print("実行中はコマンドを再ロードできません")
+            logger.warning("Reload is unavailable while a command is running")
+            return
+
         old_py = self.py_map.get(self._selectedName(self.py_cb))
         old_mcu = self.mcu_map.get(self._selectedName(self.mcu_cb))
 
@@ -1512,6 +1843,19 @@ class PokeControllerApp:
         logger.info("Reloaded commands.")
 
     def startPlay(self, *event: Any) -> None:
+        """選択中のコマンドを開始する。
+
+        順序が重要。先に状態と見た目を実行中へ倒してから start する。
+        逆にすると、ごく短いコマンドが start の中で終わった場合に、
+        後始末が先に走り、あとから実行中の見た目へ書き換えてしまう。
+        """
+        # 二重起動を断る。Tk は同じボタンのコールバックを並行実行しないが、
+        # F6・パレット・外部呼び出しからも入って来られる。
+        if self._isCommandBusy():
+            print("すでにコマンドが動いています")
+            logger.warning("A command is already running")
+            return
+
         self.assignCommand()
 
         # 旧コードはメッセージを出すだけで先へ進み、None.NAME で落ちていた
@@ -1520,7 +1864,29 @@ class PokeControllerApp:
             logger.warning("No commands have been assigned yet.")
             return
 
-        message = f"{self.startButton['text']} {self.cur_command.NAME}"
+        # シリアル未接続でも開始は妨げない。従来はここに判定が無く、
+        # 画像認識だけのコマンドや机上検証（verify_all）は繋がなくても
+        # 最後まで走っていた。ここで一律に止めると、既存のコマンドが
+        # 動かなくなる。既存コマンドは REQUIRES_SERIAL を書いていないので、
+        # 既定は「不要」でなければ後方互換が壊れる。
+        # 明示的に REQUIRES_SERIAL = True と書いたコマンドだけを止める。
+        if getattr(self.cur_command, "REQUIRES_SERIAL", False):
+            if self.ser is None or not self.ser.isOpened():
+                message = "このコマンドは COM ポートの接続が必要です"
+                print(message)
+                logger.warning(message)
+                return
+        elif self.ser is None or not self.ser.isOpened():
+            # 止めはしないが、黙って始めると「動いているのに何も起きない」
+            # に見える。操作を送る段で失敗することを先に知らせておく。
+            print("注意: COMポートが未接続です（操作の送信はできません）")
+
+        # COM の設定を GUI スレッドのここで通常値へ写す。コマンドの
+        # 生成は選択時なので、そこで渡すと選び直したあとの値を拾えない。
+        # reload_com_port はこの値だけを見る（tk 変数は読まない）。
+        self._snapshotSerialConfig(self.cur_command)
+
+        message = f"Start {self.cur_command.NAME}"
         print(message)
         logger.info(message)
         # 前回の実行を先に読む。record より後だと今回の分で上書きされる。
@@ -1529,47 +1895,172 @@ class PokeControllerApp:
         if before:
             print(f"  ({before})")
 
-        # 使用履歴を数える。ファイルへ書くのは終了時にまとめて1回だけで、
-        # 短いコマンドを連続で回しても入出力が積み上がらないようにする。
+        # 先に実行中へ倒す。start はスレッドを起こすので、戻ったときには
+        # もう終わっていることがある。あとから実行中の見た目にすると、
+        # 終了後の後始末を上書きして Stop 表示のまま固まる。
+        self._command_state = "running"
+        self._setCommandRunningUI()
+
+        # 実行ごとに世代を進める。後始末（stopPlayPost）が自分の世代の
+        # ものかを見分けるために使う。番号が無いと、止まりきらなかった
+        # 前回のスレッドが後から後始末を呼んだときに、いま走っている
+        # コマンドの画面を「空き」へ戻してしまう。
+        self._run_token += 1
+        token = self._run_token
+
+        try:
+            started = self.cur_command.start(self.ser, lambda: self.stopPlayPost(token))
+        except Exception:
+            # スレッドを起こす前に落ちると後始末も呼ばれない。ここで戻す。
+            print("コマンドを開始できませんでした")
+            logger.error(traceback.format_exc())
+            self._stopPlayPostOnGui()
+            return
+
+        # start が例外を出さずに「何もしなかった」場合を拾う。
+        # PythonCommand は前のスレッドが生きていれば False、MCU コマンドは
+        # ポート未接続で False を返す。どちらも後始末は呼ばれないため、
+        # ここで戻さないと画面だけ実行中のまま固まる。
+        # 判定は is False で行う。start を上書きしている既存のコマンドは
+        # 戻り値を返さない（None）ため、not started で見ると全て失敗扱いに
+        # なってしまう。None は従来どおり「開始できた」とみなす。
+        if started is False:
+            print("コマンドを開始できませんでした")
+            logger.warning(f"Failed to start: {cmd_name}")
+            self._stopPlayPostOnGui()
+            return
+
+        # 使用履歴は開始できたあとで数える。開始前に足すと、起動に失敗した
+        # 回数まで「実行回数」に混ざる。ファイルへ書くのは終了時に1回だけ。
         CommandStats.record(self.command_stats, cmd_name)
         self._stats_dirty = True
         # 記録は辞書へ即時入るので、選択肢もその場で作り直せる。
         # Reload を待つと「さっき使ったのに最近使ったに出ない」ことになる。
         self._refreshTagChoices()
 
-        self.cur_command.start(self.ser, self.stopPlayPost)
-
-        self.startButton["text"] = "Stop"
-        self.startButton["command"] = self.stopPlay
-        self.reloadCommandButton["state"] = "disabled"
-        self.pauseButton["state"] = "normal"
-        self._running_command = str(getattr(self.cur_command, "NAME", ""))
-        self._update_title()
-
     def stopPlay(self) -> None:
+        """実行中のコマンドへ停止を要求する。
+
+        停止したことにするのは、後始末(stopPlayPost)が呼ばれたとき。
+        ただし end() が例外を投げた・コマンドが後始末を呼ばない・
+        外部I/O で抜けられない、のいずれでも呼ばれない。その場合に
+        ボタンが disabled のまま操作を受け付けなくなるため、見張りを置く。
+        """
         if self.cur_command is None:
             return
-        message = f"{self.startButton['text']} {self.cur_command.NAME}"
+        message = f"Stop {self.cur_command.NAME}"
         print(message)
         logger.info(message)
+        self._command_state = "stopping"
         self.startButton["state"] = "disabled"
-        self.cur_command.end(self.ser)
+        try:
+            self.cur_command.end(self.ser)
+        except Exception:
+            logger.error(traceback.format_exc())
+            print("停止要求で例外が発生しました")
+            self._stopPlayPostOnGui(self._run_token)
+            return
+        self._watch_after_id = self.root.after(
+            STOP_WATCH_MS, lambda: self._watchStopped(0, self._run_token)
+        )
 
-    def stopPlayPost(self) -> None:
+    def _watchStopped(self, waited: int = 0, token: int | None = None) -> None:
+        """停止を頼んだのに戻って来ない場合、操作だけは戻す。
+
+        スレッドが生きているかどうかは実体に聞く。生きていれば、まだ
+        待つ。死んでいるのに後始末が来ていないなら、後始末が呼ばれない
+        経路に入ったということなので、こちらで画面を空きへ戻す。
+
+        生きている間は待ち続ける。時間で打ち切って画面だけ空きへ戻すと、
+        止まっていないスレッドと次に始めたコマンドが同じシリアルを同時に
+        操作することになる。Python のスレッドは外から安全に殺せないので、
+        「勝手に戻す」よりも「戻せないことを伝える」ほうが安全側になる。
+        代わりに、待っていることと経過を一定間隔で知らせる。
+
+        token は Stop を始めた時点の世代番号。見張りが遅れて発火した
+        ときに、すでに次の実行が始まっていれば触らない。
+        """
+        if token is not None and token != self._run_token:
+            logger.debug("古い実行の見張りを終了しました")
+            return
+
+        if self._command_state != "stopping":
+            return
+        thread = getattr(self.cur_command, "thread", None)
+        if thread is not None and thread.is_alive():
+            waited += STOP_WATCH_MS
+            if waited % STOP_NOTIFY_MS == 0:
+                message = (
+                    f"コマンドが停止しません（経過 {waited // 1000}秒）。"
+                    "外部の入出力を待っている可能性があります"
+                )
+                print(message)
+                logger.warning(message)
+                self._stop_waited = waited
+                self._update_title()
+            self._watch_after_id = self.root.after(
+                STOP_WATCH_MS, lambda: self._watchStopped(waited, token)
+            )
+            return
+        self._stop_waited = 0
+        message = "コマンドの後始末が呼ばれませんでした。操作を戻します"
+        print(message)
+        logger.warning("postProcess was not called. restoring the UI")
+        self._stopPlayPostOnGui(token)
+
+    def stopPlayPost(self, token: int | None = None) -> None:
         """コマンド終了後の後始末。
 
         呼び出し元は PythonCommandBase の _cleanup で、コマンドを走らせて
         いるワーカースレッドから直接呼ばれる。tkinter はスレッドセーフで
         ないので、ウィジェットを触る処理は after(0) で GUI スレッドへ渡す。
         """
+        if token is not None and token != self._run_token:
+            # 止まりきらなかった前回のスレッドが、いまごろ後始末を呼んで
+            # きた場合。すでに別のコマンドが走っているので画面は触らない。
+            logger.debug("古い実行の後始末を無視しました")
+            return
+        if self._closing:
+            # 終了処理が始まっている。ここで after を積むと、destroy の
+            # 直前に割り込んで破棄途中のウィジェットを触ることがある。
+            # 画面はもう畳む段なので後始末は不要。
+            logger.debug("終了処理中のため後始末を省きました")
+            return
         try:
-            self.root.after(0, self._stopPlayPostOnGui)
-        except tk.TclError:
-            # 終了処理の最中に終わった場合。画面はもう無いので何もしない
+            self.root.after(0, lambda t=token: self._stopPlayPostOnGui(t))
+        except (tk.TclError, RuntimeError):
+            # 終了処理の最中に終わった場合。画面はもう無いので何もしない。
+            # RuntimeError は「GUI スレッドが mainloop にいない」ときに
+            # after が投げる。捕まえないと呼び出し元（_cleanup）へ抜け、
+            # 正常な停止が異常終了に化ける。
             logger.debug("Window is already destroyed. skipped the post process")
 
-    def _stopPlayPostOnGui(self) -> None:
-        """後始末の本体。必ず GUI スレッドで動く。"""
+    def _stopPlayPostOnGui(self, token: int | None = None) -> None:
+        """後始末の本体。必ず GUI スレッドで動く。
+
+        token は「どの実行の後始末か」を表す世代番号。after(0) で積んで
+        から実際に走るまでの間に、次の実行が始まっていることがある。
+        積む時点だけで見ても足りず、走る時点でも見る必要がある。
+        （実行1の後始末が積まれたまま _watchStopped が先に画面を戻し、
+        利用者が実行2を始めたあとで積まれていた分が走ると、動いて
+        いる実行2の画面が空きへ戻り Start が押せてしまう）
+
+        操作を戻すことを最優先にする。一覧の作り直しは付随処理なので、
+        そこで例外が出てもボタンは戻っていなければならない。以前は
+        ひと続きだったため、履歴の更新で落ちると Stop 表示のまま
+        操作を受け付けなくなる余地があった。
+        """
+        if token is not None and token != self._run_token:
+            logger.debug("古い実行の GUI 後処理を無視しました")
+            return
+
+        # 同じ実行について複数回呼ばれても、一覧の作り直しまでは
+        # 繰り返さない。stopPlayPost 経由と _watchStopped 経由の
+        # 両方から来ることがあるため。状態の復元は冪等なので通す。
+        already_idle = self._command_state == "idle"
+
+        self._command_state = "idle"
+        self._stop_waited = 0
         self.startButton["text"] = "Start"
         self.startButton["command"] = self.startPlay
         self.startButton["state"] = "normal"
@@ -1579,24 +2070,37 @@ class PokeControllerApp:
         self._paused = False
         self._running_command = ""
         self._update_title()
-        # 走行中は選択を動かさないため applyCommandFilter を見送っている。
-        # 空いたこの時点で一覧を見直し、「最近使った」「よく使う」の
-        # 並びと絞り込みを実際の履歴に合わせる。
-        self._refreshTagChoices()
-        self.applyCommandFilter()
+
+        # ここから先は無くても操作できる処理。失敗しても状態は戻す。
+        if already_idle:
+            # すでに戻っている＝別経路で後始末済み。一覧の作り直しを
+            # 二重に走らせても実害は無いが、選択の復元が二度動くため省く。
+            return
+        try:
+            # 走行中は選択を動かさないため applyCommandFilter を見送っている。
+            # 空いたこの時点で一覧を見直し、「最近使った」「よく使う」の
+            # 並びと絞り込みを実際の履歴に合わせる。
+            self._refreshTagChoices()
+            self.applyCommandFilter()
+        except Exception:
+            logger.error(traceback.format_exc())
+            print("コマンド一覧の更新に失敗しました（操作は続けられます）")
 
     def ReloadCommandWithF5(self, *event: Any) -> None:
+        # 実行中の可否は reloadCommands 側で判断する。入口ごとに条件を
+        # 書くと、片方だけ直したときに挙動が食い違う。
         self.reloadCommands()
 
     def StartCommandWithF6(self, *event: Any) -> None:
-        if self.startButton["text"] == "Stop":
+        if self._isCommandBusy():
             print("Command is now working!")
             logger.debug("Command is now working!")
-        elif self.startButton["text"] == "Start":
-            self.startPlay()
+            return
+        self.startPlay()
 
     def StopCommandWithEsc(self, *event: Any) -> None:
-        if self.startButton["text"] == "Stop":
+        # 停止処理の最中は受け付けない。二重に end() を呼ぶ意味が無い。
+        if self._command_state == "running":
             self.stopPlay()
 
     def togglePause(self) -> None:
@@ -1605,11 +2109,14 @@ class PokeControllerApp:
         停止（Stop）はコマンドを終わらせるため、次に動かすときは最初
         からやり直しになる。長い手順の途中で少し手を離したいだけの
         ときに使えないので、状態を保ったまま足止めする口を分けて置く。
+
+        一時停止に対応しない種類ではボタン自体を disabled にしてある
+        （_setCommandRunningUI）。ここへ来るのは F7 の打鍵だけ。
         """
         cmd = self.cur_command
         if cmd is None or not getattr(cmd, "alive", False):
             return
-        if not hasattr(cmd, "togglePause"):
+        if not callable(getattr(cmd, "togglePause", None)):
             # MCU コマンドなど、一時停止に対応しない種類
             print("This command does not support pause.")
             return
@@ -1619,7 +2126,7 @@ class PokeControllerApp:
         self._update_title()
 
     def PauseCommandWithF7(self, *event: Any) -> None:
-        if self.startButton["text"] == "Stop":
+        if self._command_state == "running":
             self.togglePause()
 
     # ------------------------------------------------------------------
@@ -1627,22 +2134,30 @@ class PokeControllerApp:
     # ------------------------------------------------------------------
 
     def display_text(self) -> None:
-        """キューに溜まった出力をまとめて描画する。
-
-        「ログ」タブの上下2枚と「入力」の計3つの欄へ、それぞれの
-        キューから流し込む。1回の after で全部を処理するので周期は1つ。
-        """
-        follow = self.log_autoscroll.get()
-        LogPane.flushQueue(LogPane.text_queue, self.logArea, follow)
-        LogPane.flushQueue(LogPane.sub_log_queue, self.subLogArea, follow)
-
-        if self.show_input_log.get():
-            # 集約の取り残し（最後の1回）を吐き出させてから描画する
-            if self.ser is not None:
-                self.ser.flushInputLog()
-            LogPane.flushQueue(LogPane.input_log_queue, self.inputLogArea, follow)
-
-        self.logArea.after(LogPane.FLUSH_INTERVAL_MS, self.display_text)
+        self._display_after_id = None
+        if self._closing:
+            return
+        try:
+            follow = self.log_autoscroll.get()
+            LogPane.flushQueue(LogPane.text_queue, self.logArea, follow)
+            LogPane.flushQueue(LogPane.sub_log_queue, self.subLogArea, follow)
+            if self.show_input_log.get():
+                if self.ser is not None and self.ser.isOpened():
+                    self.ser.flushInputLog()
+                LogPane.flushQueue(LogPane.input_log_queue, self.inputLogArea, follow)
+        except tk.TclError:
+            if not self._closing:
+                logger.debug("ログWidget破棄中の更新を停止しました")
+        except Exception:
+            logger.error(traceback.format_exc())
+        finally:
+            if not self._closing:
+                try:
+                    self._display_after_id = self.logArea.after(
+                        LogPane.FLUSH_INTERVAL_MS, self.display_text
+                    )
+                except (tk.TclError, RuntimeError):
+                    self._display_after_id = None
 
     def run(self) -> None:
         logger.debug("Start Poke-Controller")
@@ -1651,46 +2166,95 @@ class PokeControllerApp:
     def _stopRunningCommand(self) -> None:
         """終了に先立ってコマンドを止める。
 
+        alive は「停止を要求されていないか」でしかない。finish() も
+        sendStopRequest() もスレッドが抜ける前に False にするため、
+        alive=False でもスレッドが後始末の途中ということがある。
+        そこだけを見て戻ると、直後に閉じたシリアルへ書きに行く。
+        判断はスレッドの生存で行う。
+
         止まりきるまでは待たない。長い wait や外部I/O の最中だと
         いつ抜けるか読めず、待つと画面が固まったように見える。
         スレッドは daemon なので、抜けきらなくてもプロセスは終わる。
         ここでの目的は、閉じたシリアルへ書きに行くのを減らすこと。
         """
         cmd = self.cur_command
-        if cmd is None or not getattr(cmd, "alive", False):
+        if cmd is None:
             return
-        try:
-            cmd.end(self.ser)
-        except Exception as e:
-            logger.warning(f"停止要求で例外: {e}")
+
+        thread = getattr(cmd, "thread", None)
+        running = thread is not None and thread.is_alive()
+        if not running and not getattr(cmd, "alive", False):
+            return
+
+        if getattr(cmd, "alive", False):
+            try:
+                cmd.end(self.ser)
+            except Exception as e:
+                logger.warning(f"停止要求で例外: {e}")
 
         # 後始末（キーを離す・postProcess）が走る余地を与える。待ちは
         # 短く区切る。ここで長く待つと終了操作そのものが固まって見える。
-        thread = getattr(cmd, "thread", None)
-        if thread is not None and thread.is_alive():
+        if running:
             thread.join(timeout=1.0)
             if thread.is_alive():
                 print("コマンドが停止しないまま終了します")
                 logger.warning("Command did not stop in time. exiting anyway")
 
     def exit(self) -> None:
+        """終了処理。入口が複数あるので、二重に走らせない。
+
+        × ボタン（WM_DELETE_WINDOW）とメニューの「終了」の2経路があり、
+        確認ダイアログを出しているあいだにもう一方から入れる。2回目は
+        破棄済みのウィジェットを触るため TclError（bad window path name）
+        になる。_closing は「終了処理を始めたか」の印なので、判定は
+        ダイアログより前に置く。後ろに置くと、確認を待っている間に
+        入って来た2回目を防げない。
+        """
+        if self._closing:
+            logger.debug("exit() は既に実行中のため無視しました")
+            return
         if not tkmsg.askyesno("確認", "Poke Controllerを終了しますか？"):
             return
 
-        # 走っているコマンドを先に止める。止めずに destroy すると、
-        # ワーカースレッドが閉じたシリアルへ書きに行く。停止要求を
-        # 出したあと、後始末が走る余地を少しだけ与える。
+        self._closing = True
+        # after の ID は「登録したウィジェット」に紐づく。別の
+        # ウィジェットで after_cancel しても取り消せず、予約は生き残る。
+        # display_text は logArea.after で、_restore_sash は root.after で
+        # 登録しているので、取り消しも同じ相手へ頼む。取り消し漏れが
+        # あると destroy の最中に発火し、破棄途中のウィジェットを触って
+        # TclError（can't delete Tcl command）になる。
+        for widget, after_id in (
+            (self.logArea, self._display_after_id),
+            (self.root, self._sash_after_id),
+            (self.root, self._watch_after_id),
+        ):
+            if after_id is None:
+                continue
+            try:
+                widget.after_cancel(after_id)
+            except (tk.TclError, ValueError):
+                pass
+        self._display_after_id = None
+        self._sash_after_id = None
+        self._watch_after_id = None
         self._stopRunningCommand()
+
+        self._stopKeyboard()
+        self.closingController()
+        if self.preview is not None:
+            # 映像は止めず、Sender を使うマウス操作の割り当てだけ外す。
+            # ここで stopCapture すると映像が先に消え、終了処理の
+            # 途中で画面が固まったように見える。
+            try:
+                self.preview.UnbindLeftClick()
+                self.preview.UnbindRightClick()
+            except Exception as e:
+                logger.warning(f"マウス操作の解除で例外: {e}")
 
         if self.ser is not None and self.ser.isOpened():
             self.ser.closeSerial()
             print("Serial disconnected")
 
-        if self.keyboard is not None:
-            self.keyboard.stop()
-            self.keyboard = None
-
-        self.closingController()
         # ウィンドウを壊す前に位置とサイズを控える（destroy 後は取れない）
         self._remember_geometry()
         self._save_settings()
@@ -1761,9 +2325,9 @@ class PokeControllerApp:
 
 
 if __name__ == "__main__":
-    # 実行階層に SerialController フォルダがあればそこへ移動する
-    if "SerialController" in os.listdir():
-        os.chdir("SerialController")
+    # 起動場所に依存せず、このファイルのある場所を作業ディレクトリにする。
+    # Commands や Captures を相対で開く箇所が残っているため、ここで揃える。
+    os.chdir(BASE_DIR)
 
     PokeConLogger.root_logger()
     logger.info("The root logger is created.")
