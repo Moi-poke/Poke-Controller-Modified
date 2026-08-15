@@ -626,7 +626,18 @@ class PythonCommand(CommandBase.Command):
             # GUI が無い（CUI 実行・テスト）ときは従来どおり直に作る
             build()
         else:
-            root.after(0, build)
+            # after() を呼ぶこと自体がワーカースレッドからの Tcl 呼び出しに
+            # なる。CPython + 標準の Tcl では受け付けられるが、非スレッド
+            # ビルドの Tcl や、GUI が既に破棄されている場合は例外になる。
+            # ここで落ちると done が永久にセットされず、コマンドが止まらない
+            # ばかりか Stop も効かなくなる。渡せなかったときは GUI を諦めて
+            # その場で作る（従来の CUI 経路と同じ）ほうが、まだ止められる。
+            try:
+                root.after(0, build)
+            except (RuntimeError, tk.TclError) as e:
+                logger.warning(f"GUI スレッドへ渡せませんでした: {e}")
+                root = None
+                build()
 
         waited = 0.0
         while not done.wait(0.1):
@@ -642,9 +653,14 @@ class PythonCommand(CommandBase.Command):
                 if root is not None:
                     # destroy は GUI スレッドへ依頼する。破棄されると
                     # wait_window が解け、build() が finally まで進んで
-                    # done がセットされる。
-                    root.after(0, closeOnGui)
-                    done.wait(self._DIALOGUE_CLOSE_WAIT)
+                    # done がセットされる。渡せなければ自分で閉じる。
+                    # 停止の最中なので、ここで例外を上げても得が無い。
+                    try:
+                        root.after(0, closeOnGui)
+                        done.wait(self._DIALOGUE_CLOSE_WAIT)
+                    except (RuntimeError, tk.TclError) as e:
+                        logger.warning(f"ダイアログの後始末を渡せませんでした: {e}")
+                        closeOnGui()
                 else:
                     closeOnGui()
                 self.checkIfAlive()

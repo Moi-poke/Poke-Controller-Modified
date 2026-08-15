@@ -54,7 +54,7 @@ from Menubar import PokeController_Menubar
 
 
 NAME = "Poke-Controller"
-VERSION = "v3.5.0 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
+VERSION = "v3.5.2 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
 
 
 # タイトルに出すコマンド名の上限。長い名前でウィンドウ名が埋まるのを防ぐ
@@ -167,7 +167,7 @@ class PokeControllerApp:
         # コマンド検索パレット（Ctrl+K）。二重に開かないよう参照を持つ
         self._palette: Any = None
         # 使用履歴（実行回数 / 最終実行日時）。書き出しは終了時に1回だけ
-        self.command_stats: dict[str, dict] = CommandStats.load()
+        self.command_stats: dict[str, dict] = CommandStats.load(self.profile)
         self._closing = False
         self._stats_dirty = False
         self.camera_dic: dict[int, str] | None = None
@@ -634,7 +634,6 @@ class PokeControllerApp:
         self.show_size.set(self.settings.show_size.get())
         self.com_port.set(self.settings.com_port.get())
         self.com_port_name.set(self.settings.com_port_name.get())
-        self.baud_rate.set(str(self.settings.baud_rate.get()))
         self.camera_id.set(self.settings.camera_id.get())
         self.camera_key.set(self.settings.camera_key.get())
         self.camera_lf.is_use_left_stick_mouse.set(
@@ -650,6 +649,17 @@ class PokeControllerApp:
         WindowUtils.selectCombobox(self.fps_cb, self.fps.get())
         WindowUtils.selectCombobox(self.show_size_cb, self.show_size.get())
         self.show_size_tmp = self.show_size_cb["values"].index(self.show_size_cb.get())
+
+        # Baud Rate は候補で縛らない。GameCube の自動化や独自マイコンで
+        # 9600 / 4800 以外を使う人がいる。設定にある値が候補に無ければ
+        # 候補そのものへ足して選ぶ。矯正すると設定ファイルへ書き戻る
+        # 経路があるため、利用者の値が起動のたびに消える。
+        current_rate = str(self.settings.baud_rate.get())
+        rates = [str(v) for v in BAUD_RATE_VALUES]
+        if current_rate not in rates:
+            rates.append(current_rate)
+            self.baud_rate_cb.config(values=rates)
+        self.baud_rate.set(current_rate)
 
         # 旧 settings.ini は com_port(番号) しか持たないことがある。
         # 名前が空なら番号から COM<n> を組み立てて選び直せるようにする。
@@ -677,6 +687,10 @@ class PokeControllerApp:
             self.Camera_Name.config(state="disable")
             # 旧コードはここで __init__ ごと return していたためカメラもシリアルも
             # 初期化されず起動不能だった。カメラ ID を手入力すれば使えるので続行する。
+            # ただし手入力を適用する口が無く、打っても反映されなかった（WIN-14）。
+            # Enter とフォーカス移動で適用する。打鍵ごとに適用すると、
+            # 「12」と打ちたいのに「1」の時点で開きに行ってしまう。
+            self._bindCameraEntry()
             return
 
         if self.os_name not in ("Windows", "Darwin"):
@@ -684,6 +698,7 @@ class PokeControllerApp:
                 "Unknown environment. Cannot show Camera name."
             )
             self.Camera_Name.config(state="disable")
+            self._bindCameraEntry()
             return
 
         try:
@@ -698,6 +713,32 @@ class PokeControllerApp:
             self.camera_name_fromDLL.set(message)
             logger.warning(message)
             self.Camera_Name.config(state="disable")
+
+    def _bindCameraEntry(self) -> None:
+        """Camera ID を手入力で適用できるようにする。
+
+        カメラ名の一覧を出せない環境（Linux / 未知の OS）では、ID を
+        直接打つ以外に選ぶ手段が無い。Entry は state="normal" のままで
+        打てるが、適用する契機がどこにも無かったため打っても何も
+        起きなかった（WIN-14）。
+
+        適用の契機は Enter とフォーカス移動にする。打鍵ごとに開きに
+        行くと、「12」と打ちたいのに「1」の時点で別のカメラを掴む。
+        """
+        self.camera_entry.bind("<Return>", self._onCameraEntryApplied, add="+")
+        self.camera_entry.bind("<FocusOut>", self._onCameraEntryApplied, add="+")
+
+    def _onCameraEntryApplied(self, *event: Any) -> None:
+        """入力された Camera ID を実際に開いて設定へ残す。
+
+        空や数値以外なら何もしない。打ちかけでフォーカスが外れた
+        だけの場合に、0 番のカメラを開きに行かないようにするため。
+        """
+        cam_id = self._cameraIdOrNone()
+        if cam_id is None:
+            return
+        if self.openCamera():
+            self._on_setting_changed()
 
     def _bind_keys(self) -> None:
         self.root.bind("<Key-F5>", self.ReloadCommandWithF5)
@@ -721,6 +762,39 @@ class PokeControllerApp:
             fps = 45
         self.fps.set(str(fps))
         return fps
+
+    def _currentBaudRate(self) -> int:
+        """Baud Rate を通常の int で返す。数値として読めないときだけ既定。
+
+        BAUD_RATE_VALUES は Combobox に出す「よく使う値」であって、
+        使ってよい値の一覧ではない。GameCube の自動化では別の速度を
+        使うし、独自のマイコンを載せている人はもっと速い値を入れる。
+        候補に無いことを理由に書き換えてはいけない。設定ファイルへ
+        書き戻す経路があるので、矯正すると利用者の設定が壊れて
+        元の値も分からなくなる。
+
+        ここで守るのは「数値として読めること」だけ。読めない値を
+        そのまま流すと接続の途中で例外になり、開かない理由も出ない。
+        """
+        try:
+            return int(self.baud_rate.get())
+        except (TypeError, ValueError, tk.TclError):
+            fallback = BAUD_RATE_VALUES[0]
+            logger.warning(f"Baud Rate を数値として読めないため {fallback} を使います")
+            return fallback
+
+    def _cameraIdOrNone(self) -> int | None:
+        """Camera ID を通常の int で返す。空や不正なら None を返す。
+
+        IntVar は中身が空文字や非数値のとき get() が TclError を投げる。
+        Entry を空にした状態で設定を変えると、そこから先の処理が
+        まとめて落ちる。呼ぶ側が毎回 try で囲むのではなく、取り出す
+        場所を1つにしてそこで守る。
+        """
+        try:
+            return int(self.camera_id.get())
+        except (tk.TclError, ValueError):
+            return None
 
     def _start_camera(self) -> None:
         self.camera = Camera(self._current_fps())
@@ -1122,7 +1196,7 @@ class PokeControllerApp:
 
         self.keyPress = None
         if self.ser.openSerial(
-            self.com_port.get(), self.com_port_name.get(), int(self.baud_rate.get())
+            self.com_port.get(), self.com_port_name.get(), self._currentBaudRate()
         ):
             message = f"COM Port {self.com_port_name.get()} connected successfully"
             print(message)
@@ -1145,6 +1219,7 @@ class PokeControllerApp:
             message = f"COM Port {self.com_port_name.get()} を開けませんでした"
             print(message)
             logger.warning(message)
+            self._on_setting_changed()
         self._update_title()
 
     def inactivateSerial(self) -> None:
@@ -1610,13 +1685,24 @@ class PokeControllerApp:
 
         # ダイアログを GUI スレッドで作らせるための足がかり。
         # PythonCommandBase._guiRoot がここを最初に見る。
-        # 代入できないコマンド（__slots__ や __setattr__ を持つもの）が
-        # あるため握る。渡せなくても従来どおり動く（ダイアログが
-        # 呼び出し元のスレッドで作られるだけで、これは以前と同じ）。
-        try:
-            command.gui_root = self.root
-        except Exception:
-            logger.debug(f"gui_root を渡せませんでした: {cmd_class}")
+        # McuCommand はダイアログを出さないので渡す意味が無く、
+        # 無用な属性を生やさないよう対象を絞る（WIN-09）。
+        if isinstance(command, PythonCommandBase.PythonCommand):
+            # 代入できないコマンド（__slots__ や __setattr__ を持つもの）が
+            # あるため握る。ここは初期化の失敗として扱ってはいけない。
+            # 失敗を致命扱いにすると __slots__ のコマンドが選べなくなり、
+            # 2026/08/13 に直した後方互換の破壊を再発させる。
+            # 渡せなくても従来どおり動く（ダイアログが呼び出し元の
+            # スレッドで作られるだけで、これは以前と同じ）。
+            try:
+                command.gui_root = self.root
+            except Exception as e:
+                # ログ欄にも出す。debug だけだと、ダイアログまわりで
+                # 妙な挙動を追うときに手がかりが残らない。
+                name = getattr(cmd_class, "NAME", getattr(cmd_class, "__name__", "?"))
+                message = f"gui_root を渡せませんでした（{name}）: {e}"
+                print(message)
+                logger.debug(message)
         # 設定はここでは渡さない。以前は command.settings = self.settings と
         # 参照ごと渡していたが、それでは reload_com_port が tk 変数の get()
         # をワーカースレッドから呼ぶことになり、Tcl を別スレッドで触る形に
@@ -1647,7 +1733,7 @@ class PokeControllerApp:
             config = {
                 "com_port": int(self.com_port.get()),
                 "com_port_name": str(self.com_port_name.get()),
-                "baud_rate": int(self.baud_rate.get()),
+                "baud_rate": self._currentBaudRate(),
             }
         except (tk.TclError, ValueError) as e:
             # 空欄や未選択のときは変換に失敗する。ここで止めはしない
@@ -2141,7 +2227,7 @@ class PokeControllerApp:
         # 使用履歴も同じ場所で書き出す。実行のたびに書きに行かない代わり、
         # ここを通らないと記録が残らないので、設定の保存と並べておく。
         if self._stats_dirty:
-            CommandStats.save(self.command_stats)
+            CommandStats.save(self.command_stats, self.profile)
 
         # 映像を止めたあとで解放する。順序を逆にすると解放済みメモリを読む
         if self.camera is not None:
@@ -2174,8 +2260,8 @@ class PokeControllerApp:
         self.settings.show_size.set(self.show_size.get())
         self.settings.com_port.set(self.com_port.get())
         self.settings.com_port_name.set(self.com_port_name.get())
-        self.settings.baud_rate.set(int(self.baud_rate.get()))
-        self.settings.camera_id.set(self.camera_id.get())
+        self.settings.baud_rate.set(self._currentBaudRate())
+        self.settings.camera_id.set(self._cameraIdOrNone() or 0)
         self.settings.camera_key.set(self.camera_key.get())
         self.settings.input_log_enabled.set(self.show_input_log.get())
         self.settings.save()
@@ -2199,7 +2285,14 @@ class PokeControllerApp:
         if not getattr(self, "_settings_ready", False):
             # UI 構築中・設定流し込み中は書かない（既定値で上書きしてしまう）
             return
-        self._save_settings()
+        # 保存の失敗で操作そのものを止めない。チェックを1つ入れた拍子に
+        # 例外が上がると、そのウィジェットのコールバックが切れて以後
+        # 反応しなくなる。書けなかったことはログへ出し、操作は続ける。
+        try:
+            self._save_settings()
+        except Exception as e:
+            logger.warning(f"設定の保存に失敗しました: {e}")
+            print(f"設定の保存に失敗しました: {e}")
 
 
 if __name__ == "__main__":

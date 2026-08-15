@@ -232,7 +232,7 @@ class GuiSettings:
         integer_rules = {
             "camera_id": (0, lambda value: value >= 0),
             "com_port": (0, lambda value: value >= 0),
-            "baud_rate": (9600, lambda value: value in (4800, 9600)),
+            "baud_rate": (9600, lambda value: value > 0),
             "fps": (45, lambda value: value in (5, 15, 30, 45, 60)),
         }
         for key, (default, valid) in integer_rules.items():

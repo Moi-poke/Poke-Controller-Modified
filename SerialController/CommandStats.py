@@ -39,16 +39,34 @@ TAG_RECENT = "最近使った"
 TAG_FREQUENT = "よく使う"
 
 
-def load() -> dict[str, dict]:
+def pathFor(profile: str = "") -> str:
+    """プロファイル名から使用履歴ファイルのパスを作る。
+
+    並列起動している台どうしで同じファイルを読み書きすると、後から
+    終了した側の内容で丸ごと上書きされ、もう一方の記録が消える
+    （書き込みが os.replace による全体差し替えのため、追記にならない）。
+
+    分け方は settings ファイルと同じ規則にする。片方だけ別の規則に
+    すると、プロファイルを増やしたときにどちらが対応しているのか
+    分からなくなる。profile が空なら従来どおりのパスを返す。
+    """
+    if not profile:
+        return STATS_JSON
+    root, ext = os.path.splitext(STATS_JSON)
+    return f"{root}.{profile}{ext}"
+
+
+def load(profile: str = "") -> dict[str, dict]:
     """使用履歴を読む。無い・壊れている場合は空で返す。
 
     履歴が読めないことでコマンド一覧が止まるのは割に合わない。
     どんな失敗でも空を返し、警告だけ残して続ける。
     """
-    if not os.path.isfile(STATS_JSON):
+    path = pathFor(profile)
+    if not os.path.isfile(path):
         return {}
     try:
-        with open(STATS_JSON, encoding="utf-8") as fp:
+        with open(path, encoding="utf-8") as fp:
             data = json.load(fp)
     except (OSError, json.JSONDecodeError) as e:
         logger.warning(f"使用履歴を読めませんでした: {e}")
@@ -72,21 +90,22 @@ def load() -> dict[str, dict]:
     return stats
 
 
-def save(stats: dict[str, dict]) -> bool:
+def save(stats: dict[str, dict], profile: str = "") -> bool:
     """使用履歴を書き出す。成否を返す。
 
     一時ファイルへ書いてから置換する。書いている途中で落ちても、
     元のファイルが半端な内容になって次回まるごと読めなくなる、
     という壊れ方を避けるため。
     """
-    directory = os.path.dirname(STATS_JSON)
+    path = pathFor(profile)
+    directory = os.path.dirname(path)
     try:
         if directory:
             os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=directory or ".", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as fp:
             json.dump(stats, fp, ensure_ascii=False, indent=2)
-        os.replace(tmp, STATS_JSON)
+        os.replace(tmp, path)
     except OSError as e:
         logger.warning(f"使用履歴を保存できませんでした: {e}")
         return False
