@@ -18,9 +18,13 @@ add_listener の既定は「繋げなかった」(False):
     利用者は動いていると思う（静かに壊れる型）。pokecon2 で実際に踏んだ
     ので、既定を False にし、呼び出し側が理由を出せるようにしてある。
 
-段 VI の約束: 送信の中身は1文字も変えない。ここにある処理は Sender の
-  writeRow / _is_coalescable / _write / openSerial / closeSerial から
-  そのまま移したもので、間引きの条件も例外の扱いも同じ。
+ 段 VI の約束: 送信の中身は1文字も変えない。ここにある処理は Sender の
+   writeRow / _is_coalescable / _write / openSerial / closeSerial から
+   そのまま移したもので、間引きの条件も例外の扱いも同じ。
+
+ コメント中の「PORTBACK 2章」等は開発時の外部管理文書への参照であり、
+ リポジトリには無い。番号は無視し、本文の理由だけ読めばよい。新規に
+ 書くコメントでは外部参照を付けないこと。
 """
 from __future__ import annotations
 
@@ -280,7 +284,19 @@ class TextSerialTransport(Transport):
             self.ser.close()
 
     def is_open(self) -> bool:
-        return True if self.ser is not None and self.ser.isOpen() else False
+        """回線が開いているか。新しい pySerial の is_open 属性を優先する。"""
+        if self.ser is None:
+            return False
+        prop = getattr(self.ser, "is_open", None)
+        if isinstance(prop, bool):
+            return prop
+        legacy = getattr(self.ser, "isOpen", None)
+        if callable(legacy):
+            try:
+                return bool(legacy())
+            except Exception:
+                return False
+        return False
 
     # -- 送信 ---------------------------------------------------------------
 
@@ -369,6 +385,7 @@ class TextSerialTransport(Transport):
           意味は「画面へ表示してよいか」へ寄せ、フックへ渡す。
           何を測るかと、何を見せるかは別の話なので分ける。
         """
+        ok = False
         try:
             if self._on_write_begin is not None:
                 self._on_write_begin(row, measure_perf)
@@ -376,6 +393,7 @@ class TextSerialTransport(Transport):
             # 送る文字列は ASCII 固定なので utf-8 経由より安く作れる
             self.ser.write(row.encode('ascii') + b'\r\n')
             self._last_write = time.perf_counter()
+            ok = True
 
             if self._on_write_end is not None:
                 self._on_write_end(row, measure_perf)
@@ -391,7 +409,12 @@ class TextSerialTransport(Transport):
             print('Using a port that is not open.')
             self._logger.error(f"Maybe Using a port that is not open.: {e}")
         finally:
-            self._before = row
+            # 前回(_before)は送れたときだけ進める。送れなかった行を
+            # 前回にすると、次に来たスティック行が「変わっていない」と
+            # 誤判定され、間引きで捨てられる。送れていないのに捨てるのが
+            # 最悪なので、失敗時は基準を動かさない。
+            if ok:
+                self._before = row
 
         # 送った行だけを配る。間引きで送らなかった行は Switch にも届いて
         # いないので、記録に残すとログと実機の挙動がずれる。送信の成否は

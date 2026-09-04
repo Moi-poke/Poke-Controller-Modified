@@ -339,12 +339,20 @@ class KeyPress:
         #   触っていないスティックには影響しない（ARC-01 の解）。
         #   互換のため self.format も同じ内容へ進める（段 IV では
         #     まだ外部が読んでいる可能性を考慮）。
+        #   調停で棄却されたときに互換側を巻き戻せるよう、進める前の
+        #   値を控えておく（_rollbackFormat 用）。
+        saved = self._snapshotFormat()
         self.format.setButton([btn for btn in btns if type(btn) is Button])
         self.format.setHat([btn for btn in btns if type(btn) is Hat])
         self.format.setAnyDirection([btn for btn in btns if type(btn) is Direction])
 
-        self._applyToSender(btns)
-        self._writeCurrent()
+        if self._applyToSender(btns):
+            self._writeCurrent()
+        else:
+            # 調停で全部棄却された。互換側だけ進めると Sender の姿勢と
+            # 食い違い、次の inputEnd が「持っていない解放」を申告する。
+            # 送らなかった申告は無かったことにする。
+            self._rollbackFormat(saved)
         self.input_time_0 = time.perf_counter()
 
         # self._logger.debug(f": {list(map(str,self.format.format.values()))}")
@@ -451,7 +459,13 @@ class KeyPress:
         # 中立の座標行。resetAllDirections が両スティックの変更印を
         # 立てるので、convert2str は lx ly rx ry を含む完全な行を返す。
         self._writeNeutralAll()
-        # 実行の終わりをマイコンへ知らせる（proc_state を NONE へ）
+        # 実行の終わりをマイコンへ知らせる（proc_state を NONE へ）。
+        # live 経路（Pico の S 行）には 'end' という行が無い。そのまま
+        # 送ると ERR になり、中立の保証まで怪しくなるため送らない。
+        # legacy（Leonardo 系の数字行）では従来どおり送る。
+        live = getattr(self.ser, "isLiveCapable", None)
+        if callable(live) and live():
+            return
         self.ser.writeRow('end')
 
     def serialcommand_direct_send(self, serialcommands: List[str], waittime: List[float]) -> None:
@@ -563,21 +577,64 @@ class KeyPress:
     #   外部が読んでいた場合に壊さないため、並行して更新し続ける。
     #   ただし送信行はもう self.format からは作らない。
 
-    def _applyToSender(self, btns: list) -> None:
-        """押したものだけを Sender へ申告する（input から呼ぶ）。"""
+    def _applyToSender(self, btns: list) -> bool:
+        """押したものだけを Sender へ申告する（input から呼ぶ）。
+
+        戻り値は「1 件でも申告が通ったか」。旧 Sender（姿勢を持たない
+        版）では申告自体を行わず、従来どおり format 行を送るため True
+        を返す。全部棄却された場合は False を返し、呼び出し側は送信を
+        止めて互換側を巻き戻す（_rollbackFormat）。
+        """
         if not self._posture_ready():
-            return
+            return True
+        ok = False
         buttons = [int(b) for b in btns if type(b) is Button]
-        if buttons:
-            self.ser.pressButtons(buttons, source=self.source)
         hats = [b for b in btns if type(b) is Hat]
+        dirs = [b for b in btns if type(b) is Direction]
+        if not buttons and not hats and not dirs:
+            # 申告することが無い。棄却ではなく「何もしない」なので
+            # True を返し、呼び出し側は従来どおり送信する。
+            return True
+        if buttons:
+            ok = bool(self.ser.pressButtons(buttons,
+                                            source=self.source)) or ok
         if hats:
-            self.ser.setHat(int(hats[0]), source=self.source)
-        for d in [b for b in btns if type(b) is Direction]:
+            ok = bool(self.ser.setHat(int(hats[0]),
+                                      source=self.source)) or ok
+        for d in dirs:
             # y の反転は SendFormat.setAnyDirection と同じ規則に揃える
             #   （Direction が持つ y は上が大きいが、送信行は上が小さい）。
             side = "L" if d.stick == Stick.LEFT else "R"
-            self.ser.setStick(side, int(d.x), int(255 - d.y), source=self.source)
+            ok = bool(self.ser.setStick(side, int(d.x), int(255 - d.y),
+                                        source=self.source)) or ok
+        return ok
+
+    def _snapshotFormat(self) -> dict:
+        """互換側（SendFormat）の現在値を控える（巻き戻し用）。
+
+        setButton / setHat / setAnyDirection が触る範囲は format の
+        6 項目・スティック変化印・Hat_pos だけなので、これだけ控えれば
+        進める前の状態へ完全に戻せる。
+        """
+        return {
+            "format": dict(self.format.format),
+            "L": bool(self.format.L_stick_changed),
+            "R": bool(self.format.R_stick_changed),
+            "hat_pos": self.format.Hat_pos,
+        }
+
+    def _rollbackFormat(self, saved: dict) -> None:
+        """互換側を控えた状態へ戻す（調停で棄却されたとき用）。
+
+        Sender の姿勢へ届かなかった申告は、無かったことにする。
+        互換側だけ進んでいると、次の inputEnd が持っていない解放を
+        申告し、表示と実機がずれる。
+        """
+        self.format.format.clear()
+        self.format.format.update(saved["format"])
+        self.format.L_stick_changed = saved["L"]
+        self.format.R_stick_changed = saved["R"]
+        self.format.Hat_pos = saved["hat_pos"]
 
     def _releaseFromSender(self, btns: list, tilts: list,
                            unset_hat: bool, hold_hat: Any = None) -> None:

@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Sender.py - 姿勢（押下状態）を1つに持ち、Transport へ渡す層。
+#
+# コメント中の記号の読み方（開発時の作業記録の名残）:
+#   「段 I〜VII」「段2-①」のような見出しは、改修を段階に分けて進めた
+#   ときの作業番号である。番号自体に意味は無く、読むときは無視してよい。
+#   ただし番号の後に書いてある理由（「なぜこうするか」）は仕様なので残す。
+#   PORTBACK / STRUCTURE / PICODSN / HISTORY / NEWAPP と章番号の組み合わせ
+#   は、当時の外部管理文書（表計算）への参照であり、リポジトリには無い。
+#   参照先が読めないため、判断に必要な理由はコメント本文に書く方針へ
+#   変えている。新規に書くコメントでは外部参照を付けないこと。
 import time
 import traceback
 import threading
@@ -204,6 +214,15 @@ class Sender:
         target = self.transport if transport is None else transport
         return (getattr(target, "capability", Transport.LEGACY_ROW)
                 == Transport.PICO_LIVE_STATE)
+
+    def isLiveCapable(self) -> bool:
+        """live 経路（Pico の S 行）を使っているか。
+
+        Keys.end の分岐用。live には 'end' という行が無く、送ると
+        ERR になる。公開メソッドにしてあるのは、Keys が Transport の
+        定数を知らなくて済むようにするため（循環 import 回避）。
+        """
+        return bool(self._liveCapable())
 
 
     def setTransport(self, transport: Transport.Transport) -> bool:
@@ -437,32 +456,40 @@ class Sender:
 
         手順 1 から 8 は try の内側に置き、手順 9 は finally で必ず実行
         する。途中で失敗しても回線を開いたままにしない。
+
+        錠（_lock）は状態の変更だけに使う。送出の完了待ち・worker の
+        join・入力ログの初期化まで錠の中で行うと、その間すべての申告と
+        読み取りが止まり、GUI が固まったように見える。順序（9 段）は
+        変えず、待つ部分だけ外へ出す。
         """
         self._logger.debug("Closing the serial communication")
+        live = self._liveCapable()
         with self._lock:
-            try:
-                if self._liveCapable():
-                    # 1: これ以降の状態変化を mailbox へ入れない。
-                    self._live_closing = True
-                    # 2: 中立より後に古い状態が出ないようにする。
-                    self.discardLive()
-                    # 3: worker が生きているうちに中立を送る。
-                    self.releaseAll()
-                    self.putLive(self.snapshot(), priority=True)
-                    # 4: 送出の完了を待つ。期限を過ぎたら次へ進む。
-                    if not self.waitLiveDrained(self.CLOSE_DRAIN_S):
-                        self._logger.error(
-                            "Neutral state was not sent before closing")
+            if live:
+                # 1: これ以降の状態変化を mailbox へ入れない。
+                self._live_closing = True
+                # 2: 中立より後に古い状態が出ないようにする。
+                self.discardLive()
+                # 3: worker が生きているうちに中立を送る。
+                self.releaseAll()
+                self.putLive(self.snapshot(), priority=True)
+        try:
+            if live:
+                # 4: 送出の完了を待つ。期限を過ぎたら次へ進む。
+                if not self.waitLiveDrained(self.CLOSE_DRAIN_S):
+                    self._logger.error(
+                        "Neutral state was not sent before closing")
                 # 5 から 7: 停止を要求し、起床させ、期限つきで待つ。
                 if not self.stopLiveWorker(self.CLOSE_JOIN_S):
                     self._logger.error(
                         "PicoLiveWorker did not stop; closing anyway")
                 # 8: 入力ログを初期化する。
                 self.input_logger.reset()
-            finally:
-                # 9: どの手順が失敗しても回線は必ず閉じる。
+        finally:
+            # 9: どの手順が失敗しても回線は必ず閉じる。
+            with self._lock:
                 self._live_closing = False
-                self.transport.close()
+            self.transport.close()
 
     def isOpened(self) -> bool:
         self._logger.debug("Checking if serial communication is open")
@@ -776,7 +803,10 @@ class Sender:
                 self._owner_hat[owner] = (value, self.getRevision() + 1)
                 self._hat_held[str(source)] = int(value)
             if saved["stick"] is not None:
-                self._owner_stick[owner] = saved["stick"]
+                # Hat と同じく、いまの revision で入れ直す。古い revision
+                # のまま戻すと、退避中に来た他の申告に負け続ける。
+                claim = saved["stick"][0]
+                self._owner_stick[owner] = (claim, self.getRevision() + 1)
             if self._applyComposed():
                 self._bumpRevision()
                 if self._liveCapable():
@@ -835,11 +865,29 @@ class Sender:
                 "stick": dict(self._owner_stick),
             }
 
+    def _composeStickSide(self, side: str) -> Optional[Any]:
+        """その側のスティック申告のうち revision が最大の座標を返す。
+
+        申告が無ければ None。呼び出し側は self._lock を保持していること。
+        所有者ごとの申告は ({"L": (x, y), "R": (x, y)}, revision) の形で
+        _owner_stick に入る。Hat と同じく revision 順で選ぶ。
+        """
+        self._ensureOwners()
+        latest = None
+        latest_rev = -1
+        for claim, rev in self._owner_stick.values():
+            if side in claim and int(rev) >= latest_rev:
+                latest_rev = int(rev)
+                latest = claim[side]
+        return latest
+
     def _applyComposed(self) -> bool:
         """合成した結果を姿勢へ書き、変化があれば True を返す。
 
         呼び出し側は self._lock を保持していること。所有者が 1 人だけの
         ときは合成しても同じ値になるため、送信行は現行と変わらない。
+        スティックも合成する。記録だけして合成しないと、suspend で
+        申告を外しても姿勢に値が残り、Pause で倒しが漏れる。
         """
         self._ensurePosture()
         self._ensureOwners()
@@ -855,6 +903,19 @@ class Sender:
             self._posture["hat"] = int(hat)
             self._hat_pos = int(hat)
             changed = True
+        for side, kx, ky in (("L", "lx", "ly"), ("R", "rx", "ry")):
+            target = self._composeStickSide(side)
+            tx, ty = target if target is not None else (
+                self.POSTURE_CENTER, self.POSTURE_CENTER)
+            if (int(self._posture[kx]) != int(tx)
+                    or int(self._posture[ky]) != int(ty)):
+                self._posture[kx] = int(tx)
+                self._posture[ky] = int(ty)
+                if side == "L":
+                    self._L_stick_changed = True
+                else:
+                    self._R_stick_changed = True
+                changed = True
         return changed
 
 
@@ -887,9 +948,9 @@ class Sender:
         段4-a: 申告は (値, revision) で記録する。複数の系統が別々の向きを
         押している場合、revision が最大のものが採られる。
         """
-        self.markEvent(source)   # 段2-①: 入口の時刻（PICODSN 14-5 M2）
         if not self._accept(source):
             return False
+        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -904,9 +965,9 @@ class Sender:
 
         自分の分だけ取り下げる。他の系統がまだ押していれば、その向きへ戻る。
         """
-        self.markEvent(source)   # 段2-①: 入口の時刻（PICODSN 14-5 M2）
         if not self._accept(source, releasing=True):
             return False
+        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -922,37 +983,49 @@ class Sender:
             return dict(self._hat_held)
 
     def applyStick(self, stick: str, x: Optional[int] = None,
-                   y: Optional[int] = None) -> None:
+                   y: Optional[int] = None, source: Any = None) -> None:
         """スティック座標を差分で適用し、変化があれば live に渡す。
 
         段3-b4: 中立へ戻す場合のみ優先送信とする。途中の座標は次の値で
         置き換えてよいが、中立は倒したままの状態を解くため待たせない。
+
+        申告は所有者ごとに記録し、送る値は _applyComposed の合成結果と
+        する。記録しないと suspend / restore / drop がスティックを拾えず、
+        Pause で倒しが漏れる。1 人だけの従来の使い方では合成しても同じ
+        値になるため、送信内容は変わらない。
         """
         snap = None
         priority = False
+        owner = self._ownerKey(source)
         with self._lock:
             self._ensurePosture()
+            self._ensureOwners()
             side = ("R" if str(stick).upper().endswith("R") or
                     str(stick).upper().endswith("RIGHT") else "L")
             kx = side.lower() + "x"
             ky = side.lower() + "y"
-            changed = False
-            if x is not None and self._posture[kx] != int(x):
-                self._posture[kx] = int(x)
-                changed = True
-            if y is not None and self._posture[ky] != int(y):
-                self._posture[ky] = int(y)
-                changed = True
-            if changed:
-                if side == "L":
-                    self._L_stick_changed = True
-                else:
-                    self._R_stick_changed = True
+            # 自分の前回申告を土台に、渡された軸だけ上書きする。申告が
+            # 初めての側は現在の姿勢を土台にする（差分の意味を保つ）。
+            prev_claim, _ = self._owner_stick.get(owner, ({}, -1))
+            claim = dict(prev_claim)
+            for name, ax, ay in (("L", "lx", "ly"), ("R", "rx", "ry")):
+                if name not in claim:
+                    claim[name] = (int(self._posture[ax]),
+                                   int(self._posture[ay]))
+            cx, cy = claim[side]
+            if x is not None:
+                cx = int(x)
+            if y is not None:
+                cy = int(y)
+            claim[side] = (cx, cy)
+            self._owner_stick[owner] = (claim, self.getRevision() + 1)
+            if self._applyComposed():
                 self._bumpRevision()
-                priority = (int(self._posture[kx]) == self.POSTURE_CENTER
-                            and int(self._posture[ky]) == self.POSTURE_CENTER)
                 if self._liveCapable():
                     snap = self.snapshot()
+            if snap is not None:
+                priority = (int(self._posture[kx]) == self.POSTURE_CENTER
+                            and int(self._posture[ky]) == self.POSTURE_CENTER)
         if snap is not None:
             self.putLive(snap, priority=priority)
 
@@ -1184,22 +1257,31 @@ class Sender:
         道を必ず添える。塞ぐだけで手段を書かないと、利用者からは動かな
         いとしか見えない。一時停止すれば操作でき、そのとき自動側の押下
         は退避されるため、押しっぱなしのまま渡ることもない。
+
+        通知先の呼び出しは錠の外で行う。GUI 側の通知先が Sender へ
+        呼び戻すと、錠を持ったままではデッドロックするためである。
+        間引きの帳簿だけを錠の中で済ませ、文面を作ってから外へ出る。
         """
-        now = time.perf_counter()
-        if now - self._arb_last_notify < REJECT_NOTIFY_INTERVAL:
-            self._arb_suppressed += 1
-            return
-        extra = (f"（ほか {self._arb_suppressed} 件）"
-                 if self._arb_suppressed else "")
-        self._arb_last_notify = now
-        self._arb_suppressed = 0
+        with self._lock:
+            self._ensureArbitration()
+            now = time.perf_counter()
+            if now - self._arb_last_notify < REJECT_NOTIFY_INTERVAL:
+                self._arb_suppressed += 1
+                return
+            extra = (f"（ほか {self._arb_suppressed} 件）"
+                     if self._arb_suppressed else "")
+            self._arb_last_notify = now
+            self._arb_suppressed = 0
+            notifier = self._arb_notifier
+            mode = self._arb_mode
+            cooldown = self._arb_cooldown
         msg = (f"入力調停: {source} からの操作を受け付けませんでした{extra}。"
-               f"（{winner} を優先中 / mode={self._arb_mode} "
-               f"cooldown={self._arb_cooldown}秒）")
+               f"（{winner} を優先中 / mode={mode} "
+               f"cooldown={cooldown}秒）")
         if self._isHumanSource(source):
             msg += "　一時停止すると操作できます。"
-        if callable(self._arb_notifier):
-            self._arb_notifier(msg)
+        if callable(notifier):
+            notifier(msg)
             return
         print(msg)
         self._logger.info(msg)
@@ -1233,17 +1315,31 @@ class Sender:
         """その申告を受理してよいか。段 V-a で調停を実装した。
 
         段 IV では常に True を返していた。ここを書き換えるだけで
-          全経路（pressButtons / releaseButtons / setHat / setStick /
+          全経路（pressButtons / releaseButtons / setHat /
           sendPosture / sendNeutralAll）に効く。設計どおり。
+        スティック（setStick）は対象外とする。連続値であり所有権に
+          なじまず、拒否すると半倒しが残るためである。
 
         判断は対称に作ってある。優先する側が書いてから cooldown の
           間だけ、反対側の申告を拒否する。どちらを優先するかが mode。
           「所有権」という長く続く状態を持たずに済むので、状態が増えない。
 
+        cooldown は「最後に触ってからの無操作時間」である。触り続けて
+          いる間は優先が続く（スライド式）。これは意図した挙動であり、
+          人が触っている間は人が取りたい、という使い方に合わせている。
+          逆に言うと、優先側が触り続けると反対側は永久に通らない。
+          一時停止などで明示的に手を引く場合は setHandedOver(True) で
+          調停そのものを止める（時間ではなく事実で判断する）。
+
         段4-c: releasing が真の申告は拒否しない。解放と中立を拒否すると
           押しっぱなしが残り、調停の都合で安全が損なわれる。押下を断る
           ことはできても、離す操作を断る理由は無い。
+
+        拒否の通知は錠の外で出す。_notifyReject は帳簿の更新だけを
+          錠の中で行い、通知先の呼び出しは外で行うため、ここでは
+          通知の要否だけを覚えて錠を出る。
         """
+        notify = None
         if releasing:
             return True
         with self._lock:
@@ -1261,28 +1357,33 @@ class Sender:
 
             if self._arb_mode == "human":
                 if is_human:
-                    # 人が触ったら即座に主導権を取る（横取り＝preempt）
+                    # 人が触ったら即座に主導権を取る（横取り＝preempt）。
+                    # 触り続けている間は優先が続く（スライド式・意図どおり）。
                     self._arb_last_human = now
                     return True
                 if (self._arb_last_human is not None
                         and now - self._arb_last_human < self._arb_cooldown):
                     self._arb_rejected["auto"] += 1
-                    self._notifyReject(source, "人の操作")
-                    return False
+                    notify = (source, "人の操作")
+                else:
+                    self._arb_last_auto = now
+                    return True
+            elif not is_human:
+                # mode == "script": スクリプトを優先する。書き続ける間は
+                # 優先が続く（スライド式・意図どおり）。
                 self._arb_last_auto = now
                 return True
-
-            # mode == "script": スクリプトを優先する
-            if not is_human:
-                self._arb_last_auto = now
-                return True
-            if (self._arb_last_auto is not None
+            elif (self._arb_last_auto is not None
                     and now - self._arb_last_auto < self._arb_cooldown):
                 self._arb_rejected["human"] += 1
-                self._notifyReject(source, "スクリプト")
-                return False
-            self._arb_last_human = now
-            return True
+                notify = (source, "スクリプト")
+            else:
+                self._arb_last_human = now
+                return True
+        if notify is not None:
+            self._notifyReject(*notify)
+            return False
+        return True
 
     def pressButtons(self, btns: Any, source: Optional[str] = None) -> bool:
         """ボタンを押す（差分の申告）。受理したら True。
@@ -1291,40 +1392,55 @@ class Sender:
           押していない他のボタンには一切触れないので、別系統が
           押しているものを消さない。これが ARC-01 の解。
         """
-        self.markEvent(source)   # 段2-①: 入口の時刻（PICODSN 14-5 M2）
         if not self._accept(source):
             return False
+        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
         self.applyButtons(press=btns, source=source)
         return True
 
     def releaseButtons(self, btns: Any, source: Optional[str] = None) -> bool:
         """ボタンを離す（差分の申告）。受理したら True。"""
-        self.markEvent(source)   # 段2-①: 入口の時刻（PICODSN 14-5 M2）
         if not self._accept(source, releasing=True):
             return False
+        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
         self.applyButtons(release=btns, source=source)
         return True
 
     def setHat(self, hat: Any = None, source: Optional[str] = None) -> bool:
-        """十字キーの向きを申告する。None で中立。受理したら True。"""
-        self.markEvent(source)   # 段2-①: 入口の時刻（PICODSN 14-5 M2）
-        # 中立（None）へ戻す申告は解放と同じ扱いにする。
+        """十字キーの向きを申告する。None で中立。受理したら True。
+
+        向きの申告も所有者ごとに記録する。holdHat だけが記録していた
+        頃は、通常の押下が suspend / drop の対象外になり、Pause で
+        十字キーが漏れていた。None（中立）は解放と同じ扱いにし、自分の
+        申告を取り下げる。
+        """
         if not self._accept(source, releasing=hat is None):
             return False
+        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
+        with self._lock:
+            self._ensureHatHold()
+            self._ensureOwners()
+            owner = self._ownerKey(source)
+            if hat is None:
+                self._hat_held.pop(str(source), None)
+                self._owner_hat.pop(owner, None)
+            else:
+                self._owner_hat[owner] = (int(hat), self.getRevision() + 1)
         self.applyHat(hat)
         return True
 
     def setStick(self, stick: str, x: Optional[int] = None,
                  y: Optional[int] = None,
                  source: Optional[str] = None) -> bool:
-        """スティックの座標を申告する。受理したら True。"""
-        self.markEvent(source)   # 段2-①: 入口の時刻（PICODSN 14-5 M2）
-        # 中立へ戻す申告は解放と同じ扱いにする。拒否すると倒したまま残る。
-        neutral = (x is None or int(x) == self.POSTURE_CENTER) and \
-                  (y is None or int(y) == self.POSTURE_CENTER)
-        if not self._accept(source, releasing=neutral):
-            return False
-        self.applyStick(stick, x, y)
+        """スティックの座標を申告する。常に受理して True を返す。
+
+        スティックは連続値であり、ボタンのような所有権になじまない。
+        中立へ戻す途中も含めて拒否すると半倒しが残るため、調停の対象外
+        とする。人の手で倒せる操作は、調停の mode にかかわらず出せる。
+        複数系統が同時に触った場合は revision が新しい申告が採られる。
+        """
+        self.markEvent(source)   # 段2-①: 入口の時刻
+        self.applyStick(stick, x, y, source=source)
         return True
 
     def sendPosture(self, source: Optional[str] = None) -> bool:
@@ -1859,6 +1975,18 @@ class Sender:
         受理されたら True を返す。False のときは呼び出し側が従来の
         経路へ落とす。キューが満杯・実行中・応答が来ないといった
         場面で操作そのものが消えるのは最悪だからである（35-2 E7）。
+
+        UART への書き出しは錠の外で行う。錠の中で線を待つと、その間
+        姿勢の読み取りまで止まる。写しと行文は錠の中で作り、送るのは
+        外で行う。Q の前に mailbox の古い S を破棄する。さもないと
+        Q より古い状態が後から送出され、押下が一瞬戻る。
+        なお実行中の S ワーカーまでは止めない。Q の実行と S の送出の
+        調停は Pico 側が行う前提であり、PC が待つのは次の操作と
+        混ざらないためだけである（_waitQueueDone の注記も参照）。
+
+        N は送らない。N は Pico 側で state_neutral() を呼ぶため、hold
+        で押しっぱなしにしている姿勢まで解除され、短い press のたびに
+        hold が途切れる。Q 行自体が完全な姿勢を持つので N は不要である。
         """
         transport = self.transport
         if transport is None or not self._liveCapable():
@@ -1879,20 +2007,17 @@ class Sender:
             snap = dict(snap)
             snap["btn"] = bits
 
-        ms = max(1, int(round(float(duration) * 1000.0)))
+        try:
+            ms = max(1, int(round(float(duration) * 1000.0)))
+        except (TypeError, ValueError):
+            return False
         line = self.encodeQueuedState(snap, tick=0, dur=ms)
         try:
-            with self._lock:
-                # ★★★2026/08/30 修正: N を送らない。
-                #   ★N は pico_main.c で state_neutral() を呼ぶので、
-                #     hold で押しっぱなしにしている姿勢まで解除される。
-                #   ★★短い press のたびに hold が途切れることになる。
-                #   ★★★QFULL は起きない。queue_task が実行を終えると
-                #     queue_len を 0 に戻すためである（pico_main.c D12）。
-                if not self._sendQueueLine(transport, line):
-                    return False
-                if not self._sendQueueLine(transport, "R"):
-                    return False
+            self.discardLive()
+            if not self._sendQueueLine(transport, line):
+                return False
+            if not self._sendQueueLine(transport, "R"):
+                return False
             return self._waitQueueDone(transport, duration)
         except Exception:
             # 送れなかった理由は問わない。呼び出し側が従来経路へ落とす。
