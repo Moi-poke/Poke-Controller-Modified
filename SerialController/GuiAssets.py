@@ -27,6 +27,9 @@ from loguru import logger
 
 from Commands import UnitCommand
 from Commands.PythonCommandBase import PythonCommand
+# 2026/08/25 段 V-c: GUI の模擬コントローラが押しっぱなしを扱うため、
+#   Button / Hat の列挙を直に使う（UnitCommand を経由しなくなった）。
+from Commands.Keys import Button, Hat
 
 
 isTakeLog = False
@@ -37,15 +40,19 @@ nowtime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # 相対パスだとカレントディレクトリ次第で読めなくなるため、
 # このファイルの場所を基準に解決する。
 DISABLED_IMAGE_PATH = os.path.normpath(
-    os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "Images", "disabled.png"
-    )
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "..", "Images", "disabled.png")
 )
 
 STICK_LOG_INTERVAL = 0.05  # スティック値を記録・送信する最小間隔(秒)
-STICK_SEND_INTERVAL = 0.05  # スティック値をシリアルへ送る最小間隔(秒)
-STICK_SEND_MAG_STEP = 0.25  # これ以上倒し量が変われば間隔を無視して送る
-IDLE_INTERVAL_MS = 200  # 映像を表示しないあいだの描画ループ周期(ms)
+STICK_SEND_INTERVAL = 0.05   # スティック値をシリアルへ送る最小間隔(秒)
+STICK_SEND_MAG_STEP = 0.25   # これ以上倒し量が変われば間隔を無視して送る
+# Motion イベントの処理上限。ゲーミングマウス等で毎秒1000件超の Motion が
+# 来ると、1件ごとの送信・再描画で GUI スレッドが飽和し「応答なし」になる。
+# live 送出が 8ms 周期のため、それより細かく処理しても届く値は変わらない。
+# 先頭は必ず通し、離す操作は別イベントなので取りこぼさない。
+MOTION_MIN_INTERVAL = 0.008
+IDLE_INTERVAL_MS = 200       # 映像を表示しないあいだの描画ループ周期(ms)
 LOG_DIR = "log"
 
 
@@ -104,6 +111,14 @@ class MouseStick(PythonCommand):
     """マウス操作をコマンド経由で扱うための最小実装."""
 
     NAME = "MOUSEスティック"
+
+    def __init__(self) -> None:
+        super().__init__()
+        # 2026/08/25 段 V-b: マウス操作は人の手によるもの。
+        #   入力調停で「人の手入力」として優先されるよう名札を付ける。
+        #   _sendStick 経由の座標は source="mouse" で送っている（段 V-a）ので、
+        #     ボタン側もここで揃えておく。
+        self.input_source = "mouse"
 
     def do(self) -> None:
         pass
@@ -183,6 +198,8 @@ class CaptureArea(tk.Canvas):
         # スティック送信の間引き用。最後に送った時刻
         self._last_sent = 0.0
         self._last_sent_mag = 0.0
+        # Motion 処理の最終時刻（片側ごと）。洪水時はここで間引く
+        self._motion_last: dict = {}
 
         # 画像認識の枠は1組だけ作って使い回す
         self._rect_created = False
@@ -366,7 +383,6 @@ class CaptureArea(tk.Canvas):
     @staticmethod
     def _ratio(numer: Any, denom: Any) -> tuple[float, float]:
         """要素ごとに割り算する。0 で割りそうなときは 1.0 を返す。"""
-
         def one(a: float, b: float) -> float:
             return float(a) / float(b) if b else 1.0
 
@@ -503,18 +519,107 @@ class CaptureArea(tk.Canvas):
         mag = math.hypot(dx, dy) / self.radius
         return angle, min(max(mag, 0.0), 1.0)
 
-    def _stickHex(self, angle: float, mag: float) -> str:
-        """角度と倒し量を、シリアルに流す x y の16進表記に変換する。"""
-        rad = math.radians(angle)
-        x = hex(int(128 + mag * 127.5 * math.cos(rad)))
-        y = hex(int(128 - mag * 127.5 * math.sin(rad)))
-        return f"{x} {y}"
-
     def _sendStick(self, side: str, angle: float, mag: float) -> None:
-        """片側のスティック値を送る。もう片方は中立(80)のまま。"""
+        """片側のスティック値を送る。
+
+        2026/08/25 段 II（PORTBACK 5節）: 生の行の組み立てをやめ、
+          Sender が持つ姿勢（applyStick）へ申告する形へ変えた。
+
+        なぜ変えるか（SER-06 / SER-07 / ARC-01）:
+          旧実装は f"3 8 {xy} 80 80" と行を丸ごと組み立てていた。この行は
+          先頭が btn=3 で固定され、もう片方のスティックも 80（中立）で
+          埋めている。つまり「自分が知らない項目まで自分の値で上書き」
+          していた。結果、
+            ・スクリプトが押していたボタンが落ちる（SER-06）
+            ・左を倒したまま右を倒せない（SER-07）
+          という2つの症状が出ていた。どちらも「全体を送る」ことが原因。
+
+        applyStick は差分の申告なので、触っていない項目（btn / hat /
+          もう片方のスティック）は Sender が持つ現在値のまま保たれる。
+          これで上の2件が構造的に起きなくなる。
+
+        旧経路への退避:
+          Sender が古い版（applyStick を持たない）の場合は、従来どおり
+          生の行を送る。段 II の途中でも動き続けるようにするため。
+          STRUCTURE 9-5 の「各段で必ず動く形を保つ」に従う。
+        """
+        x, y = self._stickXY(angle, mag)
+
+        # 段 V-a: 調停の口（source 付き API）を通す。
+        #   setStick / sendPosture は「誰の操作か」を Sender へ伝えるので、
+        #   入力調停を有効にしたとき、マウス操作を人の手入力として
+        #   優先できる。applyStick を直接呼ぶと調停を素通りしていた。
+        set_stick = getattr(self.ser, "setStick", None)
+        send_posture = getattr(self.ser, "sendPosture", None)
+        if callable(set_stick) and callable(send_posture):
+            if set_stick(side, x, y, source="mouse"):
+                send_posture(source="mouse")
+            return
+
+        # 退避1: 段 IV より前の Sender（姿勢はあるが調停の口が無い）
+        apply_stick = getattr(self.ser, "applyStick", None)
+        build_row = getattr(self.ser, "_buildRow", None)
+        if callable(apply_stick) and callable(build_row):
+            apply_stick(side, x, y)
+            self.ser.writeRow(build_row(), is_show=False)
+            return
+
+        # 退避2: 旧 Sender。従来どおり生の行で送る（挙動は変わらない）
         xy = self._stickHex(angle, mag)
         row = f"3 8 {xy} 80 80" if side == "L" else f"3 8 80 80 {xy}"
         self.ser.writeRow(row, is_show=False)
+
+    def _stickXY(self, angle: float, mag: float) -> tuple[int, int]:
+        """角度と倒し量を 0〜255 の座標へ直す。
+
+        _stickHex と同じ計算をして、16進へ直す前の整数を返す。
+          _stickHex は hex() で "0x80" の形にするが、姿勢へ渡すのは
+          数値なので、共通部分だけをここへ出した。
+        丸め方（int()）まで _stickHex と揃えること。round() に
+          変えると1ずれる座標が出て、旧実装と送信行が一致しなくなる。
+        """
+        rad = math.radians(angle)
+        x = int(128 + mag * 127.5 * math.cos(rad))
+        y = int(128 - mag * 127.5 * math.sin(rad))
+        return x, y
+
+    def _stickHex(self, angle: float, mag: float) -> str:
+        """角度と倒し量を、シリアルに流す x y の16進表記に変換する。
+
+        旧 Sender へ退避したときだけ使う。_stickXY と同じ値を返す
+          ことを検査で見張る（verify_stage2 相当）。
+        """
+        x, y = self._stickXY(angle, mag)
+        return f"{hex(x)} {hex(y)}"
+
+    def _sendNeutralStick(self, side: str) -> None:
+        """片側のスティックだけを中立へ戻して送る。
+
+        2026/08/25 段 II: 旧実装は "3 8 80 80 80 80" を送っていた。
+          これは「両方のスティックを中立にし、btn も 3 にする」行で、
+          左を離しただけなのに右まで戻し、押しているボタンも消していた。
+        離した側だけを中立にすれば、もう片方は倒したまま残る。
+
+        中立行はスティックだけの変化なので Sender の間引きに
+          引っかかりうる。離した状態が届かないと倒したままになるため、
+          呼び出し側で flushPending して必ず送り切る（従来どおり）。
+        """
+        # 段 V-a: 離す操作も調停の口を通す（source="mouse"）。
+        set_stick = getattr(self.ser, "setStick", None)
+        send_posture = getattr(self.ser, "sendPosture", None)
+        if callable(set_stick) and callable(send_posture):
+            if set_stick(side, 128, 128, source="mouse"):
+                send_posture(source="mouse")
+            return
+
+        apply_stick = getattr(self.ser, "applyStick", None)
+        build_row = getattr(self.ser, "_buildRow", None)
+        if callable(apply_stick) and callable(build_row):
+            apply_stick(side, 128, 128)
+            self.ser.writeRow(build_row(), is_show=False)
+            return
+        self.ser.writeRow("3 8 80 80 80 80", is_show=False)
+
 
     def _drawStick(self, x: int, y: int, color: str, tag: str) -> None:
         """スティックの外周円とノブを描く。"""
@@ -556,6 +661,11 @@ class CaptureArea(tk.Canvas):
         約19ms かかるため、通常運用でシリアルが詰まり操作が数百ms遅れて
         効く状態になっていた。
         """
+        now = time.perf_counter()
+        last = self._motion_last.get(side)
+        if last is not None and now - last < MOTION_MIN_INTERVAL:
+            return prev_angle, prev_mag
+        self._motion_last[side] = now
         angle, mag = self._angleMag(event, x_init, y_init)
 
         if self._shouldSend(mag, prev_angle, prev_mag):
@@ -581,14 +691,22 @@ class CaptureArea(tk.Canvas):
         一定間隔で間引くだけだと、振り切った瞬間や中立へ戻した瞬間が
         最大 STICK_SEND_INTERVAL ぶん遅れて効く。そこで値が大きく動いた
         ときだけ間隔を無視して即送る。
+
+        この間引きは 1 行あたり約 19 ms を要する 9600 bps の legacy 経路
+        のための措置である。live 経路は容量 1 の mailbox が最新値に畳むため、
+        申告を間引いても中間座標が失われるだけで利点がない。実測では 20 Hz
+        に制限されていた。したがって live 経路では毎フレーム申告する。
         """
         now = time.perf_counter()
+        if self._liveStickPath():
+            self._markSent(now, mag)
+            return True
         if prev_angle is None or prev_mag is None:
             self._markSent(now, mag)
             return True
 
         last = self._last_sent_mag
-        # 大きく動いた／振り切った／中立へ戻した ときは即送る
+        # 大きく動いた場合、振り切った場合、中立に戻した場合は即時送出する
         if abs(mag - last) >= STICK_SEND_MAG_STEP:
             self._markSent(now, mag)
             return True
@@ -604,8 +722,18 @@ class CaptureArea(tk.Canvas):
         self._markSent(now, mag)
         return True
 
+    def _liveStickPath(self) -> bool:
+        """現在の送信先が live 経路（間引きが不要な経路）かを返す。"""
+        judge = getattr(self.ser, "_liveCapable", None)
+        if not callable(judge):
+            return False
+        try:
+            return bool(judge())
+        except Exception:
+            return False
+
     def _markSent(self, now: float, mag: float) -> None:
-        """送信した時刻と倒し量を控える（次回の判定に使う）。"""
+        """送出した時刻と倒し量を記録する。次回の判定に使用する。"""
         self._last_sent = now
         self._last_sent_mag = mag
 
@@ -640,7 +768,7 @@ class CaptureArea(tk.Canvas):
     def mouseLeftRelease(self, ser: Any = None) -> None:
         """左スティックを離して中立へ戻す。"""
         self.config(cursor="tcross")
-        self.ser.writeRow("3 8 80 80 80 80", is_show=False)
+        self._sendNeutralStick("L")
         # 中立行は「スティックだけの変化」なので Sender の間引きに
         # 引っかかりうる。離した状態が届かないと倒したままになるため、
         # ここは必ず送り切る。
@@ -685,7 +813,7 @@ class CaptureArea(tk.Canvas):
     def mouseRightRelease(self, ser: Any = None) -> None:
         """右スティックを離して中立へ戻す。"""
         self.config(cursor="tcross")
-        self.ser.writeRow("3 8 80 80 80 80", is_show=False)
+        self._sendNeutralStick("R")
         # 中立行は「スティックだけの変化」なので Sender の間引きに
         # 引っかかりうる。離した状態が届かないと倒したままになるため、
         # ここは必ず送り切る。
@@ -828,6 +956,38 @@ class ControllerGUI:
         ("LEFT", "LEFT", 1, 0),
         ("", "UP_LEFT", 0, 0),
     )
+
+    # 2026/08/25 段 V-c: 十字キーの押しっぱなしと同時押しの合成表。
+    #   Hat は「値」であってビット列ではない（MCU-13 / 段 I と同じ注意）。
+    #     ボタンのように OR で足せないため、押している方向の集合から
+    #     どの値になるかを引く表を持つ。
+    HAT_DIRS = ("UP", "RIGHT", "DOWN", "LEFT")
+    HAT_COMBO = {
+        (): "CENTER",
+        ("UP",): "TOP",
+        ("RIGHT",): "RIGHT",
+        ("DOWN",): "BTM",
+        ("LEFT",): "LEFT",
+        ("RIGHT", "UP"): "TOP_RIGHT",
+        ("DOWN", "RIGHT"): "BTM_RIGHT",
+        ("DOWN", "LEFT"): "BTM_LEFT",
+        ("LEFT", "UP"): "TOP_LEFT",
+    }
+
+    # 十字キーのボタン名（HAT の2番目の要素）から、押している向きへの対応。
+    #   斜めのボタン（UP_RIGHT など）は2方向を同時に押したものとして扱う。
+    HAT_NAME2DIRS = {
+        "UP": ("UP",),
+        "UP_RIGHT": ("UP", "RIGHT"),
+        "RIGHT": ("RIGHT",),
+        "DOWN_RIGHT": ("DOWN", "RIGHT"),
+        "DOWN": ("DOWN",),
+        "DOWN_LEFT": ("DOWN", "LEFT"),
+        "LEFT": ("LEFT",),
+        "UP_LEFT": ("UP", "LEFT"),
+    }
+
+    BUTTON_ACTIVE_BG = "#8a8a8a"   # 押している間の色
     # (表示名, UnitCommand の属性名, width, x, y)
     JOYCON_L = (
         ("L", "L", 20, 30, 30),
@@ -846,6 +1006,16 @@ class ControllerGUI:
 
     def __init__(self, root: Any, ser: Any) -> None:
         self.ser = ser
+        # 2026/08/25 段 V-c: 押しっぱなしに対応するための保持。
+        #   従来は tk.Button の command= を使っていた。command は
+        #     「離したとき」に1回だけ呼ばれるため、押しっぱなしを
+        #     表現できない（ARC-06 の「入口の非対称」）。
+        #   押下と解放を別々に受け取り、Sender の姿勢へ差分申告する。
+        #     触っていない項目は保たれるので、他のボタンを消さない。
+        self._held_btn: dict = {}   # 表示名 -> Keys.Button
+        self._held_hat: set = set() # 押している向き（"UP" など）
+        self._buttons: dict = {}    # 表示名 -> tk.Button（見た目の反映用）
+
         self.window = tk.Toplevel(root)
         self.window.title("Switch Controller Simulator")
         # 親ウィンドウの位置から少しずらして出す。geometry の座標は
@@ -895,26 +1065,151 @@ class ControllerGUI:
 
         logger.debug("Create GUI controller")
 
-    def _makeButton(
-        self, parent: Any, text: str, name: str, **kwargs: Any
-    ) -> tk.Button:
-        """UnitCommand の名前からボタンを作る。"""
-        return tk.Button(
-            parent,
-            text=text,
-            command=lambda n=name: getattr(UnitCommand, n)().start(self.ser),
-            **kwargs,
-        )
+    def _makeButton(self, parent: Any, text: str, name: str,
+                    **kwargs: Any) -> tk.Button:
+        """押している間だけ入力を保持するボタンを作る。
 
-    def applyButtonSetting(self, button: Any) -> None:
-        """幅と配色をまとめて適用する。"""
-        button["width"] = 7
-        self.applyButtonColor(button)
+        2026/08/25 段 V-c: command= をやめ、押下と解放を別々に受ける。
+          ・command は「離したとき」に1回だけ呼ばれるので押しっぱなしを
+            表現できない。<ButtonPress-1> / <ButtonRelease-1> なら
+            押した瞬間と離した瞬間の両方を取れる。
+          ・従来は UnitCommand が毎回 KeyPress を作り、input → sleep(0.1)
+            → inputEnd を同期実行していた。sleep が GUI スレッド（mainloop）
+            を止めるため、押すたびに画面が固まっていた。
+          押しっぱなしにすると待つ必要そのものが無くなるので、sleep も
+            スレッドも要らない。送信は押した瞬間と離した瞬間の2回だけ。
 
-    def applyButtonColor(self, button: Any) -> None:
-        """ボタンの配色を適用する。"""
-        button["bg"] = self.BUTTON_BG
-        button["fg"] = self.BUTTON_FG
+        Leave（押したまま枠外へ出る）でも必ず解放する。これが無いと
+          ボタンの上でマウスを離さなかったときに押しっぱなしが残る。
+        """
+        button = tk.Button(parent, text=text, **kwargs)
+        button.bind("<ButtonPress-1>", lambda ev, n=name: self._onPress(n))
+        button.bind("<ButtonRelease-1>", lambda ev, n=name: self._onRelease(n))
+        button.bind("<Leave>", lambda ev, n=name: self._onRelease(n))
+        self._buttons[name] = button
+        return button
+
+    # ------------------------------------------------------------------
+    # 段 V-c: 押下・解放の受け口
+    # ------------------------------------------------------------------
+    # どれも Sender の差分申告 API（段 IV）を通す。source="gui" を付ける
+    #   ので、入力調停（段 V-a）では人の手入力として扱われる。
+    # 申告してから sendPosture で1行にまとめて送る。項目ごとに送ると
+    #   行数が増え、SERIAL_OPT の遅延予算に響く。
+
+    def _onPress(self, name: str) -> None:
+        """ボタンまたは十字キーを押した。"""
+        if name in self.HAT_NAME2DIRS:
+            self._pressHat(name)
+        else:
+            self._pressButton(name)
+
+    def _onRelease(self, name: str) -> None:
+        """ボタンまたは十字キーを離した。"""
+        if name in self.HAT_NAME2DIRS:
+            self._releaseHat(name)
+        else:
+            self._releaseButton(name)
+
+    def _pressButton(self, name: str) -> None:
+        """押していないときだけ申告する（二重押下を無視）。
+
+        同じボタンの ButtonPress が続けて来ても送信は1回で済む。
+          イベントの取りこぼしや連打に強くするための保持。
+        """
+        if name in self._held_btn:
+            return
+        btn = getattr(Button, name, None)
+        if btn is None:
+            return
+        self._held_btn[name] = btn
+        self._setActive(name, True)
+        if self.ser.pressButtons([int(btn)], source="gui"):
+            self.ser.sendPosture(source="gui")
+
+    def _releaseButton(self, name: str) -> None:
+        """押していたものだけ解放する（二重解放を無視）。"""
+        btn = self._held_btn.pop(name, None)
+        if btn is None:
+            return
+        self._setActive(name, False)
+        if self.ser.releaseButtons([int(btn)], source="gui"):
+            self.ser.sendPosture(source="gui")
+
+    def _pressHat(self, name: str) -> None:
+        """十字キーを押す。斜めのボタンは2方向を同時に押したものとして扱う。"""
+        dirs = self.HAT_NAME2DIRS.get(name, ())
+        if self._held_hat.issuperset(dirs):
+            return
+        self._held_hat.update(dirs)
+        self._setActive(name, True)
+        self._applyHat()
+
+    def _releaseHat(self, name: str) -> None:
+        """十字キーを離す。"""
+        dirs = self.HAT_NAME2DIRS.get(name, ())
+        if not self._held_hat.intersection(dirs):
+            return
+        self._held_hat.difference_update(dirs)
+        self._setActive(name, False)
+        self._applyHat()
+
+    def _hatValue(self) -> Any:
+        """押している向きの集合から Hat の値を決める。
+
+        Hat は「値」でありビット列ではない（MCU-13 / 段 I と同じ注意）。
+          ボタンのように OR で足せないため、組み合わせを表から引く。
+        上下同時・左右同時のように打ち消し合う組み合わせや、3つ以上の
+          同時押しは表に無い。その場合は中立へ倒す（実機の十字キーでも
+          相反する方向は同時に入らない）。
+        """
+        keys = tuple(sorted(d for d in self._held_hat if d in self.HAT_DIRS))
+        name = self.HAT_COMBO.get(keys, "CENTER")
+        return getattr(Hat, name)
+
+    def _applyHat(self) -> None:
+        """現在の向きを申告して送る。
+
+        2026/08/25 段 V-d: 押している間は holdHat で「押しっぱなし」と
+          して申告し、離すときは releaseHat で取り下げる。
+          中立を「値(CENTER)」で送ると、他の系統が押しっぱなしにして
+            いる十字キーまで中立へ戻してしまう（B1 の跨ぎ問題）。
+          取り下げなら、他が押していればその向きへ戻るだけで済む。
+        退避: 古い Sender（holdHat を持たない）なら従来どおり値で送る。
+        """
+        hold = getattr(self.ser, "holdHat", None)
+        release = getattr(self.ser, "releaseHat", None)
+        if callable(hold) and callable(release):
+            ok = (hold(int(self._hatValue()), source="gui")
+                  if self._held_hat else release(source="gui"))
+        else:
+            ok = self.ser.setHat(int(self._hatValue()), source="gui")
+        if ok:
+            self.ser.sendPosture(source="gui")
+
+    def _setActive(self, name: str, on: bool) -> None:
+        """押している間だけ色を変える（押しっぱなしが目で分かるように）。"""
+        button = self._buttons.get(name)
+        if button is None:
+            return
+        try:
+            button["bg"] = self.BUTTON_ACTIVE_BG if on else self.BUTTON_BG
+        except tk.TclError:
+            pass
+
+    def releaseAllHeld(self) -> None:
+        """押しているものをすべて離す。
+
+        窓を閉じるときや切断時に必ず呼ぶ。押しっぱなしのまま閉じると、
+          解放が届かず Switch 側でボタンが押されたままになる。
+        """
+        for name in list(self._held_btn):
+            self._releaseButton(name)
+        for name in list(self.HAT_NAME2DIRS):
+            self._setActive(name, False)
+        if self._held_hat:
+            self._held_hat.clear()
+            self._applyHat()
 
     def bind(self, event: str, func: Any) -> None:
         self.window.bind(event, func)
@@ -926,6 +1221,12 @@ class ControllerGUI:
         self.window.focus_force()
 
     def destroy(self) -> None:
+        # 段 V-c: 押しっぱなしのまま閉じると解放が届かず、
+        #   Switch 側でボタンが押されたままになる。必ず離してから閉じる。
+        self.releaseAllHeld()
+        flush = getattr(self.ser, "flushPending", None)
+        if callable(flush):
+            flush()
         self.window.destroy()
         logger.debug("GUI controller destroyed")
 

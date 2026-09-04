@@ -38,7 +38,7 @@ import Settings
 import Utility as util
 from Camera import Camera
 from CommandLoader import CommandLoader
-from Commands import McuCommandBase, PythonCommandBase, Sender
+from Commands import McuCommandBase, PythonCommandBase, Sender, Transport
 from Commands.Keys import KeyPress
 from GuiAssets import CaptureArea, ControllerGUI
 from Keyboard import SwitchKeyboardController
@@ -70,7 +70,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OPEN_DIR_ICON_PATH = os.path.join(BASE_DIR, "assets", "icons8-OpenDir-16.png")
 
 FPS_VALUES = [60, 45, 30, 15, 5]
-BAUD_RATE_VALUES = [9600, 4800]
+BAUD_RATE_VALUES = [9600, 4800, 19200, 38400, 57600, 115200]
 SHOW_SIZE_VALUES = ["640x360", "1280x720", "1920x1080"]
 COM_PORT_NOT_FOUND = "(ポートが見つかりません)"
 
@@ -86,11 +86,20 @@ STOP_NOTIFY_MS = 5000
 class PokeControllerApp:
     """メインウィンドウ."""
 
-    def __init__(self, master: Tk | None = None, profile: str = "") -> None:
-        """profile を渡すと設定・共有メモリを分けて並列起動できる。"""
+    def __init__(self, master: Tk | None = None, profile: str = "",
+                 transport: str = "") -> None:
+        """profile を渡すと設定・共有メモリを分けて並列起動できる。
+
+        2026/08/25 段 VI-b: transport は通信方式のプリセット名。
+          起動引数（--transport）から渡す。空なら settings.ini の
+          [Transport] name を使う。引数のほうが強い（その場かぎりで
+          試したいときに、設定を書き換えずに済ませるため）。
+        """
         if master is None:
             master = Tk()
         self.root = master
+        # 起動引数で指定された通信方式。設定より優先する
+        self._transport_override = str(transport).strip()
         # どの台のウィンドウか一目で分かるようタイトルに出す。
         self.profile = Settings.GuiSettings.sanitize_profile(profile)
         self._running_command = ""  # タイトルに出す実行中コマンド名
@@ -129,7 +138,7 @@ class PokeControllerApp:
     # ------------------------------------------------------------------
 
     def _init_state(self) -> None:
-        # Baud Rate を変更したい場合は "readonly" にする
+        # Baud Rate は画面から変えられないようにしている（意図的な制限）。
         self.baud_rate_state = "disabled"
         self.os_name = platform.system()
 
@@ -139,6 +148,11 @@ class PokeControllerApp:
         self.keyboard: SwitchKeyboardController | None = None
         self.camera: Camera | None = None
         self.ser: Sender.Sender | None = None
+        # いま使っている通信方式の名前（画面表示と保存に使う）
+        self.transport_name = tk.StringVar()
+        # 2026/08/29 段4-c: 入力調停の設定（画面表示と保存に使う）。
+        #   実体は Sender が持つ。ここは画面の選択値だけを持つ。
+        self.arbitration_mode = tk.StringVar()
         self.preview: CaptureArea | None = None
         self.cur_command: Any = None
         # コマンドの実行状態。idle / running / stopping の3つ。
@@ -362,6 +376,38 @@ class PokeControllerApp:
             column="7", columnspan="2", padx="5", row="0", sticky="ew"
         )
 
+        # 2026/08/25 段 VI-b: 通信方式（Transport）の選択。
+        #   候補は Transport.py の登録簿から引く。ここに名前を
+        #     書き並べない（実装を足したのに画面に出ない、を防ぐ）。
+        self.transport_label = ttk.Label(self.serial_lf)
+        self.transport_label.config(text="Transport: ")
+        self.transport_label.grid(column="0", padx="5", row="1", sticky="ew")
+
+        self.transport_cb = ttk.Combobox(self.serial_lf)
+        self.transport_cb.config(
+            state="readonly", textvariable=self.transport_name, width="28"
+        )
+        self.transport_cb.grid(column="1", padx="5", row="1", sticky="ew")
+        self.transport_cb.bind(
+            "<<ComboboxSelected>>", self.applyTransport, add=""
+        )
+
+        # 2026/08/29 段4-c: 入力調停の選択。候補は Sender の許可値から
+        #   引く（画面に名前を書き並べない）。既定の off は本家と同じ
+        #   挙動で、script を選ぶと実行中の手操作を断る。
+        self.arbitration_label = ttk.Label(self.serial_lf)
+        self.arbitration_label.config(text="入力調停: ")
+        self.arbitration_label.grid(column="0", padx="5", row="2", sticky="ew")
+
+        self.arbitration_cb = ttk.Combobox(self.serial_lf)
+        self.arbitration_cb.config(
+            state="readonly", textvariable=self.arbitration_mode, width="28"
+        )
+        self.arbitration_cb.grid(column="1", padx="5", row="2", sticky="ew")
+        self.arbitration_cb.bind(
+            "<<ComboboxSelected>>", self.applyArbitration, add=""
+        )
+
         self.serial_lf.config(text="Serial Settings")
         self.serial_lf.grid(
             column="0", columnspan="2", padx="5", row="1", sticky="nsew"
@@ -468,12 +514,15 @@ class PokeControllerApp:
 
         # Notebook より先に pack して、絞り込みを上の段に置く。
         self.filter_f.pack(fill="x", expand=False, padx="5", pady="2", side="top")
-        self.Command_nb.pack(fill="both", expand=True, padx="5", pady="5", side="top")
+        self.Command_nb.pack(
+            fill="both", expand=True, padx="5", pady="5", side="top"
+        )
 
         # タブを切り替えたら、そのタブ側の一覧へ絞り込みをかけ直す。
         self.Command_nb.bind(
             "<<NotebookTabChanged>>", self.onCommandFilterChanged, add=""
         )
+
 
         self.reloadCommandButton = ttk.Button(self.Commands_2_f)
         self.reloadCommandButton.config(text="Reload", command=self.reloadCommands)
@@ -621,6 +670,7 @@ class PokeControllerApp:
         if WindowGeometry.rememberSash(self.log_pane, self.settings):
             self._on_setting_changed()
 
+
     def loadSettings(self) -> None:
         self.settings = Settings.GuiSettings(self.profile)
         self.settings.load()
@@ -645,6 +695,12 @@ class PokeControllerApp:
 
         # 入力ログの表示。settings.ini の [Input Log] enabled と対にする
         self.show_input_log.set(self.settings.input_log_enabled.get())
+
+        # 段 VI-b: 通信方式の候補と現在値。利用者定義のプラグインは
+        #   候補を組む前に読み込む（読み込み後でないと一覧に出ない）。
+        self._loadTransportPlugins()
+        self._refreshTransportChoices()
+        self._refreshArbitrationChoices()
 
         WindowUtils.selectCombobox(self.fps_cb, self.fps.get())
         WindowUtils.selectCombobox(self.show_size_cb, self.show_size.get())
@@ -780,7 +836,9 @@ class PokeControllerApp:
             return int(self.baud_rate.get())
         except (TypeError, ValueError, tk.TclError):
             fallback = BAUD_RATE_VALUES[0]
-            logger.warning(f"Baud Rate を数値として読めないため {fallback} を使います")
+            logger.warning(
+                f"Baud Rate を数値として読めないため {fallback} を使います"
+            )
             return fallback
 
     def _cameraIdOrNone(self) -> int | None:
@@ -843,6 +901,7 @@ class PokeControllerApp:
         logger.error(message)
         return False
 
+
     def assignCamera(self, event: Any = None) -> None:
         """入力途中のIDで表示名だけ追随させる。切替と保存は行わない。"""
         try:
@@ -862,9 +921,7 @@ class PokeControllerApp:
             self.camera_id.set(previous)
             self.assignCamera()
             return "break"
-        if cam_id < 0 or (
-            self.camera_dic is not None and cam_id not in self.camera_dic
-        ):
+        if cam_id < 0 or (self.camera_dic is not None and cam_id not in self.camera_dic):
             print("Camera IDが範囲外です。元の値へ戻します")
             self.camera_id.set(previous)
             self.assignCamera()
@@ -877,10 +934,7 @@ class PokeControllerApp:
             return "break"
         self.camera_id.set(previous)
         self.camera_key.set(self.camera_keys.get(previous, ""))
-        self.assignCamera()
-        self.openCamera()
-        return "break"
-
+        self.assignCamera(); self.openCamera(); return "break"
     def locateCameraCmbbox(self) -> None:
         """接続されているカメラを列挙してコンボボックスへ入れる。
 
@@ -983,6 +1037,9 @@ class PokeControllerApp:
         self.assignCamera()
         self.openCamera()
 
+
+
+
     def saveCapture(self) -> None:
         """画面の1枚を保存し、結果をログ欄へ知らせる。
 
@@ -1013,7 +1070,23 @@ class PokeControllerApp:
         self._on_setting_changed()
 
     def applyBaudRate(self, event: Any = None) -> None:
-        # 未実装（Baud Rate は activateSerial 側で反映される）
+        """Baud Rate の選択は受け取らない（意図的に何もしない）。
+
+        画面の Combobox は state="disabled" にしてあり、そもそも選び
+        直せない。ここが空なのは実装漏れではなく、その状態に合わせて
+        いる。
+
+        Switch の自動化では 9600 から変える理由が無い。一方 GameCube
+        の自動化では別の速度を使うが、その利用者は Switch 側の数百分の
+        一で、かつ自分でスクリプトを直せる人に限られる。画面から触れる
+        ようにすると、多数派である Switch の利用者が誤って変更し、
+        「繋がらない」という問い合わせだけが増える。
+
+        速度を変える必要がある場合は settings.ini の baud_rate を直接
+        書き換える。Settings は候補で縛らず value > 0 だけを検査するの
+        で、任意の値がそのまま通る。マイコン側の SERIAL_BAUD と同じ値
+        にすること。片方だけ変えると文字が化けて一切通信できない。
+        """
         pass
 
     def applyWindowSize(self, event: Any = None) -> None:
@@ -1044,7 +1117,6 @@ class PokeControllerApp:
         else:
             directory = os.path.join(BASE_DIR, "Commands", "McuCommands")
         WindowUtils.openDirectory(directory, self.os_name)
-
     # ------------------------------------------------------------------
     # シリアル / キーボード
     # ------------------------------------------------------------------
@@ -1130,6 +1202,7 @@ class PokeControllerApp:
         self.refreshComPorts()
         self.activateSerial()
 
+
     def _apply_input_log_settings(self) -> None:
         """入力ログの設定を Sender へ反映する。
 
@@ -1156,14 +1229,138 @@ class PokeControllerApp:
             print(message)
             logger.warning(message)
 
+    # ------------------------------------------------------------------
+    # 通信方式（Transport）のプリセット  2026/08/25 段 VI-b
+    # ------------------------------------------------------------------
+    # 段 VI で「差し替えられる」形は作ったが、選ぶ手段が無かった。
+    #   ここで設定・起動引数・画面の3つから名前で選べるようにする。
+    #   本体は実装を知らない。名前を登録簿へ渡すだけ（PORTBACK 2章）。
+
+    def _selectedTransportName(self) -> str:
+        """これから使う通信方式の名前を決める。
+
+        優先順は 起動引数 > 設定ファイル。引数を上に置くのは、
+          設定を書き換えずにその場で試せるようにするため。
+        """
+        name = self._transport_override or self.settings.transport_name.get()
+        return Transport.resolve_transport_name(name)
+
+    def _loadTransportPlugins(self) -> None:
+        """利用者が置いた自作の Transport を読み込む。
+
+        フォルダ指定が空なら何もしない（既定）。読めたものは名前を
+          出す。黙って足すと、候補が増えた理由が分からなくなる。
+        """
+        directory = self.settings.transport_plugin_dir.get().strip()
+        if not directory:
+            return
+        if not os.path.isabs(directory):
+            directory = os.path.join(BASE_DIR, directory)
+        added = Transport.load_transport_plugins(directory)
+        if added:
+            message = "通信方式を読み込みました: " + ", ".join(added)
+            print(message)
+            logger.info(message)
+
+    def _refreshTransportChoices(self) -> None:
+        """選択欄の候補を登録簿から組み直し、現在値を選ぶ。"""
+        names = Transport.list_transports()
+        self.transport_cb.config(values=names)
+        current = self._selectedTransportName()
+        self.transport_name.set(current)
+
+    def applyTransport(self, event: Any = None) -> None:
+        """選択された通信方式へ差し替える。
+
+        開いている線は Sender.setTransport が閉じる。差し替えたら
+          開き直して、選んだ方式で実際に繋がる状態にする。
+        戻り値は「入力ログが繋がったか」。繋がらない方式もあるので
+          ここで理由を出す（黙ると1行も出ない理由が分からない）。
+        """
+        name = Transport.resolve_transport_name(self.transport_name.get())
+        # 解決後の名前を画面へ戻す。知らない名前を選んだまま残さない
+        self.transport_name.set(name)
+        # 画面から選び直した以上、起動引数の指定はもう効かせない
+        self._transport_override = ""
+        if self.ser is None:
+            self._on_setting_changed()
+            return
+        if name == self.ser.getTransportName():
+            return
+        transport = Transport.create_transport(name, logger=logger)
+        linked = self.ser.setTransport(transport)
+        message = f"通信方式を {name} に切り替えました。"
+        print(message)
+        logger.info(message)
+        if not linked:
+            print("  注記: この方式では入力ログを出せません。")
+        # 線は閉じられているので開き直す（従来どおり繋がった状態に戻す）
+        self.activateSerial()
+        self._on_setting_changed()
+
+    # 入力調停（誰の操作を優先するか）  2026/08/29 段4-c
+    #   既定は off で本家と同じ挙動。画面から選び直せる。
+
+    def _refreshArbitrationChoices(self) -> None:
+        """選択欄の候補を Sender の許可値から組み直し、現在値を選ぶ。"""
+        self.arbitration_cb.config(values=list(Sender.list_arbitration_modes()))
+        mode = Sender.resolve_arbitration_mode(
+            self.settings.arbitration_mode.get(), logger=logger)
+        self.arbitration_mode.set(mode)
+
+    def _arbitrationCooldown(self) -> float:
+        """設定の秒数を数へ直す。読めない値は既定の 2 秒として扱う。"""
+        try:
+            return max(0.0, float(self.settings.arbitration_cooldown.get()))
+        except (TypeError, ValueError):
+            logger.warning("入力調停の cooldown を読めません。2.0 秒とします")
+            return 2.0
+
+    def applyArbitration(self, event: Any = None) -> None:
+        """選ばれた入力調停を Sender へ反映する。
+
+        線を開いていなくても選べる。次に開いたときへ効かせるため、
+          画面の値は設定へ残す。Sender があればその場で適用する。
+        """
+        mode = Sender.resolve_arbitration_mode(
+            self.arbitration_mode.get(), logger=logger)
+        # 解決後の名前を画面へ戻す。知らない名前を選んだまま残さない
+        self.arbitration_mode.set(mode)
+        self.settings.arbitration_mode.set(mode)
+        if self.ser is not None:
+            self.ser.setArbitration(mode=mode,
+                                    cooldown=self._arbitrationCooldown())
+        message = f"入力調停を {mode} に切り替えました。"
+        if mode == "script":
+            message += "　実行中の手操作は断ります（一時停止すれば操作できます）。"
+        elif mode == "human":
+            message += "　手で触った直後はスクリプトの操作を断ります。"
+        else:
+            message += "　どちらも断りません（本家と同じ挙動）。"
+        print(message)
+        logger.info(message)
+        self._on_setting_changed()
+
+
     def _start_serial(self) -> None:
         # 入力ログは print と混ぜず、専用のキューへ流す。同じ経路だと
         # 入力ログが上限を食い尽くしてコマンドの出力が捨てられる。
+        # 段 VI-b: 運び方は登録簿から名前で作る。作れなければ
+        #   Transport 側が理由を出して既定へ戻すので None にはならない。
         self.ser = Sender.Sender(
-            self.is_show_serial, input_log_emit=LogPane.emitInputLog
+            self.is_show_serial,
+            input_log_emit=LogPane.emitInputLog,
+            transport=Transport.create_transport(
+                self._selectedTransportName(), logger=logger
+            ),
         )
+        # 段4-c: 設定の入力調停を反映する。Sender を作り直しても
+        #   画面の選択が効いたままになるよう、生成のたびに適用する。
+        self.ser.setArbitration(mode=self.arbitration_mode.get(),
+                                cooldown=self._arbitrationCooldown())
         self._apply_input_log_settings()
         self.activateSerial()
+
 
     def activateSerial(self) -> None:
         """ポートを開く。既に開いていれば閉じてから開き直す。
@@ -1201,7 +1398,9 @@ class PokeControllerApp:
             message = f"COM Port {self.com_port_name.get()} connected successfully"
             print(message)
             logger.debug(message)
-            self.keyPress = KeyPress(self.ser)
+            # 2026/08/25 段 V-b: この KeyPress はキーボード操作専用。
+            #   入力調停で「人の手入力」として扱われるよう名札を付ける。
+            self.keyPress = KeyPress(self.ser, source="keyboard")
             # 新しい KeyPress で作り直す。開けたときだけ戻すので、
             # 失敗時にチェックが入ったまま実体が無い状態にはならない。
             if was_enabled:
@@ -1373,7 +1572,10 @@ class PokeControllerApp:
         if not self.py_classes and not self.mcu_classes:
             # 全滅は「壊れたコマンドが1つある」とは症状が違う。
             # 黙って空の一覧を出すと原因に辿り着けないので知らせる。
-            message = f"コマンドを1つも読み込めませんでした（{python_dir} / {mcu_dir}）"
+            message = (
+                "コマンドを1つも読み込めませんでした"
+                f"（{python_dir} / {mcu_dir}）"
+            )
             print(message)
             logger.error(message)
         self.setCommandItems()
@@ -1436,7 +1638,9 @@ class PokeControllerApp:
                 tags = tag_table.get(name, [])
                 # 絞り込みの判定にだけ仮想タグを混ぜる。表示の前置は
                 # 実体のタグだけにして、履歴で見た目が変わらないようにする。
-                matched = tags + CommandStats.virtualTags(self.command_stats, name)
+                matched = tags + CommandStats.virtualTags(
+                    self.command_stats, name
+                )
                 if tag != TAG_ALL and tag not in matched:
                     continue
                 label = CommandTags.displayName(name, tags)
@@ -1545,12 +1749,8 @@ class PokeControllerApp:
             self._palette = None
 
         self._palette = CommandPalette.CommandPalette(
-            self.root,
-            list(names),
-            labels,
-            self.command_stats,
-            self._runFromPalette,
-            onClose,
+            self.root, list(names), labels, self.command_stats,
+            self._runFromPalette, onClose,
         )
         return "break"
 
@@ -1581,6 +1781,7 @@ class PokeControllerApp:
         combo.set(label)
         self.assignCommand()
         self.startPlay()
+
 
     def openTagEditor(self, *event: Any) -> None:
         """選択中のコマンドのタグを編集する小窓を開く。
@@ -1655,6 +1856,18 @@ class PokeControllerApp:
             self.cur_command = self.mcu_cur_command
         enabled = self.cur_command is not None
         self.startButton["state"] = "normal" if enabled else "disabled"
+
+
+
+
+
+
+
+
+
+
+
+
 
     def _buildCommand(self, cmd_class: Any) -> Any:
         """コマンドを1つ生成する。失敗したら None を返す。
@@ -1869,7 +2082,9 @@ class PokeControllerApp:
         token = self._run_token
 
         try:
-            started = self.cur_command.start(self.ser, lambda: self.stopPlayPost(token))
+            started = self.cur_command.start(
+                self.ser, lambda: self.stopPlayPost(token)
+            )
         except Exception:
             # スレッドを起こす前に落ちると後始末も呼ばれない。ここで戻す。
             print("コマンドを開始できませんでした")
@@ -2002,8 +2217,8 @@ class PokeControllerApp:
         から実際に走るまでの間に、次の実行が始まっていることがある。
         積む時点だけで見ても足りず、走る時点でも見る必要がある。
         （実行1の後始末が積まれたまま _watchStopped が先に画面を戻し、
-        利用者が実行2を始めたあとで積まれていた分が走ると、動いて
-        いる実行2の画面が空きへ戻り Start が押せてしまう）
+        　利用者が実行2を始めたあとで積まれていた分が走ると、動いて
+        　いる実行2の画面が空きへ戻り Start が押せてしまう）
 
         操作を戻すことを最優先にする。一覧の作り直しは付随処理なので、
         そこで例外が出てもボタンは戻っていなければならない。以前は
@@ -2113,12 +2328,9 @@ class PokeControllerApp:
         finally:
             if not self._closing:
                 try:
-                    self._display_after_id = self.logArea.after(
-                        LogPane.FLUSH_INTERVAL_MS, self.display_text
-                    )
+                    self._display_after_id = self.logArea.after(LogPane.FLUSH_INTERVAL_MS, self.display_text)
                 except (tk.TclError, RuntimeError):
                     self._display_after_id = None
-
     def run(self) -> None:
         logger.debug("Start Poke-Controller")
         self.mainwindow.mainloop()
@@ -2264,6 +2476,9 @@ class PokeControllerApp:
         self.settings.camera_id.set(self._cameraIdOrNone() or 0)
         self.settings.camera_key.set(self.camera_key.get())
         self.settings.input_log_enabled.set(self.show_input_log.get())
+        # 段 VI-b: 通信方式。起動引数で一時的に替えている場合も、
+        #   画面に出ている値＝実際に使っている値なのでそのまま保存する。
+        self.settings.transport_name.set(self.transport_name.get())
         self.settings.save()
 
     def _remember_geometry(self) -> None:
@@ -2310,7 +2525,14 @@ if __name__ == "__main__":
         help="設定と共有メモリを分ける名前。複数台を並列起動するときに指定する"
         "（例: --profile switch1）。未指定なら従来どおり settings.ini を使う。",
     )
+    parser.add_argument(
+        "--transport",
+        default="",
+        help="通信方式のプリセット名（例: --transport legacy_text）。"
+        "設定ファイルより優先する。未指定なら settings.ini の [Transport] "
+        "name を使う。使える名前は Transport.py の登録簿にあるもの。",
+    )
     args = parser.parse_args()
 
-    app = PokeControllerApp(profile=args.profile)
+    app = PokeControllerApp(profile=args.profile, transport=args.transport)
     app.run()
