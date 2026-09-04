@@ -422,16 +422,20 @@ class PicoUartTransport(TextSerialTransport):
 
     繋ぎ方は2通りあり、この層から見ると どちらも同じ「COM ポート」である:
 
-      ①有線（pico_main.c）: PC → USBシリアル変換器 → Pico の UART → Switch
+      ①有線: PC → USBシリアル変換器 → Pico の UART → Switch
           Pico の USB は Switch が占有するため、PC とは繋げない。
           そこで FT232 などの変換器を挟む。115200bps。
 
-      ②無線（bt_probe.c）: PC → Pico の USB(CDC) → Bluetooth → Switch
+      ②無線（pico-wakecon）: PC → Pico の USB(CDC) → Bluetooth → Switch
           無線化で Pico の USB が空いたので、PC と直結できる。
           変換器が要らず、線が1本になる。
 
     どちらも送る中身は同じ S 行なので、この実装を分ける必要は無い。
       違うのは「どの COM 番号か」だけで、それは利用者が選ぶ。
+
+    注意: Q/R の時刻付きキューを持つのは pico_firmware の Pico だけ
+      であり、pico-wakecon は持たない。Q へ回すかは Sender が応答で
+      確かめるため、ここで相手を選ぶ必要は無い。
     """
 
     name = "pico_uart"

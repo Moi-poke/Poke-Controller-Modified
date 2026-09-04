@@ -241,6 +241,8 @@ class Sender:
                 self._logger.warning(msg)
             if self._liveCapable():
                 self.startLiveWorker(self.transport)
+            # 運び先が変わるので、キュー対応の記憶は捨てる。
+            self._forgetQueueSupport()
             return self._input_log_linked
 
     def getTransportName(self) -> str:
@@ -416,6 +418,9 @@ class Sender:
         opened = self.transport.open(portNum, portName, baudrate)
         if opened and self._liveCapable():
             self.startLiveWorker()
+        if opened:
+            # 相手が変わるので、キュー対応の記憶は捨てる。
+            self._forgetQueueSupport()
         return opened
 
     def closeSerial(self) -> None:
@@ -446,16 +451,16 @@ class Sender:
         """
         self._logger.debug("Closing the serial communication")
         live = self._liveCapable()
-        with self._lock:
-            if live:
-                # 1: これ以降の状態変化を mailbox へ入れない。
-                self._live_closing = True
-                # 2: 中立より後に古い状態が出ないようにする。
-                self.discardLive()
-                # 3: worker が生きているうちに中立を送る。
-                self.releaseAll()
-                self.putLive(self.snapshot(), priority=True)
         try:
+            with self._lock:
+                if live:
+                    # 1: これ以降の状態変化を mailbox へ入れない。
+                    self._live_closing = True
+                    # 2: 中立より後に古い状態が出ないようにする。
+                    self.discardLive()
+                    # 3: worker が生きているうちに中立を送る。
+                    self.releaseAll()
+                    self.putLive(self.snapshot(), priority=True)
             if live:
                 # 4: 送出の完了を待つ。期限を過ぎたら次へ進む。
                 if not self.waitLiveDrained(self.CLOSE_DRAIN_S):
@@ -468,7 +473,9 @@ class Sender:
                 # 8: 入力ログを初期化する。
                 self.input_logger.reset()
         finally:
-            # 9: どのステップが失敗しても回線は必ず閉じる。
+            # 9: どの手順が失敗しても回線は必ず閉じる。手順 1〜3 を
+            # try の外に置くと、そこで例外が出たときに閉じず、かつ
+            # 閉じ中の印が残って以後すべての live 入力を断る。
             with self._lock:
                 self._live_closing = False
             self.transport.close()
@@ -1333,17 +1340,22 @@ class Sender:
                 else:
                     self._arb_last_auto = now
                     return True
-            elif not is_human:
-                # mode == "script": スクリプトを優先する。書き続ける間は
-                # 優先が続く（スライド式・意図どおり）。
-                self._arb_last_auto = now
-                return True
-            elif (self._arb_last_auto is not None
-                    and now - self._arb_last_auto < self._arb_cooldown):
-                self._arb_rejected["human"] += 1
-                notify = (source, "スクリプト")
+            elif self._arb_mode == "script":
+                # スクリプトを優先する。書き続ける間は優先が続く
+                # （スライド式・意図どおり）。
+                if not is_human:
+                    self._arb_last_auto = now
+                    return True
+                if (self._arb_last_auto is not None
+                        and now - self._arb_last_auto < self._arb_cooldown):
+                    self._arb_rejected["human"] += 1
+                    notify = (source, "スクリプト")
+                else:
+                    self._arb_last_human = now
+                    return True
             else:
-                self._arb_last_human = now
+                # 未知の mode は調停しない。黙って優先側として扱うより、
+                # 通して利用者の手で止められる形にする。
                 return True
         if notify is not None:
             self._notifyReject(*notify)
@@ -1409,7 +1421,14 @@ class Sender:
         return True
 
     def sendPosture(self, source: Optional[str] = None) -> bool:
-        """現在姿勢を送る。Pico live経路ではmailboxだけを使う。"""
+        """現在姿勢を送る。Pico live経路ではmailboxだけを使う。
+
+        送るのは「合成後の全体」である。棄却された系統の値は入って
+        いないが、通った別系統の値（常時受理のスティックなど）は入る。
+        調停で送出そのものを断られた行は、次の受理で送り直される。
+        中立への復帰は sendNeutralAll（常時受理）で行うため、解放が
+        届かないことはない。
+        """
         if not self._accept(source):
             return False
         # apply* が既に mailbox へ入れている。ここで同期送信
@@ -1900,10 +1919,16 @@ class Sender:
     def shouldQueue(self, duration: float) -> bool:
         """この press を Pico のキューへ回すべきかを返す。
 
-        条件は 2 つある。閾値より短いことと、live 経路であること。
+        条件は 3 つある。閾値より短いこと、live 経路であること、
+        キュー対応が否定されていないこと。
         legacy（Leonardo）にはキューが無いので、必ず False になる。
         閾値が 0 ならこの経路を使わない（実質の無効化）。
+        live 経路でも、Q 応答が無い相手（wakecon など）だと分かれば
+        使わない。送りっぱなしでは非対応を見分けられず、押下が黙って
+        消えるためである（対応の有無は runQueued が1度だけ確かめる）。
         """
+        if self._queueKnownUnsupported():
+            return False
         limit = self.queueThreshold()
         if limit <= 0:
             return False
@@ -1913,6 +1938,27 @@ class Sender:
         except (TypeError, ValueError):
             return False
         return self._liveCapable()
+
+    def _queueKnownUnsupported(self) -> bool:
+        """キュー非対応と確定済みか（読むだけ）。"""
+        return bool(getattr(self, "_queue_unsupported", False))
+
+    def _noteQueueSupported(self, supported: bool) -> None:
+        """キュー対応の有無を覚える。非対応と分かれば以後 Q へ回さない。
+
+        対応は QOK で確定する。満杯（QFULL）は対応の証拠なので、
+        非対応にはしない（混んでいるだけで、従来経路へ落とす）。
+        無応答・書式違い（ERR）は非対応とみなす。
+        繋ぎ直し・通信方式の切替えでは _forgetQueueSupport で消す。
+        """
+        if supported:
+            self._queue_unsupported = False
+        else:
+            self._queue_unsupported = True
+
+    def _forgetQueueSupport(self) -> None:
+        """キュー対応の記憶を消す。相手が変わる場面で呼ぶ。"""
+        self._queue_unsupported = False
 
     def runQueued(self, duration: float, buttons: Any = None,
                   source: Optional[str] = None) -> bool:
@@ -1941,6 +1987,14 @@ class Sender:
         N は送らない。N は Pico 側で全体を中立に戻すため、hold
         で押しっぱなしにしている姿勢まで解除され、短い press のたびに
         hold が途切れる。Q 行自体が完全な姿勢を持つので N は不要である。
+
+        Q と R は応答で確かめる。Q には QOK、R には QRUN を期待する。
+        送りっぱなしでは、キューを持たない相手（wakecon など）でも
+        送れたことになり、押下が黙って消える。QFULL（混雑）は対応の
+        証拠なので非対応にせず、従来経路へ落とすだけにする。
+        無応答・ERR は非対応と覚え、以後 Q へ回さない。
+        R が通らなかったときは、積んだ Q が次回の R で誤爆しないよう
+        N で流す。N はキューを空にする最後の砦である。
         """
         transport = self.transport
         if transport is None or not self._liveCapable():
@@ -1968,14 +2022,43 @@ class Sender:
         line = self.encodeQueuedState(snap, tick=0, dur=ms)
         try:
             self.discardLive()
-            if not self._sendQueueLine(transport, line):
-                return False
-            if not self._sendQueueLine(transport, "R"):
+            answered = self._runQueueExchange(transport, line)
+            if not answered:
                 return False
             return self._waitQueueDone(transport, duration)
         except Exception:
             # 送れなかった理由は問わない。呼び出し側が従来経路へ落とす。
             return False
+
+    def _runQueueExchange(self, transport: Any, line: str) -> bool:
+        """Q と R を応答付きで送る。実行まで漕ぎ着けたら True。
+
+        Q には QOK を期待する。QFULL は混雑（対応はしている）なので
+        非対応にはせず False で従来経路へ落とす。無応答・ERR は非対応
+        と覚える。R には QRUN を期待し、通らなければ積んだ Q を N で
+        流してから False を返す。
+        """
+        from Commands.WakeLink import expect
+        first = expect(transport, line, ("QOK", "QFULL", "ERR", "BUSY"),
+                       timeout=0.5)
+        if first is None or first.startswith("ERR"):
+            # 無応答・書式違いはキュー非対応。以後は Q へ回さない。
+            self._noteQueueSupported(False)
+            return False
+        if not first.startswith("QOK"):
+            # QFULL / BUSY: 対応はしているが今は混んでいる。
+            return False
+        self._noteQueueSupported(True)
+        second = expect(transport, "R", ("QRUN", "QEMPTY", "ERR", "BUSY"),
+                        timeout=0.5)
+        if second is not None and second.startswith("QRUN"):
+            return True
+        # R が通らないと、積んだ Q が次回の R で誤爆する。N で流す。
+        try:
+            expect(transport, "N", ("OK", "ERR"), timeout=0.5)
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     def encodeQueuedState(snap: Dict[str, Any], tick: int, dur: int) -> str:
@@ -1989,7 +2072,12 @@ class Sender:
         return "Q %04x %04x %s" % (tick & 0xFFFF, dur & 0xFFFF, body[2:])
 
     def _sendQueueLine(self, transport: Any, line: str) -> bool:
-        """Q 行や R 行を 1 本送る。送れたら True。"""
+        """Q 行や R 行を 1 本送る。送れたら True。
+
+        後方互換のため残す。runQueued は応答付きの _runQueueExchange を
+        使う。送りっぱなしでは非対応を見分けられないため、新規には
+        こちらの使用を推奨しない。
+        """
         writer = getattr(transport, "send_row", None)
         if not callable(writer):
             return False
@@ -1999,17 +2087,10 @@ class Sender:
     def _waitQueueDone(self, transport: Any, duration: float) -> bool:
         """実行が終わるまで待つ。
 
-        Transport には読み取りの口が無いため、完了応答は読めない。
-
-        読まなくてよい理由。Pico は自分の時計で実行するので、PC が
-        待たなくても押下は正しく行われる。
+        R まで通った後の待ちである。Pico は自分の時計で実行するので、
+        PC が待たなくても押下は正しく行われる。
         PC が待つのは「次の操作と混ざらないため」だけである。
         対象は 8 ms 未満なので、待っても実害が無い。
-
-        限界。満杯と実行中を検出できない。ただし Pico は実行を
-        終えるとキューの長さを 0 に戻すので満杯にならず、
-        runQueued は同期なので自分自身とは衝突しない。読み取りの口が
-        要るなら Transport へ足す。
         """
         time.sleep(float(duration))
         return True

@@ -130,3 +130,48 @@ def query(transport: Any, line: str, prefixes: Any,
                 found.append(text)
                 break
     return found
+
+
+def expect(transport: Any, line: str, prefixes: Any,
+           timeout: float = 0.5) -> Optional[str]:
+    """1行送り、合致する最初の応答行を待つ。見つかればその行を返す。
+
+    query が期限いっぱいまで集めるのに対し、こちらは1件見つかり次第
+    戻る。QOK / QRUN のような即応の確認に向く。見つからなければ None。
+    呼び出しは作業スレッドで行い、Tk の変数には触らない（query と同じ）。
+    """
+    if isinstance(prefixes, str):
+        prefixes = (prefixes,)
+    drain(transport)
+    if not send_line(transport, line):
+        return None
+    ser = _ser_of(transport)
+    if ser is None:
+        return None
+    deadline = time.perf_counter() + max(0.0, float(timeout))
+    buf = bytearray()
+    try:
+        while time.perf_counter() < deadline:
+            try:
+                chunk = ser.read(64)
+            except Exception:
+                break
+            if chunk:
+                buf.extend(chunk)
+                while True:
+                    idx = buf.find(b"\n")
+                    if idx < 0:
+                        break
+                    raw = bytes(buf[:idx])
+                    del buf[:idx + 1]
+                    try:
+                        text = raw.decode("ascii",
+                                          errors="replace").strip()
+                    except Exception:
+                        continue
+                    for prefix in prefixes:
+                        if text.startswith(prefix):
+                            return text
+    except Exception:
+        _logger.error(f"WakeLink expect failed: {traceback.format_exc()}")
+    return None
