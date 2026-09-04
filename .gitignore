@@ -121,3 +121,19 @@ venv.bak/
 # mypy
 .mypy_cache/
 SerialController/discord.yml
+
+# ローカル生成: プロファイル別設定・単一起動ロック・起動エラーログ
+SerialController/settings.*.ini
+SerialController/pokecon.lock
+SerialController/pokecon.*.lock
+SerialController/launch_error.log
+SerialController/launch_error_*.log
+
+# 検証スクリプト・測定残渣・実行時デバッグ出力（コミット不要）
+SerialController/verify_phase*.py
+SerialController/Commands/PythonCommands/verify_*.py
+SerialController/Commands/PythonCommands/verify-*.py
+SerialController/Commands/PythonCommands/stage_baseline_rows.txt
+SerialController/Debug/
+SerialController/logs/
+SerialController/log/
