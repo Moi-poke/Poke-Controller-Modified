@@ -4,7 +4,6 @@
 from time import sleep
 
 from . import CommandBase
-import numpy as np
 from .Keys import Button, Hat, KeyPress, Direction, Stick
 
 from logging import Formatter, handlers, StreamHandler, getLogger, DEBUG
@@ -61,11 +60,10 @@ class StickLeft(StickCommand):
         self._logger.debug("Start RightStick Serial Connection")
 
     def LStick(self, angle, r=1.0, duration=0.015):
-        self.ser.writeRow(
-            f'3 8 {hex(int(128 + r * 127.5 * np.cos(np.deg2rad(angle))))} {hex(int(128 - r * 127.5 * np.sin(np.deg2rad(angle))))} 80 80',
-            is_show=False
-        )
-        # self.stick(Direction(Stick.LEFT, angle, r, showName=f'Angle={angle},r={r}'), duration=duration, wait=0)
+        # 生の行の直送をやめ、姿勢の申告へ変えた。生の行は legacy 書式の
+        # ため Pico 経路では ERR になり、姿勢も迂回する。下のコメント化
+        # されていた行が本来の意図なので、それを有効にする。
+        self.stick(Direction(Stick.LEFT, angle, r, showName=f'Angle={angle},r={r}'), duration=duration, wait=0)
 
     def end(self, ser):
         super().end(ser)
@@ -84,10 +82,10 @@ class StickRight(StickCommand):
         self._logger.debug("Start RightStick Serial Connection")
 
     def RStick(self, angle, r=1.0, duration=0.015):
-        self.key.ser.writeRow(
-            f'3 8 80 80 {hex(int(128 + r * 127.5 * np.cos(np.deg2rad(angle))))} {hex(int(128 - r * 127.5 * np.sin(np.deg2rad(angle))))}',
-            is_show=False
-        )
+        # LStick と同じ理由で姿勢の申告へ変えた（生の行は legacy 専用）。
+        self.key.input([Direction(Stick.RIGHT, angle, r)],
+                       ifPrint=False)
+        self.wait(duration)
 
     def end(self, ser):
         super().end(ser)

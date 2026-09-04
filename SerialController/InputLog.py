@@ -401,10 +401,19 @@ def format_duration(seconds: Optional[float], spec: str) -> str:
     if spec == "s":
         return "{:.3f}".format(seconds)
     if spec.startswith("s."):
-        return "{:.{}f}".format(seconds, int(spec[2:]))
+        try:
+            return "{:.{}f}".format(seconds, int(spec[2:]))
+        except (TypeError, ValueError):
+            return "{:.2f}s".format(seconds)
     if spec.startswith("ms."):
-        return "{:.{}f}".format(seconds * 1000, int(spec[3:]))
-    return format(seconds, spec)
+        try:
+            return "{:.{}f}".format(seconds * 1000, int(spec[3:]))
+        except (TypeError, ValueError):
+            return "{:.0f}ms".format(seconds * 1000)
+    try:
+        return format(seconds, spec)
+    except (TypeError, ValueError):
+        return str(seconds)
 
 
 def _unescape(text: str) -> str:

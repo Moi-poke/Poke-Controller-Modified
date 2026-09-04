@@ -5,8 +5,6 @@ from Commands.Keys import Direction, Stick
 from Commands.Keys import Button
 from Commands.PythonCommandBase import PythonCommand
 from tkinter import filedialog
-import time
-import numpy as np
 
 
 # Mash a button A
@@ -20,8 +18,9 @@ class PlayRec(PythonCommand):
     # press button at duration times(s)
     def stick(self, buttons, duration=0.015, wait=0.1):
         self.keys.input(buttons, ifPrint=False)
-        # print(buttons)
-        time.sleep(duration)
+        # time.sleep では Stop を見ないため、停止要求があっても待ち切る
+        # まで止まらない。停止対応の待ちへ変える（挙動は同じ）。
+        self.wait(duration)
 
     # press button at duration times(s)
     def stickEnd(self, buttons):
@@ -29,10 +28,14 @@ class PlayRec(PythonCommand):
         self.checkIfAlive()
 
     def LStick(self, angle, r=1.0, duration=0.015):
-        self.keys.ser.writeRow(
-            f'2 8 {hex(int(128 + r * 127.5 * np.cos(np.deg2rad(angle))))} {hex(int(128 - r * 127.5 * np.sin(np.deg2rad(angle))))}'
-        )
-        time.sleep(duration)
+        # 生の行を直接送っていた旧実装（Leonardo 書式）を、姿勢の申告へ
+        # 変えた。生の行は legacy 書式（btn を2ビットシフト・可変長）の
+        # ため Pico 経路では ERR になる。Direction へ直せば、どちらの線
+        # でも同じ倒しになる（y の反転は申告側が行う）。
+        # 座標は約束が同じで、丸めが ±1 ずれることがある（int と ceil /
+        # floor の差）。スティックの分解能では無視できる。
+        self.keys.input([Direction(Stick.LEFT, angle, r)], ifPrint=False)
+        self.wait(duration)
 
     def do(self):
         file = filedialog.askopenfile(initialdir='~/')

@@ -266,6 +266,28 @@ class GuiSettings:
         if general.get("show_size", "") not in valid_sizes:
             general["show_size"] = "640x360"
             changed.append("General Setting.show_size")
+        # Transport / Arbitration もここで直す。読む側（Sender）で落ちると
+        # 起動直後の接続で例外になり、原因が設定だと分かりにくい。
+        # name の存在確認まではしない（利用者定義の Transport が足される
+        # ため）。空だけ既定へ戻す。
+        if self.setting.has_section("Transport"):
+            transport = self.setting["Transport"]
+            if not transport.get("name", "").strip():
+                transport["name"] = "legacy_text"
+                changed.append("Transport.name")
+        if self.setting.has_section("Arbitration"):
+            arb = self.setting["Arbitration"]
+            if arb.get("mode", "").strip().lower() not in (
+                    "off", "human", "script"):
+                arb["mode"] = "off"
+                changed.append("Arbitration.mode")
+            try:
+                cooldown = float(arb.get("cooldown", ""))
+            except (TypeError, ValueError):
+                cooldown = None
+            if cooldown is None or cooldown < 0:
+                arb["cooldown"] = "2.0"
+                changed.append("Arbitration.cooldown")
         if changed:
             logger.info(f"設定を既定値で補正しました: {changed}")
             self._write_ini()

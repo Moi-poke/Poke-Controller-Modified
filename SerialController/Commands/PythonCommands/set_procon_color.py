@@ -1,18 +1,21 @@
 """プロコンの色を GUI で選んで変える。
 
-画面から色見本を選び、OK を押すと Pico へ C 行を1本送る。
+画面から色見本を選び、OK を押すと Pico へ O 行を1本送る。
 色はフラッシュに保存されるので、Pico の電源を切っても残る。
 
 反映のタイミング:
     Switch 側で登録し直すまで変わらないことがある。
     変わらないときは、Switch のコントローラー登録を解除して繋ぎ直す。
 
-出典:
-    公式配色は switchbrew.org（BTJOIN シートに記録）。
-    C 行の書式は bt_probe.c の parse_c_line と対。
+相手:
+    pico-wakecon の O 行（ui.c handle_line）。旧 C と同書式で
+    先頭1字を読み飛ばすため、O で送る。C は取込（秒数）のため、
+    色を C で送ると取込が始まってしまう。書式は hid.c の
+    probe_parse_c_line と対（4つの16進 / 応答は color 行）。
 """
 
 from Commands.PythonCommandBase import PythonCommand
+from Commands.WakeLink import query
 
 
 # 色の並び: 本体 / ボタン / 左グリップ / 右グリップ
@@ -131,7 +134,7 @@ class SetProconColor(PythonCommand):
             label = choice
 
         # 4つとも正しい形か確かめる。1つでも駄目なら1本も送らない。
-        #   Pico 側の parse_c_line も同じ作りである。
+        #   Pico 側の probe_parse_c_line も同じ作りである。
         colors = []
         for name, value in zip(PART_NAMES, raw):
             fixed = normalize(value)
@@ -142,22 +145,59 @@ class SetProconColor(PythonCommand):
                 return
             colors.append(fixed)
 
-        # 送る行を組み立てる。書式は bt_probe.c の parse_c_line と対。
-        #     C <本体> <ボタン> <左> <右>
-        row = "C " + " ".join(colors)
+        # 送る行を組み立てる。書式は pico-wakecon の O 行と対。
+        #     O <本体> <ボタン> <左> <右>
+        #   C ではいけない。C は取込（秒数）のため、色を C で送ると
+        #   取込スキャンが始まってしまう。
+        row = "O " + " ".join(colors)
 
         self.print2("色を「{}」にします。".format(label))
         for name, value in zip(PART_NAMES, colors):
             self.print2("  {} #{}".format(name, value))
 
+        transport = self._color_transport()
+        if transport is not None:
+            # 応答を読む形で送る。成功なら color 行、書式違いなら usage 行。
+            # 旧ファーム（O を知らない版）は何も返さない。
+            found = query(transport, row, ("color ", "usage:"), timeout=3.0)
+            if any(line.startswith("color ") for line in found):
+                self.print2("送りました。色はフラッシュに保存されます。")
+                self.print2("画面に反映されないときは、Switch 側で登録を"
+                            "解除して繋ぎ直してください。")
+            elif any(line.startswith("usage:") for line in found):
+                self.print2("Pico が書式違いを返しました。4つの6桁16進を"
+                            "確かめてください。")
+            else:
+                self.print2("応答がありません。旧ファームの可能性があります。")
+                self.print2("pico-wakecon の O 行に対応した版を使ってください。")
+            self.finish()
+            return
+
+        # 送る口が無いときは従来の口で送るだけにする（応答は読めない）。
         # 既存の口をそのまま使う。direct_serial は1件ごとに停止を見る。
         self.direct_serial([row], [0.0])
 
         # Pico がフラッシュへ書き終えるまで少し待つ。
         self.wait(0.5)
 
-        self.print2("送りました。色はフラッシュに保存されます。")
-        self.print2("Pico の UART に X7: の行が出れば届いています。")
+        self.print2("送りました（応答は未確認）。色はフラッシュに保存されます。")
         self.print2("画面に反映されないときは、Switch 側で登録を解除して繋ぎ直してください。")
 
         self.finish()
+
+    def _color_transport(self):
+        """Sender が持つ Transport。無ければ None。"""
+        keys = getattr(self, "keys", None)
+        sender = getattr(keys, "ser", None)
+        transport = getattr(sender, "transport", None)
+        if transport is None:
+            return None
+        ser = getattr(transport, "ser", None)
+        if ser is None:
+            return None
+        try:
+            if not transport.is_open():
+                return None
+        except Exception:
+            return None
+        return transport

@@ -53,15 +53,9 @@ from Commands.CommandOperate import OperateMixin, StopThread
 #     from Commands.PythonCommandBase import clear_template_cache と
 #     書いている場合に、切り出しで静かに壊れるのを防ぐため。
 #   実体は1つ（CommandVision 側）なので、キャッシュも1つで一貫する。
-from Commands.CommandVision import (TEMPLATE_PATH, _get_template_filespec,
-                                    _imread_or_raise, clear_template_cache)
-
-# LINE Notify は 2025/3/31 にサービス終了済み。メッセージを1箇所に集約する。
-LINE_EOL_MESSAGE = "LINE通知は2025/3/31にサービスが終了しました。"
-
-# テンプレート画像のキャッシュ件数。判定ループでは同じ画像を毎秒数十回
-# 読み直すことになるため、読み込み結果を使い回す。
-IMREAD_CACHE_SIZE = 128
+from Commands.CommandVision import (LINE_EOL_MESSAGE, TEMPLATE_PATH,
+                                     _get_template_filespec,
+                                     _imread_or_raise, clear_template_cache)
 
 
 def _begin_timer_period() -> None:
@@ -148,7 +142,10 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             self.__post_init__()
 
             if self.keys is None:
-                self.keys = KeyPress(ser, source=self.input_source)
+                # 派生が独自 __init__ で super() を呼ばない場合に備え、
+                # 名札が無ければ既定を使う（無ければ AttributeError になる）。
+                self.keys = KeyPress(
+                    ser, source=getattr(self, "input_source", "script"))
 
             if self.alive:
                 self.do()
@@ -192,7 +189,8 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             # まま固まる。KeyPress の生成で落ちた流れではここも同じ例外に
             # なるため、後始末の続行を優先して握る。
             try:
-                keys = KeyPress(ser, source=self.input_source)
+                keys = KeyPress(ser, source=getattr(self, "input_source",
+                                                    "script"))
             except Exception:
                 logger.error(f"Failed to recreate KeyPress: {traceback.format_exc()}")
         if keys is not None:
@@ -460,26 +458,6 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
     def log2(self, *args: Any, sep: str = " ", end: str = "\n") -> None:
         """print2 の別名。ログとして残す意図を明示したいとき用。"""
         self.print2(*args, sep=sep, end=end)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     # Use time glitch

@@ -59,15 +59,17 @@ def _get_template_filespec(template_path: str) -> str:
     """
     テンプレート画像ファイルのパスを取得する。
     入力が絶対パスの場合は、`TEMPLATE_PATH`につなげずに返す。
+    先頭の "./" や重なった区切りは正規化する（"./pokopia/x.png" と
+    "pokopia/x.png" が同じ画像を指すようにするため）。
     Args:
         template_path (str): 画像パス
     Returns:
-        str: _description_
+        str: 実際に読むファイルのパス
     """
     if path.isabs(template_path):
-        return template_path
+        return path.normpath(template_path)
     else:
-        return path.join(TEMPLATE_PATH, template_path)
+        return path.normpath(path.join(TEMPLATE_PATH, template_path))
 
 
 @functools.lru_cache(maxsize=IMREAD_CACHE_SIZE)
@@ -88,7 +90,21 @@ def _imread_or_raise(template_path: str, flags: int) -> np.ndarray:
     filespec = _get_template_filespec(template_path)
     image = cv2.imread(filespec, flags)
     if image is None:
-        raise FileNotFoundError(f"テンプレート画像を読み込めませんでした: {filespec}")
+        # ライトユーザーが最も詰まる箇所なので、理由と置き場所を
+        # 具体的に出す。「無い」のか「壊れている（読めない）」のかを
+        # 分けて書き、置き場所の既定（TEMPLATE_PATH）も添える。
+        if not path.isfile(filespec):
+            reason = "ファイルがありません"
+            hint = (f"画像を {TEMPLATE_PATH} からの相対で置いてください "
+                    f"（例: {path.join(TEMPLATE_PATH, 'shiny_mark.png')}）")
+        else:
+            reason = "ファイルはありますが画像として読めません（破損・形式違い）"
+            hint = ("別の画像ビューアで開けるか確かめ、開けない場合は"
+                    "作り直してください")
+        raise FileNotFoundError(
+            f"テンプレート画像を読み込めませんでした（{reason}）: {filespec}\n"
+            f"{hint}\n"
+            f"指定: {template_path!r} / 既定の置き場所: {TEMPLATE_PATH}")
     image.flags.writeable = False  # 共有配列を誤って書き換えないための保険
     return image
 
