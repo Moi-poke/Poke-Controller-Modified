@@ -129,6 +129,11 @@ SerialController/pokecon.*.lock
 SerialController/launch_error.log
 SerialController/launch_error_*.log
 
+# プロトタイプ（手元に残すが追跡しない）
+SerialController/Commands/PythonCommands/PokopiaAutoCoin.py
+SerialController/Commands/PythonCommands/PokopiaAutoCoin_fast.py
+SerialController/Template/pokopia/
+
 # 検証スクリプト・測定残渣・実行時デバッグ出力（コミット不要）
 SerialController/verify_phase*.py
 SerialController/Commands/PythonCommands/verify_*.py
