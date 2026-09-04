@@ -47,67 +47,87 @@ class GuiSettings:
         self.setting.optionxform = str  # type: ignore[assignment]
 
         if not os.path.exists(self.setting_path):
-            logger.debug(
-                f"設定ファイルが無いため既定値で生成します: {self.setting_path}"
-            )
+            logger.debug(f'設定ファイルが無いため既定値で生成します: {self.setting_path}')
             self.generate()
         self.load()
         self._complete_missing()
 
-        general = self.setting["General Setting"]
-        self.camera_id = tk.IntVar(value=general.getint("camera_id"))
+        general = self.setting['General Setting']
+        self.camera_id = tk.IntVar(value=general.getint('camera_id'))
         # 同型キャプチャボードを見分けるための識別子（Windows のみ取得できる）
-        self.camera_key = tk.StringVar(value=general.get("camera_key", fallback=""))
-        self.com_port = tk.IntVar(value=general.getint("com_port"))
-        self.com_port_name = tk.StringVar(value=general.get("com_port_name"))
-        self.baud_rate = tk.IntVar(value=general.getint("baud_rate"))
-        self.fps = tk.IntVar(value=general.getint("fps"))
-        self.show_size = tk.StringVar(value=general.get("show_size"))
-        self.is_show_realtime = tk.BooleanVar(
-            value=general.getboolean("is_show_realtime")
-        )
-        self.is_show_serial = tk.BooleanVar(value=general.getboolean("is_show_serial"))
-        self.is_use_keyboard = tk.BooleanVar(
-            value=general.getboolean("is_use_keyboard")
-        )
+        self.camera_key = tk.StringVar(value=general.get('camera_key', fallback=''))
+        self.com_port = tk.IntVar(value=general.getint('com_port'))
+        self.com_port_name = tk.StringVar(value=general.get('com_port_name'))
+        self.baud_rate = tk.IntVar(value=general.getint('baud_rate'))
+        self.fps = tk.IntVar(value=general.getint('fps'))
+        self.show_size = tk.StringVar(value=general.get('show_size'))
+        self.is_show_realtime = tk.BooleanVar(value=general.getboolean('is_show_realtime'))
+        self.is_show_serial = tk.BooleanVar(value=general.getboolean('is_show_serial'))
+        self.is_use_keyboard = tk.BooleanVar(value=general.getboolean('is_use_keyboard'))
         # マウスでのスティック操作。GUI のチェックボックスと1対1で対応する
         self.is_use_left_stick_mouse = tk.BooleanVar(
-            value=general.getboolean("is_use_left_stick_mouse")
+            value=general.getboolean('is_use_left_stick_mouse')
         )
         self.is_use_right_stick_mouse = tk.BooleanVar(
-            value=general.getboolean("is_use_right_stick_mouse")
+            value=general.getboolean('is_use_right_stick_mouse')
         )
         # スティック操作の軌跡を CSV へ書き出すか（旧 GuiAssets.isTakeLog）
         self.is_take_stick_log = tk.BooleanVar(
-            value=general.getboolean("is_take_stick_log")
+            value=general.getboolean('is_take_stick_log')
         )
 
         # ウィンドウの位置とサイズ。並列起動時に台ごとの配置を覚えておく
-        window = self.setting["Window"]
-        self.window_geometry = tk.StringVar(value=window.get("geometry"))
+        window = self.setting['Window']
+        self.window_geometry = tk.StringVar(value=window.get('geometry'))
         self.restore_geometry = tk.BooleanVar(
-            value=window.getboolean("restore_geometry")
+            value=window.getboolean('restore_geometry')
         )
         # ログ欄の仕切り位置。画素ではなく割合で持つ（ウィンドウの
         # 大きさが変わっても同じ見た目の比率を保つため）
-        self.log_sash_ratio = tk.DoubleVar(value=window.getfloat("log_sash_ratio"))
+        self.log_sash_ratio = tk.DoubleVar(value=window.getfloat('log_sash_ratio'))
 
         # 入力ログ。従来は Sender.py の定数を書き換える必要があった
-        input_log = self.setting["Input Log"]
-        self.input_log_format = tk.StringVar(value=input_log.get("format"))
-        self.input_log_enabled = tk.BooleanVar(value=input_log.getboolean("enabled"))
+        input_log = self.setting['Input Log']
+        self.input_log_format = tk.StringVar(value=input_log.get('format'))
+        self.input_log_enabled = tk.BooleanVar(
+            value=input_log.getboolean('enabled')
+        )
         self.input_log_stick_change = tk.BooleanVar(
-            value=input_log.getboolean("log_stick_change")
+            value=input_log.getboolean('log_stick_change')
         )
         # 記録する操作の絞り込み。空なら書式ごとの既定に従う
         self.input_log_actions = tk.StringVar(
-            value=input_log.get("actions", fallback="")
-        )
+            value=input_log.get('actions', fallback=''))
+
+        # 2026/08/25 段 VI-b: 通信方式（Transport）のプリセット。
+        #   名前だけを持つ。実装の対応表は Transport.py の登録簿にある。
+        #   知らない名前でも黙って直さない。ここは設定ファイルの内容を
+        #     そのまま持ち、既定へ落とす判断は使う側（Transport の
+        #     resolve_transport_name）が理由つきで行う。
+        transport = self.setting['Transport']
+        self.transport_name = tk.StringVar(
+            value=transport.get('name', fallback='legacy_text'))
+        # 利用者が自作の Transport を置くフォルダ。空なら読み込まない
+        self.transport_plugin_dir = tk.StringVar(
+            value=transport.get('plugin_dir', fallback=''))
+
+        # 2026/08/29 段4-c: 入力調停（誰の操作を優先するか）。
+        #   既定は off で本家と同じ挙動。script を選ぶと実行中の
+        #     手操作を断り、一時停止すれば操作できるようになる。
+        #   知らない名前でも黙って直さない。ここは設定ファイルの内容
+        #     をそのまま持ち、既定へ落とす判断は使う側（Sender の
+        #     resolve_arbitration_mode）が理由つきで行う。
+        arbitration = self.setting['Arbitration']
+        self.arbitration_mode = tk.StringVar(
+            value=arbitration.get('mode', fallback='off'))
+        # 横取りが続く秒数。文字列で持ち、使う側で数へ直す
+        self.arbitration_cooldown = tk.StringVar(
+            value=arbitration.get('cooldown', fallback='2.0'))
 
         # Pokemon Home用の設定
-        home = self.setting["Pokemon Home"]
-        self.season = tk.StringVar(value=home.get("Season"))
-        self.is_SingleBattle = tk.StringVar(value=home.get("Single or Double"))
+        home = self.setting['Pokemon Home']
+        self.season = tk.StringVar(value=home.get('Season'))
+        self.is_SingleBattle = tk.StringVar(value=home.get('Single or Double'))
 
     # キーコンフィグが扱うセクション。KeyConfig / Keyboard の双方が参照する。
     # ここを直接 configparser で書き換えると他の設定を巻き戻すため、
@@ -143,7 +163,7 @@ class GuiSettings:
         latest = configparser.ConfigParser()
         latest.optionxform = str  # type: ignore[assignment]
         if os.path.isfile(self.setting_path):
-            latest.read(self.setting_path, encoding="utf-8")
+            latest.read(self.setting_path, encoding='utf-8')
 
         for section, values in key_maps.items():
             if section not in self.KEYMAP_SECTIONS:
@@ -183,7 +203,7 @@ class GuiSettings:
             return
         latest = configparser.ConfigParser()
         latest.optionxform = str  # type: ignore[assignment]
-        if not latest.read(self.setting_path, encoding="utf-8"):
+        if not latest.read(self.setting_path, encoding='utf-8'):
             return
         for section in self.KEYMAP_SECTIONS:
             if not latest.has_section(section):
@@ -210,8 +230,7 @@ class GuiSettings:
             loaded = self.setting.read(self.setting_path, encoding="utf-8")
         except (configparser.Error, OSError) as exc:
             logger.error(f"設定ファイルを読めないため既定値を使います: {exc}")
-            self.setting.clear()
-            return
+            self.setting.clear(); return
         if not loaded:
             logger.error(f"設定ファイルを読み込めませんでした: {self.setting_path}")
 
@@ -272,100 +291,119 @@ class GuiSettings:
                 # "1" のような1文字の数字は実際に押せるキーなので残す。
                 # 旧プレースホルダは 10000・20001 のように複数桁だけ。
                 if len(stripped) > 1 and stripped.isdigit():
-                    self.setting[section][key] = ""
-                    changed.append(f"{section}.{key}")
+                    self.setting[section][key] = ''
+                    changed.append(f'{section}.{key}')
         if changed:
-            logger.info(f"旧形式のキー割り当てを未割当に直しました: {changed}")
+            logger.info(f'旧形式のキー割り当てを未割当に直しました: {changed}')
             self._write_ini()
 
     @staticmethod
     def _default_sections() -> Dict[str, Dict[str, Any]]:
         """既定値。generate() と _complete_missing() の両方がここを参照する。"""
         return {
-            "General Setting": {
-                "camera_id": 0,
-                "camera_key": "",
-                "com_port": 0,
-                "com_port_name": "",
-                "baud_rate": 9600,
-                "fps": 45,
-                "show_size": "640x360",
-                "is_show_realtime": True,
-                "is_show_serial": False,
-                "is_use_keyboard": True,
-                "is_use_left_stick_mouse": False,
-                "is_use_right_stick_mouse": False,
-                "is_take_stick_log": False,
+            'General Setting': {
+                'camera_id': 0,
+                'camera_key': '',
+                'com_port': 0,
+                'com_port_name': '',
+                'baud_rate': 9600,
+                'fps': 45,
+                'show_size': '640x360',
+                'is_show_realtime': True,
+                'is_show_serial': False,
+                'is_use_keyboard': True,
+                'is_use_left_stick_mouse': False,
+                'is_use_right_stick_mouse': False,
+                'is_take_stick_log': False,
             },
-            "Window": {
+            'Window': {
                 # 空文字なら OS 任せ（従来どおりの位置に出る）
-                "geometry": "",
-                "restore_geometry": True,
+                'geometry': '',
+                'restore_geometry': True,
                 # ログ欄の仕切り位置(0.0〜1.0)。上側の占める割合
-                "log_sash_ratio": 0.6,
+                'log_sash_ratio': 0.6,
             },
-            "Input Log": {
+            'Input Log': {
                 # プリセット名（simple / detail / compact / csv / command / raw）
                 # かテンプレート文字列そのもの。詳細は InputLog.py の冒頭
-                "format": "simple",
-                "enabled": True,
-                "log_stick_change": False,
+                'format': 'simple',
+                'enabled': True,
+                'log_stick_change': False,
                 # 記録する操作。PRESS,RELEASE,CHANGE をカンマ区切りで。
                 # 空なら書式ごとの既定に従う（command は RELEASE のみ）。
-                "actions": "",
+                'actions': '',
             },
-            "Pokemon Home": {
-                "Season": 1,
-                "Single or Double": "シングル",
+            'Transport': {
+                # 通信方式のプリセット名。Transport.py の登録簿にある名前。
+                # 組み込みは legacy_text（従来と同じテキスト行）だけで、
+                # binary / pico2w_usb は段 VII で足す。
+                'name': 'legacy_text',
+                # 自作の Transport を置くフォルダ（ブックの場所からの
+                # 相対でも絶対でもよい）。各 .py は register(register)
+                # という関数を持つこと。空なら読み込まない。
+                'plugin_dir': '',
             },
-            "KeyMap-Button": {
-                "Button.Y": "y",
-                "Button.B": "b",
-                "Button.X": "x",
-                "Button.A": "a",
-                "Button.L": "l",
-                "Button.R": "r",
-                "Button.ZL": "k",
-                "Button.ZR": "e",
-                "Button.MINUS": "m",
-                "Button.PLUS": "p",
-                "Button.LCLICK": "q",
-                "Button.RCLICK": "w",
-                "Button.HOME": "h",
-                "Button.CAPTURE": "c",
+            'Arbitration': {
+                # 入力調停。off / human / script のいずれか。
+                #   off    … 調停しない（本家と同じ挙動。既定）
+                #   human  … 人の操作を優先する
+                #   script … スクリプトを優先し、実行中の手操作を断る
+                'mode': 'off',
+                # 優先された側が書いてから、反対側を断る秒数。
+                'cooldown': '2.0',
             },
-            "KeyMap-Direction": {
+            'Pokemon Home': {
+                'Season': 1,
+                'Single or Double': 'シングル',
+            },
+            'KeyMap-Button': {
+                'Button.Y': 'y',
+                'Button.B': 'b',
+                'Button.X': 'x',
+                'Button.A': 'a',
+                'Button.L': 'l',
+                'Button.R': 'r',
+                'Button.ZL': 'k',
+                'Button.ZR': 'e',
+                'Button.MINUS': 'm',
+                'Button.PLUS': 'p',
+                'Button.LCLICK': 'q',
+                'Button.RCLICK': 'w',
+                'Button.HOME': 'h',
+                'Button.CAPTURE': 'c',
+            },
+            'KeyMap-Direction': {
                 # 左スティック。斜めは上下と左右の同時押しで入るため、
                 # 既定では斜めに専用キーを割り当てない（空 = 未割当）。
-                "Direction.UP": "Key.up",
-                "Direction.RIGHT": "Key.right",
-                "Direction.DOWN": "Key.down",
-                "Direction.LEFT": "Key.left",
-                "Direction.UP_RIGHT": "",
-                "Direction.DOWN_RIGHT": "",
-                "Direction.DOWN_LEFT": "",
-                "Direction.UP_LEFT": "",
+                'Direction.UP': 'Key.up',
+                'Direction.RIGHT': 'Key.right',
+                'Direction.DOWN': 'Key.down',
+                'Direction.LEFT': 'Key.left',
+                'Direction.UP_RIGHT': '',
+                'Direction.DOWN_RIGHT': '',
+                'Direction.DOWN_LEFT': '',
+                'Direction.UP_LEFT': '',
             },
-            "KeyMap-Hat": {
+            'KeyMap-Hat': {
                 # 十字キー。既定では割り当てない（左スティックと同じキーに
                 # なると重複するため、必要な人がキーコンフィグで設定する）。
                 # 旧既定値 10000 などは Keyboard 側が int として解釈し、
                 # キーボードのどのキーとも一致しないため機能していなかった。
-                "Hat.TOP": "",
-                "Hat.TOP_RIGHT": "",
-                "Hat.RIGHT": "",
-                "Hat.BTM_RIGHT": "",
-                "Hat.BTM": "",
-                "Hat.BTM_LEFT": "",
-                "Hat.LEFT": "",
-                "Hat.TOP_LEFT": "",
-                "Hat.CENTER": "",
+                'Hat.TOP': '',
+                'Hat.TOP_RIGHT': '',
+                'Hat.RIGHT': '',
+                'Hat.BTM_RIGHT': '',
+                'Hat.BTM': '',
+                'Hat.BTM_LEFT': '',
+                'Hat.LEFT': '',
+                'Hat.TOP_LEFT': '',
+                'Hat.CENTER': '',
             },
         }
 
     def generate(self) -> None:
         """既定値で settings.ini を新規作成する。"""
-        logger.info("既定の設定ファイルを作成します")
+        logger.info('既定の設定ファイルを作成します')
         for section, values in self._default_sections().items():
             self.setting[section] = {k: str(v) for k, v in values.items()}
         self._write_ini()
@@ -378,49 +416,55 @@ class GuiSettings:
         # 戻してしまう。書き出す直前にファイル側を読み直して合わせる。
         self._reload_key_maps()
 
-        self.setting["General Setting"] = {
-            "camera_id": self.camera_id.get(),
-            "camera_key": self.camera_key.get(),
-            "com_port": self.com_port.get(),
-            "com_port_name": self.com_port_name.get(),
-            "baud_rate": self.baud_rate.get(),
-            "fps": self.fps.get(),
-            "show_size": self.show_size.get(),
-            "is_show_realtime": self.is_show_realtime.get(),
-            "is_show_serial": self.is_show_serial.get(),
-            "is_use_keyboard": self.is_use_keyboard.get(),
-            "is_use_left_stick_mouse": self.is_use_left_stick_mouse.get(),
-            "is_use_right_stick_mouse": self.is_use_right_stick_mouse.get(),
-            "is_take_stick_log": self.is_take_stick_log.get(),
+        self.setting['General Setting'] = {
+            'camera_id': self.camera_id.get(),
+            'camera_key': self.camera_key.get(),
+            'com_port': self.com_port.get(),
+            'com_port_name': self.com_port_name.get(),
+            'baud_rate': self.baud_rate.get(),
+            'fps': self.fps.get(),
+            'show_size': self.show_size.get(),
+            'is_show_realtime': self.is_show_realtime.get(),
+            'is_show_serial': self.is_show_serial.get(),
+            'is_use_keyboard': self.is_use_keyboard.get(),
+            'is_use_left_stick_mouse': self.is_use_left_stick_mouse.get(),
+            'is_use_right_stick_mouse': self.is_use_right_stick_mouse.get(),
+            'is_take_stick_log': self.is_take_stick_log.get(),
         }
-        self.setting["Window"] = {
-            "geometry": self.window_geometry.get(),
-            "restore_geometry": self.restore_geometry.get(),
-            "log_sash_ratio": self.log_sash_ratio.get(),
+        self.setting['Window'] = {
+            'geometry': self.window_geometry.get(),
+            'restore_geometry': self.restore_geometry.get(),
+            'log_sash_ratio': self.log_sash_ratio.get(),
         }
-        self.setting["Input Log"] = {
-            "format": self.input_log_format.get(),
-            "enabled": self.input_log_enabled.get(),
-            "log_stick_change": self.input_log_stick_change.get(),
-            "actions": self.input_log_actions.get(),
+        self.setting['Input Log'] = {
+            'format': self.input_log_format.get(),
+            'enabled': self.input_log_enabled.get(),
+            'log_stick_change': self.input_log_stick_change.get(),
+            'actions': self.input_log_actions.get(),
+        }
+        self.setting['Transport'] = {
+            'name': self.transport_name.get(),
+            'plugin_dir': self.transport_plugin_dir.get(),
+        }
+        self.setting['Arbitration'] = {
+            'mode': self.arbitration_mode.get(),
+            'cooldown': self.arbitration_cooldown.get(),
         }
 
         # pokemon home用の設定
-        self.setting["Pokemon Home"] = {
-            "Season": self.season.get(),
-            "Single or Double": self.is_SingleBattle.get(),
+        self.setting['Pokemon Home'] = {
+            'Season': self.season.get(),
+            'Single or Double': self.is_SingleBattle.get(),
         }
 
         self._write_ini(path)
-        logger.debug("設定ファイルを保存しました")
+        logger.debug('設定ファイルを保存しました')
 
     def _write_ini(self, path: Optional[str] = None) -> None:
         """一時ファイルへ書いてから置き換える（書き込み中の中断で設定を失わないため）。"""
         path = path or self.setting_path
-        tmp_path = path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as file:
+        tmp_path = path + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as file:
             self.setting.write(file)
         os.replace(tmp_path, path)  # 同一ボリューム上の原子的な置き換え
-        os.chmod(
-            path, 0o600
-        )  # 設定値は Keyboard 側で解釈されるため本人のみ読み書き可にする
+        os.chmod(path, 0o600)  # 設定値は Keyboard 側で解釈されるため本人のみ読み書き可にする
