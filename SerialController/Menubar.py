@@ -5,6 +5,7 @@ import tkinter as tk
 
 from KeyConfig import PokeKeycon
 from InputLogConfig import InputLogConfig
+from WakeSetup import WakeSetup
 from LineNotify import Line_Notify
 from get_pokestatistics import GetFromHomeGUI
 import DiscordNotify
@@ -20,6 +21,7 @@ class PokeController_Menubar(tk.Menu):
 
         self.poke_treeview: Optional[Any] = None
         self.key_config: Optional[PokeKeycon] = None
+        self.wake_setup: Optional[WakeSetup] = None
         self.input_log_config: Optional[InputLogConfig] = None
         self.line: Optional[Line_Notify] = None
 
@@ -78,6 +80,9 @@ class PokeController_Menubar(tk.Menu):
             "command", command=self.OpenKeyConfig, label="キーコンフィグ"
         )
         self.menu_command.add(
+            "command", command=self.OpenWakeSetup, label="Switch2 Wake設定"
+        )
+        self.menu_command.add(
             "command", command=self.OpenInputLogConfig, label="入力ログの書式"
         )
         self.menu_command.add(
@@ -132,6 +137,24 @@ class PokeController_Menubar(tk.Menu):
         logger.debug("Close KeyConfig window")
         self.key_config.destroy()
         self.key_config: Optional[PokeKeycon] = None
+
+    def OpenWakeSetup(self) -> None:
+        logger.debug("Open WakeSetup window")
+        if self.wake_setup is not None:
+            try:
+                self.wake_setup.window.focus_force()
+                return
+            except Exception:
+                self.wake_setup = None
+        self.wake_setup = WakeSetup(self.root, self.ser)
+        self.wake_setup.window.protocol(
+            "WM_DELETE_WINDOW", self.closingWakeSetup)
+
+    def closingWakeSetup(self) -> None:
+        logger.debug("Close WakeSetup window")
+        if self.wake_setup is not None:
+            self.wake_setup.close()
+            self.wake_setup: Optional[WakeSetup] = None
 
     def OpenInputLogConfig(self) -> None:
         """入力ログの書式を決める画面を開く。
