@@ -87,7 +87,10 @@ def read_summary(profile: str) -> dict:
     parser.optionxform = str
     try:
         parser.read(settings_path(profile), encoding="utf-8")
-    except (configparser.Error, OSError):
+    except (configparser.Error, OSError, ValueError, UnicodeDecodeError):
+        # 文字化けした設定ファイルは UnicodeDecodeError（ValueError 系）で
+        # 壊れる。ここで落とすと一覧そのものが出なくなるため、読めない旨
+        # だけ出して次へ進む。
         info["com"] = "(読めません)"
         return info
     if not parser.has_section("General Setting"):
@@ -206,6 +209,52 @@ def write_lock(profile: str, pid: int) -> None:
         pass  # 目印が書けなくても起動自体は妨げない
 
 
+def claim_lock(profile: str, pid: int) -> bool:
+    """目印を原子的に確保する。二重起動の防止用。
+
+    同時起動では先勝ちし、負けた側は False を返す。残っている目印が
+    古いもの（プロセス死去）なら running_pid() が掃除するため、取り
+    直しを1回だけ行う。上書き（write_lock）では同時起動を防げない。
+    """
+    path = lock_path(profile)
+    payload = json.dumps({"pid": pid, "started": time.time()})
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if running_pid(profile):
+                return False
+            continue
+        except OSError:
+            return False
+        try:
+            os.write(fd, payload.encode("utf-8"))
+        except OSError:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            return False
+        os.close(fd)
+        return True
+    return False
+
+
+def _drop_own_lock(profile: str, pid: int) -> None:
+    """自分の目印だけを消す。他者の目印には触らない。
+
+    起動に失敗したときの掃除用。無条件に消すと、同時に起動した
+    別プロセスの目印まで消して二重起動を招く。
+    """
+    try:
+        with open(lock_path(profile), encoding="utf-8") as file:
+            if int(json.load(file).get("pid", 0)) != int(pid):
+                return
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    _remove_quietly(lock_path(profile))
+
+
 def _remove_quietly(path: str) -> None:
     try:
         os.remove(path)
@@ -293,6 +342,12 @@ def launch(profile: str) -> int:
     if not os.path.isfile(WINDOW_SCRIPT):
         raise LaunchError(f"Window.py が見つかりません: {WINDOW_SCRIPT}")
 
+    # 先に目印を確保する。同時起動では先勝ちし、負けた側はここで止まる。
+    # 目印の中身は親の PID で仮置きし、子の PID が分かったら書き換える。
+    mine = os.getpid()
+    if not claim_lock(profile, mine):
+        raise LaunchError(f"既に起動しています: {profile or '(既定)'}")
+
     command = [python_executable(), WINDOW_SCRIPT]
     if profile:
         command += ["--profile", profile]
@@ -322,6 +377,7 @@ def launch(profile: str) -> int:
         process = subprocess.Popen(command, **kwargs)
     except OSError as error:
         _close_and_remove(log_file)
+        _drop_own_lock(profile, mine)
         raise LaunchError(f"起動できませんでした: {error}") from error
 
     # 生きているか少しだけ見張る。ここを過ぎれば GUI が出ているとみなす
@@ -342,6 +398,7 @@ def launch(profile: str) -> int:
     log_file.seek(0)
     output = log_file.read().strip()
     log_file.close()
+    _drop_own_lock(profile, mine)
 
     # 失敗したログは消さずに残す。ダイアログは末尾数行しか出せないため、
     # 全文を見たいときに参照できる場所が要る。一時フォルダは分かりにくい

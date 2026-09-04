@@ -22,11 +22,18 @@ class WakeSwitch2(PythonCommand):
             return
 
         # 保存の有無だけ確かめる。無ければ B を送っても何も起きない。
+        # ファームの応答は "saved none" か "saved spoof=..." のいずれか。
+        # 部分一致ではなく完全一致で見る。表記が変わったときは、ここで
+        # 受けた行を出して追えるようにする。
         found = query(transport, "?", ("st ", "saved "), timeout=2.0)
-        saved = any(line.startswith("saved ") and "none" not in line
-                    for line in found)
+        saved_lines = [line for line in found if line.startswith("saved ")]
+        saved = any(line != "saved none" for line in saved_lines)
         if not saved:
             self.print2("保存された wake がありません。")
+            if saved_lines:
+                self.print2("応答: {}".format(" / ".join(saved_lines)))
+            else:
+                self.print2("応答がありません。接続とファームを確かめてください。")
             self.print2("GUI の「Switch2 Wake設定」で C 取込を済ませてください。")
             self.finish()
             return

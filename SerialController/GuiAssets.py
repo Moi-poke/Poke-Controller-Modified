@@ -116,6 +116,26 @@ class CaptureAreaProxy:
         return getattr(self.__dict__["_proxy_target"], name)
 
 
+def live_sender(ser: Any) -> Any:
+    """送り先。未接続なら None を返す。
+
+    操作画面（ControllerGUI）と映像画面（CaptureArea）の両方から使う。
+    未接続のまま操作すると、None への呼び出しで AttributeError になる。
+    開いているかを見てから触る。isOpened を持たない古い送り先は、
+    従来どおり触る。
+    """
+    if ser is None:
+        return None
+    opened = getattr(ser, "isOpened", None)
+    if callable(opened):
+        try:
+            if not opened():
+                return None
+        except Exception:
+            return None
+    return ser
+
+
 class _StickRecorder:
     """スティック操作の軌跡を CSV に書き出す（isTakeLog が True のときだけ使う）."""
 
@@ -620,8 +640,11 @@ class CaptureArea(tk.Canvas):
         古い版への退避:
           送信側が古い版（差分の申告を受けられない）の場合は、従来どおり
           生の行を送る。移行の途中でも動き続けるようにするため。
-          どの段階でも必ず動く形を保つ。
+           どの段階でも必ず動く形を保つ。
         """
+        ser = live_sender(self.ser)
+        if ser is None:
+            return
         x, y = self._stickXY(angle, mag)
 
         # 送り主付きの操作口を通す。
@@ -632,8 +655,8 @@ class CaptureArea(tk.Canvas):
         #   旧来の送信経路の sendPosture は優先付けに従い、棄却時は送らない。
         #   常時送信経路では applyStick が最新の値置き場へ直行しているため、
         #   値は届く（sendPosture は常時送信経路では何もしない）。
-        set_stick = getattr(self.ser, "setStick", None)
-        send_posture = getattr(self.ser, "sendPosture", None)
+        set_stick = getattr(ser, "setStick", None)
+        send_posture = getattr(ser, "sendPosture", None)
         if callable(set_stick) and callable(send_posture):
             if set_stick(side, x, y, source="mouse"):
                 send_posture(source="mouse")
@@ -645,17 +668,17 @@ class CaptureArea(tk.Canvas):
         # ボタン落ちと片側スティックの上書きが再発するため。退避が必要な相手にだけ
         # 残してある。
         # 退避1: 姿勢は持つが送り主付きの操作口が無い旧版向け
-        apply_stick = getattr(self.ser, "applyStick", None)
-        build_row = getattr(self.ser, "_buildRow", None)
+        apply_stick = getattr(ser, "applyStick", None)
+        build_row = getattr(ser, "_buildRow", None)
         if callable(apply_stick) and callable(build_row):
             apply_stick(side, x, y)
-            self.ser.writeRow(build_row(), is_show=False)
+            ser.writeRow(build_row(), is_show=False)
             return
 
         # 退避2: 旧 Sender。従来どおり生の行で送る（挙動は変わらない）
         xy = self._stickHex(angle, mag)
         row = f"3 8 {xy} 80 80" if side == "L" else f"3 8 80 80 {xy}"
-        self.ser.writeRow(row, is_show=False)
+        ser.writeRow(row, is_show=False)
 
     def _stickXY(self, angle: float, mag: float) -> tuple[int, int]:
         """角度と倒し量を 0〜255 の座標へ直す。
@@ -674,8 +697,8 @@ class CaptureArea(tk.Canvas):
     def _stickHex(self, angle: float, mag: float) -> str:
         """角度と倒し量を、シリアルに流す x y の16進表記に変換する。
 
-        旧 Sender へ退避したときだけ使う。_stickXY と同じ値を返す
-          ことを検査で見張る（verify_stage2 相当）。
+        旧送信側へ退避したときだけ使う。_stickXY と同じ値を返すこと。
+        丸めがずれると送信行が変わるため、変えるときは両方を揃える。
         """
         x, y = self._stickXY(angle, mag)
         return f"{hex(x)} {hex(y)}"
@@ -690,23 +713,26 @@ class CaptureArea(tk.Canvas):
 
         中立行はスティックだけの変化なので Sender の間引きに
           引っかかりうる。離した状態が届かないと倒したままになるため、
-          呼び出し側で flushPending して必ず送り切る（従来どおり）。
+           呼び出し側で flushPending して必ず送り切る（従来どおり）。
         """
+        ser = live_sender(self.ser)
+        if ser is None:
+            return
         # 離す操作も送り主付きの操作口を通す（送り主はマウス）。
-        set_stick = getattr(self.ser, "setStick", None)
-        send_posture = getattr(self.ser, "sendPosture", None)
+        set_stick = getattr(ser, "setStick", None)
+        send_posture = getattr(ser, "sendPosture", None)
         if callable(set_stick) and callable(send_posture):
             if set_stick(side, 128, 128, source="mouse"):
                 send_posture(source="mouse")
             return
 
-        apply_stick = getattr(self.ser, "applyStick", None)
-        build_row = getattr(self.ser, "_buildRow", None)
+        apply_stick = getattr(ser, "applyStick", None)
+        build_row = getattr(ser, "_buildRow", None)
         if callable(apply_stick) and callable(build_row):
             apply_stick(side, 128, 128)
-            self.ser.writeRow(build_row(), is_show=False)
+            ser.writeRow(build_row(), is_show=False)
             return
-        self.ser.writeRow("3 8 80 80 80 80", is_show=False)
+        ser.writeRow("3 8 80 80 80 80", is_show=False)
 
 
     def _drawStick(self, x: int, y: int, color: str, tag: str) -> None:
@@ -1214,11 +1240,14 @@ class ControllerGUI:
         btn = getattr(Button, name, None)
         if btn is None:
             return
-        if not self.ser.pressButtons([int(btn)], source="gui"):
+        ser = live_sender(self.ser)
+        if ser is None:
+            return
+        if not ser.pressButtons([int(btn)], source="gui"):
             return
         self._held_btn[name] = btn
         self._setActive(name, True)
-        self.ser.sendPosture(source="gui")
+        ser.sendPosture(source="gui")
 
     def _releaseButton(self, name: str) -> None:
         """押していたものだけ解放する（二重解放を無視）。"""
@@ -1226,8 +1255,11 @@ class ControllerGUI:
         if btn is None:
             return
         self._setActive(name, False)
-        if self.ser.releaseButtons([int(btn)], source="gui"):
-            self.ser.sendPosture(source="gui")
+        ser = live_sender(self.ser)
+        if ser is None:
+            return
+        if ser.releaseButtons([int(btn)], source="gui"):
+            ser.sendPosture(source="gui")
 
     def _pressHat(self, name: str) -> None:
         """十字キーを押す。斜めのボタンは2方向を同時に押したものとして扱う。
@@ -1283,17 +1315,20 @@ class ControllerGUI:
           取り下げなら、他が押していればその向きへ戻るだけで済む。
         退避: 古い送信側（holdHat を持たない）なら従来どおり値で送る。
         """
-        hold = getattr(self.ser, "holdHat", None)
-        release = getattr(self.ser, "releaseHat", None)
+        ser = live_sender(self.ser)
+        if ser is None:
+            return False
+        hold = getattr(ser, "holdHat", None)
+        release = getattr(ser, "releaseHat", None)
         if callable(hold) and callable(release):
             if held:
                 ok = hold(int(self._hatValueFor(held)), source="gui")
             else:
                 ok = release(source="gui")
         else:
-            ok = self.ser.setHat(int(self._hatValueFor(held)), source="gui")
+            ok = ser.setHat(int(self._hatValueFor(held)), source="gui")
         if ok:
-            self.ser.sendPosture(source="gui")
+            ser.sendPosture(source="gui")
         return bool(ok)
 
     def _applyHat(self) -> None:
