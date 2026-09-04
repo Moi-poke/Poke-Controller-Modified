@@ -2,29 +2,27 @@
 # -*- coding: utf-8 -*-
 """Transport.py - 送信の下回り（線そのもの）を受け持つ層。
 
-2026/08/25 段 VI: Sender から「線を開く・閉じる・1行を書き出す」処理を
-  ここへ移した。Sender は姿勢（どのボタンが押されているか）と入力ログを
-  持ち、実際に何で運ぶかは知らない。運び方を替えたいときは、この抽象を
-  満たすクラスを1つ書いて Sender へ渡すだけでよい（PORTBACK 2章）。
+Sender から「線を開く・閉じる・1行を書き出す」処理をここへ移している。
+Sender は姿勢（どのボタンが押されているか）と入力ログを持ち、
+実際に何で運ぶかは知らない。運び方を替えたいときは、この抽象を
+満たすクラスを1つ書いて Sender へ渡すだけでよい。
 
-なぜ分けるか（PORTBACK 2章 / NEWAPP 4章）:
+なぜ分けるか:
   ・通信をテキストからバイナリへ替える、相手を Leonardo から RP2040 へ
     替える、といった変更が、姿勢や入力ログの話と混ざらない。
-  ・逆に、姿勢の直し（段 I〜V-d）は運び方に触れずに済む。
+  ・逆に、姿勢の直しは運び方に触れずに済む。
 
 add_listener の既定は「繋げなかった」(False):
   入力ログは送信行（文字列）を読んで組み立てる。バイナリで運ぶ実装は
     送信行を作らないので繋げない。黙って何もしないと、1行も出ないのに
-    利用者は動いていると思う（静かに壊れる型）。pokecon2 で実際に踏んだ
+    利用者は動いていると思う（静かに壊れる型）。実際に踏んだ例がある
     ので、既定を False にし、呼び出し側が理由を出せるようにしてある。
 
- 段 VI の約束: 送信の中身は1文字も変えない。ここにある処理は Sender の
-   writeRow / _is_coalescable / _write / openSerial / closeSerial から
-   そのまま移したもので、間引きの条件も例外の扱いも同じ。
+  送信の中身は変えない。ここにある処理は Sender の
+    writeRow / _is_coalescable / _write / openSerial / closeSerial から
+    そのまま移したもので、間引きの条件も例外の扱いも同じ。
 
- コメント中の「PORTBACK 2章」等は開発時の外部管理文書への参照であり、
- リポジトリには無い。番号は無視し、本文の理由だけ読めばよい。新規に
- 書くコメントでは外部参照を付けないこと。
+コメントには理由を書き、外部参照は付けない。
 """
 from __future__ import annotations
 
@@ -70,7 +68,7 @@ class Transport(abc.ABC):
     ある。入力ログを出力する実装は add_listener で True を返す。
     """
 
-    # プリセット名（PORTBACK 2章の ID）。設定画面や起動引数から選ぶときの鍵
+    # プリセット名。設定画面や起動引数から選ぶときの鍵
     name = "base"
     # 既定は従来の 1 行送信。live 対応の Transport のみが上書きする。
     capability = LEGACY_ROW
@@ -101,23 +99,22 @@ class Transport(abc.ABC):
         listeners とは別に持つ。listeners は「送信行を読みたい人」で、
           繋がらない実装もある。こちらは Sender 自身の記録なので必ず要る。
 
-        2026/08/26 段2-① (PICODSN 14-5 M1b): 手は (row) でも
-          (row, show) でも受け取れる。引数の数をここで一度だけ調べ、
-          1つしか取らない手には row だけを渡す。
-        なぜそうするか: 段2-① で Sender 側の手は show を受け取る形に
-          なったが、この抽象は外部の実装も差し込める口である。
+        手は (row) でも (row, show) でも受け取れる。引数の数をここで
+          一度だけ調べ、1つしか取らない手には row だけを渡す。
+        なぜそうするか: Sender 側の手は show を受け取る形になったが、
+          この抽象は外部の実装も差し込める口である。
           従来どおり (row) だけを取る手を繋いでいる利用者がいた
             場合、渡す数を増やすと TypeError で送信ごと落ちる。
           毎回 try で包むと、手の中で起きた本物の TypeError まで
             握りつぶすので、繋ぐ時点で1度だけ調べる形にした。
-        メソッド名・引数名は変えていない（9章 N14）。
+        メソッド名・引数名は変えていない。
         """
         self._on_write_begin = self._adapt_hook(on_write_begin)
         self._on_write_end = self._adapt_hook(on_write_end)
 
     @staticmethod
     def _adapt_hook(func: Optional[Callable[..., None]]):
-        """手が受け取れる引数の数に合わせて包む（M1b）。"""
+        """手が受け取れる引数の数に合わせて包む。"""
         if func is None:
             return None
         try:
@@ -144,9 +141,8 @@ class Transport(abc.ABC):
 class TextSerialTransport(Transport):
     """P1 legacy_text - 現行と同じテキスト行を pyserial で送る実装。
 
-    本家のマイコン（Leonardo）へそのまま繋がる。段 VI では既定として
-      これだけを用意し、挙動を1文字も変えない。他のプリセット（binary /
-      pico2w）は段 VII 以降で足す。
+    本家のマイコン（Leonardo）へそのまま繋がる。既定として
+      これだけを用意し、挙動を変えない。
     """
 
     name = "legacy_text"
@@ -374,12 +370,11 @@ class TextSerialTransport(Transport):
     def _write(self, row: str, measure_perf: bool = True) -> None:
         """実際にシリアルへ書き出す。
 
-        2026/08/26 段2-① (PICODSN 14-5 M1): フックの呼び出しから
-          measure_perf の条件を外し、在れば必ず呼ぶ形にした。
+        フックの呼び出しから measure_perf の条件を外し、在れば必ず呼ぶ形にした。
         理由: 間引きで保留された行（send_row が measure_perf=False で
           送る分）こそ最も遅れるのに、そこだけ計測されていなかった。
           このまま応答遅延を測ると、遅い行が統計から丸ごと抜けて
-            「速い」という誤った結果が出る（PICODSN 14章 Q-03b）。
+            「速い」という誤った結果が出る。
         measure_perf 引数は残す。外部（Sender.writeRow /
           writeRow_wo_perf_counter）が渡しており、消すと壊れる。
           意味は「画面へ表示してよいか」へ寄せ、フックへ渡す。
@@ -425,9 +420,6 @@ class TextSerialTransport(Transport):
 class PicoUartTransport(TextSerialTransport):
     """Pico 用。フルステートの S 行をシリアルへ送出する。
 
-    ★2026/08/31 訂正: 説明が「UART＋FT232」に限定されていたが、
-      無線版（段8）では FT232 を使わないので誤解を招く。
-
     繋ぎ方は2通りあり、この層から見ると どちらも同じ「COM ポート」である:
 
       ①有線（pico_main.c）: PC → USBシリアル変換器 → Pico の UART → Switch
@@ -436,7 +428,7 @@ class PicoUartTransport(TextSerialTransport):
 
       ②無線（bt_probe.c）: PC → Pico の USB(CDC) → Bluetooth → Switch
           無線化で Pico の USB が空いたので、PC と直結できる。
-          変換器が要らず、線が1本になる（段8-e）。
+          変換器が要らず、線が1本になる。
 
     どちらも送る中身は同じ S 行なので、この実装を分ける必要は無い。
       違うのは「どの COM 番号か」だけで、それは利用者が選ぶ。
@@ -446,7 +438,7 @@ class PicoUartTransport(TextSerialTransport):
     capability = PICO_LIVE_STATE
 
     def add_listener(self, func: Callable[[str], None]) -> bool:
-        # 125 Hz の送信行と keepalive を入力ログに流さない（23-10 案A）。
+        # 125 Hz の送信行と keepalive を入力ログに流さない。
         return False
 
     def remove_listener(self, func: Callable[[str], None]) -> None:
@@ -459,17 +451,17 @@ class PicoUartTransport(TextSerialTransport):
 
 
 # =====================================================================
-# プリセットの登録簿  2026/08/25 段 VI-b
+# プリセットの登録簿
 # =====================================================================
-# なぜ登録簿を置くか（PORTBACK 2章 Q1）:
-#   段 VI で「運び方を差し替えられる」形は作ったが、差し替えるには
-#   呼び出し側が実装クラスを import して自分で組み立てる必要があった。
+# なぜ登録簿を置くか:
+#   「運び方を差し替えられる」形だけでは、差し替えるのに呼び出し側が
+#   実装クラスを import して自分で組み立てる必要があった。
 #   利用者から見ると「選ぶ」ことができない。設定画面や起動引数から
 #     指定できるようにするには、名前と作り方の対応表が要る。
 #
 # ここが持つのは「名前 → 作り方」だけ。実装そのものは持たない。
 #   利用者が自分で書いた Transport も register_transport で足せる
-#     （PORTBACK 2章 P5「利用者定義」）。本体側は中身を知らない。
+#     （利用者定義）。本体側は中身を知らない。
 
 # 既定のプリセット名。設定が無い・読めない・知らない名前のときはここへ戻す
 DEFAULT_TRANSPORT = "legacy_text"
@@ -630,8 +622,7 @@ def load_transport_plugins(dir_path: str) -> List[str]:
     return added
 
 
-# 組み込みプリセット。段 VI で用意した P1 legacy_text のみ。
-#   P2 binary / P3 pico2w_usb は段 VII でここへ足す（PORTBACK 2章）。
+# 組み込みプリセット。
 register_transport(
     TextSerialTransport.name, TextSerialTransport,
     description="従来と同じテキスト行を pyserial で送る（本家 Leonardo 用）",

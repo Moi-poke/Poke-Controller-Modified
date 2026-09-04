@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Sender.py - 姿勢（押下状態）を1つに持ち、Transport へ渡す層。
-#
-# コメント中の記号の読み方（開発時の作業記録の名残）:
-#   「段 I〜VII」「段2-①」のような見出しは、改修を段階に分けて進めた
-#   ときの作業番号である。番号自体に意味は無く、読むときは無視してよい。
-#   ただし番号の後に書いてある理由（「なぜこうするか」）は仕様なので残す。
-#   PORTBACK / STRUCTURE / PICODSN / HISTORY / NEWAPP と章番号の組み合わせ
-#   は、当時の外部管理文書（表計算）への参照であり、リポジトリには無い。
-#   参照先が読めないため、判断に必要な理由はコメント本文に書く方針へ
-#   変えている。新規に書くコメントでは外部参照を付けないこと。
+# コメント方針: なぜこうするかの理由を書く。外部文書への参照は付けない。
 import time
 import traceback
 import threading
@@ -19,10 +11,9 @@ from logging import getLogger, DEBUG, NullHandler
 
 from typing import Any, Callable, Dict, Optional
 import InputLog
-# 2026/08/25 段 VI: 送信の下回り（線を開く・閉じる・1行書き出す）を
-#   Transport.py へ移した。Sender は「姿勢」と「入力ログ」を持ち、
-#   何で運ぶかは知らない。運び方を替えるときは Transport を差し替える。
-#   プリセットの一覧と狙いは PORTBACK 2章を参照。
+# 送信の下回り（線を開く・閉じる・1行書き出す）は Transport が持つ。
+#   Sender は「姿勢」と「入力ログ」を持ち、何で運ぶかは知らない。
+#   運び方を替えるときは Transport を差し替える。
 from Commands import Transport
 # 互換のため、従来 Sender の直下にあった定数をここからも見えるようにする。
 #   実体は Transport 側の1つ。外部が Sender.MIN_SEND_INTERVAL と
@@ -30,9 +21,8 @@ from Commands import Transport
 from Commands.Transport import (BITS_PER_BYTE, MIN_SEND_INTERVAL,
                                READ_TIMEOUT, SEND_INTERVAL_MARGIN,
                                SEND_ROW_BYTES, WRITE_TIMEOUT)
-# これらは段 VI で Sender からは使わなくなったが、モジュール直下の名前が
-#   消えると `Sender.serial` のように参照している外部コードが壊れる。
-#   検算3-2 で「消えた名前」として検出されたので残した（未使用でよい）。
+# 下記の互換 import は Sender からは使わないが、モジュール直下の名前が
+#   消えると外部コードの参照が壊れるため残す（未使用でよい）。
 import os                                                    # noqa: F401
 import platform                                              # noqa: F401
 import serial                                                # noqa: F401
@@ -42,17 +32,17 @@ import serial                                                # noqa: F401
 INPUT_LOG_FORMAT = "simple"
 INPUT_LOG_STICK_CHANGE = False
 
-# 段 VI: 送信の間引き幅とタイムアウトの定義は Transport.py へ移した。
+# 送信の間引き幅とタイムアウトの定義は Transport が持つ。
 #   上の import で名前だけをここへ引き込んである（実体は1つ）。
-#   なぜ移したか: これらは「線の性質」であって「姿勢」ではない。
-#     プロトコルを替えれば値も意味も変わるので、運び方と同じ場所に置く。
-# 入力調停（Input Control Arbitration）の既定。段 V-a で追加
+#   これらは「線の性質」であって「姿勢」ではないため、
+#   プロトコルを替えれば値も意味も変わるので、運び方と同じ場所に置く。
+# 入力調停（Input Control Arbitration）の既定。
 #   "off"    … 調停しない。全部受理する（本家と同じ挙動）
 #   "human"  … 人の手入力を優先。人が触った直後はスクリプトの申告を拒否
 #   "script" … スクリプトを優先。スクリプトが書いた直後は人の申告を拒否
-# 段4-c: 既定は off とする。本家の挙動を変えないためであり、実行中に
+# 既定は off とする。本家の挙動を変えないためであり、実行中に
 #   人の操作を拒否するかどうかは利用者が画面から選ぶ。script を選べば
-#   一時停止で操作でき、そのとき自動側の押下は退避される（段4-b）。
+#   一時停止で操作でき、そのとき自動側の押下は退避される。
 #   解放と中立の申告はどの設定でも拒否しない。拒否すると押しっぱなしが
 #   残るため、安全に関わる申告は調停より優先する。
 ARBITRATION_MODE = "off"
@@ -101,10 +91,10 @@ class Sender:
     def __init__(self, is_show_serial: Any, if_print: bool = True,
                  input_log_emit: Optional[Callable[[str], None]] = None,
                  transport: Optional[Transport.Transport] = None) -> None:
-        # 段 VI: 運び方（Transport）を1つ持つ。既定は従来と同じテキスト
-        #   シリアル（P1 legacy_text）なので、何も指定しなければ挙動は不変。
-        #   引数で差し替えられるようにしてあるのは、①別のプロトコルを
-        #     試すため ②検証で偽の線を差し込むため。
+        # 運び方（Transport）を1つ持つ。既定は従来と同じテキスト
+        #   シリアルなので、何も指定しなければ挙動は不変。
+        #   引数で差し替えられるようにしてあるのは、別のプロトコルを
+        #   試すためと、検証で偽の線を差し込むため。
         self.transport = (transport if transport is not None
                           else Transport.TextSerialTransport())
         self.is_show_serial = is_show_serial
@@ -123,9 +113,8 @@ class Sender:
         self.is_print = if_print
         self.time_bef = time.perf_counter()
         self.time_aft = time.perf_counter()
-        # 2026/08/26 段2-①: 応答遅延の計測用（PICODSN 14-5 M2〜M5）。
-        #   既定は切。入れたときだけ記録するので、通常利用では
-        #     perf_counter も deque も触らない（挙動が変わらない）。
+        # 応答遅延の計測用。既定は切。入れたときだけ記録するので、
+        #   通常利用では計測処理に触らず挙動が変わらない。
         self._perf_recording = False
         self._perf_log = deque(maxlen=10000)
         self._perf_event_time = None
@@ -139,11 +128,10 @@ class Sender:
             log_stick_change=INPUT_LOG_STICK_CHANGE,
         )
         self.input_logger.set_enabled(if_print)
-        # 段 VI: 送信行を入力ログへ運ぶ経路は、Transport の聞き手として
+        # 送信行を入力ログへ運ぶ経路は、Transport の聞き手として
         #   繋ぐ。繋がったかを必ず見る。バイナリで運ぶ実装は送信行
         #   （文字列）を作らないため繋がらず、黙っていると「1行も出ない
-        #   のに動いていると思う」形で静かに壊れる（pokecon2 で実際に
-        #   踏んだ。PORTBACK 2章 注意1）。
+        #   のに動いていると思う」形で静かに壊れる。
         self._input_log_linked = bool(
             self.transport.add_listener(self.input_logger.feed))
         if not self._input_log_linked:
@@ -160,7 +148,7 @@ class Sender:
         # 別のスレッドから来る（GUI / コマンド / キーボード）。RLock なのは
         # holdHat が applyHat を呼ぶなど、同じスレッドで錠を取り直すため。
         self._lock = threading.RLock()
-        # 段3-b2: Pico live-state 能力がある線だけ worker を立てる。
+        # Pico live-state 能力がある線だけ worker を立てる。
         if self._liveCapable():
             self.startLiveWorker()
 
@@ -197,17 +185,15 @@ class Sender:
         self.input_logger.flush()
 
     # =====================================================================
-    # 段 VI: 線そのものは Transport が受け持つ  2026/08/25
+    # 線そのものは Transport が受け持つ
     # =====================================================================
     # ここから下の openSerial / closeSerial / isOpened / writeRow /
     #   flushPending は、名前も引数も戻り値も従来どおり。中身だけを
-    #   Transport への委譲に替えた。呼び出し側（Window / Keys /
-    #   GuiAssets / McuCommandBase / PythonCommandBase）は1行も直らない。
+    #   Transport への委譲に替えた。呼び出し側は直さなくてよい。
     #
     # なぜ「名前を残して中身だけ移す」のか:
-    #   これらは既存コードが直接呼んでいる公開 API で、送信経路の走査では
-    #   本ブック内だけで30箇所以上ある。名前を替えると移植と改名が混ざり、
-    #   問題が出たときに切り分けられない（段 III の反省と同じ）。
+    #   これらは既存コードが直接呼んでいる公開 API で、呼び出し箇所が多い。
+    #   名前を替えると移植と改名が混ざり、問題が出たときに切り分けられない。
 
     def _liveCapable(self, transport: Any = None) -> bool:
         """Pico live-state worker が必要かを判断する唯一の場所。"""
@@ -269,7 +255,7 @@ class Sender:
     def ser(self) -> Any:
         """生のシリアルオブジェクト。後方互換のための覗き窓。
 
-        従来 Sender は self.ser を直に持っていた。段 VI で実体は
+        従来 Sender は self.ser を直に持っていた。実体は
           Transport 側へ移ったが、外から self.ser を見ているコードが
           あるため、同じ名前で覗けるようにしておく。
         """
@@ -305,13 +291,13 @@ class Sender:
     def _onWriteBegin(self, row: str, show: bool = True) -> None:
         """Transport が実際に書き出す直前に呼ばれる。計測の起点。
 
-        2026/08/26 段2-① (PICODSN 14-5 M1/M3): 引数 show が増えた。
-          Transport は measure_perf をそのまま渡してくる。意味は
-            「画面へ表示してよいか」で、計測するかどうかではない。
-          以前は measure_perf が偽だとフック自体が呼ばれず、
-            間引きで保留された行（最も遅れる行）が計測から抜けていた。
+        引数 show の意味は「画面へ表示してよいか」であり、
+          計測するかどうかではない。Transport は measure_perf を
+          そのまま渡してくる。以前は measure_perf が偽だとフック自体が
+          呼ばれず、間引きで保留された行（最も遅れる行）が計測から
+          抜けていた。
         time_bef は従来どおり残す。外部が読んでいる可能性を否定
-          できないため（Sender._write を残したのと同じ判断）。
+          できないため。
         """
         self.time_bef = time.perf_counter()
         if self._perf_recording:
@@ -320,7 +306,7 @@ class Sender:
     def _onWriteEnd(self, row: str, show: bool = True) -> None:
         """Transport が書き出した直後に呼ばれる。計測の終点。
 
-        段2-① (M1): 表示（show）と計測を分けた。計測は常に行い、
+        表示（show）と計測を分けている。計測は常に行い、
           print だけを show で制御する。従来 measure_perf=False の
           行は print もされなかったので、表示の挙動は変わらない。
         """
@@ -332,31 +318,27 @@ class Sender:
             print(row)
 
     # ------------------------------------------------------------------
-    # 2026/08/26 段2-①: 応答遅延の計測（PICODSN 14-5 M2〜M5）
+    # 応答遅延の計測
     # ------------------------------------------------------------------
     # 何のためにあるか:
-    #   段2 で送信 Queue を入れる前に、いまの応答の速さを測っておく。
-    #   入れてから測っても「前がどうだったか」は永久に分からない。
+    #   送信の仕組みを変える前後で、応答の速さを比べるための物差し。
     #   測る対象は event_time（入口で申告を受けた時刻）から
     #     write_start_time（実際に線へ書き始めた時刻）までの間隔。
     #
-    # なぜ既定で切ってあるか (M4):
+    # なぜ既定で切ってあるか:
     #   測る行為そのものが遅延を生む。常時記録すると、測った値が
     #     「測っていないときの速さ」からずれる。必要なときだけ入れる。
-    #   切ってあるあいだは perf_counter の呼び出しも deque への追加も
-    #     行わないので、通常利用の挙動は1ビットも変わらない。
+    #   切ってあるあいだは計測処理を行わないので、
+    #     通常利用の挙動は変わらない。
     #
-    # event_time をどこで採るか (M2):
+    # event_time をどこで採るか:
     #   申告の入口（pressButtons / releaseButtons / setHat / setStick /
     #     holdHat / releaseHat）で採る。『いつ押されたか』であって
     #     『いつ送ったか』ではない。
-    #   現行 Keys.py の input_time_0 は _writeCurrent() の後で採って
-    #     おり「送信後」の時刻なので、起点には使えない（PICODSN Q-03b）。
-    #   段2 で Queue を入れたら、この値は snapshot へ移して持ち回る。
-    #     いまは器が無いので Sender が1つだけ持つ暫定の形にしてある。
+    #   送信後に採った時刻は「送信後」の時刻なので、起点には使えない。
 
     def setPerfRecording(self, enabled: bool, capacity: int = 10000) -> None:
-        """応答遅延の記録を入／切する。既定は切（M4）。"""
+        """応答遅延の記録を入／切する。既定は切。"""
         with self._lock:
             if enabled and not self._perf_recording:
                 self._perf_log = deque(maxlen=int(capacity))
@@ -367,11 +349,11 @@ class Sender:
         return bool(self._perf_recording)
 
     def markEvent(self, source: Optional[str] = None) -> None:
-        """入口で申告を受けた時刻を記録する（M2 の event_time）。
+        """入口で申告を受けた時刻を記録する。
 
         申告系の入口から必ず呼ぶ。ここを呼び忘れた経路は、
           その行の遅延が測れない（＝統計から抜ける）。
-        記録が切のときは何もしない（M4）。
+        記録が切のときは何もしない。
         """
         if not self._perf_recording:
             return
@@ -383,7 +365,7 @@ class Sender:
                 self._perf_event_source = source
 
     def _recordPerf(self, row: str) -> None:
-        """1行ぶんの計測を記録へ積む（M3）。_onWriteEnd から呼ばれる。
+        """1行ぶんの計測を記録へ積む。_onWriteEnd から呼ばれる。
 
         1件だけ持つ形（time_bef / time_aft）では中央値も95パーセン
           タイルも出せない。上書きされて消えるため、記録は溜める。
@@ -408,7 +390,7 @@ class Sender:
         self._perf_event_source = None
 
     def getPerfLog(self) -> list:
-        """記録の写しを返す（M5）。読み取り専用。
+        """記録の写しを返す。読み取り専用。
 
         ここでは統計を計算しない。中央値の求め方や外れ値の扱いは
           測る側の判断なので、Sender は「起きたこと」だけを渡す。
@@ -424,7 +406,7 @@ class Sender:
             self._perf_event_source = None
 
     def openSerial(self, portNum: int, portName: str = '', baudrate: int = 9600) -> bool:
-        """線を開く。中身は Transport が行う（段 VI）。
+        """線を開く。中身は Transport が行う。
 
         開けた場合は live 経路に限り worker を起動する。切断で worker を
         止めているため、ここで起こさないと開き直しても状態が送出されない。
@@ -437,9 +419,9 @@ class Sender:
         return opened
 
     def closeSerial(self) -> None:
-        """回線を安全に閉じる（段3-b5）。
+        """回線を安全に閉じる。
 
-        停止は順序が全てである。PICODSN 23-6 の 9 段に従う。
+        停止は順序が全てである。
 
             1  新規の live 入力の受付を停止する
             2  未送信の通常状態を破棄する
@@ -454,12 +436,12 @@ class Sender:
         中立の送出は worker が生きているうちに行う。worker を止めてから
         mailbox へ入れても誰も送出しないため、押下が残る。
 
-        手順 1 から 8 は try の内側に置き、手順 9 は finally で必ず実行
+        ステップ 1 から 8 は try の内側に置き、ステップ 9 は finally で必ず実行
         する。途中で失敗しても回線を開いたままにしない。
 
         錠（_lock）は状態の変更だけに使う。送出の完了待ち・worker の
         join・入力ログの初期化まで錠の中で行うと、その間すべての申告と
-        読み取りが止まり、GUI が固まったように見える。順序（9 段）は
+        読み取りが止まり、GUI が固まったように見える。順序は
         変えず、待つ部分だけ外へ出す。
         """
         self._logger.debug("Closing the serial communication")
@@ -486,7 +468,7 @@ class Sender:
                 # 8: 入力ログを初期化する。
                 self.input_logger.reset()
         finally:
-            # 9: どの手順が失敗しても回線は必ず閉じる。
+            # 9: どのステップが失敗しても回線は必ず閉じる。
             with self._lock:
                 self._live_closing = False
             self.transport.close()
@@ -512,7 +494,7 @@ class Sender:
         return value
 
     def writeRow(self, row: str, is_show: bool = False, measure_perf: bool = True) -> None:
-        """1行送信する。中身は Transport が行う（段 VI）。
+        """1行送信する。中身は Transport が行う。
 
         間引き（coalescing）の条件も、送れなかったときの扱いも従来と
           同じ。移しただけで判断は変えていない。
@@ -536,9 +518,8 @@ class Sender:
     def _write(self, row: str, measure_perf: bool = True) -> None:
         """実際に書き出す。実体は Transport 側（名前だけ残す）。
 
-        段 VI の検算3で「消えた名前」として検出されたので戻した。
-          ブック内の呼び出しは Sender 自身からの3箇所だけだったが、
-          リポジトリ外の利用者コードが触っている可能性は否定できない。
+        互換のために戻した名前であり、リポジトリ外の利用者コードが
+          触っている可能性は否定できない。
           消す判断は、消してよい根拠が取れてからにする。
         """
         writer = getattr(self.transport, "_write", None)
@@ -567,30 +548,20 @@ class Sender:
             self._logger.error(f"show_input failed: {traceback.format_exc()}")
 
     # =====================================================================
-    # 段 I: 姿勢（Posture）を Sender が1つ持つ  2026/08/25 追加
+    # 姿勢（Posture）を Sender が1つ持つ
     # =====================================================================
-    # なぜここへ置くか（STRUCTURE 8章 案a / PORTBACK 7節）:
-    #   押下状態は現在3系統に分かれている（ARC-01）。①コマンドごとの
-    #   KeyPress ②GUI 用の KeyPress ③マウスは KeyPress を持たず生の行を
-    #   組み立てる。どの系統も「自分の状態」しか知らないため、送る行が
-    #   他系統の押下を消す。これが SER-06（押しながらマウスで触ると
-    #   ボタンが落ちる）と SER-07（左右スティックが同時に倒せない）の正体。
+    # なぜここへ置くか:
+    #   押下状態が系統ごとに分かれていると、どの系統も「自分の状態」しか
+    #   知らないため、送る行が他系統の押下を消す。押しながら別系統で触ると
+    #   ボタンが落ちたり、左右スティックを同時に倒せなかったりする。
     #
-    #   Sender は3章のとおり最初から一意で、全経路が既にここへ集まって
-    #   いる。before / _pending という送信状態も既に持っているので、姿勢も
-    #   ここへ置けば「送信に関することは Sender」で一貫する。ARC-02 で
-    #   入れた RLock と同じ場所で守れるため、錠も増えない。
+    #   Sender は最初から一意で、全経路が既にここへ集まっている。送信状態も
+    #   既に持っているので、姿勢もここへ置けば「送信に関することは Sender」
+    #   で一貫する。同じ錠で守れるため、錠も増えない。
     #
-    # 段 I の約束: ここで足すのは入口だけで、まだ誰も呼ばない。
-    #   既存の writeRow / KeyPress / GuiAssets の経路は1行も変えていない。
-    #   したがって、この段では実機での確認は要らない（挙動が変わらない）。
-    #   実際に繋ぎ替えるのは段 II（マウス）以降。
-    #
-    # _buildRow について（PORTBACK 7-3 で案(a)を採用）:
+    # _buildRow について:
     #   Keys.SendFormat.convert2str と同じ結果を返す実装をここへ「並べて」
-    #   置く。移さないのは、移した瞬間に既存経路が新コードを通り始め、
-    #   「既存の動作を変えない」という段 I の約束が破れるため。
-    #   一時的に同じ処理が2箇所に並ぶ。これは段 IV で必ず1つに畳む。
+    #   置く。既存の動作を変えないため、一時的に同じ処理が2箇所に並ぶ。
 
     # 姿勢の初期値。Keys.py の CENTER / Hat.CENTER と同じ値を使う。
     # Keys を import しないのは循環を避けるため（Keys が Sender を使う）。
@@ -606,19 +577,17 @@ class Sender:
             "lx": c, "ly": c, "rx": c, "ry": c,
         }
         # 変化印。convert2str と同じ意味で、読み取ると False へ戻る
-        # （SendFormat の副作用つき getter と挙動を揃える。STRUCTURE 9-4）。
+        # （SendFormat の副作用つき getter と挙動を揃える）。
         self._L_stick_changed = False
         self._R_stick_changed = False
         # Hat は「値」であってビットではない。押していない間も直前の値を
-        # 覚えておく必要がある（SendFormat.Hat_pos と同じ。MCU-13 の注意）。
+        # 覚えておく必要がある（SendFormat.Hat_pos と同じ）。
         self._hat_pos = self.POSTURE_HAT_CENTER
 
     def _ensurePosture(self) -> None:
         """姿勢がまだ無ければ作る。
 
-        __init__ を書き換えずに済ませるための遅延初期化。段 I は既存の
-        コードに手を入れない約束なので、__init__ へ1行足すのではなく
-        apply* の側で面倒を見る。段 IV で __init__ へ移してよい。
+        遅延初期化。apply* の側で面倒を見る。
         """
         if not hasattr(self, "_posture"):
             self._initPosture()
@@ -627,11 +596,11 @@ class Sender:
                      source: Any = None) -> None:
         """ボタンの押下と解放を差分で適用し、変化があれば live に渡す。
 
-        段3-b4: 解放を含む申告は優先送信とする。押下が次のスロットまで
+        解放を含む申告は優先送信とする。押下が次のスロットまで
         遅れても操作が一瞬遅れるだけだが、解放が遅れると押しっぱなしに
-        なるため、破棄も待機もさせない（16-3 Priority）。
+        なるため、破棄も待機もさせない。
 
-        段4-a: 押下は申告した所有者のビット列へ記録し、実際に送る値は
+        押下は申告した所有者のビット列へ記録し、実際に送る値は
         全所有者の OR とする。同じボタンを 2 者が押している場合、片方が
         離してももう片方が離すまで落とさないためである。所有者を指定
         しない申告は既定の所有者へ入るため、1 人しか居ない従来の使い方
@@ -661,7 +630,7 @@ class Sender:
     def applyHat(self, hat: Any = None) -> None:
         """Hat の向きを差し替え、変化があれば live に渡す。
 
-        段3-b4: 中立へ戻す場合は優先送信とする。方向が残ると意図しない
+        中立へ戻す場合は優先送信とする。方向が残ると意図しない
         移動が続くため、解放と同じ扱いにする。
         """
         snap = None
@@ -689,7 +658,7 @@ class Sender:
 
 
 
-    # 段4-a: 既定の所有者。source を渡さない経路はここへ集める。
+    # 既定の所有者。source を渡さない経路はここへ集める。
     #   所有者が 1 人だけのときは、合成しても現行と同じ値になる。
     DEFAULT_OWNER = "default"
 
@@ -714,7 +683,7 @@ class Sender:
         名札は source 文字列のみとし、実行世代までは持たない。基本は
         1 マイコンに 1 コマンドであり、複数機を操作する場合は本体を
         複数起動するため、同一プロセスで複数のコマンドが同時に姿勢を
-        書く場面が無いからである（11 章 Q4 の回答）。
+        書く場面が無いからである。
         """
         return self.DEFAULT_OWNER if source is None else str(source)
 
@@ -730,7 +699,7 @@ class Sender:
         """revision が最大の申告の値を返す。申告が無ければ None。
 
         辞書の並び順は新しさを意味しないため、順序の根拠を revision に
-        一本化する（13 章 R-02）。
+        一本化する。
         """
         latest = None
         latest_rev = -1
@@ -741,7 +710,7 @@ class Sender:
         return latest
 
     def suspendOwner(self, source: Any = None) -> bool:
-        """所有者 1 人分の申告を退避し、姿勢から外す（段4-b の手順 1）。
+        """所有者 1 人分の申告を退避し、姿勢から外す。
 
         退避したものがあれば True を返す。Pause で人へ操作を渡す前に、
         script の押下を姿勢から消しておく。消しておかないと、人が同じ
@@ -749,7 +718,7 @@ class Sender:
 
         既に退避してある場合は上書きしない。Pause 中にもう一度 Pause が
         来ても、人が触った後の状態を script の姿勢として復元しないため
-        である（B3）。
+        である。
         """
         owner = self._ownerKey(source)
         snap = None
@@ -766,7 +735,7 @@ class Sender:
                 "stick": self._owner_stick.pop(owner, None),
             }
             if all(v is None for v in saved.values()):
-                # 押していないものは退避しない。姿勢も変わらない（B5）。
+                # 押していないものは退避しない。姿勢も変わらない。
                 return False
             self._owner_saved[owner] = saved
             self._hat_held.pop(str(source), None)
@@ -780,10 +749,10 @@ class Sender:
         return True
 
     def restoreOwner(self, source: Any = None) -> bool:
-        """退避した申告を戻す（段4-b の手順 2）。
+        """退避した申告を戻す。
 
         戻したものがあれば True を返す。人が触った分は人の所有分として
-        別に持っているため、この復帰では手を触れない（B4）。
+        別に持っているため、この復帰では手を触れない。
         """
         owner = self._ownerKey(source)
         snap = None
@@ -834,7 +803,7 @@ class Sender:
 
 
     def dropOwner(self, source: Any = None) -> bool:
-        """所有者 1 人分の申告だけを取り下げる（段4-a A6）。
+        """所有者 1 人分の申告だけを取り下げる。
 
         取り下げたものがあれば True を返す。他の所有者の押下は残す。
         全員分を落とすのは releaseAll であり、こちらは Stop の意味を持つ。
@@ -931,8 +900,7 @@ class Sender:
 
         複数の系統が別々の向きを押している場合は、revision が最大の申告
         を採る。Hat は 1 つの値しか持てないため、どれかを選ぶしかない。
-        段4-a: 以前は辞書の並び順で最後の 1 件を採っていたが、辞書順は
-        新しさを意味しない。順序の根拠を revision に一本化した。
+        辞書順は新しさを意味しないため、順序の根拠を revision に一本化した。
         """
         self._ensureHatHold()
         self._ensureOwners()
@@ -942,15 +910,15 @@ class Sender:
         """十字キーを押しっぱなしにすることを申告する。
 
         これを申告しておくと、他の系統から中立へ戻す申告が来ても
-          向きが保たれる（B1 の跨ぎ問題の解）。
+          向きが保たれる。
         解除は releaseHat。同じ source が何度呼んでも最後の値になる。
 
-        段4-a: 申告は (値, revision) で記録する。複数の系統が別々の向きを
+        申告は (値, revision) で記録する。複数の系統が別々の向きを
         押している場合、revision が最大のものが採られる。
         """
         if not self._accept(source):
             return False
-        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -967,7 +935,7 @@ class Sender:
         """
         if not self._accept(source, releasing=True):
             return False
-        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -977,7 +945,7 @@ class Sender:
         return True
 
     def getHatHold(self) -> Dict[str, int]:
-        """押しっぱなしの一覧（検算・デバッグ用）。"""
+        """押しっぱなしの一覧（確認・デバッグ用）。"""
         with self._lock:
             self._ensureHatHold()
             return dict(self._hat_held)
@@ -986,7 +954,7 @@ class Sender:
                    y: Optional[int] = None, source: Any = None) -> None:
         """スティック座標を差分で適用し、変化があれば live に渡す。
 
-        段3-b4: 中立へ戻す場合のみ優先送信とする。途中の座標は次の値で
+        中立へ戻す場合のみ優先送信とする。途中の座標は次の値で
         置き換えてよいが、中立は倒したままの状態を解くため待たせない。
 
         申告は所有者ごとに記録し、送る値は _applyComposed の合成結果と
@@ -1032,10 +1000,10 @@ class Sender:
     def releaseAll(self) -> None:
         """全項目を中立に戻し、変化があれば live に渡す。
 
-        段3-b4: Stop、Neutral、Release All の経路であり、常に優先送信と
+        Stop、Neutral、Release All の経路であり、常に優先送信と
         する。停止後に押下が残ってはならない。
 
-        段4-a: 所有者ごとの申告もすべて取り下げる。これは Stop の意味を
+        所有者ごとの申告もすべて取り下げる。これは Stop の意味を
         持つ経路であり、誰の押下も残さない。1 人分だけ取り下げるのは
         dropOwner である。
         """
@@ -1051,7 +1019,7 @@ class Sender:
             self._owner_stick.clear()
             self._ensureSuspended()
             self._owner_saved.clear()
-            # 段4-c 追補: Stop は渡した状態も解く。誰の押下も残さない
+            # Stop は渡した状態も解く。誰の押下も残さない
             #   経路であり、渡したままだと次の実行で調停が効かない。
             self._ensureArbitration()
             self._arb_handed_over = False
@@ -1069,7 +1037,7 @@ class Sender:
             self.putLive(snap, priority=True)
 
     def getPosture(self) -> Dict[str, int]:
-        """現在の姿勢の写しを返す（検算・デバッグ用）。"""
+        """現在の姿勢の写しを返す（確認・デバッグ用）。"""
         with self._lock:
             self._ensurePosture()
             return dict(self._posture)
@@ -1083,8 +1051,8 @@ class Sender:
             （0x2 = L が変化 / 0x1 = R が変化）
           - 座標は16進、Hat は10進
           - 先頭は format(x, "#06x") で必ず "0x" + 4桁
-        SER-02 の訂正のとおり、この "0x" は「先頭を必ず 0 にする」ための
-          仕掛けでもある。外すと ParseLine の座標行判定を通らない行が
+        この "0x" は「先頭を必ず 0 にする」ための仕掛けでもある。
+          外すと ParseLine の座標行判定を通らない行が
           できるため、短くしてはいけない。
         convert2str と同じく、読み取ると変化印は False へ戻る。
         """
@@ -1111,14 +1079,13 @@ class Sender:
             return row
 
     def verifyAgainstSendFormat(self, sf: Any) -> bool:
-        """段 I の検算。SendFormat と姿勢を突き合わせ、行が一致するか見る。
+        """SendFormat と姿勢を突き合わせ、行が一致するか見る。
 
         使い方: 同じ操作を SendFormat と Sender の apply* の両方へ与えて
         から呼ぶ。True なら「姿勢の持ち方を変えても通信内容は変わらない」
         ことが確かめられたことになる。
 
-        入力ログを移したときに7書式を1文字ずつ照合した手口と同じ
-        （HISTORY 2026/08/23）。目視ではなく機械で比べる。
+        目視ではなく機械で比べる。
 
         注意: convert2str も _buildRow も「読むと変化印が下りる」
         副作用を持つ。したがって、この関数は1度しか正しく呼べない。
@@ -1132,49 +1099,47 @@ class Sender:
         return mine == theirs
 
     # =====================================================================
-    # 段 IV: 状態の統合と、調停の口  2026/08/25 追加
+    # 状態の統合と、調停の口
     # =====================================================================
-    # 段 III までで配線は全て Sender に集まったが、KeyPress が
-    #   SendFormat（自分専用の姿勢）を持ち続けていたため、書き出すたびに
-    #   「自分の内容で全体を上書き」していた。これが ARC-01 の本体。
-    #   段 IV では KeyPress から SendFormat を外し、差分だけを申告させる。
+    # 配線は全て Sender に集まったが、KeyPress が自分専用の姿勢を
+    #   持ち続けていると、書き出すたびに「自分の内容で全体を上書き」する。
+    #   ここでは KeyPress から専用状態を外し、差分だけを申告させる。
     #
-    # 調停（arbitration）について（PORTBACK 10章）:
+    # 調停（arbitration）について:
     #   姿勢が本当に1つになると、スクリプトと人の操作が同じ姿勢を
-    #   書き換える。遠隔操作の実装（NanoKVM 等）では、人の手入力を
+    #   書き換える。遠隔操作の実装では、人の手入力を
     #   最優先し、自動側を横取りして一定時間拒否する「入力調停」を
     #   置くのが一般的。
-    #   ただし段 IV では調停を入れない。理由は2つ。
-    #     ①現状も混ざっている（混ざり方が壊れていただけ）
-    #     ②調停は「所有者」という新しい状態を持ち込む。ARC-01 を
-    #       解くのとは別の問題で、混ぜると段 IV の成否が分からなくなる
+    #   ただしここでは調停を入れない。理由は2つ。
+    #     1. 現状も混ざっている（混ざり方が壊れていただけ）
+    #     2. 調停は「所有者」という新しい状態を持ち込む。統合とは別の問題で、
+    #       混ぜると成否が分からなくなる。
     #   代わりに『口』だけ用意する: source で誰の申告かを渡せるようにし、
-    #     受理したかを bool で返す。段 IV では常に True（全部受理）。
+    #     受理したかを bool で返す。ここでは常に True（全部受理）。
 
     # =====================================================================
-    # 段 V-a: 入力調停（Input Control Arbitration）  2026/08/25 追加
+    # 入力調停（Input Control Arbitration）
     # =====================================================================
-    # 段 IV で姿勢が本当に1つになった。その結果、①スクリプト ②キーボード
-    #   ③マウスが同じ姿勢を書き換えるようになった（＝ARC-01 の解）。
-    #   だが「常に混ざってよいか」は別問題で、STRUCTURE 9-4 に未決として
-    #   登録してあった論点（PORTBACK 10章）。
+    # 姿勢が本当に1つになった結果、スクリプト・キーボード・マウスが
+    #   同じ姿勢を書き換えるようになった。
+    #   だが「常に混ざってよいか」は別問題である。
     #
-    # 方針（PORTBACK 10章 / NanoKVM の設計を参考にした）:
-    #   ・誰の申告かは source で分かる（段 IV で用意済み）
-    #   ・受理したかは bool で返す（段 IV で用意済み）
+    # 方針:
+    #   ・誰の申告かは source で分かる
+    #   ・受理したかは bool で返す
     #   ・ここでは「受理するかどうかの判断」だけを _accept へ入れる。
-    #     段 IV で「_accept 1箇所を書き換えれば全経路に効く」と設計した
-    #     とおり、足すのはこの1箇所で済む。
+    #     _accept の1箇所を書き換えれば全経路に効く設計なので、
+    #     足すのはこの1箇所で済む。
     #
     # 既定は "off"（全部受理）にしてある。理由:
-    #   ・段 IV までの挙動を1文字も変えないため（既存コマンドへの影響なし）
+    #   ・それまでの挙動を1文字も変えないため（既存コマンドへの影響なし）
     #   ・調停は「うっかり触って邪魔する」を防ぐ仕組みだが、裏返すと
     #     「触ったのに効かない時間」を作る。どちらが良いかは使い方次第で、
-    #     利用者が選べるべきもの（STRUCTURE 9-4 の選択肢(3)）。
+    #     利用者が選べるべきもの。
     #
     # 拒否は黙って捨てない。_notifyReject で必ず知らせる。
     #   黙って無視すると「スクリプトが動かない」と見え、原因が分からなく
-    #   なる（PORTBACK 10章 の重要）。
+    #   なる。
 
     def _ensureArbitration(self) -> None:
         """調停の状態がまだ無ければ作る（遅延初期化）。
@@ -1192,7 +1157,7 @@ class Sender:
             self._arb_last_notify = 0.0
             self._arb_suppressed = 0
             self._arb_rejected = {"human": 0, "auto": 0}
-            # 段4-c 追補: 自動側が明示的に操作を人へ渡している最中か。
+            # 自動側が明示的に操作を人へ渡している最中か。
             self._arb_handed_over = False
 
     def setArbitration(self, mode: Optional[str] = None,
@@ -1200,7 +1165,7 @@ class Sender:
         """調停の設定を変える。設定画面や起動引数から呼ぶ。
 
         mode は "off" / "human" / "script"。
-          off    … 調停しない（既定。段 IV までと同じ）
+          off    … 調停しない（既定。従来と同じ）
           human  … 人の手入力を優先。人が触った直後はスクリプトを拒否
           script … スクリプトを優先。スクリプトが書いた直後は人を拒否
         cooldown は横取りが続く秒数。
@@ -1221,7 +1186,7 @@ class Sender:
                 self._arb_cooldown = max(0.0, float(cooldown))
 
     def getArbitration(self) -> Dict[str, Any]:
-        """現在の調停の設定と実績を返す（設定画面・検算用）。"""
+        """現在の調停の設定と実績を返す（設定画面・確認用）。"""
         with self._lock:
             self._ensureArbitration()
             return {
@@ -1253,8 +1218,8 @@ class Sender:
         肝心の内容が流れる。REJECT_NOTIFY_INTERVAL の間は数だけ数え、
         次に出すときへまとめる。
 
-        段4-c: スクリプトを優先して人の操作を拒否した場合は、代わりの
-        道を必ず添える。塞ぐだけで手段を書かないと、利用者からは動かな
+        スクリプトを優先して人の操作を拒否した場合は、代わりの
+        道を必ず添える。塞ぐだけで方法を書かないと、利用者からは動かな
         いとしか見えない。一時停止すれば操作でき、そのとき自動側の押下
         は退避されるため、押しっぱなしのまま渡ることもない。
 
@@ -1287,7 +1252,7 @@ class Sender:
         self._logger.info(msg)
 
     def setHandedOver(self, handed: bool) -> None:
-        """自動側が操作を人へ渡している最中かを設定する（段4-c 追補）。
+        """自動側が操作を人へ渡している最中かを設定する。
 
         一時停止のように、自動側が明示的に手を引いている間は調停を
         止める。cooldown は『最後に自動側が申告してから何秒』で測る
@@ -1312,11 +1277,11 @@ class Sender:
 
     def _accept(self, source: Optional[str],
                 releasing: bool = False) -> bool:
-        """その申告を受理してよいか。段 V-a で調停を実装した。
+        """その申告を受理してよいか。
 
-        段 IV では常に True を返していた。ここを書き換えるだけで
+        ここを書き換えるだけで
           全経路（pressButtons / releaseButtons / setHat /
-          sendPosture / sendNeutralAll）に効く。設計どおり。
+          sendPosture / sendNeutralAll）に効く。
         スティック（setStick）は対象外とする。連続値であり所有権に
           なじまず、拒否すると半倒しが残るためである。
 
@@ -1331,7 +1296,7 @@ class Sender:
           一時停止などで明示的に手を引く場合は setHandedOver(True) で
           調停そのものを止める（時間ではなく事実で判断する）。
 
-        段4-c: releasing が真の申告は拒否しない。解放と中立を拒否すると
+        releasing が真の申告は拒否しない。解放と中立を拒否すると
           押しっぱなしが残り、調停の都合で安全が損なわれる。押下を断る
           ことはできても、離す操作を断る理由は無い。
 
@@ -1388,13 +1353,13 @@ class Sender:
     def pressButtons(self, btns: Any, source: Optional[str] = None) -> bool:
         """ボタンを押す（差分の申告）。受理したら True。
 
-        段 IV の要: 呼び出し側は「押したいボタン」だけを渡す。
+        呼び出し側は「押したいボタン」だけを渡す。
           押していない他のボタンには一切触れないので、別系統が
-          押しているものを消さない。これが ARC-01 の解。
+          押しているものを消さない。
         """
         if not self._accept(source):
             return False
-        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
         self.applyButtons(press=btns, source=source)
         return True
 
@@ -1402,7 +1367,7 @@ class Sender:
         """ボタンを離す（差分の申告）。受理したら True。"""
         if not self._accept(source, releasing=True):
             return False
-        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
         self.applyButtons(release=btns, source=source)
         return True
 
@@ -1416,7 +1381,7 @@ class Sender:
         """
         if not self._accept(source, releasing=hat is None):
             return False
-        self.markEvent(source)   # 段2-①: 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -1439,7 +1404,7 @@ class Sender:
         とする。人の手で倒せる操作は、調停の mode にかかわらず出せる。
         複数系統が同時に触った場合は revision が新しい申告が採られる。
         """
-        self.markEvent(source)   # 段2-①: 入口の時刻
+        self.markEvent(source)   # 入口の時刻
         self.applyStick(stick, x, y, source=source)
         return True
 
@@ -1447,9 +1412,9 @@ class Sender:
         """現在姿勢を送る。Pico live経路ではmailboxだけを使う。"""
         if not self._accept(source):
             return False
-        # 段3-b3修正: apply*が既にmailboxへ入れている。ここで同期送信
-        #   するとGUIスレッドがTransport錠とUART書込みを待ち、workerとも
-        #   二重送信になる。legacyだけ従来どおり同期送信する。
+        # apply* が既に mailbox へ入れている。ここで同期送信
+        #   するとGUIスレッドが Transport の錠と UART 書き込みを待ち、
+        #   worker と二重送信になる。legacy だけ従来どおり同期送信する。
         if self._liveCapable():
             return True
         self.writeRow(self._buildRow())
@@ -1458,9 +1423,9 @@ class Sender:
     def sendNeutralAll(self, source: Optional[str] = None) -> bool:
         """すべて中立へ戻す。live 経路では優先送信で mailbox へ渡す。
 
-        段3-b4: 既に中立であっても再送する。releaseAll は状態が変わらな
+        既に中立であっても再送する。releaseAll は状態が変わらな
         ければ mailbox へ渡さないため、ここで現在の snapshot を優先送信
-        する。revision は増やさない（23-2 の水増しを避ける）。
+        する。revision は増やさない。
         """
         if not self._accept(source, releasing=True):
             return False
@@ -1497,8 +1462,7 @@ class Sender:
         """姿勢が変わったことを記録する。錠の中から呼ぶこと。
 
         呼び忘れると snapshot の revision が据え置きになり、
-          「変わっていない」と誤判定される。段3 の worker が送信を省く。
-        いまは誰も呼ばない（段1 は口を作るだけ）。段3 で apply* から呼ぶ。
+          「変わっていない」と誤判定され、worker が送信を省く。
         """
         rev = getattr(self, "_posture_revision", 0) + 1
         self._posture_revision = rev
@@ -1518,7 +1482,6 @@ class Sender:
         含めるもの: btn / hat / lx / ly / rx / ry / revision。
           変化印（_L/_R_stick_changed）は含めない。あれは legacy の
             可変長書式のための状態で、状態そのものではないため。
-          これを含めると 16-2 R3 で撤回した設計へ逆戻りする。
         """
         with self._lock:
             self._ensurePosture()
@@ -1532,12 +1495,12 @@ class Sender:
             }
 
     def verifySnapshotPurity(self, times: int = 3) -> bool:
-        """段1 の検算: snapshot を何度読んでも同じ値かを確かめる。
+        """snapshot を何度読んでも同じ値かを確かめる。
 
         _buildRow は2度目に違う行を返す（変化印が下りるため）。
           snapshot がその轍を踏んでいないことを機械で確かめる。
         目視で「副作用は書いていない」と言うのではなく、実際に
-          複数回読んで一致を見る（README 22章の方針）。
+          複数回読んで一致を見る。
         """
         if times < 2:
             times = 2
@@ -1548,33 +1511,31 @@ class Sender:
         return True
 
     # ------------------------------------------------------------------
-    # 段2: Pico 専用 full-state encoder（PICODSN 16-5 順序2 / 20章）
+    # Pico 専用 full-state encoder
     #
     # 何のためか:
     #   Pico ファームは "S <btn> <hat> <lx> <ly> <rx> <ry>" を受け取る。
-    #   legacy_text（_buildRow）とは別書式なので、変換する口が要る。
+    #   従来書式（_buildRow）とは別書式なので、変換する口が要る。
     #
-    # legacy と決定的に違う2点（ここを間違えると別のボタンが押される）:
-    #   ①legacy は btn を2ビット左シフトし、下位2bit へスティックの
-    #     変化印を入れる（B670）。Pico はシフトしない（pico_main.c B106
-    #     state.buttons = (uint16_t) vals[0]）。同じ姿勢でも値が4倍違う。
-    #   ②legacy は変化した側のスティックだけを付ける可変長。
-    #     Pico は6項目すべて必須（pico_main.c B96 while (idx < 6)）。
-    #     足りないと ERR を返される。
+    # 従来書式と決定的に違う2点（ここを間違えると別のボタンが押される）:
+    #   1. 従来書式は btn を2ビット左シフトし、下位2bit へスティックの
+    #     変化印を入れる。Pico はシフトしない。同じ姿勢でも値が4倍違う。
+    #   2. 従来書式は変化した側のスティックだけを付ける可変長。
+    #     Pico は6項目すべて必須。足りないと ERR を返される。
     #
     # だから Pico 側には「変化印」という概念が要らない。
     #   毎回すべての軸を送るので、1行落ちても次の行で復旧する
-    #   （pico_main.c B89 のフルステート方式）。
+    #   （フルステート方式）。
     #
-    # 書式の細かい決まり（すべて pico_main.c の実装から確定させた）:
-    #   6項目とも16進（B102 parse_hex を6回通す）。hat も16進。
-    #   "0x" を付けてはいけない（B81 で x は不正文字 → ERR）。
-    #   区切りは空白1つ以上（B97）。
+    # 書式の細かい決まり（すべて Pico ファームの受信仕様による）:
+    #   6項目とも16進。hat も16進。
+    #   "0x" を付けてはいけない（x は不正文字として ERR になる）。
+    #   区切りは空白1つ以上。
     #
     # 純関数にしてある理由:
     #   snapshot だけを引数に取り、self を読まない（@staticmethod）。
     #   同じ snapshot からは常に同じ行が出る。何度呼んでも変わらない。
-    #   _buildRow のような読み取り副作用を持ち込まない（16-2 R3）。
+    #   _buildRow のような読み取り副作用を持ち込まない。
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -1597,7 +1558,7 @@ class Sender:
 
         範囲外を黙って送らない。btn は16bit、他は8bit が上限で、
           超えた値を送ると Pico 側で別の意味になる（切り詰められる）。
-        hat は 8 超を中立へ丸める（pico_main.c B107 と同じ規則）。
+        hat は 8 超を中立へ丸める（Pico ファームと同じ規則）。
           PC 側で先に丸めるのは、送った行と Pico の状態を一致させるため。
           丸めを Pico 任せにすると、PC が思っている姿勢とずれる。
         """
@@ -1609,7 +1570,7 @@ class Sender:
                 raise ValueError(f"btn が16bitを超えています: {value}")
             return value
         if key == "hat":
-            # 8 超は中立（8）。pico_main.c B107 と同じ扱いを PC 側でも行う。
+            # 8 超は中立（8）。Pico ファームと同じ扱いを PC 側でも行う。
             return value if value <= 8 else 8
         if value > 0xFF:
             raise ValueError(f"{key} が8bitを超えています: {value}")
@@ -1620,44 +1581,43 @@ class Sender:
 
         snapshot() を通すので、_buildRow のように変化印は下りない。
           何度呼んでも同じ行が返る。125Hz で呼び続けても壊れない。
-        段2 では誰もこれを呼ばない。live worker から呼ぶのは段3。
         """
         return self.encodePicoState(self.snapshot())
 
     @staticmethod
     def verifyPicoEncoder() -> bool:
-        """段2 の検算: encoder が仕様どおりかを機械で確かめる。
+        """encoder が仕様どおりかを機械で確かめる。
 
-        目視で「書けている」と言わず、実際に組んで照合する
-          （README 22章）。pico_main.c の受け入れ条件だけを根拠にする。
+        目視で「書けている」と言わず、実際に組んで照合する。
+        Pico ファームの受け入れ条件だけを根拠にする。
         """
         base = {"btn": 0, "hat": 8, "lx": 0x80, "ly": 0x80,
                 "rx": 0x80, "ry": 0x80, "revision": 0}
 
-        # ①中立の行
+        # 中立の行
         if Sender.encodePicoState(base) != "S 0 8 80 80 80 80":
             return False
-        # ②B ボタン(0x0002)。legacy と違いシフトしない
+        # B ボタン(0x0002)。従来書式と違いシフトしない
         b_down = dict(base, btn=0x0002)
         if Sender.encodePicoState(b_down) != "S 2 8 80 80 80 80":
             return False
-        # ③16進で出ること（10進なら 255 になる）
+        # 16進で出ること（10進なら 255 になる）
         maxed = dict(base, lx=0xFF)
         if Sender.encodePicoState(maxed) != "S 0 8 ff 80 80 80":
             return False
-        # ④何度呼んでも同じ（純関数）
+        # 何度呼んでも同じ（純関数）
         if Sender.encodePicoState(base) != Sender.encodePicoState(base):
             return False
-        # ⑤項目数は必ず7（S + 6項目）
+        # 項目数は必ず7（S + 6項目）
         if len(Sender.encodePicoState(base).split()) != 7:
             return False
-        # ⑥"0x" が混ざらない（混ざると Pico が ERR を返す）
+        # "0x" が混ざらない（混ざると Pico が ERR を返す）
         if "0x" in Sender.encodePicoState(dict(base, btn=0xABCD)):
             return False
-        # ⑦hat の 8 超は中立へ丸める
+        # hat の 8 超は中立へ丸める
         if Sender.encodePicoState(dict(base, hat=9)) != "S 0 8 80 80 80 80":
             return False
-        # ⑧範囲外は黙って送らず例外にする
+        # 範囲外は黙って送らず例外にする
         try:
             Sender.encodePicoState(dict(base, lx=0x100))
             return False
@@ -1666,7 +1626,7 @@ class Sender:
         return True
 
     # ------------------------------------------------------------------
-    # 段3-a: Pico live worker と latest-state mailbox（PICODSN 16-5 順序3 / 22章）
+    # Pico live worker と latest-state mailbox
     #
     # 何をするものか:
     #   8ms（125Hz）ごとに現在の姿勢を1行送り続ける仕組み。
@@ -1675,22 +1635,21 @@ class Sender:
     # mailbox（郵便受け）と呼んでいるもの:
     #   容量1の置き場。新しい姿勢が来たら古いものを上書きする。
     #   積まない（FIFO にしない）のが要点。125Hz のライブ状態で
-    #     行列を作ると、古い姿勢が後から届いて遅延が溜まる（16-2 R4）。
-    #   現行 Transport の間引き（B300-B311）も同じ作りで、
+    #     行列を作ると、古い姿勢が後から届いて遅延が溜まる。
+    #   Transport の間引きも同じ作りで、
     #     保留は常に1行・後から来た行で上書きしている。
     #
-    # 段3-a の前提
+    # 前提
     #   startLiveWorker を呼ばない限りスレッドは起動しない。
-    #   段3-b で live mailbox に接続し、実機で確認しながら進める。
     #
-    # 優先送信（16-3 Priority）
+    # 優先送信
     #   Stop、Neutral、Release は次のスロットを待たずに送出する。
     #   スティックの中間値は破棄してよいが、解放操作は破棄できない。
     #   破棄すると押下状態が残る。
     # ------------------------------------------------------------------
 
-    # 8 ms は 125 Hz に相当し、pico_main.c の REPORT_MS および USB 記述子の
-    #   bInterval と同じ値である。これより短い周期で送出しても Switch には
+    # 8 ms は 125 Hz に相当し、Pico ファームの報告周期および USB 記述子の
+    #   間隔と同じ値である。これより短い周期で送出しても Switch には
     #   届かず、UART が滞留する。
     LIVE_SLOT_S = 0.008
     # keepalive 間隔。実機で測定した維持上限 180 ms の半分を 8 ms 単位に
@@ -1700,12 +1659,11 @@ class Sender:
     CLOSE_DRAIN_S = 0.05
     # 切断時に worker の停止を待つ上限。閉じられない状態を作らない。
     CLOSE_JOIN_S = 0.30
-    # ★段5-d: この長さ未満の press は Pico の時刻付きキューへ回す。
-    #   段5-a の実測で、8 ms 未満の押下は mailbox の構造により
-    #   線に出ない回があると分かった（PICODSN 28-11 / 35-8）。
-    #   mailbox は容量 1 で上書きするため、worker が見に来る前に
-    #   押して離すと押下が解放に上書きされる。周期の乱れではなく
-    #   設計の帰結なので、PC 側では解けない。
+    # この長さ未満の press は Pico の時刻付きキューへ回す。
+    #   8 ms 未満の押下は mailbox の構造により
+    #   線に出ない回がある。mailbox は容量 1 で上書きするため、
+    #   worker が見に来る前に押して離すと押下が解放に上書きされる。
+    #   周期の乱れではなく設計の帰結なので、PC 側では解けない。
     #   0 にすればこの経路を使わなくなる（実質の無効化）。
     QUEUE_THRESHOLD_S = 0.008
     # キューの実行が終わるのを待つ上限。押下の長さ＋往復の余裕。
@@ -1750,7 +1708,7 @@ class Sender:
         通常の変化では worker を起床させない。次の 8 ms スロットで最新値
         が読み出される。即時に起床させると 125 Hz を超え、UART が滞留する。
 
-        切断中は優先送信だけを受け付ける。段3-b5 の手順 3 で送る中立の
+        切断中は優先送信だけを受け付ける。切断時に送る中立の
         後に、通常の状態が入らないようにするためである。
         """
         self._ensureLiveState()
@@ -1773,7 +1731,7 @@ class Sender:
 
         新しい状態がなければ None を返し、worker は送出しない。同じ状態を
         送出し続けないのは、Pico が 8 ms ごとに自身で HID レポートを送出する
-        ためである（pico_main.c の report_task）。
+        ためである。
         """
         self._ensureLiveState()
         with self._live_lock:
@@ -1811,10 +1769,10 @@ class Sender:
 
 
     def _beginPreciseTimer(self) -> None:
-        """Windows のタイマ分解能を 1ms へ上げる（18-3 T4）。
+        """Windows のタイマ分解能を 1ms へ上げる。
 
         既定の分解能は約15.6ms。Event.wait(8ms) がそこへ丸められ、
-          実測で 16.22ms（＝2スロット分）になっていた。
+          実測で約16ms（＝2スロット分）になっていた。
         winmm が無い環境（Windows 以外）では何もしない。
         """
         if getattr(self, "_live_timer_raised", False):
@@ -1843,7 +1801,7 @@ class Sender:
         """8 ms の締切ごとに最新状態を送り、無変化時は 88 ms で再送する。
 
         待ちには起床合図（_live_wake）を使う。締切までの残り時間を上限と
-        して待ち、合図が来た場合は締切を待たずに送出する。これが段3-b4 の
+        して待ち、合図が来た場合は締切を待たずに送出する。これが
         優先送信であり、解放と中立を次のスロットまで待たせない。
 
         通常の変化では合図を出さないため、送出は 8 ms 周期に収まる。これ
@@ -1897,7 +1855,7 @@ class Sender:
             self._endPreciseTimer()
 
     def _recordLiveOrder(self, snap: Dict[str, Any]) -> None:
-        """revision が逆転していないかを数える（N13 の測定）。"""
+        """revision が逆転していないかを数える。"""
         rev = int(snap.get("revision", 0))
         if rev < self._live_stats["last_revision"]:
             self._live_stats["inversions"] += 1
@@ -1940,7 +1898,7 @@ class Sender:
         return float(getattr(self, "QUEUE_THRESHOLD_S", 0.0))
 
     def shouldQueue(self, duration: float) -> bool:
-        """この press を Pico のキューへ回すべきかを返す（段5-d）。
+        """この press を Pico のキューへ回すべきかを返す。
 
         条件は 2 つある。閾値より短いことと、live 経路であること。
         legacy（Leonardo）にはキューが無いので、必ず False になる。
@@ -1958,23 +1916,19 @@ class Sender:
 
     def runQueued(self, duration: float, buttons: Any = None,
                   source: Optional[str] = None) -> bool:
-        """押下を、Pico のキューで duration だけ実行する（段5-d）。
+        """押下を、Pico のキューで duration だけ実行する。
 
         押して待って離すのを PC 側で行わず、Pico に時刻と長さを渡す。
         mailbox を通らないので、8 ms 未満でも押下が消えない。
 
-        ★★★2026/08/30 修正: buttons を受け取る形にした。
-          ★以前は「いまの姿勢」を送る形で、呼び出し側が keys.input で
-            姿勢を作ってから呼んでいた。★★しかし keys.input は mailbox
-            へも申告するので、S 行が worker から送られていた。
-          ★★★つまり Q 行と S 行の両方で押していた。S 行は mailbox を
-            通るので消えうる。消えない経路を作ったのに、消える経路も
-            同時に通していたことになる（実測の画面で発覚）。
-          ★ここで buttons を受け取れば、呼び出し側は姿勢を作らなくてよい。
+        buttons を受け取る形にしてある。呼び出し側が事前に姿勢を作ると、
+          Q 行と S 行の両方で押す形になり、S 行は mailbox を通るため
+          消えうる。消えない経路を作る意味がなくなるので、ここで
+          buttons を受け取れば呼び出し側は姿勢を作らなくてよい。
 
         受理されたら True を返す。False のときは呼び出し側が従来の
         経路へ落とす。キューが満杯・実行中・応答が来ないといった
-        場面で操作そのものが消えるのは最悪だからである（35-2 E7）。
+        場面で操作そのものが消えるのは最悪だからである。
 
         UART への書き出しは錠の外で行う。錠の中で線を待つと、その間
         姿勢の読み取りまで止まる。写しと行文は錠の中で作り、送るのは
@@ -1982,9 +1936,9 @@ class Sender:
         Q より古い状態が後から送出され、押下が一瞬戻る。
         なお実行中の S ワーカーまでは止めない。Q の実行と S の送出の
         調停は Pico 側が行う前提であり、PC が待つのは次の操作と
-        混ざらないためだけである（_waitQueueDone の注記も参照）。
+        混ざらないためだけである。
 
-        N は送らない。N は Pico 側で state_neutral() を呼ぶため、hold
+        N は送らない。N は Pico 側で全体を中立に戻すため、hold
         で押しっぱなしにしている姿勢まで解除され、短い press のたびに
         hold が途切れる。Q 行自体が完全な姿勢を持つので N は不要である。
         """
@@ -1992,9 +1946,9 @@ class Sender:
         if transport is None or not self._liveCapable():
             return False
 
-        # ★いまの姿勢を土台にし、押すボタンだけを足す。
-        #   ★★hold で押しっぱなしのものを土台が持っているので、
-        #     キュー経由でも hold が維持される。
+        # いまの姿勢を土台にし、押すボタンだけを足す。
+        #   hold で押しっぱなしのものを土台が持っているので、
+        #   キュー経由でも hold が維持される。
         snap = self.snapshot()
         if buttons is not None:
             bits = int(snap["btn"])
@@ -2027,7 +1981,7 @@ class Sender:
     def encodeQueuedState(snap: Dict[str, Any], tick: int, dur: int) -> str:
         """snapshot から Q 行を組む（純関数・副作用なし）。
 
-        書式は pico_main.c の parse_queue_line と対である。S 行の先頭へ
+        書式は Pico ファームのキュー行の解釈と対である。S 行の先頭へ
         tick と dur を足しただけなので、encodePicoState と同じ並びを
         そのまま使う。書式の解釈を 2 か所に分けない。
         """
@@ -2043,28 +1997,26 @@ class Sender:
         return True
 
     def _waitQueueDone(self, transport: Any, duration: float) -> bool:
-        """実行が終わるまで待つ（段5-d）。
+        """実行が終わるまで待つ。
 
-        ★Transport には読み取りの口が無い（Transport.py の公開メソッドは
-        open / close / is_open / send_row / flush_pending / set_hooks /
-        add_listener / remove_listener だけ）。したがって QDONE は読めない。
+        Transport には読み取りの口が無いため、完了応答は読めない。
 
-        ★★読まなくてよい理由。Pico は自分の時計で実行するので、PC が
-        待たなくても押下は正しく行われる（段5-c の R4・R9 で実証済み）。
+        読まなくてよい理由。Pico は自分の時計で実行するので、PC が
+        待たなくても押下は正しく行われる。
         PC が待つのは「次の操作と混ざらないため」だけである。
         対象は 8 ms 未満なので、待っても実害が無い。
 
-        ★★★限界。QFULL と BUSY を検出できない。ただし Pico は実行を
-        終えると queue_len を 0 に戻すので（pico_main.c D12）満杯にならず、
+        限界。満杯と実行中を検出できない。ただし Pico は実行を
+        終えるとキューの長さを 0 に戻すので満杯にならず、
         runQueued は同期なので自分自身とは衝突しない。読み取りの口が
-        要るなら段6 で Transport へ足す。
+        要るなら Transport へ足す。
         """
         time.sleep(float(duration))
         return True
 
 
     def discardLive(self) -> bool:
-        """mailbox の未送信の状態を破棄する（段3-b5 の手順 2）。
+        """mailbox の未送信の状態を破棄する。
 
         破棄したものがあれば True を返す。中立を送る前に呼ぶことで、
         中立の後に古い状態が送出されることを防ぐ。
@@ -2076,7 +2028,7 @@ class Sender:
         return had
 
     def waitLiveDrained(self, timeout: float = 0.05) -> bool:
-        """mailbox が空になるまで待つ（段3-b5 の手順 4）。
+        """mailbox が空になるまで待つ。
 
         worker が取り出して送出し終えると mailbox は空になる。期限内に
         空になれば True を返す。無期限には待たない。終了できない状態を

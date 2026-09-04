@@ -24,34 +24,33 @@ from loguru import logger
 from LineNotify import Line_Notify
 from DiscordNotify import Discord_Notify
 
-# 旧: from .Keys import ... （ここだけ相対 import で、パッケージとして
-# import された場合と単体実行の場合で ImportError になる側が変わっていた）。
-# 他の Commands 配下と同じ絶対 import に統一する。
+# Commands配下と同じ絶対importに統一する。相対importでは、パッケージとして
+# 読み込む場合と単体で実行する場合とで、読み込めなくなる側が変わるため。
 from Commands import CommandBase
 from Commands.Keys import Button, Direction, KeyPress
-# 2026/08/25 段 V: 画像認識を CommandVision.py へ切り出した。
-#   このファイルは「集める場所（facade）」として ImageProcPythonCommand を
-#     組み立て、従来どおりの名前で公開し続ける。利用者のコマンドは
+# 画像認識の実体は CommandVision.py にある。
+#   このファイルは組み立て場所として ImageProcPythonCommand を
+#     従来どおりの名前で公開し続ける。利用者の設定は
 #     from Commands.PythonCommandBase import ImageProcPythonCommand
-#     と書いたまま1行も直さずに動く（NEWAPP 2章の互換の要）。
+#     と書いたまま変えずに使える。
 from Commands.CommandVision import VisionMixin
-# 2026/08/25 段 V（その2）: 対話部を CommandDialog.py へ切り出した。
+# 対話部の実体は CommandDialog.py にある。
 #   DialogMixin は PythonCommand へ重ねる（dialogue / dialogue6widget）。
-#   PokeConDialogue も再公開する。既存のコードが
+#   PokeConDialogue も再公開する。既存の設定が
 #       from Commands.PythonCommandBase import PokeConDialogue
-#     と書いていても、そのまま動くようにするため（NEWAPP 2章の互換の要）。
+#     と書いていても、そのまま使えるようにするため。
 from Commands.CommandDialog import DialogMixin, PokeConDialogue
-# 2026/08/25 段 V（その3）: 操作 API と待ちを CommandOperate.py へ切り出した。
+# 操作APIと待ちの実体は CommandOperate.py にある。
 #   OperateMixin は PythonCommand へ重ねる（press / hold / wait / checkIfAlive）。
-#   StopThread も CommandOperate 側へ移し、ここから再公開する。
+#   StopThread も操作側に置く。
 #     checkIfAlive / _gate が投げる例外なので、操作と同じ場所に置くのが自然。
-#     既存コードが from Commands.PythonCommandBase import StopThread と
-#       書いていてもそのまま動く（NEWAPP 2章の互換の要）。
+#     既存の設定が from Commands.PythonCommandBase import StopThread と
+#       書いていてもそのまま使える。
 from Commands.CommandOperate import OperateMixin, StopThread
-# 段 V: テンプレート画像まわりのモジュール関数も CommandVision.py へ移した。
-#   ただし名前はここからも見えるようにしておく。外部のコマンドや検証が
+# テンプレート画像まわりの関数（モジュール関数）の実体は CommandVision.py にある。
+#   ただし名前はここからも見えるようにしておく。外部の設定や検証が
 #     from Commands.PythonCommandBase import clear_template_cache と
-#     書いている場合に、切り出しで静かに壊れるのを防ぐため。
+#     書いている場合に、置き場所の違いで動かなくなるのを防ぐため。
 #   実体は1つ（CommandVision 側）なので、キャッシュも1つで一貫する。
 from Commands.CommandVision import (LINE_EOL_MESSAGE, TEMPLATE_PATH,
                                      _get_template_filespec,
@@ -84,11 +83,11 @@ _begin_timer_period()
 class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
     def __init__(self) -> None:
         super(PythonCommand, self).__init__()
-        # 2026/08/25 段 V-b: この操作が「誰のものか」を表す名札。
+        # この操作が「誰のものか」を表す名札。
         #   do_safe が KeyPress を作るときに渡し、入力調停（Sender)が
         #   受理／拒否の判断に使う。既定は "script"（自動実行）。
         #   GUI の模擬コントローラやマウス操作は人の手によるものなので、
-        #     派生クラス側で "gui" / "mouse" を指定する（GuiAssets）。
+        #     派生クラス側で "gui" / "mouse" を指定する。
         #   調停が off（既定）の間はどの名札でも挙動は変わらない。
         self.input_source: str = "script"
 
@@ -286,7 +285,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
 
         足止めするだけでは、押しっぱなしのまま人へ渡ることになる。人が
         同じボタンを離すと、こちらの押下まで巻き込んで落ちる。そこで
-        段4-b では、自分の所有分を退避して姿勢から外してから渡す。
+        自分の所有分を退避して姿勢から外してから渡す。
         ゲーム側から見ると、一時停止した時点でボタンが離れる。
 
         退避した分は resume で戻すため、再開時に押し直す必要はない。
@@ -321,7 +320,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
     def _suspendPosture(self) -> bool:
         """自分の所有分を退避する。対応していない Sender では何もしない。
 
-        段4-b より前の Sender と組み合わせても動くようにする。書き出しを
+        古い Sender と組み合わせても動くようにする。書き出しを
         片方だけ行った場合に、例外で一時停止そのものが失敗しないため。
         """
         ser = getattr(getattr(self, "keys", None), "ser", None)
@@ -630,14 +629,12 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
 class ImageProcPythonCommand(PythonCommand, VisionMixin):
     """画像認識つきのコマンド基底クラス。
 
-    2026/08/25 段 V: 画像認識の本体を CommandVision.py（VisionMixin）へ
-      切り出した。このクラスは PythonCommand（実行制御・操作・待ち・通知）と
-      VisionMixin（画像認識）を重ねるだけの薄い層になる。
-    名前・継承関係・コンストラクタ引数は1文字も変えていないので、
-      既存のコマンドは1行も直さずに動く（NEWAPP 2章の互換の要）。
-    段 V の確認: 本家には template_path_name / profilename というクラス属性は
-      無い（全シート走査で0件）。pokecon2 側は bridge_functions.py 互換のため
-      持たせていたが、本家へ持ち込む必要は無いのでそのままにする。
+    画像認識の本体は CommandVision.py（VisionMixin）にある。このクラスは
+      PythonCommand（実行制御・操作・待ち・通知）と VisionMixin（画像認識）を
+      重ねるだけの薄い層である。
+    名前・継承関係・コンストラクタ引数は従来どおりなので、既存の設定は
+      変えずに使える。
+    template_path_name / profilename というクラス属性は持たせない。
     """
 
     def __init__(self, cam: Any, gui: Any = None) -> None:
@@ -650,9 +647,9 @@ class ImageProcPythonCommand(PythonCommand, VisionMixin):
     def __post_init__(self) -> None:
         """通知の実体をカメラ付きで作り直す。
 
-        段 V の注意: これは画像認識ではなく通知の初期化なので、
-          VisionMixin へは移していない。Line_Notify / Discord_Notify は
-          このファイルが import しており、画像認識側から見えないため。
+        これは画像認識ではなく通知の初期化なので、VisionMixin には置いていない。
+        Line_Notify / Discord_Notify はこのファイルが読み込んでおり、
+        画像認識側からは見えないため。
         """
         self.Line = Line_Notify(self.camera)
         self.Discord = Discord_Notify(camera=self.camera)

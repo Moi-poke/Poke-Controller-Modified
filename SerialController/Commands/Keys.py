@@ -293,13 +293,10 @@ class KeyPress:
         self._logger.propagate = True
 
         self.ser = ser
-        # 2026/08/25 段 V-b: 誰の操作かを Sender へ伝えるための名札。
-        #   入力調停（Sender._accept）はこの名札を見て受理／拒否を決める。
-        #   既定は "script"。段 V-a までと同じ扱いなので、引数を渡さない
-        #     既存の呼び出しは挙動が1文字も変わらない。
-        #   キーボード操作用の KeyPress には Window が "keyboard" を渡す。
-        #     Sender.HUMAN_SOURCES に "keyboard" が入っているため、
-        #     human モードでは人の手入力として優先される。
+        # 操作元を示す名札。入力調停はこの名札を見て受理／拒否を決める。
+        # 既定は "script" で、引数を渡さない既存の呼び出しの挙動は変わらない。
+        # キーボード操作用の KeyPress には Window が "keyboard" を渡す。
+        # human モードでは人の手入力として優先される。
         self.source = str(source) if source else "script"
         self.format = SendFormat()
         self.holdButton = []
@@ -334,13 +331,13 @@ class KeyPress:
             if btn not in btns:
                 btns.append(btn)
 
-        # 段 IV: 自分の姿勢を持たず、Sender へ「差分」を申告する。
-        #   押したいものだけを渡すので、別系統が押しているボタンや
-        #   触っていないスティックには影響しない（ARC-01 の解）。
-        #   互換のため self.format も同じ内容へ進める（段 IV では
-        #     まだ外部が読んでいる可能性を考慮）。
-        #   調停で棄却されたときに互換側を巻き戻せるよう、進める前の
-        #   値を控えておく（_rollbackFormat 用）。
+        # 自分の姿勢を持たず、Sender へ「差分」を申告する。
+        # 押したいものだけを渡すので、別系統が押しているボタンや
+        # 触っていないスティックには影響しない。
+        # 互換のため self.format も同じ内容へ進める
+        # （外部が読んでいる可能性を考慮）。
+        # 調停で棄却されたときに互換側を巻き戻せるよう、進める前の
+        # 値を控えておく（_rollbackFormat 用）。
         saved = self._snapshotFormat()
         self.format.setButton([btn for btn in btns if type(btn) is Button])
         self.format.setHat([btn for btn in btns if type(btn) is Hat])
@@ -374,11 +371,9 @@ class KeyPress:
                 tilts.append(tilting)
         # self._logger.debug(tilts)
 
-        # 2026/08/25 段 IV-b（B1 の修正）: hold 中の Hat を守る
-        #   input() には holdButton を復元する手当てがあるが、inputEnd()
-        #   には無かった。そのためボタンを離すだけで unsetHat() が走り、
-        #   押しっぱなしの十字キーが中立へ落ちていた（PORTBACK 8-2 の B1）。
-        #   input 側と同じ「hold は守る」規則を inputEnd にも通す。
+        # hold 中の Hat を守る。input 側と同じ「hold は守る」規則を
+        # inputEnd にも通す。以前はボタンを離すだけで中立へ落ち、
+        # 押しっぱなしの十字キーが解除されていたため。
         hold_hat = next((b for b in self.holdButton if type(b) is Hat), None)
 
         self.format.unsetButton([btn for btn in btns if type(btn) is Button])
@@ -402,11 +397,11 @@ class KeyPress:
                 return
 
             self.holdButton.append(btn)
-        # 2026/08/25 段 V-d: Hat の押しっぱなしを Sender へも申告する。
-        #   これが無いと、別の KeyPress が中立へ戻す申告をした時点で
-        #     押しっぱなしの十字キーが落ちる（B1 の跨ぎ問題 / PORTBACK 12-2）。
-        #   holdButton は各 KeyPress が自分で持つため、他系統からは見えない。
-        #     Sender に預けることで、どの系統から中立が来ても守られる。
+        # Hat の押しっぱなしを Sender へも申告する。
+        # これが無いと、別の KeyPress が中立へ戻す申告をした時点で
+        # 押しっぱなしの十字キーが落ちる。
+        # holdButton は各 KeyPress が自分で持つため、他系統からは見えない。
+        # Sender に預けることで、どの系統から中立が来ても守られる。
         hold_hat = next((b for b in btns if type(b) is Hat), None)
         if hold_hat is not None:
             hold = getattr(self.ser, "holdHat", None)
@@ -426,8 +421,8 @@ class KeyPress:
             else:
                 self._logger.warning(f"{btn} is not in holding state")
 
-        # 段 V-d: Hat の押しっぱなしを取り下げる。自分の分だけ外すので、
-        #   他の系統がまだ押していればその向きが残る。
+        # Hat の押しっぱなしを取り下げる。自分の分だけ外すので、
+        # 他の系統がまだ押していればその向きが残る。
         if any(type(b) is Hat for b in btns):
             if not any(type(b) is Hat for b in self.holdButton):
                 release = getattr(self.ser, "releaseHat", None)
@@ -449,7 +444,7 @@ class KeyPress:
         手を入れる必要は無い。
         """
         self.holdButton.clear()
-        # 段 V-d: end は「すべて中立」なので押しっぱなしも取り下げる。
+        # end は「すべて中立」なので押しっぱなしも取り下げる。
         release = getattr(self.ser, "releaseHat", None)
         if callable(release):
             release(source=self.source)
@@ -473,31 +468,29 @@ class KeyPress:
             time.sleep(wtime)
             self.ser.writeRow_wo_perf_counter(row, is_show=False)
     # ------------------------------------------------------------------
-    # 2026/08/25 段 III（PORTBACK 5節）: 姿勢を Sender へ委譲する
+    # 姿勢を Sender へ委譲する
     # ------------------------------------------------------------------
-    # 何をしたか:
-    #   KeyPress は SendFormat（自分専用の姿勢）を持ち、そこへ書いてから
-    #   convert2str() で行を組んで送っていた。この「自分専用」が ARC-01
-    #   （状態の分裂）そのもので、コマンド用・GUI 用で別々の姿勢を持ち、
-    #   互いの押下を消し合っていた。
-    #   段 III では、姿勢の書き込み先を Sender（アプリに1つ）へ移す。
+    # KeyPress は SendFormat（自分専用の姿勢）を持ち、そこへ書いてから
+    # convert2str() で行を組んで送っていた。この「自分専用」が状態の分裂
+    # そのもので、コマンド用・GUI 用で別々の姿勢を持ち、
+    # 互いの押下を消し合っていた。
+    # 姿勢の書き込み先を Sender（アプリに1つ）へ移す。
     #
-    # 外向きの API は1文字も変えない:
+    # 外向きの API は変えない:
     #   input / inputEnd / hold / holdEnd / end の名前・引数・意味は不変。
-    #   既存コマンドは1行も直さずに動く（NEWAPP 2章の互換の要）。
+    #   既存コマンドは直さずに動く。
     #
     # self.format は残す:
     #   互換のため SendFormat のインスタンスも並行して更新し続ける。
     #   ・外部が self.format.format を読んでいた場合に壊さないため
-    #   ・段 III の検算で「両者が同じ行を出す」ことを見張るため
-    #   段 IV で SendFormat を畳むときに、ここを外す。
+    #   ・両者が同じ行を出すことを見張るため
     #
     # 退避:
     #   Sender が applyButtons を持たない旧版なら、従来どおり
-    #   self.format.convert2str() の行を送る。挙動は完全に同じ。
+    #   self.format.convert2str() の行を送る。挙動は同じ。
 
     def _posture_ready(self) -> bool:
-        """Sender が姿勢を持つ版か（段 I 以降か）。"""
+        """Sender が姿勢を持つ版か。"""
         return all(callable(getattr(self.ser, n, None))
                    for n in ("applyButtons", "applyHat", "applyStick",
                              "_buildRow"))
@@ -524,27 +517,25 @@ class KeyPress:
     def _writeCurrent(self) -> None:
         """現在の姿勢を1行にして送る。
 
-        段 III の中核。従来は self.format.convert2str() の戻り値を
-          そのまま writeRow へ渡していた。ここを Sender の姿勢経由に
-          置き換える。ただし出力される行は1文字も変わらない
-          （段 I の検算 339 件で確認済み）。
+        従来は self.format.convert2str() の戻り値をそのまま writeRow へ
+        渡していた。ここを Sender の姿勢経由に置き換える。ただし
+        出力される行は変わらない。
         """
         if not self._posture_ready():
             # 旧 Sender。従来どおり（挙動は完全に同じ）
             self.ser.writeRow(self.format.convert2str())
             return
 
-        # 段 IV: _syncPostureFromFormat（全体の上書き）をやめた。
-        #   申告は _applyToSender / _releaseFromSender が差分で済ませて
-        #   いるので、ここは「今の姿勢を1行にして送る」だけでよい。
-        #   これで別系統の押下を消さなくなる（ARC-01 の解）。
+        # 全体の上書きはやめた。申告は _applyToSender / _releaseFromSender が
+        # 差分で済ませているので、ここは「今の姿勢を1行にして送る」だけでよい。
+        # これで別系統の押下を消さない。
         self.format.convert2str()      # 互換側の印を下ろす（副作用を維持）
         self.ser.sendPosture(source=self.source)
 
     def _writeNeutralAll(self) -> None:
         """すべて中立へ戻した完全な行を必ず送る（end 専用）。
 
-        _writeCurrent と分けた理由（2026/08/25 の検算で判明）:
+        _writeCurrent と分けた理由:
           applyStick は「値が変わったときだけ」変化印を立てる。だから
           既に中立だった状態で end() を呼ぶと印が立たず、送信行から
           座標が落ちて "0x0000 8" になる。
@@ -564,14 +555,13 @@ class KeyPress:
 
 
     # ------------------------------------------------------------------
-    # 2026/08/25 段 IV: 差分の申告（ARC-01 の解）
+    # 差分の申告
     # ------------------------------------------------------------------
-    # 段 III との違い:
-    #   段 III は _syncPostureFromFormat で「自分の SendFormat の内容を
-    #   Sender へ丸ごと写す」形だった。これは姿勢の置き場所を移した
-    #   だけで、書くたびに全体を上書きする点は変わっていなかった。
-    #   段 IV では「押したもの・離したものだけ」を申告する。触っていない
-    #   項目は Sender が持つ値のまま保たれるので、別系統の押下を消さない。
+    # 以前は _syncPostureFromFormat で「自分の SendFormat の内容を
+    # Sender へ丸ごと写す」形だった。これは姿勢の置き場所を移した
+    # だけで、書くたびに全体を上書きする点は変わっていなかった。
+    # 現在は「押したもの・離したものだけ」を申告する。触っていない
+    # 項目は Sender が持つ値のまま保たれるので、別系統の押下を消さない。
     #
     # self.format は残す:
     #   外部が読んでいた場合に壊さないため、並行して更新し続ける。
@@ -643,8 +633,8 @@ class KeyPress:
         スティックの解除は「軸ごと」に行う。SendFormat.unsetDirection
           と同じ規則（片軸を中立にし、もう片軸は fixOtherAxis で端へ寄せる）
           を保つため、結果の座標は self.format から読み取って申告する。
-          ここだけは self.format の計算結果に頼っている。段 V 以降で
-            unsetDirection 相当を Sender 側へ持てば外せる。
+          ここだけは self.format の計算結果に頼っている。将来的に
+          unsetDirection 相当を Sender 側へ持てば外せる。
         """
         if not self._posture_ready():
             return
@@ -652,7 +642,7 @@ class KeyPress:
         if buttons:
             self.ser.releaseButtons(buttons, source=self.source)
         if unset_hat:
-            # B1: hold 中の Hat は中立へ戻さない（input 側と同じ規則）
+            # hold 中の Hat は中立へ戻さない（input 側と同じ規則）
             self.ser.setHat(None if hold_hat is None else int(hold_hat),
                             source=self.source)
         f = self.format.format

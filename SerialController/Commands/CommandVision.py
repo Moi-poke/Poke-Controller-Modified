@@ -2,24 +2,23 @@
 # -*- coding: utf-8 -*-
 """CommandVision.py - 画像認識 API（VisionMixin）.
 
-2026/08/25 段 V: PythonCommandBase.py（1999行）から画像認識部を切り出した。
+画像認識部をまとめたファイルである。
 
 なぜ Mixin にするか:
-  画像認識は「通信と無関係」で、他の部分と混ぜる理由が無い（PORTBACK 4節）。
+  画像認識は通信と無関係で、他の部分と混ぜる理由が無い。
   ただし ImageProcPythonCommand は PythonCommand を継承しており、待ち系
   （wait / _deadline / _runElapsed）と通知（Discord / Line）を親から使う。
   完全に独立した別クラスにはできないので、Mixin として重ねる形にする。
-  これは pokecon2 の api/vision.py で実証済みの分け方（STAGE1）。
 
-親クラスへの依存（実測で5つだけ）:
-  self.wait / self._deadline / self._runElapsed … 待ち系（operate 側）
-  self.Discord / self.Line … 通知（notify 側）
-  依存が少ないので Mixin として素直に切り出せる。AST で全数走査して確認した。
+親クラスへの依存:
+  self.wait / self._deadline / self._runElapsed … 待ち系（操作側）
+  self.Discord / self.Line … 通知側
+  依存が少ないので Mixin として素直に分けられる。
 
 互換:
-  利用者のコマンドは from Commands.PythonCommandBase import ImageProcPythonCommand
+  利用者の設定は from Commands.PythonCommandBase import ImageProcPythonCommand
   と書く。PythonCommandBase.py が引き続きこの名前を公開するので、既存の
-  コマンドは1行も変えずに動く（NEWAPP 2章の互換の要）。
+  設定は変えずに使える。
 """
 from __future__ import annotations
 
@@ -48,9 +47,9 @@ IMREAD_CACHE_SIZE = 128
 
 
 # テンプレート画像の既定の置き場所。
-# 段 V の注意: 元は PythonCommandBase.py にあり、__file__ の2つ上を
-#   基準にしていた（SerialController/Commands/ → SerialController/Template）。
-#   このファイルも同じ Commands/ 配下へ置くので、同じ式で同じ場所を指す。
+#   __file__ の2つ上を基準にしている
+#   （SerialController/Commands/ → SerialController/Template）。
+#   このファイルも同じ Commands/ 配下にあるので、同じ式で同じ場所を指す。
 #   別の階層へ置くと Template を見失うため、配置を変えるときはここを直す。
 TEMPLATE_PATH = path.normpath(path.join(path.dirname(path.dirname(path.abspath(__file__))), "Template"))
 

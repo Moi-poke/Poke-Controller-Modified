@@ -28,8 +28,8 @@ from loguru import logger
 
 from Commands import UnitCommand
 from Commands.PythonCommandBase import PythonCommand
-# 2026/08/25 段 V-c: GUI の模擬コントローラが押しっぱなしを扱うため、
-#   Button / Hat の列挙を直に使う（UnitCommand を経由しなくなった）。
+# 模擬コントローラがボタンの押しっぱなしを扱うため、
+#   ボタンと十字キーの種類を直接使う（UnitCommand を経由しない）。
 from Commands.Keys import Button, Hat
 
 
@@ -174,10 +174,9 @@ class MouseStick(PythonCommand):
 
     def __init__(self) -> None:
         super().__init__()
-        # 2026/08/25 段 V-b: マウス操作は人の手によるもの。
-        #   入力調停で「人の手入力」として優先されるよう名札を付ける。
-        #   _sendStick 経由の座標は source="mouse" で送っている（段 V-a）ので、
-        #     ボタン側もここで揃えておく。
+        # マウス操作は人の手による操作として扱うため、送り主を
+        # 「マウス」と名乗る。スティックの座標も同じ名乗りで送っているので、
+        # ボタン側もここで揃えておく。
         self.input_source = "mouse"
 
     def do(self) -> None:
@@ -603,37 +602,36 @@ class CaptureArea(tk.Canvas):
     def _sendStick(self, side: str, angle: float, mag: float) -> None:
         """片側のスティック値を送る。
 
-        2026/08/25 段 II（PORTBACK 5節）: 生の行の組み立てをやめ、
-          Sender が持つ姿勢（applyStick）へ申告する形へ変えた。
+        生の送信行を組み立てるのをやめ、送信側が持つ現在の姿勢へ
+          差分だけを申告する形に変えた。
 
-        なぜ変えるか（SER-06 / SER-07 / ARC-01）:
-          旧実装は f"3 8 {xy} 80 80" と行を丸ごと組み立てていた。この行は
-          先頭が btn=3 で固定され、もう片方のスティックも 80（中立）で
-          埋めている。つまり「自分が知らない項目まで自分の値で上書き」
-          していた。結果、
-            ・スクリプトが押していたボタンが落ちる（SER-06）
-            ・左を倒したまま右を倒せない（SER-07）
-          という2つの症状が出ていた。どちらも「全体を送る」ことが原因。
+        なぜ変えるか:
+          旧実装は行全体を組み立てていた。この行は先頭のボタンが固定値で、
+          もう片方のスティックも中立で埋めていた。つまり自分が知らない項目まで
+          自分の値で上書きしていた。結果、
+            ・スクリプトが押していたボタンが外れる
+            ・左を倒したまま右を倒せない
+          という2つの不具合が出ていた。どちらも行全体を送ることが原因。
 
-        applyStick は差分の申告なので、触っていない項目（btn / hat /
-          もう片方のスティック）は Sender が持つ現在値のまま保たれる。
-          これで上の2件が構造的に起きなくなる。
+        差分の申告なら、触っていない項目（ボタン・十字キー・
+          もう片方のスティック）は送信側の現在値のまま保たれる。
+          これで上の2件が仕組み上起きなくなる。
 
-        旧経路への退避:
-          Sender が古い版（applyStick を持たない）の場合は、従来どおり
-          生の行を送る。段 II の途中でも動き続けるようにするため。
-          STRUCTURE 9-5 の「各段で必ず動く形を保つ」に従う。
+        古い版への退避:
+          送信側が古い版（差分の申告を受けられない）の場合は、従来どおり
+          生の行を送る。移行の途中でも動き続けるようにするため。
+          どの段階でも必ず動く形を保つ。
         """
         x, y = self._stickXY(angle, mag)
 
-        # 段 V-a: 調停の口（source 付き API）を通す。
-        #   setStick / sendPosture は「誰の操作か」を Sender へ伝えるので、
-        #   入力調停を有効にしたとき、マウス操作を人の手入力として
-        #   優先できる。applyStick を直接呼ぶと調停を素通りしていた。
-        #   なお setStick 自体は常時受理する（連続値に所有権は無い）。
-        #   legacy 経路の sendPosture は調停に従い、棄却時は送らない。
-        #   live 経路では applyStick が mailbox へ直行しているため、
-        #   値は届く（sendPosture は live では何もしない）。
+        # 送り主付きの操作口を通す。
+        #   setStick / sendPosture は「誰の操作か」を送信側へ伝えるので、
+        #   入力の優先付けを有効にしたとき、マウス操作を人の手入力として
+        #   優先できる。applyStick を直接呼ぶと優先付けを素通りしていた。
+        #   なお setStick 自体は常時受け付ける（連続値に所有権は無い）。
+        #   旧来の送信経路の sendPosture は優先付けに従い、棄却時は送らない。
+        #   常時送信経路では applyStick が最新の値置き場へ直行しているため、
+        #   値は届く（sendPosture は常時送信経路では何もしない）。
         set_stick = getattr(self.ser, "setStick", None)
         send_posture = getattr(self.ser, "sendPosture", None)
         if callable(set_stick) and callable(send_posture):
@@ -641,12 +639,12 @@ class CaptureArea(tk.Canvas):
                 send_posture(source="mouse")
             return
 
-        # 退避1・退避2: いずれも古い Sender 用であり、現行の Sender では
-        # 通らない。調停が無い版なので迂回のしようが無く、挙動は従来どおり。
-        # 特に退避2の生の行（btn=3 固定）は、現行では絶対に送らないこと。
-        # SER-06 / SER-07 の上書きが再発するため。退避が必要な相手にだけ
+        # 退避1・退避2: いずれも古い送信側用であり、現行の送信側では
+        # 通らない。優先付けが無い版なので迂回のしようが無く、挙動は従来どおり。
+        # 特に退避2の生の行（ボタン固定）は、現行では絶対に送らないこと。
+        # ボタン落ちと片側スティックの上書きが再発するため。退避が必要な相手にだけ
         # 残してある。
-        # 退避1: 段 IV より前の Sender（姿勢はあるが調停の口が無い）
+        # 退避1: 姿勢は持つが送り主付きの操作口が無い旧版向け
         apply_stick = getattr(self.ser, "applyStick", None)
         build_row = getattr(self.ser, "_buildRow", None)
         if callable(apply_stick) and callable(build_row):
@@ -685,16 +683,16 @@ class CaptureArea(tk.Canvas):
     def _sendNeutralStick(self, side: str) -> None:
         """片側のスティックだけを中立へ戻して送る。
 
-        2026/08/25 段 II: 旧実装は "3 8 80 80 80 80" を送っていた。
-          これは「両方のスティックを中立にし、btn も 3 にする」行で、
-          左を離しただけなのに右まで戻し、押しているボタンも消していた。
+        旧実装は両方のスティックを中立に戻し、ボタンも初期値にする行を
+          送っていた。これは左を離しただけなのに右まで戻し、
+          押しているボタンも消していた。
         離した側だけを中立にすれば、もう片方は倒したまま残る。
 
         中立行はスティックだけの変化なので Sender の間引きに
           引っかかりうる。離した状態が届かないと倒したままになるため、
           呼び出し側で flushPending して必ず送り切る（従来どおり）。
         """
-        # 段 V-a: 離す操作も調停の口を通す（source="mouse"）。
+        # 離す操作も送り主付きの操作口を通す（送り主はマウス）。
         set_stick = getattr(self.ser, "setStick", None)
         send_posture = getattr(self.ser, "sendPosture", None)
         if callable(set_stick) and callable(send_posture):
@@ -1047,8 +1045,9 @@ class ControllerGUI:
         ("", "UP_LEFT", 0, 0),
     )
 
-    # 2026/08/25 段 V-c: 十字キーの押しっぱなしと同時押しの合成表。
-    #   Hat は「値」であってビット列ではない（MCU-13 / 段 I と同じ注意）。
+    # 十字キーの押しっぱなしと同時押しの合成表。
+    #   十字キーは「どれか一つの値」であって、ボタンのような
+    #   ビットの組み合わせではない。
     #     ボタンのように OR で足せないため、押している方向の集合から
     #     どの値になるかを引く表を持つ。
     HAT_DIRS = ("UP", "RIGHT", "DOWN", "LEFT")
@@ -1096,11 +1095,11 @@ class ControllerGUI:
 
     def __init__(self, root: Any, ser: Any) -> None:
         self.ser = ser
-        # 2026/08/25 段 V-c: 押しっぱなしに対応するための保持。
+        # ボタンの押しっぱなしに対応するための保持。
         #   従来は tk.Button の command= を使っていた。command は
         #     「離したとき」に1回だけ呼ばれるため、押しっぱなしを
-        #     表現できない（ARC-06 の「入口の非対称」）。
-        #   押下と解放を別々に受け取り、Sender の姿勢へ差分申告する。
+        #     表現できない（押す・離すの両方を受けられない）。
+        #   押下と解放を別々に受け取り、送信側の姿勢へ差分申告する。
         #     触っていない項目は保たれるので、他のボタンを消さない。
         self._held_btn: dict = {}   # 表示名 -> Keys.Button
         self._held_hat: set = set() # 押している向き（"UP" など）
@@ -1159,7 +1158,7 @@ class ControllerGUI:
                     **kwargs: Any) -> tk.Button:
         """押している間だけ入力を保持するボタンを作る。
 
-        2026/08/25 段 V-c: command= をやめ、押下と解放を別々に受ける。
+        command= をやめ、押下と解放を別々に受ける。
           ・command は「離したとき」に1回だけ呼ばれるので押しっぱなしを
             表現できない。<ButtonPress-1> / <ButtonRelease-1> なら
             押した瞬間と離した瞬間の両方を取れる。
@@ -1180,12 +1179,12 @@ class ControllerGUI:
         return button
 
     # ------------------------------------------------------------------
-    # 段 V-c: 押下・解放の受け口
+    # 押下・解放の受け口
     # ------------------------------------------------------------------
-    # どれも Sender の差分申告 API（段 IV）を通す。source="gui" を付ける
-    #   ので、入力調停（段 V-a）では人の手入力として扱われる。
+    # どれも送信側の差分申告の操作口を通す。送り主として「操作画面」を付ける
+    #   ので、入力の優先付けでは人の手入力として扱われる。
     # 申告してから sendPosture で1行にまとめて送る。項目ごとに送ると
-    #   行数が増え、SERIAL_OPT の遅延予算に響く。
+    #   行数が増え、送信の遅延予算に響く。
 
     def _onPress(self, name: str) -> None:
         """ボタンまたは十字キーを押した。"""
@@ -1255,7 +1254,7 @@ class ControllerGUI:
     def _hatValue(self) -> Any:
         """押している向きの集合から Hat の値を決める。
 
-        Hat は「値」でありビット列ではない（MCU-13 / 段 I と同じ注意）。
+        十字キーは「どれか一つの値」であり、ボタンのようなビット列ではない。
           ボタンのように OR で足せないため、組み合わせを表から引く。
           上下同時・左右同時のように打ち消し合う組み合わせや、3つ以上の
           同時押しは表に無い。その場合は中立へ倒す（実機の十字キーでも
@@ -1277,12 +1276,12 @@ class ControllerGUI:
     def _announceHat(self, held: Any) -> bool:
         """向きの集合を申告して送る。受理したら True を返す。
 
-        2026/08/25 段 V-d: 押している間は holdHat で「押しっぱなし」と
-          して申告し、離すときは releaseHat で取り下げる。
-          中立を「値(CENTER)」で送ると、他の系統が押しっぱなしにして
-            いる十字キーまで中立へ戻してしまう（B1 の跨ぎ問題）。
+        押している間は holdHat で「押しっぱなし」として申告し、
+          離すときは releaseHat で取り下げる。
+          中立を「中央値」で送ると、別の操作元が押しっぱなしにしている
+            十字キーまで中立へ戻してしまう。
           取り下げなら、他が押していればその向きへ戻るだけで済む。
-        退避: 古い Sender（holdHat を持たない）なら従来どおり値で送る。
+        退避: 古い送信側（holdHat を持たない）なら従来どおり値で送る。
         """
         hold = getattr(self.ser, "holdHat", None)
         release = getattr(self.ser, "releaseHat", None)
@@ -1339,8 +1338,8 @@ class ControllerGUI:
         self.window.focus_force()
 
     def destroy(self) -> None:
-        # 段 V-c: 押しっぱなしのまま閉じると解放が届かず、
-        #   Switch 側でボタンが押されたままになる。必ず離してから閉じる。
+        # 押しっぱなしのまま閉じると解放が届かず、
+        # Switch 側でボタンが押されたままになる。必ず離してから閉じる。
         self.releaseAllHeld()
         flush = getattr(self.ser, "flushPending", None)
         if callable(flush):

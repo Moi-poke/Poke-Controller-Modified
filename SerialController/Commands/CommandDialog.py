@@ -2,14 +2,13 @@
 # -*- coding: utf-8 -*-
 """CommandDialog.py - 入力ダイアログ（DialogMixin / PokeConDialogue）.
 
-2026/08/25 段 V（その2）: PythonCommandBase.py から対話部を切り出した。
+PythonCommandBase.py から対話部を切り出したもの。
 
 なぜ分けるか:
   ダイアログは tkinter に強く依存する一方、コマンドの実行制御・操作・
-  画像認識とは何のつながりも無い。PythonCommandBase.py が 1271 行ある
-  うちの約 400 行がここで、混ざっている理由が無い（PORTBACK 4節）。
+  画像認識とはつながりが無い。混ざっている理由が無いため分けている。
 
-構成（CommandVision.py と同じ形に揃えた）:
+構成:
   PokeConDialogue : ダイアログの窓そのもの（tkinter の組み立て）
   DialogMixin     : コマンドから使う入口（dialogue / dialogue6widget）
 
@@ -22,7 +21,7 @@
 互換:
   PythonCommandBase.py が PokeConDialogue を re-import するので、
       from Commands.PythonCommandBase import PokeConDialogue
-  と書いている既存のコードはそのまま動く（NEWAPP 2章の互換の要）。
+  と書いている既存のコードはそのまま動く。
 """
 from __future__ import annotations
 

@@ -99,11 +99,10 @@ class GuiSettings:
         self.input_log_actions = tk.StringVar(
             value=input_log.get('actions', fallback=''))
 
-        # 2026/08/25 段 VI-b: 通信方式（Transport）のプリセット。
-        #   名前だけを持つ。実装の対応表は Transport.py の登録簿にある。
-        #   知らない名前でも黙って直さない。ここは設定ファイルの内容を
-        #     そのまま持ち、既定へ落とす判断は使う側（Transport の
-        #     resolve_transport_name）が理由つきで行う。
+        # 通信方式（Transport）のプリセット。
+        # 名前だけを持つ。実装の対応表は Transport.py の登録簿にある。
+        # 知らない名前でも黙って直さない。ここは設定ファイルの内容を
+        # そのまま持ち、既定へ落とす判断は使う側が理由つきで行う。
         transport = self.setting['Transport']
         self.transport_name = tk.StringVar(
             value=transport.get('name', fallback='legacy_text'))
@@ -111,12 +110,11 @@ class GuiSettings:
         self.transport_plugin_dir = tk.StringVar(
             value=transport.get('plugin_dir', fallback=''))
 
-        # 2026/08/29 段4-c: 入力調停（誰の操作を優先するか）。
-        #   既定は off で本家と同じ挙動。script を選ぶと実行中の
-        #     手操作を断り、一時停止すれば操作できるようになる。
-        #   知らない名前でも黙って直さない。ここは設定ファイルの内容
-        #     をそのまま持ち、既定へ落とす判断は使う側（Sender の
-        #     resolve_arbitration_mode）が理由つきで行う。
+        # 入力調停（誰の操作を優先するか）。
+        # 既定は off で本家と同じ挙動。script を選ぶと実行中の
+        # 手操作を断り、一時停止すれば操作できるようになる。
+        # 知らない名前でも黙って直さない。ここは設定ファイルの内容を
+        # そのまま持ち、既定へ落とす判断は使う側が理由つきで行う。
         arbitration = self.setting['Arbitration']
         self.arbitration_mode = tk.StringVar(
             value=arbitration.get('mode', fallback='off'))
@@ -357,8 +355,7 @@ class GuiSettings:
             },
             'Transport': {
                 # 通信方式のプリセット名。Transport.py の登録簿にある名前。
-                # 組み込みは legacy_text（従来と同じテキスト行）だけで、
-                # binary / pico2w_usb は段 VII で足す。
+                # 組み込みは legacy_text（従来と同じテキスト行）だけ。
                 'name': 'legacy_text',
                 # 自作の Transport を置くフォルダ（ブックの場所からの
                 # 相対でも絶対でもよい）。各 .py は register(register)

@@ -2,18 +2,15 @@
 # -*- coding: utf-8 -*-
 """CommandOperate.py - 操作 API と待ち（OperateMixin）.
 
-2026/08/25 段 V（その3）: PythonCommandBase.py から操作部を切り出した。
-
-何が入っているか:
+内容:
   ・操作   press / pressRep / hold / holdEnd
   ・待ち   wait / short_wait / _precise_sleep / _wait_or_stop / _deadline
   ・関所   _gate / _gateRelease / checkIfAlive / _waitResume
   ・その他 timeLeap（Switch の日付を進める操作）
 
-なぜ分けるか:
-  利用者のコマンドが最も多く呼ぶのがここ（NEWAPP 2章の実測で wait が40回、
-  hold/holdEnd が12回、press が5回）。実行制御（start / do_safe / 停止）と
-  混ざっていると、操作の意味を知りたいだけでも実行制御まで読むことになる。
+操作と待ちは利用者の設定が最も多く呼ぶ部分である。実行制御
+（start / do_safe / 停止）と分けているのは、操作の意味を知りたいときに
+実行制御まで読まずに済むようにするためである。
 
 親クラス（PythonCommand）に依存するもの:
   ・属性     keys / alive / _stop_event / _resume_event
@@ -23,8 +20,7 @@
 
 互換:
   PythonCommandBase.py が OperateMixin を PythonCommand へ重ねるので、
-  press / hold / wait などの呼び出しは1文字も変わらない
-  （NEWAPP 2章の互換の要）。
+  press / hold / wait などの呼び出し方は変わらない。
 """
 from __future__ import annotations
 
@@ -37,12 +33,11 @@ from loguru import logger
 from Commands.Keys import Button, Direction
 
 
-# 停止要求を伝える例外。PythonCommandBase.py が定義していたものを
-#   こちらへ移した。checkIfAlive / _gate / _gateRelease が投げるので、
-#   操作側と一緒に置くのが自然。
-#   PythonCommandBase.py から re-import するので、
+# 停止要求を伝える例外。checkIfAlive / _gate / _gateRelease が投げるので、
+#   操作側と一緒に置いている。
+#   PythonCommandBase.py から再公開するので、
 #       from Commands.PythonCommandBase import StopThread
-#     と書いている既存コードはそのまま動く。
+#     と書いている既存の設定はそのまま使える。
 class StopThread(Exception):
     pass
 
@@ -64,11 +59,11 @@ class OperateMixin:
     # press button at duration times(s)
     def press(self, buttons: Any, duration: float = 0.1, wait: float = 0.1) -> None:
         self._gate()
-        # ★★★2026/08/30 段5-d: 短い押下だけ Pico に任せる（PICODSN 35章）。
-        #   mailbox は容量 1 で上書きするため、worker が見に来る前に押して
-        #   離すと押下が解放に上書きされて消える。★段5-a の実測では 4 ms が
-        #   20 回中 1 回しか線に出なかった。★★8 ms 以上は 20/20 で出る。
-        #   ★★★受理されなければ従来経路へ落ちるので、操作は消えない。
+        # 短い押下だけ Pico の時刻付きキューに任せる。
+        #   受け渡し場所は容量1で上書きされるため、作業側が見に来る前に押して
+        #   離すと押下が解放に上書きされて消えることがある。短すぎる押下は
+        #   線に出ないことがある。
+        #   受理されなければ従来経路で送るので、操作は消えない。
         if self._pressQueued(buttons, duration):
             self.wait(wait)
             self.checkIfAlive()
@@ -82,9 +77,9 @@ class OperateMixin:
     def _pressQueued(self, buttons: Any, duration: float) -> bool:
         """短い押下を Pico の時刻付きキューへ回す。回せたら True。
 
-        ★ここでは「回せたか」だけを返す。★★待ちと生存確認は呼び出し側が
+        ここでは「回せたか」だけを返す。待ちと生存確認は呼び出し側が
         従来どおり行うので、成功しても失敗しても press の見た目は変わらない。
-        ★★★Leonardo（legacy）では shouldQueue が False を返すため、
+        Leonardo（legacy）では shouldQueue が False を返すため、
         この関数は必ず False になり、従来の経路がそのまま通る。
         """
         keys = getattr(self, "keys", None)
@@ -94,19 +89,19 @@ class OperateMixin:
         decide = getattr(ser, "shouldQueue", None)
         run = getattr(ser, "runQueued", None)
         if not callable(decide) or not callable(run):
-            return False        # 段5-d 以前の Sender でもそのまま動く
+            return False        # 古い Sender でもそのまま動く
         try:
             if not decide(duration):
                 return False
-            # ★★★2026/08/30 修正: keys.input を呼ばない。
-            #   ★keys.input は mailbox へも申告するので、worker が
-            #     S 行を送ってしまう。★★つまり Q 行と S 行の両方で
-            #     押すことになり、消えうる経路も同時に通っていた。
-            #   ★★★buttons を runQueued へ直接渡す。姿勢の土台は
+            # keys.input は呼ばない。
+            #   keys.input は受け渡し場所へも申告するので、作業側が
+            #     S 行を送ってしまう。つまり Q 行と S 行の両方で
+            #     押すことになり、二重に送っていた。
+            #   buttons を runQueued へ直接渡す。姿勢の土台は
             #     Sender が snapshot で持つので hold も維持される。
             return bool(run(duration, buttons=buttons))
         except Exception:
-            # ★理由は問わない。従来経路へ落とすのが最も安全である。
+            # 理由は問わず、従来経路へ落とすのが最も安全である。
             return False
 
     # press button at duration times(s) repeatedly
@@ -152,22 +147,21 @@ class OperateMixin:
     def _precise_sleep(self, wait: float) -> None:
         """指定時間だけ待つ。停止要求が来たら待ち切らずに戻る。
 
-        旧実装は末尾を _SPIN_MARGIN だけビジースピンして精度を
-        確保していた。press() の既定が duration=0.1 / wait=0.1 の
-        ため1操作あたり2回通り、実行中ずっと CPU を焼いていた。
+        末尾を少しだけ忙しく回して精度を確保する作りにはしていない。
+        press() の既定が duration=0.1 / wait=0.1 のため1操作あたり2回通り、
+        実行中ずっと CPU を使うことになるためである。
 
-        さらに一時停止ぶんの補正もこのスピンで消化していたため、
-        止めた秒数だけ Resume 直後に1コアが張り付き、GIL を握って
-        映像描画(33ms)とログ描画(200ms)まで巻き添えにしていた。
-        PCB-11 でスピンを廃止し、待ちは _wait_or_stop へ一本化した。
+        さらに一時停止ぶんの補正もその回転で消化すると、止めた秒数だけ
+        再開直後に1コアが張り付き、映像描画(33ms)とログ描画(200ms)まで
+        巻き添えにする。待ちは _wait_or_stop へ一本化している。
 
-        停止要求は _wait_or_stop が _TICK 刻みで拾う。以前は待機中に
-        停止を見ておらず、wait(10) の最中に Stop を押しても最大10秒
-        止まらなかった。
+        停止要求は _wait_or_stop が _TICK 刻みで拾う。待機中に
+        停止を見ない作りでは、wait(10) の最中に Stop を押しても最大10秒
+        止まらなかったためである。
         """
         # 待ちの本体。停止・一時停止は _wait_or_stop が拾う。
-        # 末尾のスピンは PCB-11 で廃止した（補正ぶんを1コア全開で
-        # 消化し、Resume 直後に映像とログの描画を引きずっていた）。
+        # 末尾を忙しく回す作りはやめている（補正ぶんを1コア全開で
+        # 消化し、再開直後に映像とログの描画を引きずっていたため）。
         self._wait_or_stop(wait)
 
     def _wait_or_stop(self, timeout: float) -> bool:

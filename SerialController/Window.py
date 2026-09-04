@@ -90,7 +90,7 @@ class PokeControllerApp:
                  transport: str = "") -> None:
         """profile を渡すと設定・共有メモリを分けて並列起動できる。
 
-        2026/08/25 段 VI-b: transport は通信方式のプリセット名。
+        transport は通信方式のプリセット名。
           起動引数（--transport）から渡す。空なら settings.ini の
           [Transport] name を使う。引数のほうが強い（その場かぎりで
           試したいときに、設定を書き換えずに済ませるため）。
@@ -150,8 +150,8 @@ class PokeControllerApp:
         self.ser: Sender.Sender | None = None
         # いま使っている通信方式の名前（画面表示と保存に使う）
         self.transport_name = tk.StringVar()
-        # 2026/08/29 段4-c: 入力調停の設定（画面表示と保存に使う）。
-        #   実体は Sender が持つ。ここは画面の選択値だけを持つ。
+        # 入力の優先付けの設定（画面表示と保存に使う）。
+        #   実体は送信側が持つ。ここは画面の選択値だけを持つ。
         self.arbitration_mode = tk.StringVar()
         self.preview: CaptureArea | None = None
         self.cur_command: Any = None
@@ -376,8 +376,8 @@ class PokeControllerApp:
             column="7", columnspan="2", padx="5", row="0", sticky="ew"
         )
 
-        # 2026/08/25 段 VI-b: 通信方式（Transport）の選択。
-        #   候補は Transport.py の登録簿から引く。ここに名前を
+        # 通信方式の選択。
+        #   候補は通信方式の一覧から引く。ここに名前を
         #     書き並べない（実装を足したのに画面に出ない、を防ぐ）。
         self.transport_label = ttk.Label(self.serial_lf)
         self.transport_label.config(text="Transport: ")
@@ -392,7 +392,7 @@ class PokeControllerApp:
             "<<ComboboxSelected>>", self.applyTransport, add=""
         )
 
-        # 2026/08/29 段4-c: 入力調停の選択。候補は Sender の許可値から
+        # 入力の優先付けの選択。候補は送信側の許可値から
         #   引く（画面に名前を書き並べない）。既定の off は本家と同じ
         #   挙動で、script を選ぶと実行中の手操作を断る。
         self.arbitration_label = ttk.Label(self.serial_lf)
@@ -696,7 +696,7 @@ class PokeControllerApp:
         # 入力ログの表示。settings.ini の [Input Log] enabled と対にする
         self.show_input_log.set(self.settings.input_log_enabled.get())
 
-        # 段 VI-b: 通信方式の候補と現在値。利用者定義のプラグインは
+        # 通信方式の候補と現在値。利用者定義のプラグインは
         #   候補を組む前に読み込む（読み込み後でないと一覧に出ない）。
         self._loadTransportPlugins()
         self._refreshTransportChoices()
@@ -743,7 +743,7 @@ class PokeControllerApp:
             self.Camera_Name.config(state="disable")
             # 旧コードはここで __init__ ごと return していたためカメラもシリアルも
             # 初期化されず起動不能だった。カメラ ID を手入力すれば使えるので続行する。
-            # ただし手入力を適用する口が無く、打っても反映されなかった（WIN-14）。
+            # ただし手入力を適用する口が無く、打っても反映されなかった。
             # Enter とフォーカス移動で適用する。打鍵ごとに適用すると、
             # 「12」と打ちたいのに「1」の時点で開きに行ってしまう。
             self._bindCameraEntry()
@@ -776,7 +776,7 @@ class PokeControllerApp:
         カメラ名の一覧を出せない環境（Linux / 未知の OS）では、ID を
         直接打つ以外に選ぶ手段が無い。Entry は state="normal" のままで
         打てるが、適用する契機がどこにも無かったため打っても何も
-        起きなかった（WIN-14）。
+        起きなかった。
 
         適用の契機は Enter とフォーカス移動にする。打鍵ごとに開きに
         行くと、「12」と打ちたいのに「1」の時点で別のカメラを掴む。
@@ -1230,11 +1230,11 @@ class PokeControllerApp:
             logger.warning(message)
 
     # ------------------------------------------------------------------
-    # 通信方式（Transport）のプリセット  2026/08/25 段 VI-b
+    # 通信方式のプリセット
     # ------------------------------------------------------------------
-    # 段 VI で「差し替えられる」形は作ったが、選ぶ手段が無かった。
+    # 運び方を差し替えられる形は作ったが、選ぶ手段が無かった。
     #   ここで設定・起動引数・画面の3つから名前で選べるようにする。
-    #   本体は実装を知らない。名前を登録簿へ渡すだけ（PORTBACK 2章）。
+    #   本体は実装を知らない。名前を登録簿へ渡すだけ。
 
     def _selectedTransportName(self) -> str:
         """これから使う通信方式の名前を決める。
@@ -1298,7 +1298,7 @@ class PokeControllerApp:
         self.activateSerial()
         self._on_setting_changed()
 
-    # 入力調停（誰の操作を優先するか）  2026/08/29 段4-c
+    # 入力の優先付け（誰の操作を優先するか）
     #   既定は off で本家と同じ挙動。画面から選び直せる。
 
     def _refreshArbitrationChoices(self) -> None:
@@ -1345,7 +1345,7 @@ class PokeControllerApp:
     def _start_serial(self) -> None:
         # 入力ログは print と混ぜず、専用のキューへ流す。同じ経路だと
         # 入力ログが上限を食い尽くしてコマンドの出力が捨てられる。
-        # 段 VI-b: 運び方は登録簿から名前で作る。作れなければ
+        # 運び方は登録簿から名前で作る。作れなければ
         #   Transport 側が理由を出して既定へ戻すので None にはならない。
         self.ser = Sender.Sender(
             self.is_show_serial,
@@ -1354,7 +1354,7 @@ class PokeControllerApp:
                 self._selectedTransportName(), logger=logger
             ),
         )
-        # 段4-c: 設定の入力調停を反映する。Sender を作り直しても
+        # 設定の入力の優先付けを反映する。送信側を作り直しても
         #   画面の選択が効いたままになるよう、生成のたびに適用する。
         self.ser.setArbitration(mode=self.arbitration_mode.get(),
                                 cooldown=self._arbitrationCooldown())
@@ -1398,8 +1398,8 @@ class PokeControllerApp:
             message = f"COM Port {self.com_port_name.get()} connected successfully"
             print(message)
             logger.debug(message)
-            # 2026/08/25 段 V-b: この KeyPress はキーボード操作専用。
-            #   入力調停で「人の手入力」として扱われるよう名札を付ける。
+            # この KeyPress はキーボード操作専用。
+            #   入力の優先付けで「人の手入力」として扱われるよう名札を付ける。
             self.keyPress = KeyPress(self.ser, source="keyboard")
             # 新しい KeyPress で作り直す。開けたときだけ戻すので、
             # 失敗時にチェックが入ったまま実体が無い状態にはならない。
@@ -1905,12 +1905,12 @@ class PokeControllerApp:
         # ダイアログを GUI スレッドで作らせるための足がかり。
         # PythonCommandBase._guiRoot がここを最初に見る。
         # McuCommand はダイアログを出さないので渡す意味が無く、
-        # 無用な属性を生やさないよう対象を絞る（WIN-09）。
+        # 無用な属性を生やさないよう対象を絞る。
         if isinstance(command, PythonCommandBase.PythonCommand):
             # 代入できないコマンド（__slots__ や __setattr__ を持つもの）が
             # あるため握る。ここは初期化の失敗として扱ってはいけない。
             # 失敗を致命扱いにすると __slots__ のコマンドが選べなくなり、
-            # 2026/08/13 に直した後方互換の破壊を再発させる。
+            # 以前に直した後方互換の破壊を再発させる。
             # 渡せなくても従来どおり動く（ダイアログが呼び出し元の
             # スレッドで作られるだけで、これは以前と同じ）。
             try:
@@ -1925,7 +1925,7 @@ class PokeControllerApp:
         # 設定はここでは渡さない。以前は command.settings = self.settings と
         # 参照ごと渡していたが、それでは reload_com_port が tk 変数の get()
         # をワーカースレッドから呼ぶことになり、Tcl を別スレッドで触る形に
-        # なっていた（PCB-20 案C）。COM の設定は Start の直前に GUI スレッド
+        # なっていた。COM の設定は Start の直前に GUI スレッド
         # で _snapshotSerialConfig() が通常の Python 値へ写す。生成から Start
         # までに COM ポートを選び直される可能性があるため、渡す時点は生成時
         # ではなく Start 直前でなければならない。
@@ -2463,7 +2463,7 @@ class PokeControllerApp:
         # （LStick / RStick Mouse）は self.ser へ書くため、シリアルを
         # 閉じる前に「送る側」を止めておく。Unbind だけでは capture()
         # の周回自体は生き続け、閉じた口を持ったまま回ることになる。
-        # 逆順にすると「閉じた先へ書きに行く」経路が残る（WIN-06）。
+        # 逆順にすると「閉じた先へ書きに行く」経路が残る。
         if self.preview is not None:
             try:
                 self.preview.UnbindLeftClick()
@@ -2531,7 +2531,7 @@ class PokeControllerApp:
         self.settings.camera_id.set(self._cameraIdOrNone() or 0)
         self.settings.camera_key.set(self.camera_key.get())
         self.settings.input_log_enabled.set(self.show_input_log.get())
-        # 段 VI-b: 通信方式。起動引数で一時的に替えている場合も、
+        # 通信方式。起動引数で一時的に替えている場合も、
         #   画面に出ている値＝実際に使っている値なのでそのまま保存する。
         self.settings.transport_name.set(self.transport_name.get())
         self.settings.save()
