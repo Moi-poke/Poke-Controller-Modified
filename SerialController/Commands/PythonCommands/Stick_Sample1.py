@@ -7,7 +7,7 @@ from Commands.PythonCommandBase import PythonCommand
 
 # スティックの動作サンプルコード
 class StickSample1(PythonCommand):
-    NAME = 'スティック1'
+    NAME = "スティック1"
 
     def __init__(self):
         super().__init__()
@@ -30,7 +30,7 @@ class StickSample1(PythonCommand):
             angle = 0
             i = 0
             while True:
-                '''
+                """
                 ここには動作サンプルコードを書く。スティック補正画面で挙動確認ができる。
                 全体を通して極座標で考えていく。（角度と大きさで曲線をあらわす)
                 
@@ -42,10 +42,16 @@ class StickSample1(PythonCommand):
                 以下はr=0.5でangleを増加させながらstickを動かすコード
                 50%位置をスティックが円形に移動する
                 stickEnd()を行わないとスティックが入力されっぱなしになるので注意
-                '''
+                """
 
                 r = 0.5
-                self.stick(Direction(Stick.LEFT, angle, r, showName=f'Angle={angle},r={r}'), duration=0.0, wait=0.0)
+                self.stick(
+                    Direction(Stick.LEFT, angle, r, showName=f"Angle={angle},r={r}"),
+                    duration=0.002,
+                    wait=0.002,
+                )
                 angle += 5
                 i += 1
-            self.stickEnd(Direction(Stick.LEFT, i, i / 360, showName=f'Angle={angle},r={r}'))
+            self.stickEnd(
+                Direction(Stick.LEFT, i, i / 360, showName=f"Angle={angle},r={r}")
+            )

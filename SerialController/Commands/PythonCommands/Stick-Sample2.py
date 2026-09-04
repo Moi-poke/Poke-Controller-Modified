@@ -9,7 +9,7 @@ from Commands.PythonCommandBase import PythonCommand
 
 # スティックの動作サンプルコード
 class StickSample2(PythonCommand):
-    NAME = 'スティック2'
+    NAME = "スティック2"
 
     def __init__(self):
         super().__init__()
@@ -43,19 +43,39 @@ class StickSample2(PythonCommand):
             while True:
                 angle_ = np.deg2rad(sin[(angle % 360)])
                 if 0 <= angle_ < np.pi / 4 or np.pi * 7 / 4 <= angle_ < 2 * np.pi:
-                    r = np.sqrt(1 / 2 + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 0 / 2 - angle_))) ** 2)
+                    r = np.sqrt(
+                        1 / 2
+                        + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 0 / 2 - angle_)))
+                        ** 2
+                    )
                 elif np.pi * 1 / 4 <= angle_ < np.pi * 3 / 4:
-                    r = np.sqrt(1 / 2 + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 1 / 2 - angle_))) ** 2)
+                    r = np.sqrt(
+                        1 / 2
+                        + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 1 / 2 - angle_)))
+                        ** 2
+                    )
                 elif np.pi * 3 / 4 <= angle_ < np.pi * 5 / 4:
-                    r = np.sqrt(1 / 2 + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 2 / 2 - angle_))) ** 2)
+                    r = np.sqrt(
+                        1 / 2
+                        + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 2 / 2 - angle_)))
+                        ** 2
+                    )
                 elif np.pi * 5 / 4 <= angle_ < np.pi * 7 / 4:
-                    r = np.sqrt(1 / 2 + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 3 / 2 - angle_))) ** 2)
+                    r = np.sqrt(
+                        1 / 2
+                        + ((1 / np.sqrt(2)) * np.tan(np.abs(np.pi * 3 / 2 - angle_)))
+                        ** 2
+                    )
 
-                self.stick(Direction(Stick.LEFT, sin[(angle % 360)] + 45, r, showName='UP'), duration=0.00, wait=0.0)
+                self.stick(
+                    Direction(Stick.LEFT, sin[(angle % 360)] + 45, r, showName="UP"),
+                    duration=0.01,
+                    wait=0.0,
+                )
                 angle += 5
                 i += 1
             self.wait(1.0)
-            self.stickEnd(Direction(Stick.LEFT, i, i / 360, showName='UP'))
+            self.stickEnd(Direction(Stick.LEFT, i, i / 360, showName="UP"))
             self.press(Direction.DOWN, wait=0.5)
             self.wait(0.5)
             self.press(Button.A)
