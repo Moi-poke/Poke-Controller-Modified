@@ -26,6 +26,7 @@ class WakeSetup:
         self._queue: queue.Queue = queue.Queue()
         self._busy = False
         self._stop = False
+        self._closed = False
 
         self.window = tk.Toplevel(master)
         self.window.title("Switch2 Wake設定")
@@ -72,8 +73,16 @@ class WakeSetup:
     # -- 画面まわり ------------------------------------------------------
 
     def close(self) -> None:
+        """窓を閉じる。二重に呼ばれても安全にする。"""
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
         self._stop = True
-        self.window.destroy()
+        try:
+            if self.window.winfo_exists():
+                self.window.destroy()
+        except Exception:
+            pass
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy

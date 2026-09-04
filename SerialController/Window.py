@@ -40,7 +40,7 @@ from Camera import Camera
 from CommandLoader import CommandLoader
 from Commands import McuCommandBase, PythonCommandBase, Sender, Transport
 from Commands.Keys import KeyPress
-from GuiAssets import CaptureArea, ControllerGUI
+from GuiAssets import CaptureArea, CaptureAreaProxy, ControllerGUI
 from Keyboard import SwitchKeyboardController
 import CommandTags
 import CommandStats
@@ -1884,8 +1884,14 @@ class PokeControllerApp:
                 # 旧: except TypeError で握っていたため、コマンド内部で起きた
                 # TypeError まで「古い形式」と誤判定し引数1つで再生成していた。
                 # シグネチャを見て渡せる引数の数を先に決める。
+                # preview は代理越しに渡す。ワーカーから Canvas を直接触ると
+                # Tk のスレッド制約に触れるため、描画系は GUI スレッドへ
+                # 回す（CaptureAreaProxy）。
+                gui = self.preview
+                if gui is not None:
+                    gui = CaptureAreaProxy(self.root, gui)
                 if WindowUtils.acceptsGuiArg(cmd_class):
-                    command = cmd_class(self.camera, self.preview)
+                    command = cmd_class(self.camera, gui)
                 else:
                     command = cmd_class(self.camera)
             else:
@@ -2123,11 +2129,28 @@ class PokeControllerApp:
         """
         if self.cur_command is None:
             return
+        if self._command_state != "running":
+            # 停止の最中・空きの Stop は受け付けない。二重に end() を
+            # 呼ぶ意味が無い（Esc 側は既にこの条件で弾いている）。
+            return
         message = f"Stop {self.cur_command.NAME}"
         print(message)
         logger.info(message)
         self._command_state = "stopping"
         self.startButton["state"] = "disabled"
+        # 一時停止のまま止めると、退避と「人へ渡した」印が残る。止める
+        # 前に戻す。resume は停止中でなければ何もしない。渡しっぱなし
+        # のまま次を実行すると、調停が効かない（handed_over 残留）。
+        resume = getattr(self.cur_command, "resume", None)
+        if callable(resume):
+            try:
+                resume()
+            except Exception:
+                logger.error(traceback.format_exc())
+        if self._paused:
+            self._paused = False
+            self.pauseButton["text"] = "Pause"
+            self._update_title()
         try:
             self.cur_command.end(self.ser)
         except Exception:
@@ -2348,15 +2371,20 @@ class PokeControllerApp:
         いつ抜けるか読めず、待つと画面が固まったように見える。
         スレッドは daemon なので、抜けきらなくてもプロセスは終わる。
         ここでの目的は、閉じたシリアルへ書きに行くのを減らすこと。
+
+        戻り値は「止まりきったか」。止まらなかった場合は呼び出し側
+        （exit）で live の送出を止め、閉じた線への書き込みを減らす。
+        残りの書き込み自体は無害（Transport._write が閉じた線への
+        書き込みを例外として握り、live worker も送出失敗を数えるだけ）。
         """
         cmd = self.cur_command
         if cmd is None:
-            return
+            return True
 
         thread = getattr(cmd, "thread", None)
         running = thread is not None and thread.is_alive()
         if not running and not getattr(cmd, "alive", False):
-            return
+            return True
 
         if getattr(cmd, "alive", False):
             try:
@@ -2371,6 +2399,17 @@ class PokeControllerApp:
             if thread.is_alive():
                 print("コマンドが停止しないまま終了します")
                 logger.warning("Command did not stop in time. exiting anyway")
+                # 生き残りが閉じたシリアルへ書き続けないよう、live の
+                # 送出だけはここで止める。スレッド自体は daemon なので
+                # プロセス終了と共に終わる。
+                try:
+                    if self.ser is not None:
+                        self.ser.discardLive()
+                        self.ser.stopLiveWorker(0.5)
+                except Exception as e:
+                    logger.warning(f"live worker の停止で例外: {e}")
+                return False
+        return True
 
     def exit(self) -> None:
         """終了処理。入口が複数あるので、二重に走らせない。
@@ -2409,6 +2448,13 @@ class PokeControllerApp:
         self._display_after_id = None
         self._sash_after_id = None
         self._watch_after_id = None
+        # 子窓（Wake設定・キーコンフィグ等）を先に閉じる。開きっぱなしの
+        # まま destroy へ進むと、after 予約が破棄途中の窓を触る。
+        try:
+            if self.menu is not None:
+                self.menu.closeAll()
+        except Exception as e:
+            logger.warning(f"子窓を閉じるときに例外: {e}")
         self._stopRunningCommand()
 
         self._stopKeyboard()
@@ -2433,9 +2479,18 @@ class PokeControllerApp:
             self.ser.closeSerial()
             print("Serial disconnected")
 
-        # ウィンドウを壊す前に位置とサイズを控える（destroy 後は取れない）
+        # ウィンドウを壊す前に位置とサイズを控える（destroy 後は取れない）。
+        # 仕切り位置もここで控える。drag 解放時には書いているが、最後に
+        # 動かしたまま閉じた場合に備える。保存の失敗で終了を止めない。
+        try:
+            WindowGeometry.rememberSash(self.log_pane, self.settings)
+        except Exception as e:
+            logger.warning(f"仕切り位置の保存に失敗しました: {e}")
         self._remember_geometry()
-        self._save_settings()
+        try:
+            self._save_settings()
+        except Exception as e:
+            logger.warning(f"終了時の設定保存に失敗しました: {e}")
         # 使用履歴も同じ場所で書き出す。実行のたびに書きに行かない代わり、
         # ここを通らないと記録が残らないので、設定の保存と並べておく。
         if self._stats_dirty:

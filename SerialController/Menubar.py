@@ -94,11 +94,24 @@ class PokeController_Menubar(tk.Menu):
             label="Discord通知の設定",
         )
 
+    @staticmethod
+    def _alive(window: Any) -> bool:
+        """ウィンドウが生きているか。破棄済み参照の再利用を防ぐ。
+
+        画面側が destroy されても参照は残るため、「None か」だけでは
+        足りない。OpenInputLogConfig と同じ判定を他でも使う。
+        """
+        try:
+            return window is not None and bool(window.winfo_exists())
+        except Exception:
+            return False
+
     def OpenPokeHomeCoop(self) -> None:
         logger.debug("Open Pokemon home cooperate window")
-        if self.poke_treeview is not None:
+        if self._alive(self.poke_treeview):
             self.poke_treeview.focus_force()
             return
+        self.poke_treeview = None
 
         window2 = GetFromHomeGUI(
             self.root, self.settings.season, self.settings.is_SingleBattle
@@ -108,8 +121,12 @@ class PokeController_Menubar(tk.Menu):
 
     def closingGetFromHome(self) -> None:
         logger.debug("Close Pokemon home cooperate window")
-        self.poke_treeview.destroy()
-        self.poke_treeview: Optional[Any] = None
+        if self.poke_treeview is not None:
+            try:
+                self.poke_treeview.destroy()
+            except Exception:
+                pass
+            self.poke_treeview: Optional[Any] = None
 
     def LineTokenSetting(self) -> None:
         try:
@@ -125,9 +142,10 @@ class PokeController_Menubar(tk.Menu):
 
     def OpenKeyConfig(self) -> None:
         logger.debug("Open KeyConfig window")
-        if self.key_config is not None:
+        if self._alive(self.key_config):
             self.key_config.focus_force()
             return
+        self.key_config = None
 
         kc_window = PokeKeycon(self.root)
         kc_window.protocol("WM_DELETE_WINDOW", self.closingKeyConfig)
@@ -135,17 +153,19 @@ class PokeController_Menubar(tk.Menu):
 
     def closingKeyConfig(self) -> None:
         logger.debug("Close KeyConfig window")
-        self.key_config.destroy()
-        self.key_config: Optional[PokeKeycon] = None
+        if self.key_config is not None:
+            try:
+                self.key_config.destroy()
+            except Exception:
+                pass
+            self.key_config: Optional[PokeKeycon] = None
 
     def OpenWakeSetup(self) -> None:
         logger.debug("Open WakeSetup window")
-        if self.wake_setup is not None:
-            try:
-                self.wake_setup.window.focus_force()
-                return
-            except Exception:
-                self.wake_setup = None
+        if self._alive(getattr(self.wake_setup, "window", None)):
+            self.wake_setup.window.focus_force()
+            return
+        self.wake_setup = None
         self.wake_setup = WakeSetup(self.root, self.ser)
         self.wake_setup.window.protocol(
             "WM_DELETE_WINDOW", self.closingWakeSetup)
@@ -153,8 +173,34 @@ class PokeController_Menubar(tk.Menu):
     def closingWakeSetup(self) -> None:
         logger.debug("Close WakeSetup window")
         if self.wake_setup is not None:
-            self.wake_setup.close()
+            try:
+                self.wake_setup.close()
+            except Exception:
+                pass
             self.wake_setup: Optional[WakeSetup] = None
+
+    def closeAll(self) -> None:
+        """子窓をすべて閉じる。終了処理から呼ぶ。
+
+        開きっぱなしのまま root.destroy() へ進むと、破棄途中の
+        ウィジェットを after 予約が触って TclError になる。
+        """
+        for name in ("wake_setup", "key_config", "poke_treeview",
+                     "input_log_config"):
+            window = getattr(self, name, None)
+            if window is None:
+                continue
+            try:
+                close = getattr(window, "close", None)
+                if callable(close):
+                    close()
+                    continue
+                if self._alive(window):
+                    window.destroy()
+            except Exception:
+                pass
+            finally:
+                setattr(self, name, None)
 
     def OpenInputLogConfig(self) -> None:
         """入力ログの書式を決める画面を開く。

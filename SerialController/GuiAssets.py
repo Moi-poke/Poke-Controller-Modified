@@ -16,6 +16,7 @@ import os
 import re
 import time
 import tkinter as tk
+import traceback
 from collections import deque
 from tkinter.scrolledtext import ScrolledText
 from typing import Any
@@ -54,6 +55,65 @@ STICK_SEND_MAG_STEP = 0.25   # これ以上倒し量が変われば間隔を無�
 MOTION_MIN_INTERVAL = 0.008
 IDLE_INTERVAL_MS = 200       # 映像を表示しないあいだの描画ループ周期(ms)
 LOG_DIR = "log"
+
+
+class CaptureAreaProxy:
+    """ワーカーから安全に呼べる CaptureArea の代理。
+
+    tkinter はスレッドセーフでない。コマンドのワーカースレッドから
+    Canvas（create_rectangle / coords / itemconfig / after）を直接
+    呼ぶと、描画の競合や終了時の TclError になる。描画系だけは
+    GUI スレッドへ after(0) で渡し、戻り値は待たない（非同期）。
+
+    描画以外はそのまま委譲する（従来と同じ。新規に Tk を触る呼び出し
+    を足すときは、ここへ marshaled 版を足すこと）。実物が要る場合
+    （tk.Toplevel の親など）は .widget で取り出す。あくまで非常口で
+    あり、取り出した先の操作は呼び出し側の責任になる。
+    """
+
+    def __init__(self, root: Any, target: Any) -> None:
+        self._proxy_root = root
+        self._proxy_target = target
+
+    @property
+    def widget(self) -> Any:
+        """裏の実物。Tk を直接触る用途の非常口（呼び出し側の責任）。"""
+        return self._proxy_target
+
+    def _marshal(self, name: str, *args: Any, **kwargs: Any) -> None:
+        target = self._proxy_target
+        root = self._proxy_root
+        if target is None or root is None:
+            return
+        try:
+            root.after(0, lambda: self._call_guarded(target, name,
+                                                     args, kwargs))
+        except Exception:
+            # 終了後など after 自体が積めないときは捨てる。枠表示は
+            # 無くても操作に影響しない。
+            pass
+
+    @staticmethod
+    def _call_guarded(target: Any, name: str, args: Any,
+                      kwargs: Any) -> None:
+        try:
+            getattr(target, name)(*args, **kwargs)
+        except Exception:
+            logger.debug(f"CaptureAreaProxy.{name} failed: "
+                         f"{traceback.format_exc()}")
+
+    def ImgRect(self, *args: Any, **kwargs: Any) -> None:
+        """枠の描画を GUI スレッドへ回す（非同期・戻り値なし）。"""
+        self._marshal("ImgRect", *args, **kwargs)
+
+    def deleteImageRect(self, *args: Any, **kwargs: Any) -> None:
+        """枠の消去を GUI スレッドへ回す（非同期・戻り値なし）。"""
+        self._marshal("deleteImageRect", *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith(("_proxy_", "widget")):
+            raise AttributeError(name)
+        return getattr(self.__dict__["_proxy_target"], name)
 
 
 class _StickRecorder:
@@ -238,12 +298,22 @@ class CaptureArea(tk.Canvas):
         """描画ループを止める。camera.destroy() より先に必ず呼ぶ。
 
         止めずに破棄すると、解放済みのカメラ/共有メモリへ readFrame() が
-        走ってクラッシュする。
+        走ってクラッシュする。枠消去の予約（_rect_after_id）もここで
+        消す。残すと destroy の最中に発火し、破棄途中の Canvas を触って
+        TclError になる。
         """
         self._capturing = False
-        if self._after_id is not None:
-            self.after_cancel(self._after_id)
-            self._after_id = None
+        for name in ("_after_id", "_rect_after_id", "_select_after_id"):
+            after_id = getattr(self, name, None)
+            if after_id is None:
+                continue
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                # 破棄途中の after_cancel は TclError になることがある。
+                # 止めることが目的なので、例外は握って進む。
+                pass
+            setattr(self, name, None)
 
     def capture(self) -> None:
         """1フレーム描画し、次回を予約する。例外が出ても止まらないようにする。
@@ -461,7 +531,18 @@ class CaptureArea(tk.Canvas):
         )
 
         # after には呼び出し可能オブジェクトを渡す（直接呼ぶと即時実行になる）
-        self.after(250, lambda: self.delete("SelectArea"))
+        # 予約 ID は控えておく。終了時に残っていると破棄途中の Canvas を
+        # 触るため、stopCapture で取り消す。
+        try:
+            if getattr(self, "_select_after_id", None) is not None:
+                self.after_cancel(self._select_after_id)
+        except Exception:
+            pass
+        try:
+            self._select_after_id = self.after(
+                250, lambda: self.delete("SelectArea"))
+        except Exception:
+            self._select_after_id = None
 
         if self.master.is_use_left_stick_mouse.get():
             self.BindLeftClick()
@@ -549,6 +630,10 @@ class CaptureArea(tk.Canvas):
         #   setStick / sendPosture は「誰の操作か」を Sender へ伝えるので、
         #   入力調停を有効にしたとき、マウス操作を人の手入力として
         #   優先できる。applyStick を直接呼ぶと調停を素通りしていた。
+        #   なお setStick 自体は常時受理する（連続値に所有権は無い）。
+        #   legacy 経路の sendPosture は調停に従い、棄却時は送らない。
+        #   live 経路では applyStick が mailbox へ直行しているため、
+        #   値は届く（sendPosture は live では何もしない）。
         set_stick = getattr(self.ser, "setStick", None)
         send_posture = getattr(self.ser, "sendPosture", None)
         if callable(set_stick) and callable(send_posture):
@@ -556,6 +641,11 @@ class CaptureArea(tk.Canvas):
                 send_posture(source="mouse")
             return
 
+        # 退避1・退避2: いずれも古い Sender 用であり、現行の Sender では
+        # 通らない。調停が無い版なので迂回のしようが無く、挙動は従来どおり。
+        # 特に退避2の生の行（btn=3 固定）は、現行では絶対に送らないこと。
+        # SER-06 / SER-07 の上書きが再発するため。退避が必要な相手にだけ
+        # 残してある。
         # 退避1: 段 IV より前の Sender（姿勢はあるが調停の口が無い）
         apply_stick = getattr(self.ser, "applyStick", None)
         build_row = getattr(self.ser, "_buildRow", None)
@@ -1116,16 +1206,20 @@ class ControllerGUI:
 
         同じボタンの ButtonPress が続けて来ても送信は1回で済む。
           イベントの取りこぼしや連打に強くするための保持。
+        申告が受理されてから保持と点灯を行う。調停で棄却されたのに
+          点灯すると「押しているのに効かない」表示になる。棄却時は
+          Sender の通知が出るので、ここでは黙って何もしない。
         """
         if name in self._held_btn:
             return
         btn = getattr(Button, name, None)
         if btn is None:
             return
+        if not self.ser.pressButtons([int(btn)], source="gui"):
+            return
         self._held_btn[name] = btn
         self._setActive(name, True)
-        if self.ser.pressButtons([int(btn)], source="gui"):
-            self.ser.sendPosture(source="gui")
+        self.ser.sendPosture(source="gui")
 
     def _releaseButton(self, name: str) -> None:
         """押していたものだけ解放する（二重解放を無視）。"""
@@ -1137,38 +1231,51 @@ class ControllerGUI:
             self.ser.sendPosture(source="gui")
 
     def _pressHat(self, name: str) -> None:
-        """十字キーを押す。斜めのボタンは2方向を同時に押したものとして扱う。"""
+        """十字キーを押す。斜めのボタンは2方向を同時に押したものとして扱う。
+
+        申告が受理されてから保持と点灯を行う（_pressButton と同じ理由）。
+        """
         dirs = self.HAT_NAME2DIRS.get(name, ())
         if self._held_hat.issuperset(dirs):
             return
+        if not self._announceHat(self._held_hat | set(dirs)):
+            return
         self._held_hat.update(dirs)
         self._setActive(name, True)
-        self._applyHat()
 
     def _releaseHat(self, name: str) -> None:
-        """十字キーを離す。"""
+        """十字キーを離す。解放は拒否されないため、常に反映する。"""
         dirs = self.HAT_NAME2DIRS.get(name, ())
         if not self._held_hat.intersection(dirs):
             return
         self._held_hat.difference_update(dirs)
         self._setActive(name, False)
-        self._applyHat()
+        self._announceHat(set(self._held_hat))
 
     def _hatValue(self) -> Any:
         """押している向きの集合から Hat の値を決める。
 
         Hat は「値」でありビット列ではない（MCU-13 / 段 I と同じ注意）。
           ボタンのように OR で足せないため、組み合わせを表から引く。
-        上下同時・左右同時のように打ち消し合う組み合わせや、3つ以上の
+          上下同時・左右同時のように打ち消し合う組み合わせや、3つ以上の
           同時押しは表に無い。その場合は中立へ倒す（実機の十字キーでも
           相反する方向は同時に入らない）。
         """
-        keys = tuple(sorted(d for d in self._held_hat if d in self.HAT_DIRS))
-        name = self.HAT_COMBO.get(keys, "CENTER")
+        return self._hatValueFor(self._held_hat)
+
+    @staticmethod
+    def _hatValueFor(held: Any) -> Any:
+        """向きの集合から Hat の値を決める（_hatValue の実体）。
+
+        受理前の仮の集合でも値を求められるよう、引数で受ける形に
+        分けた。受理されてから self._held_hat へ反映する。
+        """
+        keys = tuple(sorted(d for d in held if d in ControllerGUI.HAT_DIRS))
+        name = ControllerGUI.HAT_COMBO.get(keys, "CENTER")
         return getattr(Hat, name)
 
-    def _applyHat(self) -> None:
-        """現在の向きを申告して送る。
+    def _announceHat(self, held: Any) -> bool:
+        """向きの集合を申告して送る。受理したら True を返す。
 
         2026/08/25 段 V-d: 押している間は holdHat で「押しっぱなし」と
           して申告し、離すときは releaseHat で取り下げる。
@@ -1180,12 +1287,23 @@ class ControllerGUI:
         hold = getattr(self.ser, "holdHat", None)
         release = getattr(self.ser, "releaseHat", None)
         if callable(hold) and callable(release):
-            ok = (hold(int(self._hatValue()), source="gui")
-                  if self._held_hat else release(source="gui"))
+            if held:
+                ok = hold(int(self._hatValueFor(held)), source="gui")
+            else:
+                ok = release(source="gui")
         else:
-            ok = self.ser.setHat(int(self._hatValue()), source="gui")
+            ok = self.ser.setHat(int(self._hatValueFor(held)), source="gui")
         if ok:
             self.ser.sendPosture(source="gui")
+        return bool(ok)
+
+    def _applyHat(self) -> None:
+        """現在の向きを申告して送る（後方互換の入口）。
+
+        受理の成否は見ない。点灯と保持の整合が必要な新しい呼び出しは
+        _announceHat を直接使うこと。
+        """
+        self._announceHat(set(self._held_hat))
 
     def _setActive(self, name: str, on: bool) -> None:
         """押している間だけ色を変える（押しっぱなしが目で分かるように）。"""
