@@ -11,7 +11,7 @@
     pico-wakecon の O 行（ui.c handle_line）。旧 C と同書式で
     先頭1字を読み飛ばすため、O で送る。C は取込（秒数）のため、
     色を C で送ると取込が始まってしまう。書式は hid.c の
-    probe_parse_c_line と対（4つの16進 / 応答は color 行）。
+    probe_parse_color_line と対（4つの16進 / 応答は color 行）。
 """
 
 from Commands.PythonCommandBase import PythonCommand
@@ -134,7 +134,7 @@ class SetProconColor(PythonCommand):
             label = choice
 
         # 4つとも正しい形か確かめる。1つでも駄目なら1本も送らない。
-        #   Pico 側の probe_parse_c_line も同じ作りである。
+        #   Pico 側の probe_parse_color_line も同じ作りである。
         colors = []
         for name, value in zip(PART_NAMES, raw):
             fixed = normalize(value)
