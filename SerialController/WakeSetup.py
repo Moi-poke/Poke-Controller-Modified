@@ -181,7 +181,8 @@ class WakeSetup:
             transport = self._transport()
             if transport is None:
                 return
-            found = query(transport, "?", ("st ", "saved "), timeout=3.0)
+            found = query(transport, "?", ("st ", "saved ", "color "),
+                            timeout=3.0)
             if not found:
                 self._queue.put(("log", "応答がありません。"))
             for text in found:
