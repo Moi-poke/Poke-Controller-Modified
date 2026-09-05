@@ -52,7 +52,7 @@ from loguru import logger
 from pygubu.widgets.scrollbarhelper import ScrollbarHelper
 
 NAME = "Poke-Controller"
-VERSION = "v3.5.2 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
+VERSION = "v3.6.0 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
 
 
 # タイトルに出すコマンド名の上限。長い名前でウィンドウ名が埋まるのを防ぐ
