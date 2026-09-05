@@ -6,6 +6,15 @@
 
 ## 変更点
 
+### ver3.6.0
+主な変更点
+- 開発基盤の整備（`task` + ruff + mypy、型付け、コード整理）
+- GUI非依存部を `SerialController/core/` へ分離（既存の自作スクリプトはそのまま動きます）
+- LINE通知の削除（LINE Notify サービス終了のため。通知はDiscord連携へ）
+- Picoファーム（別repo pico-wakeCon）との通信対応
+- 複数台の並列起動に対応（ランチャー / `--profile`）
+- `requirements.txt` を廃止（uv管理に一本化）
+
 ### 2025/3/29 ver3.1.0公開
 主な変更点
 - uvを利用したパッケージ管理方式を採用
@@ -22,10 +31,16 @@ python 3.10以降であれば動くと思いますが、3.12.7以降推奨。
 
 Clone後、以下の流れで起動します
 ```cmd
-Poke-Controller-Modified-master\Poke-Controller-Modified-master> pip install uv
-Poke-Controller-Modified-master\Poke-Controller-Modified-master> uv sync
-Poke-Controller-Modified-master\Poke-Controller-Modified-master> .\.venv\Scripts\activate
-Poke-Controller-Modified-master\Poke-Controller-Modified-master> python .\SerialController\Window.py
+> pip install uv
+> uv sync
+> .\.venv\Scripts\activate
+> python .\SerialController\Window.py
+```
+
+複数台を並列で動かすときは、ランチャーを使うかプロファイルを指定します
+```cmd
+> python .\SerialController\launcher.py
+> python .\SerialController\Window.py --profile switch1
 ```
 
 ### ~ver3.0の追加・変更点
