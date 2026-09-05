@@ -9,10 +9,10 @@ class Fossil_shiny(ImageProcPythonCommand):
     def __init__(self, cam):
         super().__init__(cam)
 
-    '''
+    """
     head = {0 : "カセキのトリ", 1 : "カセキのサカナ"}
     body = {0 : "カセキのリュウ", 1 : "カセキのクビナガ"}
-    '''
+    """
 
     def fossil_loop(self, head=0, body=0):
         # start = time.time()
@@ -24,15 +24,19 @@ class Fossil_shiny(ImageProcPythonCommand):
                 self.press(Button.A, wait=0.75)
 
                 if head == 1:
-                    self.press(Direction.DOWN, duration=0.07, wait=0.75)  # select fossil
+                    self.press(
+                        Direction.DOWN, duration=0.07, wait=0.75
+                    )  # select fossil
                 self.press(Button.A, wait=0.75)  # determine fossil
 
                 if body == 1:
-                    self.press(Direction.DOWN, duration=0.07, wait=0.75)  # select fossil
+                    self.press(
+                        Direction.DOWN, duration=0.07, wait=0.75
+                    )  # select fossil
                 self.press(Button.A, wait=0.75)  # determine fossil
 
                 self.press(Button.A, wait=0.75)  # select "それでよければ"
-                while not self.isContainTemplate('Network_Offline.png', 0.8):
+                while not self.isContainTemplate("Network_Offline.png", 0.8):
                     self.press(Button.B, wait=0.5)
                 self.wait(1.0)
 
@@ -46,7 +50,7 @@ class Fossil_shiny(ImageProcPythonCommand):
             # tm = round(time.time() - start, 2)
             # print('Loop : {} in {} sec. Average: {} sec/loop'.format(i, tm, round(tm / i, 2)))
             if is_contain_shiny:
-                print('Shiny!')
+                print("Shiny!")
                 break
 
             self.press(Button.HOME, wait=2)  # EXIT Game
@@ -54,10 +58,10 @@ class Fossil_shiny(ImageProcPythonCommand):
             self.press(Button.A, wait=2.5)  # closed
             self.press(Button.A, wait=2.0)  # Choose game
             self.press(Button.A)  # User selection
-            while not self.isContainTemplate('OP.png', 0.7):  # recognize Opening
+            while not self.isContainTemplate("OP.png", 0.7):  # recognize Opening
                 self.wait(0.2)
             self.press(Button.A)  # load save-data
-            while not self.isContainTemplate('Network_Offline.png', 0.8):
+            while not self.isContainTemplate("Network_Offline.png", 0.8):
                 self.wait(0.5)
             self.wait(1.0)
             i += 1
@@ -68,10 +72,10 @@ class Fossil_shiny(ImageProcPythonCommand):
         for i in range(0, row):
             for j in range(0, col):
                 # if shiny, then stop
-                if self.isContainTemplate('shiny_mark.png', threshold=0.9):
+                if self.isContainTemplate("shiny_mark.png", threshold=0.9):
                     return True
                 # Maybe this threshold works for only Japanese version.
-                if self.isContainTemplate('status.png', threshold=0.7):
+                if self.isContainTemplate("status.png", threshold=0.7):
                     pass
                 if not j == col - 1:
                     if i % 2 == 0:
@@ -83,7 +87,7 @@ class Fossil_shiny(ImageProcPythonCommand):
 
 
 class Fossil_shiny_00(Fossil_shiny):  # パッチラゴン
-    NAME = 'カセキ色厳選(パッチラゴン)'
+    NAME = "カセキ色厳選(パッチラゴン)"
 
     def __init__(self, cam):
         super().__init__(cam)
@@ -93,7 +97,7 @@ class Fossil_shiny_00(Fossil_shiny):  # パッチラゴン
 
 
 class Fossil_shiny_01(Fossil_shiny):  # パッチルドン
-    NAME = 'カセキ色厳選(パッチルドン)'
+    NAME = "カセキ色厳選(パッチルドン)"
 
     def __init__(self, cam):
         super().__init__(cam)
@@ -103,7 +107,7 @@ class Fossil_shiny_01(Fossil_shiny):  # パッチルドン
 
 
 class Fossil_shiny_10(Fossil_shiny):  # ウオノラゴン
-    NAME = 'カセキ色厳選(ウオノラゴン)'
+    NAME = "カセキ色厳選(ウオノラゴン)"
 
     def __init__(self, cam):
         super().__init__(cam)
@@ -113,7 +117,7 @@ class Fossil_shiny_10(Fossil_shiny):  # ウオノラゴン
 
 
 class Fossil_shiny_11(Fossil_shiny):  # ウオチルドン
-    NAME = 'カセキ色厳選(ウオチルドン)'
+    NAME = "カセキ色厳選(ウオチルドン)"
 
     def __init__(self, cam):
         super().__init__(cam)

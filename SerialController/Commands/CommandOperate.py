@@ -22,15 +22,14 @@
   PythonCommandBase.py が OperateMixin を PythonCommand へ重ねるので、
   press / hold / wait などの呼び出し方は変わらない。
 """
+
 from __future__ import annotations
 
 import time
 from typing import Any, Callable
 
-from deprecated import deprecated
-from loguru import logger
-
 from Commands.Keys import Button, Direction
+from loguru import logger
 
 
 # 停止要求を伝える例外。checkIfAlive / _gate / _gateRelease が投げるので、
@@ -89,7 +88,7 @@ class OperateMixin:
         decide = getattr(ser, "shouldQueue", None)
         run = getattr(ser, "runQueued", None)
         if not callable(decide) or not callable(run):
-            return False        # 古い Sender でもそのまま動く
+            return False  # 古い Sender でもそのまま動く
         try:
             if not decide(duration):
                 return False
@@ -219,8 +218,7 @@ class OperateMixin:
         limit = float(timeout)
 
         def expired() -> bool:
-            elapsed = (time.perf_counter() - start
-                       - (self._pausedSeconds() - paused0))
+            elapsed = time.perf_counter() - start - (self._pausedSeconds() - paused0)
             return elapsed >= limit
 
         return expired

@@ -37,9 +37,11 @@ class WakeSetup:
 
         ttk.Label(
             body,
-            text=("1. Switch2 をスリープ → 取込開始 → Joy-Con の HOME\n"
-                  "2. 一覧で flag=81 を確認（保存は自動）\n"
-                  "3. Joy-Con の電源を OFF → 起こす"),
+            text=(
+                "1. Switch2 をスリープ → 取込開始 → Joy-Con の HOME\n"
+                "2. 一覧で flag=81 を確認（保存は自動）\n"
+                "3. Joy-Con の電源を OFF → 起こす"
+            ),
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(0, 8))
 
@@ -47,22 +49,19 @@ class WakeSetup:
         row1.pack(fill=tk.X, pady=2)
         ttk.Label(row1, text="取込秒数").pack(side=tk.LEFT)
         self._seconds = tk.IntVar(value=15)
-        ttk.Spinbox(row1, from_=5, to=60, width=4,
-                    textvariable=self._seconds).pack(side=tk.LEFT, padx=4)
-        self._btn_cap = ttk.Button(row1, text="取込開始",
-                                   command=self._on_capture)
+        ttk.Spinbox(row1, from_=5, to=60, width=4, textvariable=self._seconds).pack(
+            side=tk.LEFT, padx=4
+        )
+        self._btn_cap = ttk.Button(row1, text="取込開始", command=self._on_capture)
         self._btn_cap.pack(side=tk.LEFT, padx=4)
 
         row2 = ttk.Frame(body)
         row2.pack(fill=tk.X, pady=2)
-        self._btn_list = ttk.Button(row2, text="一覧",
-                                    command=self._on_list)
+        self._btn_list = ttk.Button(row2, text="一覧", command=self._on_list)
         self._btn_list.pack(side=tk.LEFT, padx=2)
-        self._btn_status = ttk.Button(row2, text="状態確認",
-                                      command=self._on_status)
+        self._btn_status = ttk.Button(row2, text="状態確認", command=self._on_status)
         self._btn_status.pack(side=tk.LEFT, padx=2)
-        self._btn_wake = ttk.Button(row2, text="起こす",
-                                    command=self._on_wake)
+        self._btn_wake = ttk.Button(row2, text="起こす", command=self._on_wake)
         self._btn_wake.pack(side=tk.LEFT, padx=2)
 
         self._log = tk.Text(body, height=14, width=72, state=tk.DISABLED)
@@ -87,8 +86,7 @@ class WakeSetup:
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         state = tk.DISABLED if busy else tk.NORMAL
-        for btn in (self._btn_cap, self._btn_list, self._btn_status,
-                    self._btn_wake):
+        for btn in (self._btn_cap, self._btn_list, self._btn_status, self._btn_wake):
             btn.configure(state=state)
 
     def _append(self, text: str) -> None:
@@ -119,8 +117,7 @@ class WakeSetup:
         if self._busy:
             return
         self._set_busy(True)
-        thread = threading.Thread(target=self._guarded, args=(func,),
-                                  daemon=True)
+        thread = threading.Thread(target=self._guarded, args=(func,), daemon=True)
         thread.start()
 
     def _guarded(self, func) -> None:
@@ -152,8 +149,13 @@ class WakeSetup:
             transport = self._transport()
             if transport is None:
                 return
-            self._queue.put(("log", f"CAP-START {seconds}s."
-                                    " Switch2 をスリープさせ、Joy-Con の HOME を。"))
+            self._queue.put(
+                (
+                    "log",
+                    f"CAP-START {seconds}s."
+                    " Switch2 をスリープさせ、Joy-Con の HOME を。",
+                )
+            )
             drain(transport)
             if not send_line(transport, f"C {seconds}"):
                 self._queue.put(("log", "送信に失敗しました。"))
@@ -170,8 +172,7 @@ class WakeSetup:
             transport = self._transport()
             if transport is None:
                 return
-            for text in query(transport, "L", ("list ", "saved "),
-                              timeout=3.0):
+            for text in query(transport, "L", ("list ", "saved "), timeout=3.0):
                 self._queue.put(("log", text))
 
         self._run(job)
@@ -181,8 +182,7 @@ class WakeSetup:
             transport = self._transport()
             if transport is None:
                 return
-            found = query(transport, "?", ("st ", "saved ", "color "),
-                            timeout=3.0)
+            found = query(transport, "?", ("st ", "saved ", "color "), timeout=3.0)
             if not found:
                 self._queue.put(("log", "応答がありません。"))
             for text in found:

@@ -8,7 +8,7 @@ from Commands.PythonCommandBase import ImageProcPythonCommand
 # auto egg hatching using image recognition
 # 自動卵孵化(キャプボあり)
 class AutoHatching(ImageProcPythonCommand):
-    NAME = '自動卵孵化'
+    NAME = "自動卵孵化"
 
     def __init__(self, cam):
         super().__init__(cam)
@@ -25,8 +25,16 @@ class AutoHatching(ImageProcPythonCommand):
 
         while True:
             for i in range(0, self.itr_max):
-                print('iteration: ' + str(i + 1) + ' (' + str(i * 5) + '/30) -> (' + str((i + 1) * 5) + '/30)')
-                print('hatched box num : ' + str(self.hatched_box_num))
+                print(
+                    "iteration: "
+                    + str(i + 1)
+                    + " ("
+                    + str(i * 5)
+                    + "/30) -> ("
+                    + str((i + 1) * 5)
+                    + "/30)"
+                )
+                print("hatched box num : " + str(self.hatched_box_num))
 
                 self.getNewEgg()
                 self.press(Direction.UP, duration=0.05, wait=0.5)
@@ -38,10 +46,10 @@ class AutoHatching(ImageProcPythonCommand):
                     self.hold([Direction.RIGHT, Direction.R_LEFT])
 
                     # turn round and round
-                    while not self.isContainTemplate('egg_notice.png'):
+                    while not self.isContainTemplate("egg_notice.png"):
                         self.wait(1)
 
-                    print('egg hatching')
+                    print("egg hatching")
                     self.holdEnd([Direction.RIGHT, Direction.R_LEFT])
                     self.press(Button.A)
                     self.wait(15)
@@ -49,8 +57,8 @@ class AutoHatching(ImageProcPythonCommand):
                         self.press(Button.A, wait=1)
                     self.hatched_num += 1
                     self.party_num += 1
-                    print('party_num: ' + str(self.party_num))
-                    print('all hatched num: ' + str(self.hatched_num))
+                    print("party_num: " + str(self.party_num))
+                    print("all hatched num: " + str(self.hatched_num))
 
                     self.press(Button.X, wait=1)
                     self.press(Button.A, wait=3)  # open up a map
@@ -93,7 +101,7 @@ class AutoHatching(ImageProcPythonCommand):
             # As of now, stop if shiny is in box
             is_contain_shiny = self.ReleaseBox()
             if is_contain_shiny:
-                print('shiny!')
+                print("shiny!")
                 break
 
             self.press(Button.B, wait=0.5)
@@ -104,10 +112,10 @@ class AutoHatching(ImageProcPythonCommand):
 
     def getNewEgg(self):
         self.press(Button.A, wait=0.5)
-        if not self.isContainTemplate('egg_found.png'):
-            print('egg not found')
+        if not self.isContainTemplate("egg_found.png"):
+            print("egg not found")
             self.finish()  # TODO
-        print('egg found')
+        print("egg found")
         self.press(Button.A, wait=1)
         self.press(Button.A, wait=1)
         self.press(Button.A, wait=3)
@@ -137,13 +145,12 @@ class AutoHatching(ImageProcPythonCommand):
         col = 6
         for i in range(0, row):
             for j in range(0, col):
-
                 # if shiny, then stop
-                if self.isContainTemplate('shiny_mark.png', threshold=0.9):
+                if self.isContainTemplate("shiny_mark.png", threshold=0.9):
                     return True
 
                 # Maybe this threshold works for only Japanese version.
-                if self.isContainTemplate('status.png', threshold=0.7):
+                if self.isContainTemplate("status.png", threshold=0.7):
                     # Release a pokemon
                     self.Release()
 

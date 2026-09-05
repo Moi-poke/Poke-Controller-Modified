@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import ctypes
 import multiprocessing
 import signal
+from multiprocessing import shared_memory
 from typing import cast
 
 import cv2
 import numpy as np
-from multiprocessing import shared_memory
 
 
 def _update(
@@ -54,14 +53,14 @@ def _set_props(video_capture: cv2.VideoCapture, props: dict[int, float]):
     for key, value in props.items():
         try:
             video_capture.set(key, value)
-        except:
+        except Exception:
             pass
 
 
 def _get_props(video_capture: cv2.VideoCapture) -> dict[int, float]:
     ids = [cv2.CAP_PROP_FRAME_HEIGHT, cv2.CAP_PROP_FRAME_WIDTH]
     return cast(
-        "dict[int, float]", dict([[prop, video_capture.get(prop)] for prop in ids])
+        "dict[int, float]", dict([(prop, video_capture.get(prop)) for prop in ids])
     )
 
 
@@ -183,7 +182,7 @@ class VideoCaptureWrapper:
     def __del__(self):
         try:
             self.release()
-        except:
+        except Exception:
             pass
 
 

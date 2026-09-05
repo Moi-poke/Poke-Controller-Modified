@@ -24,6 +24,7 @@ add_listener の既定は「繋げなかった」(False):
 
 コメントには理由を書き、外部参照は付けない。
 """
+
 from __future__ import annotations
 
 import abc
@@ -33,7 +34,7 @@ import platform
 import threading
 import time
 import traceback
-from logging import getLogger, DEBUG, NullHandler
+from logging import DEBUG, NullHandler, getLogger
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import serial
@@ -46,10 +47,10 @@ import serial
 # かといって短くしすぎると、今度は送信が伝送速度を追い越す。この線には
 # フロー制御が無く、相手の空き状況を見ずに送るため、溢れた分は取りこぼす。
 # そこで下限を「1行の伝送時間の2倍」とし、上限は従来の 0.02 に据え置く。
-MIN_SEND_INTERVAL = 0.02          # 上限（従来値）。接続前や算出不能時はこれ
-SEND_ROW_BYTES = 22               # "0x0003 8 80 80 80 80" + CRLF の最大長
-BITS_PER_BYTE = 10                # 8N1（スタート1＋データ8＋ストップ1）
-SEND_INTERVAL_MARGIN = 2.0        # 伝送時間の何倍を下限にするか
+MIN_SEND_INTERVAL = 0.02  # 上限（従来値）。接続前や算出不能時はこれ
+SEND_ROW_BYTES = 22  # "0x0003 8 80 80 80 80" + CRLF の最大長
+BITS_PER_BYTE = 10  # 8N1（スタート1＋データ8＋ストップ1）
+SEND_INTERVAL_MARGIN = 2.0  # 伝送時間の何倍を下限にするか
 # write が無期限にブロックし、GUI ごと固まるのを防ぐ
 READ_TIMEOUT = 0.5
 WRITE_TIMEOUT = 0.5
@@ -73,8 +74,7 @@ class Transport(abc.ABC):
     # 既定は従来の 1 行送信。live 対応の Transport のみが上書きする。
     capability = LEGACY_ROW
 
-    def open(self, portNum: int, portName: str = '',
-             baudrate: int = 9600) -> bool:
+    def open(self, portNum: int, portName: str = "", baudrate: int = 9600) -> bool:
         """線を開く。開けたら True。"""
         return False
 
@@ -92,8 +92,11 @@ class Transport(abc.ABC):
     def flush_pending(self) -> None:
         """間引きで保留している分があれば送り切る。"""
 
-    def set_hooks(self, on_write_begin: Optional[Callable[..., None]] = None,
-                  on_write_end: Optional[Callable[..., None]] = None) -> None:
+    def set_hooks(
+        self,
+        on_write_begin: Optional[Callable[..., None]] = None,
+        on_write_end: Optional[Callable[..., None]] = None,
+    ) -> None:
         """実際に書き出す前後で呼ぶ手。Sender の帳簿（計測・直前の行）用。
 
         listeners とは別に持つ。listeners は「送信行を読みたい人」で、
@@ -166,7 +169,7 @@ class TextSerialTransport(Transport):
         self._on_write_begin = None
         self._on_write_end = None
         self.listeners: List[Callable[[str], None]] = []
-        self._listener_ng = set()   # 一度落ちた聞き手。同じ苦情を繰り返さない
+        self._listener_ng = set()  # 一度落ちた聞き手。同じ苦情を繰り返さない
 
     # -- 聞き手の付け外し ---------------------------------------------------
 
@@ -216,8 +219,7 @@ class TextSerialTransport(Transport):
         """いま使っている間引き幅（検算・表示用）。"""
         return self._send_interval
 
-    def open(self, portNum: int, portName: str = '',
-             baudrate: int = 9600) -> bool:
+    def open(self, portNum: int, portName: str = "", baudrate: int = 9600) -> bool:
         # baudrate は StringVar 由来の str が渡ることがあるため int に正規化
         baudrate = int(baudrate)
         # 間引き幅は速度で決まる。ポートを開く前に決めておけば、
@@ -225,46 +227,96 @@ class TextSerialTransport(Transport):
         self._send_interval = self.calc_send_interval(baudrate)
 
         try:
-            if portName is None or portName == '':
-                if os.name == 'nt':
-                    print('connecting to ' + "COM" + str(portNum) + "(" + str(baudrate) + ")")
-                    self._logger.info('connecting to ' + "COM" + str(portNum) + "(" + str(baudrate) + ")")
+            if portName is None or portName == "":
+                if os.name == "nt":
+                    print(
+                        "connecting to "
+                        + "COM"
+                        + str(portNum)
+                        + "("
+                        + str(baudrate)
+                        + ")"
+                    )
+                    self._logger.info(
+                        "connecting to "
+                        + "COM"
+                        + str(portNum)
+                        + "("
+                        + str(baudrate)
+                        + ")"
+                    )
                     self.ser = serial.Serial(
-                        "COM" + str(portNum), baudrate,
-                        timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT,
+                        "COM" + str(portNum),
+                        baudrate,
+                        timeout=READ_TIMEOUT,
+                        write_timeout=WRITE_TIMEOUT,
                     )
                     return True
-                elif os.name == 'posix':
-                    if platform.system() == 'Darwin':
-                        print('connecting to ' + "/dev/tty.usbserial-" + str(portNum) + "(" + str(baudrate) + ")")
-                        self._logger.info('connecting to ' + "/dev/tty.usbserial-" + str(portNum) + "(" + str(baudrate) + ")")
+                elif os.name == "posix":
+                    if platform.system() == "Darwin":
+                        print(
+                            "connecting to "
+                            + "/dev/tty.usbserial-"
+                            + str(portNum)
+                            + "("
+                            + str(baudrate)
+                            + ")"
+                        )
+                        self._logger.info(
+                            "connecting to "
+                            + "/dev/tty.usbserial-"
+                            + str(portNum)
+                            + "("
+                            + str(baudrate)
+                            + ")"
+                        )
                         self.ser = serial.Serial(
-                            "/dev/tty.usbserial-" + str(portNum), baudrate,
-                            timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT,
+                            "/dev/tty.usbserial-" + str(portNum),
+                            baudrate,
+                            timeout=READ_TIMEOUT,
+                            write_timeout=WRITE_TIMEOUT,
                         )
                         return True
                     else:
-                        print('connecting to ' + "/dev/ttyUSB" + str(portNum) + "(" + str(baudrate) + ")")
-                        self._logger.info('connecting to ' + "/dev/ttyUSB" + str(portNum) + "(" + str(baudrate) + ")")
+                        print(
+                            "connecting to "
+                            + "/dev/ttyUSB"
+                            + str(portNum)
+                            + "("
+                            + str(baudrate)
+                            + ")"
+                        )
+                        self._logger.info(
+                            "connecting to "
+                            + "/dev/ttyUSB"
+                            + str(portNum)
+                            + "("
+                            + str(baudrate)
+                            + ")"
+                        )
                         self.ser = serial.Serial(
-                            "/dev/ttyUSB" + str(portNum), baudrate,
-                            timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT,
+                            "/dev/ttyUSB" + str(portNum),
+                            baudrate,
+                            timeout=READ_TIMEOUT,
+                            write_timeout=WRITE_TIMEOUT,
                         )
                         return True
                 else:
-                    print('Not supported OS')
-                    self._logger.warning('Not supported OS')
+                    print("Not supported OS")
+                    self._logger.warning("Not supported OS")
                     return False
             else:
-                print('connecting to ' + portName)
-                self._logger.info('connecting to ' + portName)
+                print("connecting to " + portName)
+                self._logger.info("connecting to " + portName)
                 self.ser = serial.Serial(
-                    portName, baudrate,
-                    timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT,
+                    portName,
+                    baudrate,
+                    timeout=READ_TIMEOUT,
+                    write_timeout=WRITE_TIMEOUT,
                 )
                 return True
         except IOError as e:
-            print('COM Port: can\'t be established')
+            print("COM Port: can't be established")
             self._logger.error(f"COM Port: can't be established: {e}")
             return False
 
@@ -336,7 +388,7 @@ class TextSerialTransport(Transport):
         if prev is None:
             return False
         try:
-            return row.split(' ')[:2] == prev.split(' ')[:2]
+            return row.split(" ")[:2] == prev.split(" ")[:2]
         except AttributeError:
             return False
 
@@ -364,8 +416,11 @@ class TextSerialTransport(Transport):
                 key = id(func)
                 if key not in self._listener_ng:
                     self._listener_ng.add(key)
-                    print("  注記: 送信行の受け取りで例外が出ました"
-                          + "（以後は黙ります）: " + repr(e))
+                    print(
+                        "  注記: 送信行の受け取りで例外が出ました"
+                        + "（以後は黙ります）: "
+                        + repr(e)
+                    )
 
     def _write(self, row: str, measure_perf: bool = True) -> None:
         """実際にシリアルへ書き出す。
@@ -386,7 +441,7 @@ class TextSerialTransport(Transport):
                 self._on_write_begin(row, measure_perf)
 
             # 送る文字列は ASCII 固定なので utf-8 経由より安く作れる
-            self.ser.write(row.encode('ascii') + b'\r\n')
+            self.ser.write(row.encode("ascii") + b"\r\n")
             self._last_write = time.perf_counter()
             ok = True
 
@@ -395,13 +450,13 @@ class TextSerialTransport(Transport):
         except serial.SerialTimeoutException as e:
             # write_timeout を付けたことで、相手が受け取らない状態でも
             # 無期限に固まらず、ここへ落ちてくる
-            print('Serial write timeout')
+            print("Serial write timeout")
             self._logger.error(f"Serial write timeout: {e}")
         except serial.serialutil.SerialException as e:
             print(e)
             self._logger.error(f"Error : {e}")
         except AttributeError as e:
-            print('Using a port that is not open.')
+            print("Using a port that is not open.")
             self._logger.error(f"Maybe Using a port that is not open.: {e}")
         finally:
             # 前回(_before)は送れたときだけ進める。送れなかった行を
@@ -475,10 +530,13 @@ DEFAULT_TRANSPORT = "legacy_text"
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
 
 
-def register_transport(name: str, factory: Callable[..., Transport],
-                       description: str = "",
-                       builtin: bool = False,
-                       replace: bool = False) -> bool:
+def register_transport(
+    name: str,
+    factory: Callable[..., Transport],
+    description: str = "",
+    builtin: bool = False,
+    replace: bool = False,
+) -> bool:
     """プリセットを登録する。登録できた場合は True を返す。
 
     name は設定画面や --transport で指定する鍵。factory は「呼ぶと
@@ -496,13 +554,17 @@ def register_transport(name: str, factory: Callable[..., Transport],
         print(f"  注記: プリセット '{key}' の作り方が呼び出せません。")
         return False
     if key in _REGISTRY and not replace:
-        print(f"  注記: プリセット '{key}' は既にあります"
-              "（置き換えるなら replace=True）。")
+        print(
+            f"  注記: プリセット '{key}' は既にあります"
+            "（置き換えるなら replace=True）。"
+        )
         return False
     capability = getattr(factory, "capability", LEGACY_ROW)
     if capability not in VALID_CAPABILITIES:
-        print(f"  注記: プリセット '{key}' の capability '{capability}' は"
-              "許可されていません。登録しませんでした。")
+        print(
+            f"  注記: プリセット '{key}' の capability '{capability}' は"
+            "許可されていません。登録しませんでした。"
+        )
         return False
 
     _REGISTRY[key] = {
@@ -554,14 +616,15 @@ def resolve_transport_name(name: Optional[str]) -> str:
         return DEFAULT_TRANSPORT
     if key in _REGISTRY:
         return key
-    print(f"通信方式 '{key}' は登録されていません。"
-          f"既定の '{DEFAULT_TRANSPORT}' を使います。")
+    print(
+        f"通信方式 '{key}' は登録されていません。"
+        f"既定の '{DEFAULT_TRANSPORT}' を使います。"
+    )
     print("  使えるもの: " + ", ".join(list_transports()))
     return DEFAULT_TRANSPORT
 
 
-def create_transport(name: Optional[str] = None,
-                     logger: Any = None) -> Transport:
+def create_transport(name: Optional[str] = None, logger: Any = None) -> Transport:
     """名前から運び方を1つ作る。設定画面・起動引数はここを通る。
 
     作れなかった場合も None を返さず、既定の実装を返す。ここで
@@ -580,8 +643,10 @@ def create_transport(name: Optional[str] = None,
             # logger を受け取らない作り方もある（利用者定義など）
             return info["factory"]()
     except Exception:
-        print(f"通信方式 '{key}' を用意できませんでした。"
-              f"既定の '{DEFAULT_TRANSPORT}' へ戻します。")
+        print(
+            f"通信方式 '{key}' を用意できませんでした。"
+            f"既定の '{DEFAULT_TRANSPORT}' へ戻します。"
+        )
         print(traceback.format_exc())
         if key != DEFAULT_TRANSPORT:
             return create_transport(DEFAULT_TRANSPORT, logger=logger)
@@ -602,13 +667,15 @@ def load_transport_plugins(dir_path: str) -> List[str]:
     if not dir_path or not os.path.isdir(dir_path):
         return added
     import importlib.util
+
     for filename in sorted(os.listdir(dir_path)):
         if not filename.endswith(".py") or filename.startswith("_"):
             continue
         full = os.path.join(dir_path, filename)
         try:
             spec = importlib.util.spec_from_file_location(
-                "transport_plugin_" + filename[:-3], full)
+                "transport_plugin_" + filename[:-3], full
+            )
             if spec is None or spec.loader is None:
                 continue
             module = importlib.util.module_from_spec(spec)
@@ -628,13 +695,15 @@ def load_transport_plugins(dir_path: str) -> List[str]:
 
 # 組み込みプリセット。
 register_transport(
-    TextSerialTransport.name, TextSerialTransport,
+    TextSerialTransport.name,
+    TextSerialTransport,
     description="従来と同じテキスト行を pyserial で送る（本家 Leonardo 用）",
     builtin=True,
 )
 
 register_transport(
-    PicoUartTransport.name, PicoUartTransport,
+    PicoUartTransport.name,
+    PicoUartTransport,
     description="Picoへfull-state S行を送る（有線=USBシリアル変換器 / 無線=PicoのUSB直結）",
     builtin=True,
 )

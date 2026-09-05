@@ -38,7 +38,7 @@ def clampRatio(ratio: float) -> float:
     return min(SASH_MAX, max(SASH_MIN, ratio))
 
 
-def rememberGeometry(root: tk.Misc, settings: Any) -> None:
+def rememberGeometry(root: tk.Tk, settings: Any) -> None:
     """ウィンドウの位置とサイズを設定へ控える。
 
     最大化・最小化された状態の geometry を保存すると、次回そのまま
@@ -53,7 +53,7 @@ def rememberGeometry(root: tk.Misc, settings: Any) -> None:
         logger.debug("Failed to read the window geometry")
 
 
-def restoreGeometry(root: tk.Misc, settings: Any) -> None:
+def restoreGeometry(root: tk.Tk, settings: Any) -> None:
     """前回のウィンドウ位置とサイズを復元する。"""
     if not settings.restore_geometry.get():
         return

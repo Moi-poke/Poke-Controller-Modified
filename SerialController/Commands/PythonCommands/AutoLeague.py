@@ -8,7 +8,7 @@ from Commands.PythonCommandBase import PythonCommand
 # Auto league
 # 自動リーグ周回(画像認識なし)
 class AutoLeague(PythonCommand):
-    NAME = '自動リーグ周回'
+    NAME = "自動リーグ周回"
 
     def __init__(self):
         super().__init__()

@@ -5,7 +5,7 @@ import traceback
 from glob import glob
 from os.path import join, relpath
 from types import ModuleType
-from typing import Any, List, Optional
+from typing import List, Optional
 
 # 他ファイル（Camera.py / Window.py / GuiAssets.py / Sender.py）に合わせ
 # loguru へ統一。getLogger 由来の初期化は不要になった。

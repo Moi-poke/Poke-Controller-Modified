@@ -2,44 +2,25 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from abc import abstractmethod
-from os import path
 import atexit
-import functools
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
-import random
-import re
 import threading
 import time
-import tkinter as tk
-import tkinter.ttk as ttk
 import traceback
-
-import cv2
-import numpy as np
-from deprecated import deprecated
-from loguru import logger
-
-from LineNotify import Line_Notify
-from DiscordNotify import Discord_Notify
+from abc import abstractmethod
+from typing import Any, Callable, Dict, List, Optional
 
 # Commands配下と同じ絶対importに統一する。相対importでは、パッケージとして
 # 読み込む場合と単体で実行する場合とで、読み込めなくなる側が変わるため。
 from Commands import CommandBase
-from Commands.Keys import Button, Direction, KeyPress
-# 画像認識の実体は CommandVision.py にある。
-#   このファイルは組み立て場所として ImageProcPythonCommand を
-#     従来どおりの名前で公開し続ける。利用者の設定は
-#     from Commands.PythonCommandBase import ImageProcPythonCommand
-#     と書いたまま変えずに使える。
-from Commands.CommandVision import VisionMixin
+
 # 対話部の実体は CommandDialog.py にある。
 #   DialogMixin は PythonCommand へ重ねる（dialogue / dialogue6widget）。
 #   PokeConDialogue も再公開する。既存の設定が
 #       from Commands.PythonCommandBase import PokeConDialogue
 #     と書いていても、そのまま使えるようにするため。
-from Commands.CommandDialog import DialogMixin, PokeConDialogue
+from Commands.CommandDialog import DialogMixin
+
 # 操作APIと待ちの実体は CommandOperate.py にある。
 #   OperateMixin は PythonCommand へ重ねる（press / hold / wait / checkIfAlive）。
 #   StopThread も操作側に置く。
@@ -47,14 +28,26 @@ from Commands.CommandDialog import DialogMixin, PokeConDialogue
 #     既存の設定が from Commands.PythonCommandBase import StopThread と
 #       書いていてもそのまま使える。
 from Commands.CommandOperate import OperateMixin, StopThread
+
+# 画像認識の実体は CommandVision.py にある。
+#   このファイルは組み立て場所として ImageProcPythonCommand を
+#     従来どおりの名前で公開し続ける。利用者の設定は
+#     from Commands.PythonCommandBase import ImageProcPythonCommand
+#     と書いたまま変えずに使える。
 # テンプレート画像まわりの関数（モジュール関数）の実体は CommandVision.py にある。
 #   ただし名前はここからも見えるようにしておく。外部の設定や検証が
 #     from Commands.PythonCommandBase import clear_template_cache と
 #     書いている場合に、置き場所の違いで動かなくなるのを防ぐため。
 #   実体は1つ（CommandVision 側）なので、キャッシュも1つで一貫する。
-from Commands.CommandVision import (LINE_EOL_MESSAGE, TEMPLATE_PATH,
-                                     _get_template_filespec,
-                                     _imread_or_raise, clear_template_cache)
+from Commands.CommandVision import (
+    LINE_EOL_MESSAGE,
+    VisionMixin,
+)
+from Commands.Keys import KeyPress
+from DiscordNotify import Discord_Notify
+from LineNotify import Line_Notify
+from deprecated import deprecated
+from loguru import logger
 
 
 def _begin_timer_period() -> None:
@@ -101,8 +94,8 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         # 一時停止。set されている間が「実行中」で、clear すると
         # 待ち・操作の手前で足止めする（停止とは別の仕組み）。
         self._resume_event = threading.Event()
-        self._resume_event.set()     # 既定は実行中
-        self._paused_total = 0.0     # 通算の一時停止秒数
+        self._resume_event.set()  # 既定は実行中
+        self._paused_total = 0.0  # 通算の一時停止秒数
         self._pause_started = 0.0
         self.postProcess = None
         self.message_dialogue = None
@@ -144,7 +137,8 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
                 # 派生が独自 __init__ で super() を呼ばない場合に備え、
                 # 名札が無ければ既定を使う（無ければ AttributeError になる）。
                 self.keys = KeyPress(
-                    ser, source=getattr(self, "input_source", "script"))
+                    ser, source=getattr(self, "input_source", "script")
+                )
 
             if self.alive:
                 self.do()
@@ -188,8 +182,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             # まま固まる。KeyPress の生成で落ちた流れではここも同じ例外に
             # なるため、後始末の続行を優先して握る。
             try:
-                keys = KeyPress(ser, source=getattr(self, "input_source",
-                                                    "script"))
+                keys = KeyPress(ser, source=getattr(self, "input_source", "script"))
             except Exception:
                 logger.error(f"Failed to recreate KeyPress: {traceback.format_exc()}")
         if keys is not None:
@@ -458,9 +451,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         """print2 の別名。ログとして残す意図を明示したいとき用。"""
         self.print2(*args, sep=sep, end=end)
 
-
     # Use time glitch
-
 
     @deprecated(reason="Use discord instead")
     def LINE_text(self, txt: str = "", token: str = "token") -> bool:
@@ -653,7 +644,6 @@ class ImageProcPythonCommand(PythonCommand, VisionMixin):
         """
         self.Line = Line_Notify(self.camera)
         self.Discord = Discord_Notify(camera=self.camera)
-
 
     @deprecated(reason="Use discord instead")
     def LINE_image(self, txt: str = "", token: str = "token") -> bool:

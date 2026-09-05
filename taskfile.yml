@@ -1,0 +1,70 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+# タスクランナー定義。実体はすべて uv 管理下のコマンドの薄いラッパー。
+# 使い方: task <タスク名>（task本体は別途 `winget install Task.Task` が必要）
+# taskが無い環境では各 cmds 欄の `uv run ...` を直接実行すれば同じ結果になる。
+
+version: '3'
+
+tasks:
+  sync:
+    desc: 依存関係の同期（uv管理）
+    cmds:
+      - uv sync
+
+  lint:
+    desc: ruffによる静的検査
+    cmds:
+      - uv run --frozen ruff check {{.CLI_ARGS}} SerialController tools
+
+  format:
+    desc: ruffによる整形
+    cmds:
+      - uv run --frozen ruff format {{.CLI_ARGS}} SerialController tools
+
+  typecheck:
+    desc: mypyによる型検査
+    cmds:
+      - uv run --frozen mypy SerialController tools
+
+  check:
+    desc: 検査＋整形＋型検査（修正モード）
+    cmds:
+      - task: lint
+        vars:
+          CLI_ARGS: --fix
+      - task: format
+      - task: typecheck
+
+  ci:
+    desc: 検査＋整形確認＋型検査（修正なし・CI用）
+    cmds:
+      - task: lint
+      - task: format
+        vars:
+          CLI_ARGS: --check
+      - task: typecheck
+      - task: bounds
+
+  app:
+    desc: 本体を起動する（PROFILE変数でプロファイル指定、例: task app PROFILE=switch1）
+    vars:
+      PROFILE: '{{.PROFILE | default ""}}'
+    cmds:
+      - uv run --frozen python SerialController/Window.py --profile {{.PROFILE}}
+
+  launcher:
+    desc: プロファイル選択ランチャーを起動する
+    cmds:
+      - uv run --frozen python SerialController/launcher.py
+
+  clean:
+    desc: 生成物（__pycache__ / .mypy_cache / 起動ログ残骸）の掃除
+    cmds:
+      - powershell -NoProfile -Command "Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force"
+      - powershell -NoProfile -Command "if (Test-Path .mypy_cache) { Remove-Item -Recurse -Force .mypy_cache }"
+      - powershell -NoProfile -Command "Get-ChildItem -Path $env:TEMP -Filter 'pokecon_boot_*.log' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue"
+
+  setup_dev:
+    desc: 開発環境の準備（pre-commitフックの有効化）
+    cmds:
+      - git config core.hooksPath .githooks

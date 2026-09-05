@@ -2,18 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import time
+import tkinter as tk
 from typing import Any
+
+import cv2
 import numpy as np
-from Commands.Keys import Button
-from Commands.PythonCommandBase import PythonCommand
 from Commands.PythonCommandBase import ImageProcPythonCommand
-from logging import getLogger, DEBUG, NullHandler
 
 # from loguru import logger
-from icecream import ic
-
-import tkinter as tk
-import cv2
 
 
 def calculate_iou(box1: list, box2: list) -> float:

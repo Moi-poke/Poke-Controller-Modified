@@ -1,14 +1,13 @@
+import tkinter as tk
 import traceback
 from typing import Any, Optional
-import cv2
-import tkinter as tk
 
-from KeyConfig import PokeKeycon
-from InputLogConfig import InputLogConfig
-from WakeSetup import WakeSetup
-from LineNotify import Line_Notify
-from get_pokestatistics import GetFromHomeGUI
 import DiscordNotify
+from InputLogConfig import InputLogConfig
+from KeyConfig import PokeKeycon
+from LineNotify import Line_Notify
+from WakeSetup import WakeSetup
+from get_pokestatistics import GetFromHomeGUI
 from loguru import logger
 
 
@@ -167,8 +166,7 @@ class PokeController_Menubar(tk.Menu):
             return
         self.wake_setup = None
         self.wake_setup = WakeSetup(self.root, self.ser)
-        self.wake_setup.window.protocol(
-            "WM_DELETE_WINDOW", self.closingWakeSetup)
+        self.wake_setup.window.protocol("WM_DELETE_WINDOW", self.closingWakeSetup)
 
     def closingWakeSetup(self) -> None:
         logger.debug("Close WakeSetup window")
@@ -185,8 +183,7 @@ class PokeController_Menubar(tk.Menu):
         開きっぱなしのまま root.destroy() へ進むと、破棄途中の
         ウィジェットを after 予約が触って TclError になる。
         """
-        for name in ("wake_setup", "key_config", "poke_treeview",
-                     "input_log_config"):
+        for name in ("wake_setup", "key_config", "poke_treeview", "input_log_config"):
             window = getattr(self, name, None)
             if window is None:
                 continue

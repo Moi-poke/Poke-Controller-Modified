@@ -7,7 +7,7 @@ from Commands.PythonCommandBase import PythonCommand
 
 # Get watt automatically using the glitch
 class InfinityWatt(PythonCommand):
-    NAME = '無限ワット'
+    NAME = "無限ワット"
 
     def __init__(self):
         super().__init__()

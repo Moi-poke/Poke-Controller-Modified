@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from loguru import logger
-
 from Commands import CommandBase
+from loguru import logger
 
 
 # MCU command

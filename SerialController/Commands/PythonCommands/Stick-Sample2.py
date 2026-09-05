@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-
 from Commands.Keys import Button, Direction, Stick
 from Commands.PythonCommandBase import PythonCommand
 

@@ -6,7 +6,7 @@ from Commands.McuCommandBase import McuCommand
 
 # Mash A button
 class PickUpBerry(McuCommand):
-    NAME = 'きのみ回収'
+    NAME = "きのみ回収"
 
-    def __init__(self, sync_name='pickupberry'):
+    def __init__(self, sync_name="pickupberry"):
         super().__init__(sync_name)

@@ -8,7 +8,7 @@ from Commands.PythonCommandBase import PythonCommand
 # Mash a button A
 # A連打
 class Mash_A(PythonCommand):
-    NAME = 'A連打'
+    NAME = "A連打"
 
     def __init__(self):
         super().__init__()

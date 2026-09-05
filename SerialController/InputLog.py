@@ -24,26 +24,42 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-
 # ---------------------------------------------------------------------------
 # 送信フォーマットの定義（Keys.SendFormat.convert2str と対で保つ）
 # ---------------------------------------------------------------------------
 
 BUTTON_NAMES = (
-    "Button.Y", "Button.B", "Button.A", "Button.X",
-    "Button.L", "Button.R", "Button.ZL", "Button.ZR",
-    "Button.MINUS", "Button.PLUS", "Button.LCLICK", "Button.RCLICK",
-    "Button.HOME", "Button.CAPTURE",
+    "Button.Y",
+    "Button.B",
+    "Button.A",
+    "Button.X",
+    "Button.L",
+    "Button.R",
+    "Button.ZL",
+    "Button.ZR",
+    "Button.MINUS",
+    "Button.PLUS",
+    "Button.LCLICK",
+    "Button.RCLICK",
+    "Button.HOME",
+    "Button.CAPTURE",
 )
 
 HAT_NAMES = (
-    "Hat.TOP", "Hat.TOP_RIGHT", "Hat.RIGHT", "Hat.BTM_RIGHT",
-    "Hat.BTM", "Hat.BTM_LEFT", "Hat.LEFT", "Hat.TOP_LEFT", "Hat.CENTER",
+    "Hat.TOP",
+    "Hat.TOP_RIGHT",
+    "Hat.RIGHT",
+    "Hat.BTM_RIGHT",
+    "Hat.BTM",
+    "Hat.BTM_LEFT",
+    "Hat.LEFT",
+    "Hat.TOP_LEFT",
+    "Hat.CENTER",
 )
 
 HAT_CENTER = 8
 NEUTRAL = 128
-BUTTON_SHIFT = 2       # 下位2bitは L/R スティックの変更フラグ
+BUTTON_SHIFT = 2  # 下位2bitは L/R スティックの変更フラグ
 FLAG_R_STICK = 0x1
 FLAG_L_STICK = 0x2
 
@@ -95,12 +111,12 @@ WallTime = datetime.datetime
 class InputEvent:
     """1つの操作。press / release / change のいずれか。"""
 
-    action: str                     # PRESS / RELEASE / CHANGE
-    kind: str                       # button / hat / stick
-    name: str                       # Button.A / Hat.TOP / Stick.LEFT
-    at: float                       # time.perf_counter() の値
-    wall: WallTime         # 実時刻
-    duration: Optional[float] = None    # RELEASE のときだけ入る（秒）
+    action: str  # PRESS / RELEASE / CHANGE
+    kind: str  # button / hat / stick
+    name: str  # Button.A / Hat.TOP / Stick.LEFT
+    at: float  # time.perf_counter() の値
+    wall: WallTime  # 実時刻
+    duration: Optional[float] = None  # RELEASE のときだけ入る（秒）
     x: Optional[int] = None
     y: Optional[int] = None
     deg: Optional[float] = None
@@ -108,10 +124,10 @@ class InputEvent:
     raw: str = ""
     held: tuple = ()
     # 倒している間の軌跡。スティックの RELEASE でだけ入る。
-    from_deg: Optional[float] = None   # 倒し始めた向き
-    max_mag: Optional[float] = None    # その間の最大の倒し量
-    turn: Optional[float] = None       # 累積の回転量（度。+が反時計回り）
-    moves: int = 0                     # 向きが変わった回数
+    from_deg: Optional[float] = None  # 倒し始めた向き
+    max_mag: Optional[float] = None  # その間の最大の倒し量
+    turn: Optional[float] = None  # 累積の回転量（度。+が反時計回り）
+    moves: int = 0  # 向きが変わった回数
 
 
 # ---------------------------------------------------------------------------
@@ -120,12 +136,16 @@ class InputEvent:
 
 PRESETS = {
     "simple": "{time} {mark} {name}[ {dir}][ ({dur})][ ※{turn}]",
-    "detail": ("{time:HH:mm:ss.fff} {event:<7} {name:<14}"
-               "[ {dir}][ dur={dur:>7}][ deg={deg:6.1f} mag={mag:.2f}]"
-               "[ held={held}][ ※{turn}]"),
+    "detail": (
+        "{time:HH:mm:ss.fff} {event:<7} {name:<14}"
+        "[ {dir}][ dur={dur:>7}][ deg={deg:6.1f} mag={mag:.2f}]"
+        "[ held={held}][ ※{turn}]"
+    ),
     "compact": "{time:mm:ss.fff} {mark} {short}[ +{dur:ms}ms]",
-    "csv": ("{time:yyyy/MM/dd HH:mm:ss.fff},{event},{kind},{name},"
-            "{dir},{dur:s.3},{deg:.1f},{turn}"),
+    "csv": (
+        "{time:yyyy/MM/dd HH:mm:ss.fff},{event},{kind},{name},"
+        "{dir},{dur:s.3},{deg:.1f},{turn}"
+    ),
     "command": "self.press({cmd}[, duration={dur:s.2}])[  # {turn}]",
     "command_raw": "self.press({raw_cmd}[, duration={dur:s.2}])[  # {turn}]",
     "raw": "{time} {event:<7} {name} <- {raw}",
@@ -199,13 +219,20 @@ REPEAT_FLUSH = 0.4
 # 行うので、200行/秒でも1回あたり40行と現実的な量に収まる。
 MAX_LINES_PER_SEC = 200
 
-_TIME_MAP = {"yyyy": "%Y", "yy": "%y", "MM": "%m", "dd": "%d",
-             "HH": "%H", "mm": "%M", "ss": "%S"}
+_TIME_MAP = {
+    "yyyy": "%Y",
+    "yy": "%y",
+    "MM": "%m",
+    "dd": "%d",
+    "HH": "%H",
+    "mm": "%M",
+    "ss": "%S",
+}
 _TIME_RE = re.compile("yyyy|yy|MM|dd|HH|mm|ss")
 _FIELD_RE = re.compile(r"\{(\w+)(?::([^{}\[\]]*))?\}")
 _GROUP_RE = re.compile(r"\[([^\[\]]*)\]")
 
-_ESC_OPEN = "\x00"     # [[ の退避先。省略ブロックの解析から外すために使う
+_ESC_OPEN = "\x00"  # [[ の退避先。省略ブロックの解析から外すために使う
 _ESC_CLOSE = "\x01"
 
 DEFAULT_TIME_PATTERN = "HH:mm:ss.fff"
@@ -355,12 +382,11 @@ def rotation_text(ev: InputEvent) -> str:
     1周回す操作は、どの Direction 1つでも表せない。press を並べて
     再現するものでもないので、何をしたのかが分かる説明を残す。
     """
-    if not is_rotation(ev):
+    if not is_rotation(ev) or ev.turn is None:
         return ""
     turns = abs(ev.turn) / 360.0
     way = "反時計回り" if ev.turn > 0 else "時計回り"
-    return (f"{ev.name} を{way}に {turns:.1f}周"
-            f"（{ev.from_deg:.0f}°→{ev.deg:.0f}°）")
+    return f"{ev.name} を{way}に {turns:.1f}周（{ev.from_deg:.0f}°→{ev.deg:.0f}°）"
 
 
 def command_target(ev: InputEvent) -> str:
@@ -390,7 +416,7 @@ def format_duration(seconds: Optional[float], spec: str) -> str:
     if seconds is None:
         return ""
     align = _ALIGN_RE.match(spec) if spec else None
-    if align:                       # 桁揃えのみ。中身は auto で作る
+    if align:  # 桁揃えのみ。中身は auto で作る
         return format(format_duration(seconds, ""), spec)
     if not spec or spec == "auto":
         if seconds < 1.0:
@@ -446,7 +472,7 @@ class LogFormatter:
         pos = 0
         for group in _GROUP_RE.finditer(template):
             if group.start() > pos:
-                head = template[pos:group.start()]
+                head = template[pos : group.start()]
                 segments.append((False, self._split_fields(head)))
             segments.append((True, self._split_fields(group.group(1))))
             pos = group.end()
@@ -461,7 +487,7 @@ class LogFormatter:
         pos = 0
         for m in _FIELD_RE.finditer(text):
             if m.start() > pos:
-                parts.append(_unescape(text[pos:m.start()]))
+                parts.append(_unescape(text[pos : m.start()]))
             parts.append((m.group(1), m.group(2) or ""))
             pos = m.end()
         if pos < len(text):
@@ -483,7 +509,7 @@ class LogFormatter:
                     filled = True
                 text.append(value)
             if optional and has_field and not filled:
-                continue    # 中身が空の [ ] ブロックは丸ごと落とす
+                continue  # 中身が空の [ ] ブロックは丸ごと落とす
             out.append("".join(text))
         return "".join(out)
 
@@ -541,6 +567,7 @@ class LogFormatter:
 # 書式の下見（設定画面用）
 # ---------------------------------------------------------------------------
 
+
 def sample_events() -> List[InputEvent]:
     """書式の見本を作るための、決め打ちのイベント列を返す。
 
@@ -553,20 +580,58 @@ def sample_events() -> List[InputEvent]:
     wall = datetime.datetime.now()
     raw = "0x0004 8 80 80 80 80"
     return [
-        InputEvent("PRESS", "button", "Button.A", now, wall,
-                   raw=raw, held=("Button.A",)),
-        InputEvent("RELEASE", "button", "Button.A", now + 0.082, wall,
-                   duration=0.082, raw=raw, held=()),
-        InputEvent("PRESS", "hat", "Hat.TOP", now + 0.20, wall,
-                   raw=raw, held=("Hat.TOP",)),
-        InputEvent("RELEASE", "stick", "Stick.LEFT", now + 1.35, wall,
-                   duration=1.35, x=128, y=128, deg=90.0, mag=1.0,
-                   max_mag=1.0, from_deg=90.0, turn=0.0, raw=raw, held=()),
+        InputEvent(
+            "PRESS", "button", "Button.A", now, wall, raw=raw, held=("Button.A",)
+        ),
+        InputEvent(
+            "RELEASE",
+            "button",
+            "Button.A",
+            now + 0.082,
+            wall,
+            duration=0.082,
+            raw=raw,
+            held=(),
+        ),
+        InputEvent(
+            "PRESS", "hat", "Hat.TOP", now + 0.20, wall, raw=raw, held=("Hat.TOP",)
+        ),
+        InputEvent(
+            "RELEASE",
+            "stick",
+            "Stick.LEFT",
+            now + 1.35,
+            wall,
+            duration=1.35,
+            x=128,
+            y=128,
+            deg=90.0,
+            mag=1.0,
+            max_mag=1.0,
+            from_deg=90.0,
+            turn=0.0,
+            raw=raw,
+            held=(),
+        ),
         # マウスで1周回した例。Direction 1つでは表せない操作
-        InputEvent("RELEASE", "stick", "Stick.LEFT", now + 2.10, wall,
-                   duration=0.71, x=128, y=128, deg=177.0, mag=1.0,
-                   max_mag=1.0, from_deg=15.0, turn=523.0, moves=15,
-                   raw=raw, held=()),
+        InputEvent(
+            "RELEASE",
+            "stick",
+            "Stick.LEFT",
+            now + 2.10,
+            wall,
+            duration=0.71,
+            x=128,
+            y=128,
+            deg=177.0,
+            mag=1.0,
+            max_mag=1.0,
+            from_deg=15.0,
+            turn=523.0,
+            moves=15,
+            raw=raw,
+            held=(),
+        ),
     ]
 
 
@@ -581,8 +646,11 @@ def preview_lines(template: str, actions: Any = None) -> List[str]:
         formatter = LogFormatter(template)
         started = time.perf_counter()
         wanted = tuple(actions) if actions else None
-        return [formatter.format(ev, started) for ev in sample_events()
-                if wanted is None or ev.action in wanted]
+        return [
+            formatter.format(ev, started)
+            for ev in sample_events()
+            if wanted is None or ev.action in wanted
+        ]
     except Exception as e:
         return [f"(この書式は使えません: {e})"]
 
@@ -591,14 +659,19 @@ def preview_lines(template: str, actions: Any = None) -> List[str]:
 # 差分の検出とログ出力
 # ---------------------------------------------------------------------------
 
+
 class InputLogger:
     """送信行の差分から press / release を組み立ててログへ流す。"""
 
-    def __init__(self, template: str = DEFAULT_FORMAT,
-                 emit: Optional[Callable[[str], None]] = None,
-                 enabled: bool = True, log_stick_change: bool = False,
-                 deadzone: float = STICK_DEADZONE,
-                 actions: Any = None) -> None:
+    def __init__(
+        self,
+        template: str = DEFAULT_FORMAT,
+        emit: Optional[Callable[[str], None]] = None,
+        enabled: bool = True,
+        log_stick_change: bool = False,
+        deadzone: float = STICK_DEADZONE,
+        actions: Any = None,
+    ) -> None:
         self.formatter = LogFormatter(template)
         self.emit = emit if emit is not None else print
         self.enabled = enabled
@@ -613,14 +686,13 @@ class InputLogger:
         # 出す行はロック内で作ってリストへ溜め、抜けてから書き出す。
         self._lock = threading.Lock()
 
-
         # 連打の集約用。直前に出そうとした行と、その繰り返し回数
         self.repeat_window = REPEAT_WINDOW
         self.repeat_flush = REPEAT_FLUSH
         # 保留中の反復。キーは _collapse_key が作る
         # （スティックは向きまで含む）。値は text/count/emitted/at/seq。
         self._pending: Dict[tuple, Dict[str, Any]] = {}
-        self._seq = 0           # 保留の登録順。出力順を押した順に保つ
+        self._seq = 0  # 保留の登録順。出力順を押した順に保つ
 
         # 流量制限用。1秒ごとに出した行数を数え、超えた分は捨てる
         self.max_lines_per_sec = MAX_LINES_PER_SEC
@@ -652,9 +724,11 @@ class InputLogger:
     def _reset_state(self) -> None:
         self._btn = 0
         self._hat = HAT_CENTER
-        self._stick = {"Stick.LEFT": (NEUTRAL, NEUTRAL),
-                       "Stick.RIGHT": (NEUTRAL, NEUTRAL)}
-        self._since = {}        # 押し始めた時刻 {name: perf_counter}
+        self._stick = {
+            "Stick.LEFT": (NEUTRAL, NEUTRAL),
+            "Stick.RIGHT": (NEUTRAL, NEUTRAL),
+        }
+        self._since = {}  # 押し始めた時刻 {name: perf_counter}
         # 倒している間の軌跡 {stick名: {from,last,max_mag,turn,moves}}。
         # 離した瞬間の座標は中立なので、向きはここから取り出す。
         self._track: Dict[str, Dict[str, Any]] = {}
@@ -667,8 +741,9 @@ class InputLogger:
         ログが出る」ように見える。
         """
         with self._lock:
-            events = self._release_all(time.perf_counter(),
-                                       datetime.datetime.now(), "end")
+            events = self._release_all(
+                time.perf_counter(), datetime.datetime.now(), "end"
+            )
             self._reset_state()
             # 溜まっていた保留を先に出し切る（順序を保つため）
             pending = self._pop_pending(list(self._pending))
@@ -704,7 +779,7 @@ class InputLogger:
                 continue
             try:
                 text = self.formatter.format(ev, self.started)
-            except Exception:      # 表示の失敗で操作を止めない
+            except Exception:  # 表示の失敗で操作を止めない
                 continue
             self._emit_collapsed(ev, text)
 
@@ -769,8 +844,13 @@ class InputLogger:
                 stale += self._pop_pending([key])
 
             self._seq += 1
-            self._pending[key] = {"text": text, "count": 1, "emitted": 1,
-                                  "at": now, "seq": self._seq}
+            self._pending[key] = {
+                "text": text,
+                "count": 1,
+                "emitted": 1,
+                "at": now,
+                "seq": self._seq,
+            }
             # 別の操作が来た時点で、他の保留はすべて確定させる。
             # 時間の経過を待つと、押した順に出せなくなる。
             others = [k for k in self._pending if k != key]
@@ -778,7 +858,7 @@ class InputLogger:
 
         for line in stale:
             self._emit_limited(line)
-        self._emit_limited(text)   # 初回は待たせずに出す
+        self._emit_limited(text)  # 初回は待たせずに出す
 
     def _pop_pending(self, keys: list) -> list:
         """保留を取り出して行にする（呼び出し側でロック済み）。
@@ -819,7 +899,7 @@ class InputLogger:
             elif ch in ")]}":
                 depth -= 1
             elif ch == "," and depth == 0:
-                return args[:i], args[i + 1:].lstrip()
+                return args[:i], args[i + 1 :].lstrip()
         return args, ""
 
     def _repeat_text(self, text: str, count: int) -> str:
@@ -848,7 +928,7 @@ class InputLogger:
         if not body.startswith(head) or not body.endswith(")"):
             return f"{text} x{count}"
 
-        target, rest = self._split_first_arg(body[len(head):-1])
+        target, rest = self._split_first_arg(body[len(head) : -1])
         if rest:
             out = f"self.pressRep({target}, {count}, {rest})"
         else:
@@ -902,7 +982,6 @@ class InputLogger:
         except Exception:
             pass
 
-
     # -- 解析 ---------------------------------------------------------------
 
     def _parse(self, row: str) -> Optional[Tuple[Any, ...]]:
@@ -948,22 +1027,34 @@ class InputLogger:
     def _held_names(self) -> tuple:
         return tuple(sorted(self._since))
 
-    def _make(self, action: str, kind: str, name: str, now: float, wall: WallTime,
-              row: str, **kw: Any) -> InputEvent:
-        return InputEvent(action=action, kind=kind, name=name, at=now,
-                          wall=wall, raw=row, **kw)
+    def _make(
+        self,
+        action: str,
+        kind: str,
+        name: str,
+        now: float,
+        wall: WallTime,
+        row: str,
+        **kw: Any,
+    ) -> InputEvent:
+        return InputEvent(
+            action=action, kind=kind, name=name, at=now, wall=wall, raw=row, **kw
+        )
 
-    def _press(self, kind: str, name: str, now: float, wall: WallTime, row: str,
-               **kw: Any) -> InputEvent:
+    def _press(
+        self, kind: str, name: str, now: float, wall: WallTime, row: str, **kw: Any
+    ) -> InputEvent:
         self._since[name] = now
         return self._make("PRESS", kind, name, now, wall, row, **kw)
 
-    def _release(self, kind: str, name: str, now: float, wall: WallTime, row: str,
-                 **kw: Any) -> InputEvent:
+    def _release(
+        self, kind: str, name: str, now: float, wall: WallTime, row: str, **kw: Any
+    ) -> InputEvent:
         since = self._since.pop(name, None)
         duration = None if since is None else now - since
-        return self._make("RELEASE", kind, name, now, wall, row,
-                          duration=duration, **kw)
+        return self._make(
+            "RELEASE", kind, name, now, wall, row, duration=duration, **kw
+        )
 
     def _diff_buttons(self, btn: int, now: float, wall: WallTime, row: str) -> list:
         changed = btn ^ self._btn
@@ -992,8 +1083,9 @@ class InputLogger:
             events.append(self._press("hat", HAT_NAMES[hat], now, wall, row))
         return events
 
-    def _diff_stick(self, name: str, x: int, y: int, now: float, wall: WallTime,
-                    row: str) -> list:
+    def _diff_stick(
+        self, name: str, x: int, y: int, now: float, wall: WallTime, row: str
+    ) -> list:
         """スティックの変化を press / release / change に振り分ける。
 
         倒している間は「軌跡」を貯める。マウス操作では倒したまま向きが
@@ -1015,12 +1107,19 @@ class InputLogger:
         deg, mag = self.angle(x, y)
 
         if is_now and not was:
-            self._track[name] = {"from": deg, "last": deg,
-                                 "max_mag": mag, "turn": 0.0, "moves": 0,
-                                 # CHANGE の比較基準。押し始めの値から始める
-                                 "emit_deg": deg, "emit_mag": mag}
-            return [self._press("stick", name, now, wall, row,
-                                x=x, y=y, deg=deg, mag=mag)]
+            self._track[name] = {
+                "from": deg,
+                "last": deg,
+                "max_mag": mag,
+                "turn": 0.0,
+                "moves": 0,
+                # CHANGE の比較基準。押し始めの値から始める
+                "emit_deg": deg,
+                "emit_mag": mag,
+            }
+            return [
+                self._press("stick", name, now, wall, row, x=x, y=y, deg=deg, mag=mag)
+            ]
 
         if was and not is_now:
             # 離した。座標は中立なので、軌跡から「倒していた向き」を渡す
@@ -1032,10 +1131,23 @@ class InputLogger:
                 max_mag = track["max_mag"]
                 turn = track["turn"]
                 moves = track["moves"]
-            return [self._release("stick", name, now, wall, row,
-                                  x=x, y=y, deg=last_deg, mag=max_mag,
-                                  from_deg=None if track is None else track["from"],
-                                  max_mag=max_mag, turn=turn, moves=moves)]
+            return [
+                self._release(
+                    "stick",
+                    name,
+                    now,
+                    wall,
+                    row,
+                    x=x,
+                    y=y,
+                    deg=last_deg,
+                    mag=max_mag,
+                    from_deg=None if track is None else track["from"],
+                    max_mag=max_mag,
+                    turn=turn,
+                    moves=moves,
+                )
+            ]
 
         if was and is_now:
             track = self._track.get(name)
@@ -1069,12 +1181,24 @@ class InputLogger:
                 if track is not None:
                     track["emit_deg"] = deg
                     track["emit_mag"] = mag
-                return [self._make("CHANGE", "stick", name, now, wall, row,
-                                   x=x, y=y, deg=deg, mag=mag,
-                                   from_deg=base.get("from"),
-                                   max_mag=base.get("max_mag"),
-                                   turn=base.get("turn"),
-                                   moves=base.get("moves", 0))]
+                return [
+                    self._make(
+                        "CHANGE",
+                        "stick",
+                        name,
+                        now,
+                        wall,
+                        row,
+                        x=x,
+                        y=y,
+                        deg=deg,
+                        mag=mag,
+                        from_deg=base.get("from"),
+                        max_mag=base.get("max_mag"),
+                        turn=base.get("turn"),
+                        moves=base.get("moves", 0),
+                    )
+                ]
         return []
 
     def _tilted(self, x: int, y: int) -> bool:

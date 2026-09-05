@@ -26,11 +26,9 @@ import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
+from Settings import GuiSettings
 from loguru import logger
 from pynput import keyboard
-
-from Settings import GuiSettings
-
 
 # Joy-Con の色。左右で色を分けると、どちら側のボタンか一目で分かる
 COLOR_L = "#00c3e3"
@@ -279,11 +277,12 @@ class PokeKeycon:
         self.entries[key] = entry
 
         # クリックで入力待ちに入り、離れたら解除する
-        entry.bind("<FocusIn>", lambda _e, it=item: self.start_capture(it))
+        # item は行ごとの仮引数のため、束縛の遅延は起きない。
+        entry.bind("<FocusIn>", lambda _e: self.start_capture(item))
         entry.bind("<FocusOut>", lambda _e: self.stop_capture())
         # 選択中の項目を消したいことがあるので Delete / BackSpace を受ける
-        entry.bind("<Delete>", lambda _e, it=item: self.clear_item(it))
-        entry.bind("<BackSpace>", lambda _e, it=item: self.clear_item(it))
+        entry.bind("<Delete>", lambda _e: self.clear_item(item))
+        entry.bind("<BackSpace>", lambda _e: self.clear_item(item))
 
     def _build_status(self) -> None:
         """操作の説明と、重複などの警告を出す欄。"""

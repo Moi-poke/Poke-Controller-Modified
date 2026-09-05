@@ -2,31 +2,31 @@
 # -*- coding: utf-8 -*-
 # Sender.py - 姿勢（押下状態）を1つに持ち、Transport へ渡す層。
 # コメント方針: なぜこうするかの理由を書く。外部文書への参照は付けない。
+# 下記の互換 import は Sender からは使わないが、モジュール直下の名前が
+#   消えると外部コードの参照が壊れるため残す（未使用でよい）。
+import os  # noqa: F401
+import platform  # noqa: F401
+import threading
 import time
 import traceback
-import threading
 from collections import deque
-
-from logging import getLogger, DEBUG, NullHandler
-
+from logging import DEBUG, NullHandler, getLogger
 from typing import Any, Callable, Dict, Optional
+
 import InputLog
+import serial  # noqa: F401
+
 # 送信の下回り（線を開く・閉じる・1行書き出す）は Transport が持つ。
 #   Sender は「姿勢」と「入力ログ」を持ち、何で運ぶかは知らない。
 #   運び方を替えるときは Transport を差し替える。
 from Commands import Transport
+
 # 互換のため、従来 Sender の直下にあった定数をここからも見えるようにする。
 #   実体は Transport 側の1つ。外部が Sender.MIN_SEND_INTERVAL と
 #     書いていても壊れない（設定・検証コードが読む可能性がある）。
-from Commands.Transport import (BITS_PER_BYTE, MIN_SEND_INTERVAL,
-                               READ_TIMEOUT, SEND_INTERVAL_MARGIN,
-                               SEND_ROW_BYTES, WRITE_TIMEOUT)
-# 下記の互換 import は Sender からは使わないが、モジュール直下の名前が
-#   消えると外部コードの参照が壊れるため残す（未使用でよい）。
-import os                                                    # noqa: F401
-import platform                                              # noqa: F401
-import serial                                                # noqa: F401
-
+from Commands.Transport import (
+    MIN_SEND_INTERVAL,
+)
 
 # 入力ログの既定。ここを書き換えれば起動時の書式が変わる
 INPUT_LOG_FORMAT = "simple"
@@ -73,9 +73,16 @@ def resolve_arbitration_mode(name: Any, logger: Any = None) -> str:
     text = str(name).strip().lower() if name is not None else ""
     if text in ARBITRATION_MODES:
         return text
-    message = ("入力調停の設定 " + repr(name) + " は知らない名前です。"
-               + ARBITRATION_MODE + " として扱います"
-               + "（選べるのは " + " / ".join(ARBITRATION_MODES) + "）。")
+    message = (
+        "入力調停の設定 "
+        + repr(name)
+        + " は知らない名前です。"
+        + ARBITRATION_MODE
+        + " として扱います"
+        + "（選べるのは "
+        + " / ".join(ARBITRATION_MODES)
+        + "）。"
+    )
     if logger is not None:
         logger.warning(message)
     else:
@@ -86,17 +93,22 @@ def resolve_arbitration_mode(name: Any, logger: Any = None) -> str:
 class Sender:
     # 内容が変わらないので実体は1つでよい（旧コードは生成のたびに作り直していた）
     Buttons = InputLog.BUTTON_NAMES
-    Hat = tuple(name.split('.')[1] for name in InputLog.HAT_NAMES)
+    Hat = tuple(name.split(".")[1] for name in InputLog.HAT_NAMES)
 
-    def __init__(self, is_show_serial: Any, if_print: bool = True,
-                 input_log_emit: Optional[Callable[[str], None]] = None,
-                 transport: Optional[Transport.Transport] = None) -> None:
+    def __init__(
+        self,
+        is_show_serial: Any,
+        if_print: bool = True,
+        input_log_emit: Optional[Callable[[str], None]] = None,
+        transport: Optional[Transport.Transport] = None,
+    ) -> None:
         # 運び方（Transport）を1つ持つ。既定は従来と同じテキスト
         #   シリアルなので、何も指定しなければ挙動は不変。
         #   引数で差し替えられるようにしてあるのは、別のプロトコルを
         #   試すためと、検証で偽の線を差し込むため。
-        self.transport = (transport if transport is not None
-                          else Transport.TextSerialTransport())
+        self.transport = (
+            transport if transport is not None else Transport.TextSerialTransport()
+        )
         self.is_show_serial = is_show_serial
 
         self._logger = getLogger(__name__)
@@ -133,11 +145,14 @@ class Sender:
         #   （文字列）を作らないため繋がらず、黙っていると「1行も出ない
         #   のに動いていると思う」形で静かに壊れる。
         self._input_log_linked = bool(
-            self.transport.add_listener(self.input_logger.feed))
+            self.transport.add_listener(self.input_logger.feed)
+        )
         if not self._input_log_linked:
-            msg = ("入力ログは、この通信方式（"
-                   + str(getattr(self.transport, "name", "?"))
-                   + "）では出せません（送信行を作らないため）。")
+            msg = (
+                "入力ログは、この通信方式（"
+                + str(getattr(self.transport, "name", "?"))
+                + "）では出せません（送信行を作らないため）。"
+            )
             print(msg)
             self._logger.warning(msg)
         # 送信の前後で自分の帳簿を付けるための手。計測（time_bef /
@@ -154,8 +169,7 @@ class Sender:
 
     # -- 入力ログの設定 -----------------------------------------------------
 
-    def setInputLogFormat(self, template: str,
-                          actions: Any = None) -> None:
+    def setInputLogFormat(self, template: str, actions: Any = None) -> None:
         """表示書式を差し替える。
 
         template はプリセット名（simple / detail / compact / csv / command /
@@ -198,8 +212,10 @@ class Sender:
     def _liveCapable(self, transport: Any = None) -> bool:
         """Pico live-state worker が必要かを判断する唯一の場所。"""
         target = self.transport if transport is None else transport
-        return (getattr(target, "capability", Transport.LEGACY_ROW)
-                == Transport.PICO_LIVE_STATE)
+        return (
+            getattr(target, "capability", Transport.LEGACY_ROW)
+            == Transport.PICO_LIVE_STATE
+        )
 
     def isLiveCapable(self) -> bool:
         """live 経路（Pico の S 行）を使っているか。
@@ -209,7 +225,6 @@ class Sender:
         定数を知らなくて済むようにするため（循環 import 回避）。
         """
         return bool(self._liveCapable())
-
 
     def setTransport(self, transport: Transport.Transport) -> bool:
         """通信方式を切り替える。
@@ -227,16 +242,20 @@ class Sender:
                 self.transport.close()
             except Exception:
                 self._logger.error(
-                    f"Failed to close previous transport: {traceback.format_exc()}")
+                    f"Failed to close previous transport: {traceback.format_exc()}"
+                )
             self.transport = transport
             self.transport._logger = self._logger
             self.transport.set_hooks(self._onWriteBegin, self._onWriteEnd)
             self._input_log_linked = bool(
-                self.transport.add_listener(self.input_logger.feed))
+                self.transport.add_listener(self.input_logger.feed)
+            )
             if not self._input_log_linked:
-                msg = ("入力ログは、この通信方式（"
-                       + str(getattr(self.transport, "name", "?"))
-                       + "）では出せません（送信行を作らないため）。")
+                msg = (
+                    "入力ログは、この通信方式（"
+                    + str(getattr(self.transport, "name", "?"))
+                    + "）では出せません（送信行を作らないため）。"
+                )
                 print(msg)
                 self._logger.warning(msg)
             if self._liveCapable():
@@ -276,8 +295,7 @@ class Sender:
     @property
     def _send_interval(self) -> float:
         """いま使っている間引き幅。後方互換のための覗き窓。"""
-        return float(getattr(self.transport, "_send_interval",
-                             MIN_SEND_INTERVAL))
+        return float(getattr(self.transport, "_send_interval", MIN_SEND_INTERVAL))
 
     def _calcSendInterval(self, baudrate: int) -> float:
         """通信速度から送信の最小間隔を決める。実体は Transport 側。
@@ -377,21 +395,25 @@ class Sender:
         ev = self._perf_event_time
         start = self._perf_write_start
         end = self.time_aft
-        self._perf_log.append({
-            "event": ev,
-            "write_start": start,
-            "write_end": end,
-            "source": self._perf_event_source,
-            "row": row,
-            # 遅延そのものはここで引いておく。後から引くと、
-            #   event が None の行を数え間違える。
-            "latency": (start - ev) if (ev is not None and start is not None) else None,
-        })
+        self._perf_log.append(
+            {
+                "event": ev,
+                "write_start": start,
+                "write_end": end,
+                "source": self._perf_event_source,
+                "row": row,
+                # 遅延そのものはここで引いておく。後から引くと、
+                #   event が None の行を数え間違える。
+                "latency": (start - ev)
+                if (ev is not None and start is not None)
+                else None,
+            }
+        )
         # 1行出したら次の申告のために空ける（次の event_time を採れる）
         self._perf_event_time = None
         self._perf_event_source = None
 
-    def getPerfLog(self) -> list:
+    def getPerfLog(self) -> list[dict[str, Any]]:
         """記録の写しを返す。読み取り専用。
 
         ここでは統計を計算しない。中央値の求め方や外れ値の扱いは
@@ -407,7 +429,9 @@ class Sender:
             self._perf_event_time = None
             self._perf_event_source = None
 
-    def openSerial(self, portNum: int, portName: str = '', baudrate: int = 9600) -> bool:
+    def openSerial(
+        self, portNum: int, portName: str = "", baudrate: int = 9600
+    ) -> bool:
         """線を開く。中身は Transport が行う。
 
         開けた場合は live 経路に限り worker を起動する。切断で worker を
@@ -464,12 +488,10 @@ class Sender:
             if live:
                 # 4: 送出の完了を待つ。期限を過ぎたら次へ進む。
                 if not self.waitLiveDrained(self.CLOSE_DRAIN_S):
-                    self._logger.error(
-                        "Neutral state was not sent before closing")
+                    self._logger.error("Neutral state was not sent before closing")
                 # 5 から 7: 停止を要求し、起床させ、期限つきで待つ。
                 if not self.stopLiveWorker(self.CLOSE_JOIN_S):
-                    self._logger.error(
-                        "PicoLiveWorker did not stop; closing anyway")
+                    self._logger.error("PicoLiveWorker did not stop; closing anyway")
                 # 8: 入力ログを初期化する。
                 self.input_logger.reset()
         finally:
@@ -492,15 +514,16 @@ class Sender:
         """
         try:
             getter = getattr(self.is_show_serial, "get", None)
-            value = bool(getter()) if callable(getter) else bool(
-                self.is_show_serial)
+            value = bool(getter()) if callable(getter) else bool(self.is_show_serial)
         except Exception:
             # 読めないときは直前の値を保つ。表示の有無で送信は変えない。
             return bool(getattr(self, "_show_serial_last", True))
         self._show_serial_last = value
         return value
 
-    def writeRow(self, row: str, is_show: bool = False, measure_perf: bool = True) -> None:
+    def writeRow(
+        self, row: str, is_show: bool = False, measure_perf: bool = True
+    ) -> None:
         """1行送信する。中身は Transport が行う。
 
         間引き（coalescing）の条件も、送れなかったときの扱いも従来と
@@ -547,7 +570,7 @@ class Sender:
         """
         try:
             if isinstance(output, (list, tuple)):
-                row = ' '.join(str(x) for x in output)
+                row = " ".join(str(x) for x in output)
             else:
                 row = str(output)
             self.input_logger.feed(row)
@@ -581,7 +604,10 @@ class Sender:
         self._posture = {
             "btn": 0,
             "hat": self.POSTURE_HAT_CENTER,
-            "lx": c, "ly": c, "rx": c, "ry": c,
+            "lx": c,
+            "ly": c,
+            "rx": c,
+            "ry": c,
         }
         # 変化印。convert2str と同じ意味で、読み取ると False へ戻る
         # （SendFormat の副作用つき getter と挙動を揃える）。
@@ -599,8 +625,9 @@ class Sender:
         if not hasattr(self, "_posture"):
             self._initPosture()
 
-    def applyButtons(self, press: Any = None, release: Any = None,
-                     source: Any = None) -> None:
+    def applyButtons(
+        self, press: Any = None, release: Any = None, source: Any = None
+    ) -> None:
         """ボタンの押下と解放を差分で適用し、変化があれば live に渡す。
 
         解放を含む申告は優先送信とする。押下が次のスロットまで
@@ -619,9 +646,9 @@ class Sender:
             self._ensurePosture()
             self._ensureOwners()
             bits = int(self._owner_btn.get(owner, 0))
-            for btn in (press or ()):
+            for btn in press or ():
                 bits |= int(btn)
-            for btn in (release or ()):
+            for btn in release or ():
                 bits &= ~int(btn)
             if bits:
                 self._owner_btn[owner] = bits
@@ -647,8 +674,7 @@ class Sender:
             self._ensureHatHold()
             if hat is None:
                 held = self._heldHatValue()
-                self._hat_pos = (held if held is not None
-                                 else self.POSTURE_HAT_CENTER)
+                self._hat_pos = held if held is not None else self.POSTURE_HAT_CENTER
             else:
                 self._hat_pos = int(hat)
             if self._posture["hat"] != self._hat_pos:
@@ -659,11 +685,6 @@ class Sender:
                     snap = self.snapshot()
         if snap is not None:
             self.putLive(snap, priority=priority)
-
-
-
-
-
 
     # 既定の所有者。source を渡さない経路はここへ集める。
     #   所有者が 1 人だけのときは、合成しても現行と同じ値になる。
@@ -808,7 +829,6 @@ class Sender:
         if not hasattr(self, "_owner_saved"):
             self._owner_saved: Dict[str, Any] = {}
 
-
     def dropOwner(self, source: Any = None) -> bool:
         """所有者 1 人分の申告だけを取り下げる。
 
@@ -820,7 +840,7 @@ class Sender:
         with self._lock:
             self._ensurePosture()
             self._ensureOwners()
-            had = (self._owner_btn.pop(owner, None) is not None)
+            had = self._owner_btn.pop(owner, None) is not None
             had = (self._owner_hat.pop(owner, None) is not None) or had
             had = (self._owner_stick.pop(owner, None) is not None) or had
             if had and self._applyComposed():
@@ -881,10 +901,12 @@ class Sender:
             changed = True
         for side, kx, ky in (("L", "lx", "ly"), ("R", "rx", "ry")):
             target = self._composeStickSide(side)
-            tx, ty = target if target is not None else (
-                self.POSTURE_CENTER, self.POSTURE_CENTER)
-            if (int(self._posture[kx]) != int(tx)
-                    or int(self._posture[ky]) != int(ty)):
+            tx, ty = (
+                target
+                if target is not None
+                else (self.POSTURE_CENTER, self.POSTURE_CENTER)
+            )
+            if int(self._posture[kx]) != int(tx) or int(self._posture[ky]) != int(ty):
                 self._posture[kx] = int(tx)
                 self._posture[ky] = int(ty)
                 if side == "L":
@@ -893,7 +915,6 @@ class Sender:
                     self._R_stick_changed = True
                 changed = True
         return changed
-
 
     def _ensureHatHold(self) -> None:
         """Hat の押しっぱなし記録がまだ無ければ作る（遅延初期化）。"""
@@ -925,7 +946,7 @@ class Sender:
         """
         if not self._accept(source):
             return False
-        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)  # 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -942,7 +963,7 @@ class Sender:
         """
         if not self._accept(source, releasing=True):
             return False
-        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)  # 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -957,8 +978,13 @@ class Sender:
             self._ensureHatHold()
             return dict(self._hat_held)
 
-    def applyStick(self, stick: str, x: Optional[int] = None,
-                   y: Optional[int] = None, source: Any = None) -> None:
+    def applyStick(
+        self,
+        stick: str,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        source: Any = None,
+    ) -> None:
         """スティック座標を差分で適用し、変化があれば live に渡す。
 
         中立へ戻す場合のみ優先送信とする。途中の座標は次の値で
@@ -975,8 +1001,12 @@ class Sender:
         with self._lock:
             self._ensurePosture()
             self._ensureOwners()
-            side = ("R" if str(stick).upper().endswith("R") or
-                    str(stick).upper().endswith("RIGHT") else "L")
+            side = (
+                "R"
+                if str(stick).upper().endswith("R")
+                or str(stick).upper().endswith("RIGHT")
+                else "L"
+            )
             kx = side.lower() + "x"
             ky = side.lower() + "y"
             # 自分の前回申告を土台に、渡された軸だけ上書きする。申告が
@@ -985,8 +1015,7 @@ class Sender:
             claim = dict(prev_claim)
             for name, ax, ay in (("L", "lx", "ly"), ("R", "rx", "ry")):
                 if name not in claim:
-                    claim[name] = (int(self._posture[ax]),
-                                   int(self._posture[ay]))
+                    claim[name] = (int(self._posture[ax]), int(self._posture[ay]))
             cx, cy = claim[side]
             if x is not None:
                 cx = int(x)
@@ -999,8 +1028,10 @@ class Sender:
                 if self._liveCapable():
                     snap = self.snapshot()
             if snap is not None:
-                priority = (int(self._posture[kx]) == self.POSTURE_CENTER
-                            and int(self._posture[ky]) == self.POSTURE_CENTER)
+                priority = (
+                    int(self._posture[kx]) == self.POSTURE_CENTER
+                    and int(self._posture[ky]) == self.POSTURE_CENTER
+                )
         if snap is not None:
             self.putLive(snap, priority=priority)
 
@@ -1076,10 +1107,13 @@ class Sender:
             if self._R_stick_changed:
                 send_btn |= 0x1
                 str_R = format(p["rx"], "x") + space + format(p["ry"], "x")
-            row = (format(send_btn, "#06x")
-                   + space + str(int(p["hat"]))
-                   + (space + str_L if self._L_stick_changed else "")
-                   + (space + str_R if self._R_stick_changed else ""))
+            row = (
+                format(send_btn, "#06x")
+                + space
+                + str(int(p["hat"]))
+                + (space + str_L if self._L_stick_changed else "")
+                + (space + str_R if self._R_stick_changed else "")
+            )
             # 読み取ったので印を下ろす（convert2str と同じ副作用）
             self._L_stick_changed = False
             self._R_stick_changed = False
@@ -1102,7 +1136,8 @@ class Sender:
         theirs = sf.convert2str()
         if mine != theirs:
             self._logger.error(
-                f"_buildRow mismatch: mine={mine!r} sendformat={theirs!r}")
+                f"_buildRow mismatch: mine={mine!r} sendformat={theirs!r}"
+            )
         return mine == theirs
 
     # =====================================================================
@@ -1167,8 +1202,9 @@ class Sender:
             # 自動側が明示的に操作を人へ渡している最中か。
             self._arb_handed_over = False
 
-    def setArbitration(self, mode: Optional[str] = None,
-                       cooldown: Optional[float] = None) -> None:
+    def setArbitration(
+        self, mode: Optional[str] = None, cooldown: Optional[float] = None
+    ) -> None:
         """調停の設定を変える。設定画面や起動引数から呼ぶ。
 
         mode は "off" / "human" / "script"。
@@ -1183,8 +1219,8 @@ class Sender:
                 mode = str(mode).lower()
                 if mode not in ("off", "human", "script"):
                     raise ValueError(
-                        f"unknown arbitration mode: {mode!r} "
-                        "(off / human / script)")
+                        f"unknown arbitration mode: {mode!r} (off / human / script)"
+                    )
                 self._arb_mode = mode
                 # 切り替えた瞬間に前の持ち主が残らないよう履歴を捨てる
                 self._arb_last_human = None
@@ -1240,16 +1276,19 @@ class Sender:
             if now - self._arb_last_notify < REJECT_NOTIFY_INTERVAL:
                 self._arb_suppressed += 1
                 return
-            extra = (f"（ほか {self._arb_suppressed} 件）"
-                     if self._arb_suppressed else "")
+            extra = (
+                f"（ほか {self._arb_suppressed} 件）" if self._arb_suppressed else ""
+            )
             self._arb_last_notify = now
             self._arb_suppressed = 0
             notifier = self._arb_notifier
             mode = self._arb_mode
             cooldown = self._arb_cooldown
-        msg = (f"入力調停: {source} からの操作を受け付けませんでした{extra}。"
-               f"（{winner} を優先中 / mode={mode} "
-               f"cooldown={cooldown}秒）")
+        msg = (
+            f"入力調停: {source} からの操作を受け付けませんでした{extra}。"
+            f"（{winner} を優先中 / mode={mode} "
+            f"cooldown={cooldown}秒）"
+        )
         if self._isHumanSource(source):
             msg += "　一時停止すると操作できます。"
         if callable(notifier):
@@ -1281,9 +1320,7 @@ class Sender:
             self._ensureArbitration()
             return bool(getattr(self, "_arb_handed_over", False))
 
-
-    def _accept(self, source: Optional[str],
-                releasing: bool = False) -> bool:
+    def _accept(self, source: Optional[str], releasing: bool = False) -> bool:
         """その申告を受理してよいか。
 
         ここを書き換えるだけで
@@ -1333,8 +1370,10 @@ class Sender:
                     # 触り続けている間は優先が続く（スライド式・意図どおり）。
                     self._arb_last_human = now
                     return True
-                if (self._arb_last_human is not None
-                        and now - self._arb_last_human < self._arb_cooldown):
+                if (
+                    self._arb_last_human is not None
+                    and now - self._arb_last_human < self._arb_cooldown
+                ):
                     self._arb_rejected["auto"] += 1
                     notify = (source, "人の操作")
                 else:
@@ -1346,8 +1385,10 @@ class Sender:
                 if not is_human:
                     self._arb_last_auto = now
                     return True
-                if (self._arb_last_auto is not None
-                        and now - self._arb_last_auto < self._arb_cooldown):
+                if (
+                    self._arb_last_auto is not None
+                    and now - self._arb_last_auto < self._arb_cooldown
+                ):
                     self._arb_rejected["human"] += 1
                     notify = (source, "スクリプト")
                 else:
@@ -1371,7 +1412,7 @@ class Sender:
         """
         if not self._accept(source):
             return False
-        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)  # 入口の時刻（受理した申告だけ測る）
         self.applyButtons(press=btns, source=source)
         return True
 
@@ -1379,7 +1420,7 @@ class Sender:
         """ボタンを離す（差分の申告）。受理したら True。"""
         if not self._accept(source, releasing=True):
             return False
-        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)  # 入口の時刻（受理した申告だけ測る）
         self.applyButtons(release=btns, source=source)
         return True
 
@@ -1393,7 +1434,7 @@ class Sender:
         """
         if not self._accept(source, releasing=hat is None):
             return False
-        self.markEvent(source)   # 入口の時刻（受理した申告だけ測る）
+        self.markEvent(source)  # 入口の時刻（受理した申告だけ測る）
         with self._lock:
             self._ensureHatHold()
             self._ensureOwners()
@@ -1406,9 +1447,13 @@ class Sender:
         self.applyHat(hat)
         return True
 
-    def setStick(self, stick: str, x: Optional[int] = None,
-                 y: Optional[int] = None,
-                 source: Optional[str] = None) -> bool:
+    def setStick(
+        self,
+        stick: str,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        source: Optional[str] = None,
+    ) -> bool:
         """スティックの座標を申告する。常に受理して True を返す。
 
         スティックは連続値であり、ボタンのような所有権になじまない。
@@ -1416,7 +1461,7 @@ class Sender:
         とする。人の手で倒せる操作は、調停の mode にかかわらず出せる。
         複数系統が同時に触った場合は revision が新しい申告が採られる。
         """
-        self.markEvent(source)   # 入口の時刻
+        self.markEvent(source)  # 入口の時刻
         self.applyStick(stick, x, y, source=source)
         return True
 
@@ -1455,28 +1500,6 @@ class Sender:
         self.writeRow(self._buildRow())
         return True
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def _bumpRevision(self) -> int:
         """姿勢が変わったことを記録する。錠の中から呼ぶこと。
 
@@ -1508,8 +1531,10 @@ class Sender:
             return {
                 "btn": int(p["btn"]),
                 "hat": int(p["hat"]),
-                "lx": int(p["lx"]), "ly": int(p["ly"]),
-                "rx": int(p["rx"]), "ry": int(p["ry"]),
+                "lx": int(p["lx"]),
+                "ly": int(p["ly"]),
+                "rx": int(p["rx"]),
+                "ry": int(p["ry"]),
                 "revision": self.getRevision(),
             }
 
@@ -1569,7 +1594,8 @@ class Sender:
         """
         return "S " + " ".join(
             format(Sender._picoField(snap, key), "x")
-            for key in ("btn", "hat", "lx", "ly", "rx", "ry"))
+            for key in ("btn", "hat", "lx", "ly", "rx", "ry")
+        )
 
     @staticmethod
     def _picoField(snap: Dict[str, Any], key: str) -> int:
@@ -1610,8 +1636,15 @@ class Sender:
         目視で「書けている」と言わず、実際に組んで照合する。
         Pico ファームの受け入れ条件だけを根拠にする。
         """
-        base = {"btn": 0, "hat": 8, "lx": 0x80, "ly": 0x80,
-                "rx": 0x80, "ry": 0x80, "revision": 0}
+        base = {
+            "btn": 0,
+            "hat": 8,
+            "lx": 0x80,
+            "ly": 0x80,
+            "rx": 0x80,
+            "ry": 0x80,
+            "revision": 0,
+        }
 
         # 中立の行
         if Sender.encodePicoState(base) != "S 0 8 80 80 80 80":
@@ -1688,7 +1721,6 @@ class Sender:
     # キューの実行が終わるのを待つ上限。押下の長さ＋往復の余裕。
     QUEUE_WAIT_MARGIN_S = 0.5
 
-
     def _ensureLiveState(self) -> None:
         """live 経路の mailbox、worker 状態、統計、表示状態を初期化する。"""
         if not hasattr(self, "_live_lock"):
@@ -1703,9 +1735,13 @@ class Sender:
             self._live_thread = None
         if not hasattr(self, "_live_stats"):
             self._live_stats = {
-                "put": 0, "replaced": 0, "sent": 0,
-                "keepalive": 0, "priority": 0,
-                "last_revision": -1, "inversions": 0,
+                "put": 0,
+                "replaced": 0,
+                "sent": 0,
+                "keepalive": 0,
+                "priority": 0,
+                "last_revision": -1,
+                "inversions": 0,
             }
         if not hasattr(self, "_live_last_snap"):
             self._live_last_snap = None
@@ -1720,8 +1756,9 @@ class Sender:
         if not hasattr(self, "_live_last_shown_snap"):
             self._live_last_shown_snap = None
 
-    def putLive(self, snap: Optional[Dict[str, Any]] = None,
-                priority: bool = False) -> None:
+    def putLive(
+        self, snap: Optional[Dict[str, Any]] = None, priority: bool = False
+    ) -> None:
         """最新の状態を容量 1 の mailbox へ置く（古い未送信は破棄する）。
 
         通常の変化では worker を起床させない。次の 8 ms スロットで最新値
@@ -1757,8 +1794,9 @@ class Sender:
             snap, self._live_box = self._live_box, None
         return snap
 
-    def _showLiveRow(self, snap: Dict[str, Any], now: float,
-                     is_keepalive: bool) -> bool:
+    def _showLiveRow(
+        self, snap: Dict[str, Any], now: float, is_keepalive: bool
+    ) -> bool:
         """送信行の表示可否を返す。表示は 20 Hz に制限し、解放と中立は即時に
         表示する。keepalive は表示しない。
         """
@@ -1768,24 +1806,26 @@ class Sender:
         releasing = False
         if prev is not None:
             stick_released = any(
-                int(prev[k]) != self.POSTURE_CENTER and
-                int(snap[k]) == self.POSTURE_CENTER
+                int(prev[k]) != self.POSTURE_CENTER
+                and int(snap[k]) == self.POSTURE_CENTER
                 for k in ("lx", "ly", "rx", "ry")
             )
             releasing = (
-                (int(snap["btn"]) & int(prev["btn"])) != int(prev["btn"]) or
-                (int(prev["hat"]) != self.POSTURE_HAT_CENTER and
-                 int(snap["hat"]) == self.POSTURE_HAT_CENTER) or
-                stick_released
+                (int(snap["btn"]) & int(prev["btn"])) != int(prev["btn"])
+                or (
+                    int(prev["hat"]) != self.POSTURE_HAT_CENTER
+                    and int(snap["hat"]) == self.POSTURE_HAT_CENTER
+                )
+                or stick_released
             )
-        due = (self._live_last_shown_at is None or
-               now - self._live_last_shown_at >= 0.050)
+        due = (
+            self._live_last_shown_at is None or now - self._live_last_shown_at >= 0.050
+        )
         if releasing or due:
             self._live_last_shown_at = now
             self._live_last_shown_snap = dict(snap)
             return True
         return False
-
 
     def _beginPreciseTimer(self) -> None:
         """Windows のタイマ分解能を 1ms へ上げる。
@@ -1798,6 +1838,7 @@ class Sender:
             return
         try:
             import ctypes
+
             ctypes.WinDLL("winmm").timeBeginPeriod(1)
             self._live_timer_raised = True
         except Exception:
@@ -1810,11 +1851,11 @@ class Sender:
             return
         try:
             import ctypes
+
             ctypes.WinDLL("winmm").timeEndPeriod(1)
         except Exception:
             pass
         self._live_timer_raised = False
-
 
     def _liveLoop(self, transport: Any) -> None:
         """8 ms の締切ごとに最新状態を送り、無変化時は 88 ms で再送する。
@@ -1850,8 +1891,11 @@ class Sender:
                     with self._live_lock:
                         last_snap = self._live_last_snap
                         last_at = self._live_last_sent_at
-                    if (last_snap is None or last_at is None or
-                            now - last_at < self.LIVE_KEEPALIVE_S):
+                    if (
+                        last_snap is None
+                        or last_at is None
+                        or now - last_at < self.LIVE_KEEPALIVE_S
+                    ):
                         continue
                     snap = last_snap
                     is_keepalive = True
@@ -1860,8 +1904,7 @@ class Sender:
                 self._recordLiveOrder(snap)
                 try:
                     show = self._showLiveRow(snap, now, is_keepalive)
-                    transport.send_row(self.encodePicoState(snap),
-                                       measure_perf=show)
+                    transport.send_row(self.encodePicoState(snap), measure_perf=show)
                     with self._live_lock:
                         self._live_stats["sent"] += 1
                         if is_keepalive:
@@ -1902,8 +1945,9 @@ class Sender:
         self._live_last_shown_at = None
         self._live_last_shown_snap = None
         self.putLive(self.snapshot())
-        thread = threading.Thread(target=self._liveLoop, args=(transport,),
-                                  name="PicoLiveWorker", daemon=True)
+        thread = threading.Thread(
+            target=self._liveLoop, args=(transport,), name="PicoLiveWorker", daemon=True
+        )
         self._live_thread = thread
         thread.start()
         return True
@@ -1960,8 +2004,9 @@ class Sender:
         """キュー対応の記憶を消す。相手が変わる場面で呼ぶ。"""
         self._queue_unsupported = False
 
-    def runQueued(self, duration: float, buttons: Any = None,
-                  source: Optional[str] = None) -> bool:
+    def runQueued(
+        self, duration: float, buttons: Any = None, source: Optional[str] = None
+    ) -> bool:
         """押下を、Pico のキューで duration だけ実行する。
 
         押して待って離すのを PC 側で行わず、Pico に時刻と長さを渡す。
@@ -2006,12 +2051,11 @@ class Sender:
         snap = self.snapshot()
         if buttons is not None:
             bits = int(snap["btn"])
-            for btn in (buttons if isinstance(buttons, (list, tuple))
-                        else [buttons]):
+            for btn in buttons if isinstance(buttons, (list, tuple)) else [buttons]:
                 try:
                     bits |= int(btn)
                 except (TypeError, ValueError):
-                    return False    # 解釈できない値は従来経路へ落とす
+                    return False  # 解釈できない値は従来経路へ落とす
             snap = dict(snap)
             snap["btn"] = bits
 
@@ -2039,8 +2083,8 @@ class Sender:
         流してから False を返す。
         """
         from Commands.WakeLink import expect
-        first = expect(transport, line, ("QOK", "QFULL", "ERR", "BUSY"),
-                       timeout=0.5)
+
+        first = expect(transport, line, ("QOK", "QFULL", "ERR", "BUSY"), timeout=0.5)
         if first is None or first.startswith("ERR"):
             # 無応答・書式違いはキュー非対応。以後は Q へ回さない。
             self._noteQueueSupported(False)
@@ -2049,8 +2093,7 @@ class Sender:
             # QFULL / BUSY: 対応はしているが今は混んでいる。
             return False
         self._noteQueueSupported(True)
-        second = expect(transport, "R", ("QRUN", "QEMPTY", "ERR", "BUSY"),
-                        timeout=0.5)
+        second = expect(transport, "R", ("QRUN", "QEMPTY", "ERR", "BUSY"), timeout=0.5)
         if second is not None and second.startswith("QRUN"):
             return True
         # R が通らないと、積んだ Q が次回の R で誤爆する。N で流す。
@@ -2095,7 +2138,6 @@ class Sender:
         time.sleep(float(duration))
         return True
 
-
     def discardLive(self) -> bool:
         """mailbox の未送信の状態を破棄する。
 
@@ -2127,7 +2169,6 @@ class Sender:
             time.sleep(0.001)
         with self._live_lock:
             return self._live_box is None
-
 
     def stopLiveWorker(self, timeout: float = 1.0) -> bool:
         """常駐ワーカーを止める。止まるまで待つ。
@@ -2163,7 +2204,13 @@ class Sender:
         """live統計を初期化する。"""
         self._ensureLiveState()
         with self._live_lock:
-            for key in ("put", "replaced", "sent", "keepalive",
-                        "priority", "inversions"):
+            for key in (
+                "put",
+                "replaced",
+                "sent",
+                "keepalive",
+                "priority",
+                "inversions",
+            ):
                 self._live_stats[key] = 0
             self._live_stats["last_revision"] = -1

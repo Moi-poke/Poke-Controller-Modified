@@ -16,12 +16,10 @@ from __future__ import annotations
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
-from typing import Any, Callable, List, Optional
-
-from loguru import logger
+from typing import Any, Callable, Optional
 
 import InputLog
-
+from loguru import logger
 
 # 対象イベントのチェックボックス。(内部名, 画面に出す名前)
 ACTION_ITEMS = (

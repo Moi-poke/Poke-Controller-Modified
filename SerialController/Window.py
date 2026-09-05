@@ -21,37 +21,35 @@ import argparse
 import os
 import platform
 import subprocess
-import traceback
 import sys
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
+import traceback
 from tkinter import Tk
 from typing import Any
 
-import cv2
-from loguru import logger
-from pygubu.widgets.scrollbarhelper import ScrollbarHelper
-
+import CommandPalette
+import CommandStats
+import CommandTags
+import LogPane
 import PokeConLogger
 import Settings
+import TagEditor
 import Utility as util
+import WindowGeometry
+import WindowUtils
+import cv2
 from Camera import Camera
 from CommandLoader import CommandLoader
+from CommandTags import TAG_ALL
 from Commands import McuCommandBase, PythonCommandBase, Sender, Transport
 from Commands.Keys import KeyPress
 from GuiAssets import CaptureArea, CaptureAreaProxy, ControllerGUI
 from Keyboard import SwitchKeyboardController
-import CommandTags
-import CommandStats
-import CommandPalette
-import TagEditor
-import LogPane
-import WindowUtils
-import WindowGeometry
-from CommandTags import TAG_ALL, TAG_UNCLASSIFIED
 from Menubar import PokeController_Menubar
-
+from loguru import logger
+from pygubu.widgets.scrollbarhelper import ScrollbarHelper
 
 NAME = "Poke-Controller"
 VERSION = "v3.5.2 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
@@ -83,11 +81,25 @@ STOP_WATCH_MS = 500
 STOP_NOTIFY_MS = 5000
 
 
+class CameraLabelframe(ttk.Labelframe):
+    """カメラ枠。マウスでのスティック操作フラグを持つ。
+
+    GuiAssets の CaptureArea が master 経由でこの2つを読む。
+    動的に足すと型に見えなくなるため、型として宣言する。
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.is_use_left_stick_mouse = tk.BooleanVar()
+        self.is_use_right_stick_mouse = tk.BooleanVar()
+
+
 class PokeControllerApp:
     """メインウィンドウ."""
 
-    def __init__(self, master: Tk | None = None, profile: str = "",
-                 transport: str = "") -> None:
+    def __init__(
+        self, master: Tk | None = None, profile: str = "", transport: str = ""
+    ) -> None:
         """profile を渡すと設定・共有メモリを分けて並列起動できる。
 
         transport は通信方式のプリセット名。
@@ -189,7 +201,7 @@ class PokeControllerApp:
         self.camera_keys: dict[int, str] = {}
         self._camera_labels: list[str] = []
         self.camera_key = tk.StringVar()
-        self._display_after_id: Any = None
+        self._display_after_id = None
         self._sash_after_id: Any = None
         # 停止の見張り（_watchStopped）の予約。終了時に取り消せるよう
         self._watch_after_id: Any = None
@@ -207,12 +219,12 @@ class PokeControllerApp:
         self._build_command_frame()
         self._build_log_area()
 
-        self.frame_1.config(height="720", padding="5", relief="flat", width="1280")
-        self.frame_1.pack(expand="true", fill="both", side="top")
-        self.frame_1.columnconfigure("3", weight="1")
+        self.frame_1.config(height=720, padding=5, relief="flat", width=1280)
+        self.frame_1.pack(expand=True, fill="both", side="top")
+        self.frame_1.columnconfigure(3, weight=1)
 
     def _build_camera_frame(self) -> None:
-        self.camera_lf = ttk.Labelframe(self.frame_1)
+        self.camera_lf = CameraLabelframe(self.frame_1)
 
         self.camera_id_label = ttk.Label(self.camera_lf)
         self.camera_id_label.config(anchor="center", text="Camera ID:")
@@ -221,16 +233,16 @@ class PokeControllerApp:
         self.camera_entry = ttk.Entry(self.camera_lf)
         self.camera_id = tk.IntVar()
         self.camera_entry.config(state="normal", textvariable=self.camera_id)
-        self.camera_entry.grid(column="1", padx="5", row="0", sticky="ew")
+        self.camera_entry.grid(column=1, padx="5", row=0, sticky="ew")
         self.camera_entry.columnconfigure("1", uniform="0")
 
         self.reloadButton = ttk.Button(self.camera_lf)
         self.reloadButton.config(text="Reload Camera", command=self.openCamera)
-        self.reloadButton.grid(column="2", padx="5", row="0", sticky="ew")
+        self.reloadButton.grid(column=2, padx="5", row=0, sticky="ew")
 
         self.separator_1 = ttk.Separator(self.camera_lf)
         self.separator_1.config(orient="vertical")
-        self.separator_1.grid(column="3", row="0", sticky="ns")
+        self.separator_1.grid(column=3, row=0, sticky="ns")
 
         self.is_show_realtime = tk.BooleanVar()
         self.cb_show_realtime = ttk.Checkbutton(self.camera_lf)
@@ -239,25 +251,25 @@ class PokeControllerApp:
             variable=self.is_show_realtime,
             command=self._on_setting_changed,
         )
-        self.cb_show_realtime.grid(column="4", row="0")
+        self.cb_show_realtime.grid(column=4, row=0)
 
         self.separator_2 = ttk.Separator(self.camera_lf)
         self.separator_2.config(orient="vertical")
-        self.separator_2.grid(column="5", row="0", sticky="ns")
+        self.separator_2.grid(column=5, row=0, sticky="ns")
 
         # -- キャプチャ操作
         self.capture_f = ttk.Frame(self.camera_lf)
         self.captureButton = ttk.Button(self.capture_f)
         self.captureButton.config(text="Capture", command=self.saveCapture)
-        self.captureButton.grid(column="0", row="0")
+        self.captureButton.grid(column=0, row=0)
 
         self.open_folder_img = tk.PhotoImage(file=OPEN_DIR_ICON_PATH)
         self.OpencaptureButton = ttk.Button(self.capture_f)
         self.OpencaptureButton.config(
             image=self.open_folder_img, command=self.OpenCaptureDir
         )
-        self.OpencaptureButton.grid(column="1", row="0")
-        self.capture_f.grid(column="6", row="0", sticky="ns")
+        self.OpencaptureButton.grid(column=1, row=0)
+        self.capture_f.grid(column=6, row=0, sticky="ns")
 
         # -- FPS / 表示サイズ
         self.camera_f2 = ttk.Frame(self.camera_lf)
@@ -372,46 +384,38 @@ class PokeControllerApp:
             variable=self.is_show_serial,
             command=self._on_setting_changed,
         )
-        self.cb_show_serial.grid(
-            column="7", columnspan="2", padx="5", row="0", sticky="ew"
-        )
+        self.cb_show_serial.grid(column=7, columnspan=2, padx="5", row=0, sticky="ew")
 
         # 通信方式の選択。
         #   候補は通信方式の一覧から引く。ここに名前を
         #     書き並べない（実装を足したのに画面に出ない、を防ぐ）。
         self.transport_label = ttk.Label(self.serial_lf)
         self.transport_label.config(text="Transport: ")
-        self.transport_label.grid(column="0", padx="5", row="1", sticky="ew")
+        self.transport_label.grid(column=0, padx="5", row=1, sticky="ew")
 
         self.transport_cb = ttk.Combobox(self.serial_lf)
         self.transport_cb.config(
-            state="readonly", textvariable=self.transport_name, width="28"
+            state="readonly", textvariable=self.transport_name, width=28
         )
-        self.transport_cb.grid(column="1", padx="5", row="1", sticky="ew")
-        self.transport_cb.bind(
-            "<<ComboboxSelected>>", self.applyTransport, add=""
-        )
+        self.transport_cb.grid(column=1, padx="5", row=1, sticky="ew")
+        self.transport_cb.bind("<<ComboboxSelected>>", self.applyTransport, add="")
 
         # 入力の優先付けの選択。候補は送信側の許可値から
         #   引く（画面に名前を書き並べない）。既定の off は本家と同じ
         #   挙動で、script を選ぶと実行中の手操作を断る。
         self.arbitration_label = ttk.Label(self.serial_lf)
         self.arbitration_label.config(text="入力調停: ")
-        self.arbitration_label.grid(column="0", padx="5", row="2", sticky="ew")
+        self.arbitration_label.grid(column=0, padx="5", row=2, sticky="ew")
 
         self.arbitration_cb = ttk.Combobox(self.serial_lf)
         self.arbitration_cb.config(
-            state="readonly", textvariable=self.arbitration_mode, width="28"
+            state="readonly", textvariable=self.arbitration_mode, width=28
         )
-        self.arbitration_cb.grid(column="1", padx="5", row="2", sticky="ew")
-        self.arbitration_cb.bind(
-            "<<ComboboxSelected>>", self.applyArbitration, add=""
-        )
+        self.arbitration_cb.grid(column=1, padx="5", row=2, sticky="ew")
+        self.arbitration_cb.bind("<<ComboboxSelected>>", self.applyArbitration, add="")
 
         self.serial_lf.config(text="Serial Settings")
-        self.serial_lf.grid(
-            column="0", columnspan="2", padx="5", row="1", sticky="nsew"
-        )
+        self.serial_lf.grid(column=0, columnspan=2, padx="5", row=1, sticky="nsew")
 
     def _build_control_frame(self) -> None:
         self.control_lf = ttk.Labelframe(self.frame_1)
@@ -423,7 +427,7 @@ class PokeControllerApp:
             variable=self.is_use_keyboard,
             command=self._on_keyboard_toggled,
         )
-        self.cb_use_keyboard.grid(column="0", padx="10", pady="5", sticky="ew")
+        self.cb_use_keyboard.grid(column=0, padx="10", pady="5", sticky="ew")
 
         self.cb_left_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_left_stick_mouse.config(
@@ -431,9 +435,7 @@ class PokeControllerApp:
             variable=self.camera_lf.is_use_left_stick_mouse,
             command=self._on_left_stick_toggled,
         )
-        self.cb_left_stick_mouse.grid(
-            column="1", row="0", padx="10", pady="5", sticky="ew"
-        )
+        self.cb_left_stick_mouse.grid(column=1, row=0, padx="10", pady="5", sticky="ew")
 
         self.cb_right_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_right_stick_mouse.config(
@@ -442,19 +444,17 @@ class PokeControllerApp:
             command=self._on_right_stick_toggled,
         )
         self.cb_right_stick_mouse.grid(
-            column="1", row="1", padx="10", pady="5", sticky="ew"
+            column=1, row=1, padx="10", pady="5", sticky="ew"
         )
 
         self.simpleConButton = ttk.Button(self.control_lf)
         self.simpleConButton.config(
             text="Controller", command=self.createControllerWindow
         )
-        self.simpleConButton.grid(column="0", padx="10", pady="5", row="1", sticky="ew")
+        self.simpleConButton.grid(column=0, padx="10", pady="5", row=1, sticky="ew")
 
         self.control_lf.config(height="200", text="Controller")
-        self.control_lf.grid(
-            column="0", padx="5", row="2", columnspan="2", sticky="nsew"
-        )
+        self.control_lf.grid(column=0, padx="5", row=2, columnspan=2, sticky="nsew")
 
     def _build_command_frame(self) -> None:
         self.command_lf = ttk.Labelframe(self.frame_1)
@@ -514,25 +514,20 @@ class PokeControllerApp:
 
         # Notebook より先に pack して、絞り込みを上の段に置く。
         self.filter_f.pack(fill="x", expand=False, padx="5", pady="2", side="top")
-        self.Command_nb.pack(
-            fill="both", expand=True, padx="5", pady="5", side="top"
-        )
+        self.Command_nb.pack(fill="both", expand=True, padx="5", pady="5", side="top")
 
         # タブを切り替えたら、そのタブ側の一覧へ絞り込みをかけ直す。
         self.Command_nb.bind(
             "<<NotebookTabChanged>>", self.onCommandFilterChanged, add=""
         )
 
-
         self.reloadCommandButton = ttk.Button(self.Commands_2_f)
         self.reloadCommandButton.config(text="Reload", command=self.reloadCommands)
-        self.reloadCommandButton.grid(
-            column="0", padx="5", pady="5", row="1", sticky="ew"
-        )
+        self.reloadCommandButton.grid(column=0, padx="5", pady="5", row=1, sticky="ew")
 
         self.startButton = ttk.Button(self.Commands_2_f)
         self.startButton.config(text="Start", command=self.startPlay)
-        self.startButton.grid(column="1", padx="5", pady="5", row="1", sticky="ew")
+        self.startButton.grid(column=1, padx="5", pady="5", row=1, sticky="ew")
 
         # 一時停止。Start/Stop の隣に置く。停止と紛らわしくならないよう
         # 実行中だけ押せる状態にする。
@@ -540,16 +535,16 @@ class PokeControllerApp:
         self.pauseButton.config(
             text="Pause", command=self.togglePause, state="disabled"
         )
-        self.pauseButton.grid(column="2", padx="5", pady="5", row="1", sticky="ew")
+        self.pauseButton.grid(column=2, padx="5", pady="5", row=1, sticky="ew")
 
         self.Commands_f.pack(
             fill="both", expand=True, padx="5", pady="5", anchor=tk.E, side="top"
         )
         self.Commands_2_f.pack(
-            fill=None, expand=True, padx="5", pady="5", anchor=tk.E, side="top"
+            fill="none", expand=True, padx=5, pady=5, anchor=tk.E, side="top"
         )
         self.command_lf.config(height="200", text="Command")
-        self.command_lf.grid(column="2", padx="5", row="1", rowspan="2", sticky="nsew")
+        self.command_lf.grid(column=2, padx="5", row=1, rowspan=2, sticky="nsew")
 
     def _build_log_area(self) -> None:
         """ログ欄を組み立てる。
@@ -586,9 +581,7 @@ class PokeControllerApp:
         self.inputLogArea = WindowUtils.makeLogText(self.input_scroll)
         self.log_nb.add(self.input_scroll, text="入力")
 
-        self.log_nb.grid(
-            column="3", padx="5", pady="5", row="0", rowspan="3", sticky="nsew"
-        )
+        self.log_nb.grid(column=3, padx="5", pady="5", row=0, rowspan=3, sticky="nsew")
 
         self._build_log_toolbar()
         # 仕切り位置の復元は、ウィジェットの大きさが確定してからでないと
@@ -602,7 +595,7 @@ class PokeControllerApp:
         止めたいときにすぐ止められる口を用意しておく。
         """
         bar = ttk.Frame(self.frame_1)
-        bar.grid(column="3", padx="5", row="3", sticky="ew")
+        bar.grid(column=3, padx="5", row=3, sticky="ew")
 
         self.log_autoscroll = tk.BooleanVar(value=True)
         ttk.Checkbutton(bar, text="追従", variable=self.log_autoscroll).pack(
@@ -669,7 +662,6 @@ class PokeControllerApp:
     def _remember_sash(self, *event: Any) -> None:
         if WindowGeometry.rememberSash(self.log_pane, self.settings):
             self._on_setting_changed()
-
 
     def loadSettings(self) -> None:
         self.settings = Settings.GuiSettings(self.profile)
@@ -836,9 +828,7 @@ class PokeControllerApp:
             return int(self.baud_rate.get())
         except (TypeError, ValueError, tk.TclError):
             fallback = BAUD_RATE_VALUES[0]
-            logger.warning(
-                f"Baud Rate を数値として読めないため {fallback} を使います"
-            )
+            logger.warning(f"Baud Rate を数値として読めないため {fallback} を使います")
             return fallback
 
     def _cameraIdOrNone(self) -> int | None:
@@ -872,7 +862,7 @@ class PokeControllerApp:
         )
         self.preview.config(cursor="crosshair")
         self.preview.grid(
-            column="0", columnspan="7", row="2", padx="5", pady="5", sticky=tk.NSEW
+            column=0, columnspan=7, row=2, padx="5", pady="5", sticky=tk.NSEW
         )
 
         # 復元したチェック状態を実際のマウス操作へ反映する。設定を読んだ
@@ -901,7 +891,6 @@ class PokeControllerApp:
         logger.error(message)
         return False
 
-
     def assignCamera(self, event: Any = None) -> None:
         """入力途中のIDで表示名だけ追随させる。切替と保存は行わない。"""
         try:
@@ -921,7 +910,9 @@ class PokeControllerApp:
             self.camera_id.set(previous)
             self.assignCamera()
             return "break"
-        if cam_id < 0 or (self.camera_dic is not None and cam_id not in self.camera_dic):
+        if cam_id < 0 or (
+            self.camera_dic is not None and cam_id not in self.camera_dic
+        ):
             print("Camera IDが範囲外です。元の値へ戻します")
             self.camera_id.set(previous)
             self.assignCamera()
@@ -934,7 +925,10 @@ class PokeControllerApp:
             return "break"
         self.camera_id.set(previous)
         self.camera_key.set(self.camera_keys.get(previous, ""))
-        self.assignCamera(); self.openCamera(); return "break"
+        self.assignCamera()
+        self.openCamera()
+        return "break"
+
     def locateCameraCmbbox(self) -> None:
         """接続されているカメラを列挙してコンボボックスへ入れる。
 
@@ -1037,9 +1031,6 @@ class PokeControllerApp:
         self.assignCamera()
         self.openCamera()
 
-
-
-
     def saveCapture(self) -> None:
         """画面の1枚を保存し、結果をログ欄へ知らせる。
 
@@ -1117,6 +1108,7 @@ class PokeControllerApp:
         else:
             directory = os.path.join(BASE_DIR, "Commands", "McuCommands")
         WindowUtils.openDirectory(directory, self.os_name)
+
     # ------------------------------------------------------------------
     # シリアル / キーボード
     # ------------------------------------------------------------------
@@ -1201,7 +1193,6 @@ class PokeControllerApp:
         """
         self.refreshComPorts()
         self.activateSerial()
-
 
     def _apply_input_log_settings(self) -> None:
         """入力ログの設定を Sender へ反映する。
@@ -1305,7 +1296,8 @@ class PokeControllerApp:
         """選択欄の候補を Sender の許可値から組み直し、現在値を選ぶ。"""
         self.arbitration_cb.config(values=list(Sender.list_arbitration_modes()))
         mode = Sender.resolve_arbitration_mode(
-            self.settings.arbitration_mode.get(), logger=logger)
+            self.settings.arbitration_mode.get(), logger=logger
+        )
         self.arbitration_mode.set(mode)
 
     def _arbitrationCooldown(self) -> float:
@@ -1323,13 +1315,13 @@ class PokeControllerApp:
           画面の値は設定へ残す。Sender があればその場で適用する。
         """
         mode = Sender.resolve_arbitration_mode(
-            self.arbitration_mode.get(), logger=logger)
+            self.arbitration_mode.get(), logger=logger
+        )
         # 解決後の名前を画面へ戻す。知らない名前を選んだまま残さない
         self.arbitration_mode.set(mode)
         self.settings.arbitration_mode.set(mode)
         if self.ser is not None:
-            self.ser.setArbitration(mode=mode,
-                                    cooldown=self._arbitrationCooldown())
+            self.ser.setArbitration(mode=mode, cooldown=self._arbitrationCooldown())
         message = f"入力調停を {mode} に切り替えました。"
         if mode == "script":
             message += "　実行中の手操作は断ります（一時停止すれば操作できます）。"
@@ -1340,7 +1332,6 @@ class PokeControllerApp:
         print(message)
         logger.info(message)
         self._on_setting_changed()
-
 
     def _start_serial(self) -> None:
         # 入力ログは print と混ぜず、専用のキューへ流す。同じ経路だと
@@ -1356,11 +1347,11 @@ class PokeControllerApp:
         )
         # 設定の入力の優先付けを反映する。送信側を作り直しても
         #   画面の選択が効いたままになるよう、生成のたびに適用する。
-        self.ser.setArbitration(mode=self.arbitration_mode.get(),
-                                cooldown=self._arbitrationCooldown())
+        self.ser.setArbitration(
+            mode=self.arbitration_mode.get(), cooldown=self._arbitrationCooldown()
+        )
         self._apply_input_log_settings()
         self.activateSerial()
-
 
     def activateSerial(self) -> None:
         """ポートを開く。既に開いていれば閉じてから開き直す。
@@ -1572,10 +1563,7 @@ class PokeControllerApp:
         if not self.py_classes and not self.mcu_classes:
             # 全滅は「壊れたコマンドが1つある」とは症状が違う。
             # 黙って空の一覧を出すと原因に辿り着けないので知らせる。
-            message = (
-                "コマンドを1つも読み込めませんでした"
-                f"（{python_dir} / {mcu_dir}）"
-            )
+            message = f"コマンドを1つも読み込めませんでした（{python_dir} / {mcu_dir}）"
             print(message)
             logger.error(message)
         self.setCommandItems()
@@ -1638,9 +1626,7 @@ class PokeControllerApp:
                 tags = tag_table.get(name, [])
                 # 絞り込みの判定にだけ仮想タグを混ぜる。表示の前置は
                 # 実体のタグだけにして、履歴で見た目が変わらないようにする。
-                matched = tags + CommandStats.virtualTags(
-                    self.command_stats, name
-                )
+                matched = tags + CommandStats.virtualTags(self.command_stats, name)
                 if tag != TAG_ALL and tag not in matched:
                     continue
                 label = CommandTags.displayName(name, tags)
@@ -1684,7 +1670,7 @@ class PokeControllerApp:
         """検索欄・タグ・タブの切り替えから呼ばれる。"""
         self.applyCommandFilter()
 
-    def clearCommandFilter(self, *event: Any) -> None:
+    def clearCommandFilter(self, *event: Any) -> str:
         """検索語とタグを既定へ戻し、検索欄から抜ける。
 
         Esc は停止(StopCommandWithEsc)にも割り当ててある。検索欄に
@@ -1729,11 +1715,9 @@ class PokeControllerApp:
 
         # いま見えているタブを対象にする。Python と Mcu で候補が別なので、
         # 画面と違うタブのコマンドを出すと選んだあとに取り違える。
-        combo = self.py_cb
         names = self.py_all_names
         tag_table = self.py_tags
         if self.Command_nb.index(self.Command_nb.select()) != 0:  # type: ignore
-            combo = self.mcu_cb
             names = self.mcu_all_names
             tag_table = self.mcu_tags
 
@@ -1749,8 +1733,12 @@ class PokeControllerApp:
             self._palette = None
 
         self._palette = CommandPalette.CommandPalette(
-            self.root, list(names), labels, self.command_stats,
-            self._runFromPalette, onClose,
+            self.root,
+            list(names),
+            labels,
+            self.command_stats,
+            self._runFromPalette,
+            onClose,
         )
         return "break"
 
@@ -1781,7 +1769,6 @@ class PokeControllerApp:
         combo.set(label)
         self.assignCommand()
         self.startPlay()
-
 
     def openTagEditor(self, *event: Any) -> None:
         """選択中のコマンドのタグを編集する小窓を開く。
@@ -1856,18 +1843,6 @@ class PokeControllerApp:
             self.cur_command = self.mcu_cur_command
         enabled = self.cur_command is not None
         self.startButton["state"] = "normal" if enabled else "disabled"
-
-
-
-
-
-
-
-
-
-
-
-
 
     def _buildCommand(self, cmd_class: Any) -> Any:
         """コマンドを1つ生成する。失敗したら None を返す。
@@ -2088,9 +2063,7 @@ class PokeControllerApp:
         token = self._run_token
 
         try:
-            started = self.cur_command.start(
-                self.ser, lambda: self.stopPlayPost(token)
-            )
+            started = self.cur_command.start(self.ser, lambda: self.stopPlayPost(token))
         except Exception:
             # スレッドを起こす前に落ちると後始末も呼ばれない。ここで戻す。
             print("コマンドを開始できませんでした")
@@ -2225,7 +2198,7 @@ class PokeControllerApp:
             logger.debug("終了処理中のため後始末を省きました")
             return
         try:
-            self.root.after(0, lambda t=token: self._stopPlayPostOnGui(t))
+            self.root.after(0, lambda: self._stopPlayPostOnGui(token))
         except (tk.TclError, RuntimeError):
             # 終了処理の最中に終わった場合。画面はもう無いので何もしない。
             # RuntimeError は「GUI スレッドが mainloop にいない」ときに
@@ -2240,8 +2213,8 @@ class PokeControllerApp:
         から実際に走るまでの間に、次の実行が始まっていることがある。
         積む時点だけで見ても足りず、走る時点でも見る必要がある。
         （実行1の後始末が積まれたまま _watchStopped が先に画面を戻し、
-        　利用者が実行2を始めたあとで積まれていた分が走ると、動いて
-        　いる実行2の画面が空きへ戻り Start が押せてしまう）
+        利用者が実行2を始めたあとで積まれていた分が走ると、動いて
+        いる実行2の画面が空きへ戻り Start が押せてしまう）
 
         操作を戻すことを最優先にする。一覧の作り直しは付随処理なので、
         そこで例外が出てもボタンは戻っていなければならない。以前は
@@ -2351,14 +2324,17 @@ class PokeControllerApp:
         finally:
             if not self._closing:
                 try:
-                    self._display_after_id = self.logArea.after(LogPane.FLUSH_INTERVAL_MS, self.display_text)
+                    self._display_after_id = self.logArea.after(
+                        LogPane.FLUSH_INTERVAL_MS, self.display_text
+                    )
                 except (tk.TclError, RuntimeError):
                     self._display_after_id = None
+
     def run(self) -> None:
         logger.debug("Start Poke-Controller")
         self.mainwindow.mainloop()
 
-    def _stopRunningCommand(self) -> None:
+    def _stopRunningCommand(self) -> bool:
         """終了に先立ってコマンドを止める。
 
         alive は「停止を要求されていないか」でしかない。finish() も

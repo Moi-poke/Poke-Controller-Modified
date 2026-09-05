@@ -1,0 +1,6 @@
+#!/bin/sh
+# pre-commitフック。task本体が無くても動くよう uv を直接呼ぶ。
+# 有効化: task setup_dev（= git config core.hooksPath .githooks）
+set -e
+uv run --frozen ruff check SerialController tools
+uv run --frozen ruff format --check SerialController tools

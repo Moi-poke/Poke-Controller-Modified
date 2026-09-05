@@ -7,7 +7,7 @@ from Commands.PythonCommandBase import ImageProcPythonCommand
 
 # auto releasing pokemons
 class AutoRelease(ImageProcPythonCommand):
-    NAME = '自動リリース'
+    NAME = "自動リリース"
 
     def __init__(self, cam):
         super().__init__(cam)
@@ -24,9 +24,10 @@ class AutoRelease(ImageProcPythonCommand):
                     self.Release()
                 else:
                     # if shiny, then skip
-                    if not self.isContainTemplate('shiny_mark.png', threshold=0.9):
-                        if self.isContainTemplate('status.png',
-                                                  threshold=0.7):  # Maybe this threshold works for only Japanese version.
+                    if not self.isContainTemplate("shiny_mark.png", threshold=0.9):
+                        if self.isContainTemplate(
+                            "status.png", threshold=0.7
+                        ):  # Maybe this threshold works for only Japanese version.
                             # Release a pokemon
                             self.Release()
 

@@ -21,9 +21,8 @@ from __future__ import annotations
 import json
 import os
 
-from loguru import logger
-
 import Utility as util
+from loguru import logger
 
 TAGS_JSON = "Commands/tags.json"
 TAG_UNCLASSIFIED = "未分類"  # タグが1つも無いものへ必ず付ける

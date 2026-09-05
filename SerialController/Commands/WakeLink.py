@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 import traceback
-from logging import getLogger, DEBUG, NullHandler
+from logging import DEBUG, NullHandler, getLogger
 from typing import Any, List, Optional
 
 _logger = getLogger(__name__)
@@ -40,8 +40,8 @@ def _lock_of(transport: Any) -> Any:
         def __enter__(self) -> None:
             return None
 
-        def __exit__(self, *args: Any) -> bool:
-            return False
+        def __exit__(self, *args: Any) -> None:
+            return None
 
     lock = getattr(transport, "_lock", None)
     if lock is None:
@@ -87,7 +87,7 @@ def read_lines(transport: Any, duration: float) -> List[str]:
                 if idx < 0:
                     break
                 raw = bytes(buf[:idx])
-                del buf[:idx + 1]
+                del buf[: idx + 1]
                 try:
                     out.append(raw.decode("ascii", errors="replace").strip())
                 except Exception:
@@ -111,8 +111,7 @@ def drain(transport: Any) -> None:
         pass
 
 
-def query(transport: Any, line: str, prefixes: Any,
-          timeout: float = 3.0) -> List[str]:
+def query(transport: Any, line: str, prefixes: Any, timeout: float = 3.0) -> List[str]:
     """1行送り、prefixes に合う応答行だけ集めて返す。
 
     prefixes は先頭一致の文字列かその並び。live の S 行は送るだけで
@@ -132,8 +131,9 @@ def query(transport: Any, line: str, prefixes: Any,
     return found
 
 
-def expect(transport: Any, line: str, prefixes: Any,
-           timeout: float = 0.5) -> Optional[str]:
+def expect(
+    transport: Any, line: str, prefixes: Any, timeout: float = 0.5
+) -> Optional[str]:
     """1行送り、合致する最初の応答行を待つ。見つかればその行を返す。
 
     query が期限いっぱいまで集めるのに対し、こちらは1件見つかり次第
@@ -163,10 +163,9 @@ def expect(transport: Any, line: str, prefixes: Any,
                     if idx < 0:
                         break
                     raw = bytes(buf[:idx])
-                    del buf[:idx + 1]
+                    del buf[: idx + 1]
                     try:
-                        text = raw.decode("ascii",
-                                          errors="replace").strip()
+                        text = raw.decode("ascii", errors="replace").strip()
                     except Exception:
                         continue
                     for prefix in prefixes:

@@ -21,10 +21,9 @@ import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
 from typing import Any, Callable
 
-from loguru import logger
-
 import CommandTags
 from CommandTags import TAG_UNCLASSIFIED
+from loguru import logger
 
 # チェックボックスを横に並べる数。増やすと窓が横に伸びて画面からはみ出す。
 COLUMNS = 4

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from typing import Any
+
 from Commands.PythonCommandBase import ImageProcPythonCommand
 
 
@@ -22,9 +23,9 @@ class DiscordNotifySample(ImageProcPythonCommand):
         # 通知先の選択
         self.discord_image(
             content="名前によって通知先を選択できます",
-            name="サンプル2" # 登録時の名前を入力
+            name="サンプル2",  # 登録時の名前を入力
         )
         self.discord_image(
             content="indexでも選択できます",
-            index=1 # 登録順(0始まり)
+            index=1,  # 登録順(0始まり)
         )

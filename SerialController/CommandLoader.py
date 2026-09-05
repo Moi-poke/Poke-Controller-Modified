@@ -22,9 +22,13 @@ class CommandLoader:
         cur_module_names = util.getModuleNames(self.path)
 
         # Load only not loaded modules
-        not_loaded_module_names = list(set(cur_module_names) - set(loaded_module_dic.keys()))
+        not_loaded_module_names = list(
+            set(cur_module_names) - set(loaded_module_dic.keys())
+        )
         if len(not_loaded_module_names) > 0:
-            self.modules.extend(util.importAllModules(self.path, not_loaded_module_names))
+            self.modules.extend(
+                util.importAllModules(self.path, not_loaded_module_names)
+            )
 
         # Reload commands except deleted ones
         for mod_name in list(set(cur_module_names) & set(loaded_module_dic.keys())):
@@ -33,7 +37,9 @@ class CommandLoader:
         # Unload deleted commands
         for mod_name in list(set(loaded_module_dic.keys()) - set(cur_module_names)):
             self.modules.remove(loaded_module_dic[mod_name])
-            sys.modules.pop(loaded_module_dic[mod_name].__name__)  # Un-import module forcefully
+            sys.modules.pop(
+                loaded_module_dic[mod_name].__name__
+            )  # Un-import module forcefully
 
         # return command class types
         return self.getCommandClasses()
@@ -41,7 +47,12 @@ class CommandLoader:
     def getCommandClasses(self):
         classes = []
         for mod in self.modules:
-            classes.extend([c for c in util.getClassesInModule(mod) \
-                            if issubclass(c, self.base_type) and hasattr(c, 'NAME') and c.NAME])
+            classes.extend(
+                [
+                    c
+                    for c in util.getClassesInModule(mod)
+                    if issubclass(c, self.base_type) and hasattr(c, "NAME") and c.NAME
+                ]
+            )
 
         return classes

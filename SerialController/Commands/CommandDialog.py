@@ -23,6 +23,7 @@ PythonCommandBase.py から対話部を切り出したもの。
       from Commands.PythonCommandBase import PokeConDialogue
   と書いている既存のコードはそのまま動く。
 """
+
 from __future__ import annotations
 
 import threading
@@ -260,7 +261,7 @@ class PokeConDialogue(object):
         self.main_frame.pack()
         self.message_dialogue.master.wait_window(self.message_dialogue)
 
-    def mode0(self, message: list | str) -> None:
+    def mode0(self, message: list | str | int) -> None:
         if type(message) is not list:
             message = [message]
         n = len(message)
@@ -340,7 +341,11 @@ class PokeConDialogue(object):
                 sample = tk.Label(row, width=4, relief="sunken", borderwidth=1)
                 widget = ttk.Entry(row, textvariable=variable)
 
-                def update_color(*_args: object, value: tk.StringVar = variable, swatch: tk.Label = sample) -> None:
+                def update_color(
+                    *_args: object,
+                    value: tk.StringVar = variable,
+                    swatch: tk.Label = sample,
+                ) -> None:
                     text = value.get().strip().lower()
                     if text.startswith("#"):
                         text = text[1:]

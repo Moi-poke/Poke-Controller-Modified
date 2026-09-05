@@ -9,7 +9,7 @@ from Commands.PythonCommandBase import PythonCommand
 # Auto cafe battles
 # 無限カフェ(ランクマッチ使用)
 class InfinityCafe(PythonCommand):
-    NAME = '無限カフェ'
+    NAME = "無限カフェ"
 
     def __init__(self):
         super().__init__()

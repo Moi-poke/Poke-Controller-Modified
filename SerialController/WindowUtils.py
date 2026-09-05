@@ -93,9 +93,9 @@ def makeLogText(holder: Any) -> tk.Text:
     # 計算でレイアウトを取り直す。横スクロールは holder が
     # scrolltype="both" なので既にある。
     text = tk.Text(holder.container, wrap="none")
-    text.config(blockcursor="true", height="10", insertunfocussed="none", maxundo="0")
-    text.config(relief="flat", state="disabled", undo="false", width="50")
-    text.pack(expand="true", fill="both", side="top")
+    text.config(blockcursor=True, height=10, insertunfocussed="none", maxundo=0)
+    text.config(relief="flat", state="disabled", undo=False, width=50)
+    text.pack(expand=True, fill="both", side="top")
     holder.add_child(text)
     holder.config(borderwidth="1", padding="1", relief="sunken")
     return text
@@ -109,7 +109,7 @@ def acceptsGuiArg(cmd_class: type) -> bool:
     シグネチャを見て渡せる引数の数を先に決める。
     """
     try:
-        params = inspect.signature(cmd_class.__init__).parameters
+        params = inspect.signature(cmd_class).parameters
     except (TypeError, ValueError):
         return False
 
@@ -117,13 +117,14 @@ def acceptsGuiArg(cmd_class: type) -> bool:
     if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values()):
         return True
 
-    # self / cam を除いて、あと1つ以上受け取れるか
+    # self は signature() の対象外（生成時の引数だけが残る）。
+    # cam を除いて、あと1つ以上受け取れるか
     positional = [
         p
         for p in params.values()
         if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
     ]
-    return len(positional) >= 3
+    return len(positional) >= 2
 
 
 def openDirectory(directory: str, os_name: str) -> None:

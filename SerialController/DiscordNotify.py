@@ -1,15 +1,15 @@
-import os
-from tkinter import messagebox, simpledialog
-import cv2
 import io
-
-from deprecated import deprecated
-import requests
-from PIL import Image
-from loguru import logger
-import yaml
+import os
 import tkinter as tk
+from tkinter import messagebox, simpledialog
+
+import cv2
+import requests
+import yaml
 from Camera import Camera
+from PIL import Image
+from deprecated import deprecated
+from loguru import logger
 
 
 class Discord_Notify:

@@ -1,9 +1,9 @@
 import configparser
-from typing import Any, Optional
-import cv2
 import io
 import os
+from typing import Any, Optional
 
+import cv2
 import requests
 from PIL import Image
 from loguru import logger

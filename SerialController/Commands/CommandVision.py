@@ -20,6 +20,7 @@
   と書く。PythonCommandBase.py が引き続きこの名前を公開するので、既存の
   設定は変えずに使える。
 """
+
 from __future__ import annotations
 
 import functools
@@ -33,7 +34,6 @@ from typing import Any, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from deprecated import deprecated
 from loguru import logger
 
 # LINE Notify は 2025/3/31 にサービス終了済み。メッセージを1箇所に集約する。
@@ -51,7 +51,9 @@ IMREAD_CACHE_SIZE = 128
 #   （SerialController/Commands/ → SerialController/Template）。
 #   このファイルも同じ Commands/ 配下にあるので、同じ式で同じ場所を指す。
 #   別の階層へ置くと Template を見失うため、配置を変えるときはここを直す。
-TEMPLATE_PATH = path.normpath(path.join(path.dirname(path.dirname(path.abspath(__file__))), "Template"))
+TEMPLATE_PATH = path.normpath(
+    path.join(path.dirname(path.dirname(path.abspath(__file__))), "Template")
+)
 
 
 def _get_template_filespec(template_path: str) -> str:
@@ -94,16 +96,18 @@ def _imread_or_raise(template_path: str, flags: int) -> np.ndarray:
         # 分けて書き、置き場所の既定（TEMPLATE_PATH）も添える。
         if not path.isfile(filespec):
             reason = "ファイルがありません"
-            hint = (f"画像を {TEMPLATE_PATH} からの相対で置いてください "
-                    f"（例: {path.join(TEMPLATE_PATH, 'shiny_mark.png')}）")
+            hint = (
+                f"画像を {TEMPLATE_PATH} からの相対で置いてください "
+                f"（例: {path.join(TEMPLATE_PATH, 'shiny_mark.png')}）"
+            )
         else:
             reason = "ファイルはありますが画像として読めません（破損・形式違い）"
-            hint = ("別の画像ビューアで開けるか確かめ、開けない場合は"
-                    "作り直してください")
+            hint = "別の画像ビューアで開けるか確かめ、開けない場合は作り直してください"
         raise FileNotFoundError(
             f"テンプレート画像を読み込めませんでした（{reason}）: {filespec}\n"
             f"{hint}\n"
-            f"指定: {template_path!r} / 既定の置き場所: {TEMPLATE_PATH}")
+            f"指定: {template_path!r} / 既定の置き場所: {TEMPLATE_PATH}"
+        )
     image.flags.writeable = False  # 共有配列を誤って書き換えないための保険
     return image
 
@@ -137,15 +141,15 @@ class VisionMixin:
           ここで無条件に生成すると、GPU を使わない全コマンドまで起動不能に
           なるため、実際に GPU 版を呼んだときだけ確保する。
         """
-        self.camera = cam
-        self.gui = gui
-        self.gsrc = None
-        self.gtmpl = None
-        self.gresult = None
+        self.camera: Any = cam
+        self.gui: Any = gui
+        self.gsrc: Any = None
+        self.gtmpl: Any = None
+        self.gresult: Any = None
         # GPU 版のキャッシュ。matcher は (dtype, method)、テンプレートは
         # (path, use_gray) をキーにする
-        self._cuda_matchers: dict = {}
-        self._cuda_templates: dict = {}
+        self._cuda_matchers: dict[tuple[int, int], Any] = {}
+        self._cuda_templates: dict[tuple[str, bool], Any] = {}
 
     def _ensure_cuda(self) -> bool:
         """CUDA が使えるかを判定し、使えれば GpuMat を用意する。"""
@@ -251,9 +255,7 @@ class VisionMixin:
         if x1 >= x2 or y1 >= y2:
             raise ValueError(f"crop の左右または上下が逆です: {crop}")
         if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
-            raise ValueError(
-                f"crop が画面({width}x{height})の外を指しています: {crop}"
-            )
+            raise ValueError(f"crop が画面({width}x{height})の外を指しています: {crop}")
         return src[y1:y2, x1:x2]
 
     @staticmethod
@@ -542,8 +544,15 @@ class VisionMixin:
     # しているあいだも時計だけが進み、再開した直後に「時間切れ」と判定
     # されて1回も照合せずに False を返す。
 
-    def _matchOnce(self, template_path, threshold=0.7, use_gray=True,
-                   crop=None, mask_path=None, show_value=False):
+    def _matchOnce(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        show_value=False,
+    ):
         """1回だけ照合し、(判定, 相関値, 中心座標) をまとめて返す。
 
         readFrame → crop → 色変換 → matchTemplate までの手順は
@@ -583,9 +592,17 @@ class VisionMixin:
         center = (int(max_loc[0] + dx + w / 2), int(max_loc[1] + dy + h / 2))
         return bool(max_val >= threshold), float(max_val), center
 
-    def waitTemplate(self, template_path, timeout=10.0, interval=0.2,
-                     threshold=0.7, use_gray=True, crop=None,
-                     mask_path=None, show_value=False) -> bool:
+    def waitTemplate(
+        self,
+        template_path,
+        timeout=10.0,
+        interval=0.2,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        show_value=False,
+    ) -> bool:
         """現れるまで待つ。見つかれば True、時間切れなら False。
 
         while not self.isContainTemplate(...): self.wait(0.5) と自前で
@@ -596,8 +613,9 @@ class VisionMixin:
         """
         expired = self._deadline(timeout)
         while True:
-            hit, _, _ = self._matchOnce(template_path, threshold, use_gray,
-                                        crop, mask_path, show_value)
+            hit, _, _ = self._matchOnce(
+                template_path, threshold, use_gray, crop, mask_path, show_value
+            )
             if hit:
                 return True
             if expired():
@@ -605,9 +623,16 @@ class VisionMixin:
                 return False
             self.wait(interval)
 
-    def waitTemplateGone(self, template_path, timeout=10.0, interval=0.2,
-                         threshold=0.7, use_gray=True, crop=None,
-                         mask_path=None) -> bool:
+    def waitTemplateGone(
+        self,
+        template_path,
+        timeout=10.0,
+        interval=0.2,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+    ) -> bool:
         """消えるまで待つ。消えれば True、時間切れなら False。
 
         ロード中の表示やメッセージ枠が抜けきるのを待つ用途。出現待ちと
@@ -616,8 +641,9 @@ class VisionMixin:
         """
         expired = self._deadline(timeout)
         while True:
-            hit, _, _ = self._matchOnce(template_path, threshold, use_gray,
-                                        crop, mask_path)
+            hit, _, _ = self._matchOnce(
+                template_path, threshold, use_gray, crop, mask_path
+            )
             if not hit:
                 return True
             if expired():
@@ -625,8 +651,15 @@ class VisionMixin:
                 return False
             self.wait(interval)
 
-    def waitStable(self, quiet=0.5, timeout=10.0, threshold=20,
-                   interval=0.1, crop=None, ratio=0.001) -> bool:
+    def waitStable(
+        self,
+        quiet=0.5,
+        timeout=10.0,
+        threshold=20,
+        interval=0.1,
+        crop=None,
+        ratio=0.001,
+    ) -> bool:
         """画面の動きが止まるまで待つ。止まれば True、時間切れは False。
 
         テンプレート画像を1枚も用意せずに使えるのが利点。安全側に倒して
@@ -667,21 +700,29 @@ class VisionMixin:
                 return False
             f1, f2 = f2, f3
 
-    def getTemplatePosition(self, template_path, threshold=0.7,
-                            use_gray=True, crop=None, mask_path=None,
-                            show_value=False) -> Optional[Tuple[int, int]]:
+    def getTemplatePosition(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        show_value=False,
+    ) -> Optional[Tuple[int, int]]:
         """一致位置の中心 (x, y) を画面全体の座標で返す。無ければ None。
 
         isContainTemplate も内部では max_loc を出しているが、GUI へ矩形を
         描くためだけに使って捨てている。戻り値の互換を壊さずに位置を
         取れるよう、別名のメソッドとして分ける。
         """
-        hit, _, center = self._matchOnce(template_path, threshold, use_gray,
-                                         crop, mask_path, show_value)
+        hit, _, center = self._matchOnce(
+            template_path, threshold, use_gray, crop, mask_path, show_value
+        )
         return center if hit else None
 
-    def preloadTemplates(self, template_paths: List[str],
-                         use_gray: bool = True) -> List[str]:
+    def preloadTemplates(
+        self, template_paths: List[str], use_gray: bool = True
+    ) -> List[str]:
         """先読みして、読めなかったパスの一覧を返す。
 
         _imread_or_raise が FileNotFoundError を投げるのは判定の瞬間なので、
@@ -702,8 +743,7 @@ class VisionMixin:
 
     # -- 記録・複数検出・色 -------------------------------------------------
 
-    def saveFrame(self, name: str = "frame", crop=None,
-                  folder: str = "Debug") -> str:
+    def saveFrame(self, name: str = "frame", crop=None, folder: str = "Debug") -> str:
         """いまの画面を日時つきで保存し、保存先のパスを返す。
 
         show_value=True は print するだけなので、放置運用ではログが
@@ -729,26 +769,39 @@ class VisionMixin:
             return ""
         return filespec
 
-    def isContainTemplateDump(self, template_path, threshold=0.7,
-                              use_gray=True, crop=None, mask_path=None,
-                              folder: str = "Debug") -> bool:
+    def isContainTemplateDump(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        mask_path=None,
+        folder: str = "Debug",
+    ) -> bool:
         """判定し、外れたときだけ相関値つきで画面を保存する。
 
         isContainTemplate と戻り値も使い方も同じ。外れた回の画面が残る
         ので、閾値が渋いのか画面そのものが違うのかを後から切り分け
         られる。当たった回まで保存すると1周で数百枚になり使えない。
         """
-        hit, val, _ = self._matchOnce(template_path, threshold, use_gray,
-                                      crop, mask_path)
+        hit, val, _ = self._matchOnce(
+            template_path, threshold, use_gray, crop, mask_path
+        )
         if not hit:
             stem = path.splitext(path.basename(str(template_path)))[0]
             saved = self.saveFrame(f"{stem}_{val:.3f}", crop, folder)
             logger.debug(f"NG {template_path} val={val:.3f} -> {saved}")
         return hit
 
-    def findAllTemplates(self, template_path, threshold=0.7, use_gray=True,
-                         crop=None, max_count: int = 20,
-                         show_value=False) -> List[Tuple[int, int]]:
+    def findAllTemplates(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        max_count: int = 20,
+        show_value=False,
+    ) -> List[Tuple[int, int]]:
         """閾値を超えた箇所すべての中心座標を、相関の高い順に返す。
 
         minMaxLoc は最大の1件しか返さないため、「並んでいる数」を数える
@@ -775,7 +828,7 @@ class VisionMixin:
         if len(xs) == 0:
             return []
 
-        order = np.argsort(res[ys, xs])[::-1]   # 相関の高い順に見る
+        order = np.argsort(res[ys, xs])[::-1]  # 相関の高い順に見る
         dx = crop[0] if len(crop) == 4 else 0
         dy = crop[1] if len(crop) == 4 else 0
         near_x, near_y = max(1, w // 2), max(1, h // 2)
@@ -783,8 +836,7 @@ class VisionMixin:
         found: List[Tuple[int, int]] = []
         for i in order:
             x, y = int(xs[i]), int(ys[i])
-            if any(abs(x - px) < near_x and abs(y - py) < near_y
-                   for px, py in found):
+            if any(abs(x - px) < near_x and abs(y - py) < near_y for px, py in found):
                 continue
             found.append((x, y))
             if len(found) >= max_count:
@@ -794,11 +846,18 @@ class VisionMixin:
             print(f"{template_path} hits: {len(found)}")
         return [(x + dx + w // 2, y + dy + h // 2) for x, y in found]
 
-    def countTemplate(self, template_path, threshold=0.7, use_gray=True,
-                      crop=None, max_count: int = 20) -> int:
+    def countTemplate(
+        self,
+        template_path,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        max_count: int = 20,
+    ) -> int:
         """閾値を超えた箇所の個数を返す（findAllTemplates の件数）。"""
-        return len(self.findAllTemplates(template_path, threshold, use_gray,
-                                         crop, max_count))
+        return len(
+            self.findAllTemplates(template_path, threshold, use_gray, crop, max_count)
+        )
 
     def getColorRatio(self, crop, lower_hsv, upper_hsv) -> float:
         """指定領域で、その色が占める割合(0.0〜1.0)を返す。
@@ -824,12 +883,12 @@ class VisionMixin:
             hi1 = np.array([179, hi[1], hi[2]], dtype=np.uint8)
             lo2 = np.array([0, lo[1], lo[2]], dtype=np.uint8)
             hi2 = np.array([hi[0], hi[1], hi[2]], dtype=np.uint8)
-            mask = cv2.bitwise_or(cv2.inRange(hsv, lo1, hi1),
-                                  cv2.inRange(hsv, lo2, hi2))
+            mask = cv2.bitwise_or(
+                cv2.inRange(hsv, lo1, hi1), cv2.inRange(hsv, lo2, hi2)
+            )
         total = float(mask.shape[0] * mask.shape[1])
         return float(np.count_nonzero(mask)) / total
 
-    def isSimilarColor(self, crop, lower_hsv, upper_hsv,
-                       ratio: float = 0.6) -> bool:
+    def isSimilarColor(self, crop, lower_hsv, upper_hsv, ratio: float = 0.6) -> bool:
         """指定領域が、おおむねその色で占められているかを返す。"""
         return self.getColorRatio(crop, lower_hsv, upper_hsv) >= float(ratio)

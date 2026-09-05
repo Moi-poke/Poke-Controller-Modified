@@ -9,7 +9,7 @@ from Commands.PythonCommandBase import PythonCommand
 # Infinity ID lottery
 # 無限IDくじ(ランクマッチ使用)
 class InfinityLottery(PythonCommand):
-    NAME = '無限IDくじ'
+    NAME = "無限IDくじ"
 
     def __init__(self):
         super().__init__()

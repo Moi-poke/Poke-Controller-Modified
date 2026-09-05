@@ -3,10 +3,11 @@ This code has copied from https://qiita.com/Esfahan/items/275b0f124369ccf8cf18
 """
 
 # -*- coding:utf-8 -*-
-from logging import Formatter, handlers, StreamHandler, getLogger, DEBUG
-import logging
 import datetime as dt
+import logging
 import os
+from logging import Formatter, StreamHandler
+
 from loguru import logger
 
 now = dt.datetime.now()
@@ -45,9 +46,9 @@ def root_logger():  # type: ignore
 
     try:
         if "SerialController" in os.listdir():
-            path = ".\log"
+            path = r".\log"
         else:
-            path = "..\log"
+            path = r"..\log"
         os.makedirs(path)
     except FileExistsError:
         pass

@@ -5,11 +5,10 @@ import configparser
 import os
 from typing import Any, Dict, List, Optional, Type
 
-from pynput.keyboard import Key, Listener
-from loguru import logger
-
 from Commands.Keys import Button, Direction, Hat
 from Settings import GuiSettings
+from loguru import logger
+from pynput.keyboard import Key, Listener
 
 
 # キーボード入力を受け取る基底クラス

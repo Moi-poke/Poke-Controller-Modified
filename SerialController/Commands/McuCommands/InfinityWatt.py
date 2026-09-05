@@ -6,7 +6,7 @@ from Commands.McuCommandBase import McuCommand
 
 # Mash A button
 class InfinityWatt(McuCommand):
-    NAME = '無限ワット'
+    NAME = "無限ワット"
 
-    def __init__(self, sync_name='inf_watt'):
+    def __init__(self, sync_name="inf_watt"):
         super().__init__(sync_name)

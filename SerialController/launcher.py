@@ -29,7 +29,7 @@ import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.simpledialog as tksimple
 import tkinter.ttk as ttk
-
+from typing import Any, List, Optional
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WINDOW_SCRIPT = os.path.join(APP_DIR, "Window.py")

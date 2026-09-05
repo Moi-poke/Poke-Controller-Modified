@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from Commands.Keys import Button
 from Commands.PythonCommandBase import PythonCommand
 
 try:
@@ -9,15 +8,14 @@ try:
 except ImportError:
     print("PyAudio is not installed.")
     pass
-except:
-    pass
+
+from datetime import datetime
 
 import numpy as np
-from datetime import datetime
 
 # import matplotlib.pyplot as plt
 
-'''
+"""
 色違いの音を検出したい
 という気持ちを満たす(かもしれない)スクリプトです
 実行中にｷﾗｰﾝが鳴ると反応します
@@ -41,20 +39,19 @@ OpenCVの使用中(=映像キャプチャ中)は他の手段でキャプチャ�
 　OBSは受け取った音をPCに接続されている任意のデバイスに出力できるので，その出力先からAUXケーブルなどでPCのマイク端子に接続する
 ・あるいはOBSからVoicemeeterなどの仮想サウンドデバイスに"入力"することでその出力を受け取る方法もあります．
 　この方法であれば追加のケーブルは不要ですが，設定が面倒かもしれません．
-'''
+"""
 
 
 class ListenShiny(PythonCommand):
-    NAME = '色違いの音を聴きたい'
+    NAME = "色違いの音を聴きたい"
 
     def __init__(self):
         super().__init__()
 
     def do(self):
-
         CHUNK = 1024
         RATE = 44100
-        l = 1e7  # 閾値．入力の音量によって変動します．
+        threshold = 1e7  # 閾値．入力の音量によって変動します．
         sound_count = 0
 
         data1 = []
@@ -70,13 +67,15 @@ class ListenShiny(PythonCommand):
         #     print(p. get_device_info_by_index(index))
         device_index = 1
 
-        stream = p.open(format=pyaudio.paInt16,
-                        channels=1,  # 1: モノラル
-                        input_device_index=device_index,
-                        rate=RATE,
-                        frames_per_buffer=CHUNK,
-                        input=True,
-                        output=False)
+        stream = p.open(
+            format=pyaudio.paInt16,
+            channels=1,  # 1: モノラル
+            input_device_index=device_index,
+            rate=RATE,
+            frames_per_buffer=CHUNK,
+            input=True,
+            output=False,
+        )
         self._logger.debug(f"Connect: {p.get_device_info_by_index(device_index)}")
         try:
             while stream.is_active():  # 無限ループします
@@ -84,7 +83,7 @@ class ListenShiny(PythonCommand):
                     # stop押したらbreak処理
                     break
                 for i in range(int(1.5 * RATE / CHUNK)):
-                    d = np.frombuffer(stream.read(CHUNK), dtype='int16')
+                    d = np.frombuffer(stream.read(CHUNK), dtype="int16")
                     if sound_count == 0:
                         data1.append(d)
 
@@ -103,7 +102,9 @@ class ListenShiny(PythonCommand):
                         fft_data = np.fft.fft(data)
                         data2 = []
 
-                    fft_abs = np.abs(fft_data)  # / (np.max(fft_data)-np.min(fft_data)) * 1e7
+                    fft_abs = np.abs(
+                        fft_data
+                    )  # / (np.max(fft_data)-np.min(fft_data)) * 1e7
                     # 正規化っぽいことしようと思ったけどよくわからなかった
 
                     # plt.plot(freqList, fft_abs)  # matplotlibで可視化するとき用．
@@ -111,10 +112,16 @@ class ListenShiny(PythonCommand):
                     # plt.draw() #  グラフ表示用
                     # plt.show() #  グラフ表示用
 
-                    data3100 = fft_abs[np.where((freqList < 3200) & (freqList > 3000))]  # 3100Hz付近の周波数成分
-                    data4200 = fft_abs[np.where((freqList < 4400) & (freqList > 4150))]  # 4200Hz付近の周波数成分
+                    data3100 = fft_abs[
+                        np.where((freqList < 3200) & (freqList > 3000))
+                    ]  # 3100Hz付近の周波数成分
+                    data4200 = fft_abs[
+                        np.where((freqList < 4400) & (freqList > 4150))
+                    ]  # 4200Hz付近の周波数成分
 
-                    if (data3100.max() > 0.4 * l) and (data4200.max() > 1 * l):
+                    if (data3100.max() > 0.4 * threshold) and (
+                        data4200.max() > 1 * threshold
+                    ):
                         # 3100Hz付近と4200Hz付近の強度が一定以上あったとき、色違いと判断
                         # 4200Hz付近のほうが強いので閾値に0.4掛けしています．
                         # スペクトラムを見る限り3100Hzの倍音もなっているような気がするので，それも追加で認識してもよいのかも

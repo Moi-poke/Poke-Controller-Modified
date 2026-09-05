@@ -184,8 +184,11 @@ def frequentNames(stats: dict[str, dict], least: int = FREQUENT_MIN) -> list[str
     1回しか使っていないものまで含めると「よく使う」の意味が無くなる
     ので、下限を設ける。同数のときは名前順にして並びを安定させる。
     """
-    hot = [(v.get("count", 0), k) for k, v in stats.items()
-           if int(v.get("count", 0)) >= least]
+    hot = [
+        (v.get("count", 0), k)
+        for k, v in stats.items()
+        if int(v.get("count", 0)) >= least
+    ]
     hot.sort(key=lambda x: (-x[0], x[1]))
     return [name for _count, name in hot]
 

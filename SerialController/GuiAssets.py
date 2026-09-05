@@ -23,15 +23,13 @@ from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image, ImageTk
-from loguru import logger
 
-from Commands import UnitCommand
-from Commands.PythonCommandBase import PythonCommand
 # 模擬コントローラがボタンの押しっぱなしを扱うため、
 #   ボタンと十字キーの種類を直接使う（UnitCommand を経由しない）。
 from Commands.Keys import Button, Hat
-
+from Commands.PythonCommandBase import PythonCommand
+from PIL import Image, ImageTk
+from loguru import logger
 
 isTakeLog = False
 # True にするとスティック操作の軌跡を log/ に CSV で書き出す。
@@ -41,19 +39,20 @@ nowtime = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # 相対パスだとカレントディレクトリ次第で読めなくなるため、
 # このファイルの場所を基準に解決する。
 DISABLED_IMAGE_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 "..", "Images", "disabled.png")
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "Images", "disabled.png"
+    )
 )
 
 STICK_LOG_INTERVAL = 0.05  # スティック値を記録・送信する最小間隔(秒)
-STICK_SEND_INTERVAL = 0.05   # スティック値をシリアルへ送る最小間隔(秒)
-STICK_SEND_MAG_STEP = 0.25   # これ以上倒し量が変われば間隔を無視して送る
+STICK_SEND_INTERVAL = 0.05  # スティック値をシリアルへ送る最小間隔(秒)
+STICK_SEND_MAG_STEP = 0.25  # これ以上倒し量が変われば間隔を無視して送る
 # Motion イベントの処理上限。ゲーミングマウス等で毎秒1000件超の Motion が
 # 来ると、1件ごとの送信・再描画で GUI スレッドが飽和し「応答なし」になる。
 # live 送出が 8ms 周期のため、それより細かく処理しても届く値は変わらない。
 # 先頭は必ず通し、離す操作は別イベントなので取りこぼさない。
 MOTION_MIN_INTERVAL = 0.008
-IDLE_INTERVAL_MS = 200       # 映像を表示しないあいだの描画ループ周期(ms)
+IDLE_INTERVAL_MS = 200  # 映像を表示しないあいだの描画ループ周期(ms)
 LOG_DIR = "log"
 
 
@@ -86,21 +85,18 @@ class CaptureAreaProxy:
         if target is None or root is None:
             return
         try:
-            root.after(0, lambda: self._call_guarded(target, name,
-                                                     args, kwargs))
+            root.after(0, lambda: self._call_guarded(target, name, args, kwargs))
         except Exception:
             # 終了後など after 自体が積めないときは捨てる。枠表示は
             # 無くても操作に影響しない。
             pass
 
     @staticmethod
-    def _call_guarded(target: Any, name: str, args: Any,
-                      kwargs: Any) -> None:
+    def _call_guarded(target: Any, name: str, args: Any, kwargs: Any) -> None:
         try:
             getattr(target, name)(*args, **kwargs)
         except Exception:
-            logger.debug(f"CaptureAreaProxy.{name} failed: "
-                         f"{traceback.format_exc()}")
+            logger.debug(f"CaptureAreaProxy.{name} failed: {traceback.format_exc()}")
 
     def ImgRect(self, *args: Any, **kwargs: Any) -> None:
         """枠の描画を GUI スレッドへ回す（非同期・戻り値なし）。"""
@@ -472,6 +468,7 @@ class CaptureArea(tk.Canvas):
     @staticmethod
     def _ratio(numer: Any, denom: Any) -> tuple[float, float]:
         """要素ごとに割り算する。0 で割りそうなときは 1.0 を返す。"""
+
         def one(a: float, b: float) -> float:
             return float(a) / float(b) if b else 1.0
 
@@ -497,7 +494,7 @@ class CaptureArea(tk.Canvas):
             self.min_x + 1,
             self.min_y + 1,
             outline="red",
-            tag="SelectArea",
+            tags="SelectArea",
         )
 
         ratio_x, ratio_y = self._captureRatio()
@@ -553,13 +550,12 @@ class CaptureArea(tk.Canvas):
         # 予約 ID は控えておく。終了時に残っていると破棄途中の Canvas を
         # 触るため、stopCapture で取り消す。
         try:
-            if getattr(self, "_select_after_id", None) is not None:
+            if self._select_after_id is not None:
                 self.after_cancel(self._select_after_id)
         except Exception:
             pass
         try:
-            self._select_after_id = self.after(
-                250, lambda: self.delete("SelectArea"))
+            self._select_after_id = self.after(250, lambda: self.delete("SelectArea"))
         except Exception:
             self._select_after_id = None
 
@@ -734,13 +730,12 @@ class CaptureArea(tk.Canvas):
             return
         ser.writeRow("3 8 80 80 80 80", is_show=False)
 
-
     def _drawStick(self, x: int, y: int, color: str, tag: str) -> None:
         """スティックの外周円とノブを描く。"""
         r = self.radius
         k = r // 10
-        self.create_oval(x - r, y - r, x + r, y + r, outline=color, tag=tag)
-        self.create_oval(x - k, y - k, x + k, y + k, fill=color, tag=tag + "2")
+        self.create_oval(x - r, y - r, x + r, y + r, outline=color, tags=tag)
+        self.create_oval(x - k, y - k, x + k, y + k, fill=color, tags=tag + "2")
 
     def _moveKnob(
         self, event: Any, x_init: int, y_init: int, angle: float, mag: float, tag: str
@@ -766,7 +761,7 @@ class CaptureArea(tk.Canvas):
         prev_mag: float | None,
         rec: _StickRecorder | None,
         tag: str,
-    ) -> tuple[float, float]:
+    ) -> tuple[float | None, float | None]:
         """ドラッグ中の共通処理。今回の角度と倒し量を返す。
 
         送信の間引きは記録(rec)の有無と切り離す。旧実装は条件が逆で、
@@ -977,10 +972,10 @@ class CaptureArea(tk.Canvas):
 
         if not self._rect_created:
             self.create_rectangle(
-                *outer, width=4.5, outline="white", tag=self.RECT_TAG_OUTER
+                *outer, width=4.5, outline="white", tags=self.RECT_TAG_OUTER
             )
             self.create_rectangle(
-                *inner, width=2.5, outline=outline, tag=self.RECT_TAG_INNER
+                *inner, width=2.5, outline=outline, tags=self.RECT_TAG_INNER
             )
             self._rect_created = True
         else:
@@ -1102,7 +1097,7 @@ class ControllerGUI:
         "UP_LEFT": ("UP", "LEFT"),
     }
 
-    BUTTON_ACTIVE_BG = "#8a8a8a"   # 押している間の色
+    BUTTON_ACTIVE_BG = "#8a8a8a"  # 押している間の色
     # (表示名, UnitCommand の属性名, width, x, y)
     JOYCON_L = (
         ("L", "L", 20, 30, 30),
@@ -1127,9 +1122,11 @@ class ControllerGUI:
         #     表現できない（押す・離すの両方を受けられない）。
         #   押下と解放を別々に受け取り、送信側の姿勢へ差分申告する。
         #     触っていない項目は保たれるので、他のボタンを消さない。
-        self._held_btn: dict = {}   # 表示名 -> Keys.Button
-        self._held_hat: set = set() # 押している向き（"UP" など）
-        self._buttons: dict = {}    # 表示名 -> tk.Button（見た目の反映用）
+        self._held_btn: dict = {}  # 表示名 -> Keys.Button
+        self._held_hat: set = set()  # 押している向き（"UP" など）
+        self._buttons: dict[
+            str, tk.Button
+        ] = {}  # 表示名 -> tk.Button（見た目の反映用）
 
         self.window = tk.Toplevel(root)
         self.window.title("Switch Controller Simulator")
@@ -1180,8 +1177,9 @@ class ControllerGUI:
 
         logger.debug("Create GUI controller")
 
-    def _makeButton(self, parent: Any, text: str, name: str,
-                    **kwargs: Any) -> tk.Button:
+    def _makeButton(
+        self, parent: Any, text: str, name: str, **kwargs: Any
+    ) -> tk.Button:
         """押している間だけ入力を保持するボタンを作る。
 
         command= をやめ、押下と解放を別々に受ける。
@@ -1198,9 +1196,10 @@ class ControllerGUI:
           ボタンの上でマウスを離さなかったときに押しっぱなしが残る。
         """
         button = tk.Button(parent, text=text, **kwargs)
-        button.bind("<ButtonPress-1>", lambda ev, n=name: self._onPress(n))
-        button.bind("<ButtonRelease-1>", lambda ev, n=name: self._onRelease(n))
-        button.bind("<Leave>", lambda ev, n=name: self._onRelease(n))
+        # name は行ごとの仮引数のため、束縛の遅延は起きない。
+        button.bind("<ButtonPress-1>", lambda ev: self._onPress(name))
+        button.bind("<ButtonRelease-1>", lambda ev: self._onRelease(name))
+        button.bind("<Leave>", lambda ev: self._onRelease(name))
         self._buttons[name] = button
         return button
 

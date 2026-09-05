@@ -23,6 +23,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=1.19.0",
     "pygubu-designer>=0.40.2",
     "ruff>=0.9.7",
     "types-deprecated>=1.2.15.20250304",
@@ -30,6 +31,19 @@ dev = [
     "types-requests>=2.32.0.20250328",
 ]
 
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.isort]
+case-sensitive = true
+combine-as-imports = true
+
 [tool.mypy]
+python_version = "3.10"
 warn_unreachable = true
+warn_unused_configs = true
 pretty = true
+ignore_missing_imports = true

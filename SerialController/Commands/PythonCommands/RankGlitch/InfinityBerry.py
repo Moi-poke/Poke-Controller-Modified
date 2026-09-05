@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import cv2
-
 from Commands.Keys import Button
 from Commands.PythonCommandBase import ImageProcPythonCommand
 
@@ -11,7 +10,7 @@ from Commands.PythonCommandBase import ImageProcPythonCommand
 # Infinity getting berries
 # 無限きのみ(ランクマッチ, 画像認識任意)
 class InfinityBerry(ImageProcPythonCommand):
-    NAME = '無限きのみ'
+    NAME = "無限きのみ"
 
     def __init__(self, cam):
         super().__init__(cam)
@@ -19,7 +18,6 @@ class InfinityBerry(ImageProcPythonCommand):
 
     def do(self):
         while True:
-
             # If camera is not opened, then pick 1 and timeleap
             if not self.cam.isOpened():
                 self.press(Button.A, wait=0.5)
@@ -42,18 +40,18 @@ class InfinityBerry(ImageProcPythonCommand):
                     self.press(Button.A, wait=0.5)  # just in case
                     self.press(Button.A, wait=0.5)
 
-                    while not self.isContainTemplate('fell_message.png'):
+                    while not self.isContainTemplate("fell_message.png"):
                         self.press(Button.B, wait=0.5)
-                    print('fell message!')
+                    print("fell message!")
                     self.press(Button.A, wait=0.5)
 
                     # Judge continuity by tree shaking motion
                     if self.isContinue():
-                        print('continue')
+                        print("continue")
                         self.wait(0.5)
                         continue
                     else:
-                        print('not continue')
+                        print("not continue")
                         break
 
                 for _ in range(0, 10):  # B loop
@@ -67,11 +65,17 @@ class InfinityBerry(ImageProcPythonCommand):
         zero_cnt = 0
         height_half = int(self.camera.capture_size[1] / 2)
 
-        frame1 = cv2.cvtColor(self.camera.readFrame()[0:height_half - 1, :], cv2.COLOR_BGR2GRAY)
+        frame1 = cv2.cvtColor(
+            self.camera.readFrame()[0 : height_half - 1, :], cv2.COLOR_BGR2GRAY
+        )
         self.wait(check_interval / 3)
-        frame2 = cv2.cvtColor(self.camera.readFrame()[0:height_half - 1, :], cv2.COLOR_BGR2GRAY)
+        frame2 = cv2.cvtColor(
+            self.camera.readFrame()[0 : height_half - 1, :], cv2.COLOR_BGR2GRAY
+        )
         self.wait(check_interval / 3)
-        frame3 = cv2.cvtColor(self.camera.readFrame()[0:height_half - 1, :], cv2.COLOR_BGR2GRAY)
+        frame3 = cv2.cvtColor(
+            self.camera.readFrame()[0 : height_half - 1, :], cv2.COLOR_BGR2GRAY
+        )
 
         while time < check_duration:
             mask = self.getInterframeDiff(frame1, frame2, frame3, 15)
@@ -80,11 +84,13 @@ class InfinityBerry(ImageProcPythonCommand):
             frame1 = frame2
             frame2 = frame3
             self.wait(check_interval)
-            frame3 = cv2.cvtColor(self.camera.readFrame()[0:height_half - 1, :], cv2.COLOR_BGR2GRAY)
+            frame3 = cv2.cvtColor(
+                self.camera.readFrame()[0 : height_half - 1, :], cv2.COLOR_BGR2GRAY
+            )
 
             time += check_interval
 
-        print('diff cnt: ' + str(zero_cnt))
+        print("diff cnt: " + str(zero_cnt))
 
         # zero count threshold is heuristic value... weather: sunny
         return True if zero_cnt < 9000 else False
