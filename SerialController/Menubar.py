@@ -1,11 +1,9 @@
 import tkinter as tk
-import traceback
-from typing import Any, Optional
+from typing import Any
 
 import DiscordNotify
 from InputLogConfig import InputLogConfig
 from KeyConfig import PokeKeycon
-from LineNotify import Line_Notify
 from WakeSetup import WakeSetup
 from get_pokestatistics import GetFromHomeGUI
 from loguru import logger
@@ -18,14 +16,13 @@ class PokeController_Menubar(tk.Menu):
         self.app = master
         tk.Menu.__init__(self, master.root, **kw)
 
-        self.poke_treeview: Optional[Any] = None
-        self.key_config: Optional[PokeKeycon] = None
-        self.wake_setup: Optional[WakeSetup] = None
-        self.input_log_config: Optional[InputLogConfig] = None
-        self.line: Optional[Line_Notify] = None
+        self.poke_treeview: Any | None = None
+        self.key_config: PokeKeycon | None = None
+        self.wake_setup: WakeSetup | None = None
+        self.input_log_config: InputLogConfig | None = None
 
-        self.menu = tk.Menu(self, tearoff="false")
-        self.menu_command = tk.Menu(self, tearoff="false")
+        self.menu = tk.Menu(self, tearoff=False)
+        self.menu_command = tk.Menu(self, tearoff=False)
         self.add(tk.CASCADE, menu=self.menu, label="メニュー")
         self.menu.add(tk.CASCADE, menu=self.menu_command, label="コマンド")
 
@@ -125,24 +122,13 @@ class PokeController_Menubar(tk.Menu):
                 self.poke_treeview.destroy()
             except Exception:
                 pass
-            self.poke_treeview: Optional[Any] = None
-
-    def LineTokenSetting(self) -> None:
-        try:
-            logger.debug("Show line API")
-            if self.line is None:
-                self.line = Line_Notify(self.camera)
-            print(self.line)
-            self.line.getRateLimit()
-            # LINE.send_text_n_image("CAPTURE")
-        except Exception as E:
-            logger.error(E)
-            logger.error(traceback.format_exc())
+            self.poke_treeview = None
 
     def OpenKeyConfig(self) -> None:
         logger.debug("Open KeyConfig window")
-        if self._alive(self.key_config):
-            self.key_config.focus_force()
+        key_config = self.key_config
+        if key_config is not None and self._alive(key_config):
+            key_config.focus_force()
             return
         self.key_config = None
 

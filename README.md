@@ -81,22 +81,7 @@ Poke-Controller-Modified-master\Poke-Controller-Modified-master> python .\Serial
 - メニュー機能の追加
 
   現状は以下の機能のみ
-  - LINE連携機能のToken確認\
-    Python Commandの関数にLine通知コマンドを追加しています。その設定がちゃんとできているかの確認です\
-    **Usage**
-    - LINE Notifyより通知用のTokenを取得 Tokenをline_token.iniの`paste_your_token_here`部分に貼り付け テキスト通知をしたいときは
-      ```python
-      self.LINE_text("通知したい内容")
-      ```
-      画像認識を用いるプログラム内では\
-      画像とテキストを同時に通知することが可能で
-      ```python
-      self.LINE_image("通知したい内容")
-      ```
-      と書きます
-    - アプリ起動時にLINE Token Check FAILED.と表示される間はtokenが間違っています。
-    - Tokenが正しい場合、アプリ起動時にAPI制限までの回数・リセットされる時刻が表示されます。メニューのLINE Token checkから残数を確認できます。 頻繁に通知を行うと制限に達することがあるので気をつけましょう
-    - 複数のトークンに対応しています。 tokenファイルに改行して別のトークン名を追記し、関数に引数として渡すことで使い分けてください。 詳しくはサンプルコードを参考にしてください
+  - LINE連携機能は削除しました（LINE Notify が2025/3/31にサービス終了のため）。通知にはDiscord連携を使ってください。
 
   - Pokémon Home連携
 

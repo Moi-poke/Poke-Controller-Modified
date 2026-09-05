@@ -39,14 +39,9 @@ from Commands.CommandOperate import OperateMixin, StopThread
 #     from Commands.PythonCommandBase import clear_template_cache と
 #     書いている場合に、置き場所の違いで動かなくなるのを防ぐため。
 #   実体は1つ（CommandVision 側）なので、キャッシュも1つで一貫する。
-from Commands.CommandVision import (
-    LINE_EOL_MESSAGE,
-    VisionMixin,
-)
+from Commands.CommandVision import VisionMixin
 from Commands.Keys import KeyPress
 from DiscordNotify import Discord_Notify
-from LineNotify import Line_Notify
-from deprecated import deprecated
 from loguru import logger
 
 
@@ -97,27 +92,25 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         self._resume_event.set()  # 既定は実行中
         self._paused_total = 0.0  # 通算の一時停止秒数
         self._pause_started = 0.0
-        self.postProcess = None
+        self.postProcess: Callable[[], None] | None = None
         self.message_dialogue = None
         # ダイアログを GUI スレッドで作るためのルート。Window が生成時に
         # 差し込む。CUI 実行やテストでは None のままで、その場合は従来
         # どおり呼び出し元のスレッドで直に作る。
-        self.gui_root: Optional[Any] = None
+        self.gui_root: Any | None = None
         # COM の設定は Window が Start の直前にここへ写す（通常の Python
         # 値の辞書）。tk 変数を持たせるとワーカースレッドから Tcl を触る
         # ことになるため、値だけを受け取る。無ければ reload_com_port は
         # 理由を出して False を返す（設定ファイルを読み直さない）。
-        self.serial_config: Optional[Dict[str, Any]] = None
+        self.serial_config: dict[str, Any] | None = None
 
         # __post_init__ は do_safe 経由でしか呼ばれない。do() を直接呼ぶ
         # 使い方をされたときに AttributeError にならないよう None で初期化する。
-        self.Line = None
-        self.Discord = None
+        self.Discord: Any = None
 
         self.traceback_limit = 5
 
     def __post_init__(self) -> None:
-        self.Line = Line_Notify()
         self.Discord = Discord_Notify()
 
     @abstractmethod
@@ -125,8 +118,8 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         pass
 
     def do_safe(self, ser: Any) -> None:
-        # 初期化も try の内側で行う。ここを外に置くと、Line_Notify /
-        # Discord_Notify のコンストラクタや KeyPress の生成で落ちたとき
+        # 初期化も try の内側で行う。ここを外に置くと、Discord_Notify の
+        # コンストラクタや KeyPress の生成で落ちたとき
         # except にも finally にも入らず、後始末（_cleanup）が呼ばれない。
         # postProcess が永久に呼ばれないため Window は実行中のまま固まり、
         # しかもワーカー内の未捕捉例外は stderr へ出るのでログ欄にも出ない。
@@ -453,19 +446,8 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
 
     # Use time glitch
 
-    @deprecated(reason="Use discord instead")
-    def LINE_text(self, txt: str = "", token: str = "token") -> bool:
-        """LINE Notify は 2025/3/31 にサービス終了。送信は行わない。
-
-        以前は「終了しました」と出力した直後に送信を試み、例外を pass で
-        握り潰していた（LINE_image は逆に except 側で出力しており非対称）。
-        deprecated である以上、送信自体を行わず False を返す形に統一した。
-        """
-        logger.error(LINE_EOL_MESSAGE)
-        return False
-
     def discord_text(
-        self, content: str = "", index: int = 0, name: Optional[str] = None
+        self, content: str = "", index: int = 0, name: str | None = None
     ) -> bool:
         """
         Discordにテキストメッセージを送信します。
@@ -639,20 +621,13 @@ class ImageProcPythonCommand(PythonCommand, VisionMixin):
         """通知の実体をカメラ付きで作り直す。
 
         これは画像認識ではなく通知の初期化なので、VisionMixin には置いていない。
-        Line_Notify / Discord_Notify はこのファイルが読み込んでおり、
+        Discord_Notify はこのファイルが読み込んでおり、
         画像認識側からは見えないため。
         """
-        self.Line = Line_Notify(self.camera)
         self.Discord = Discord_Notify(camera=self.camera)
 
-    @deprecated(reason="Use discord instead")
-    def LINE_image(self, txt: str = "", token: str = "token") -> bool:
-        """LINE Notify は 2025/3/31 にサービス終了。送信は行わない。"""
-        logger.error(LINE_EOL_MESSAGE)
-        return False
-
     def discord_image(
-        self, content: str = "", index: int = 0, name: Optional[str] = None
+        self, content: str = "", index: int = 0, name: str | None = None
     ) -> bool:
         """
         Discordにテキストメッセージを送信します。

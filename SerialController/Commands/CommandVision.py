@@ -12,7 +12,7 @@
 
 親クラスへの依存:
   self.wait / self._deadline / self._runElapsed … 待ち系（操作側）
-  self.Discord / self.Line … 通知側
+   self.Discord … 通知側
   依存が少ないので Mixin として素直に分けられる。
 
 互換:
@@ -29,17 +29,13 @@ import random
 import re
 import time
 import traceback
+from collections.abc import Callable
 from os import path
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import cv2
 import numpy as np
 from loguru import logger
-
-# LINE Notify は 2025/3/31 にサービス終了済み。メッセージを1箇所に集約する。
-# PythonCommandBase.py と同じ値を持つ。片方だけ直すと食い違うため、
-#   将来まとめるなら定数だけを別ファイルへ出す。
-LINE_EOL_MESSAGE = "LINE通知は2025/3/31にサービスが終了しました。"
 
 # テンプレート画像のキャッシュ件数。判定ループでは同じ画像を毎秒数十回
 # 読み直すことになるため、読み込み結果を使い回す。
