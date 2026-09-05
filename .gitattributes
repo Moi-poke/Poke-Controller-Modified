@@ -1,0 +1,9 @@
+# 改行は LF に統一する（混在しているとパッチ適用や差分が壊れる）。
+* text=auto eol=lf
+
+# バイナリは変換しない
+*.dll binary
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
