@@ -1,4 +1,6 @@
 .DS_Store
+Thumbs.db
+desktop.ini
 *.d
 *.o
 *.bin
@@ -128,6 +130,9 @@ SerialController/pokecon.lock
 SerialController/pokecon.*.lock
 SerialController/launch_error.log
 SerialController/launch_error_*.log
+
+# VSCode の作業設定（マシン固有のパスを含むため追跡しない）
+.vscode/
 
 # プロトタイプ（手元に残すが追跡しない）
 SerialController/Commands/PythonCommands/PokopiaAutoCoin.py
