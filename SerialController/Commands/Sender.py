@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 # Sender.py - 姿勢（押下状態）を1つに持ち、Transport へ渡す層。
 # コメント方針: なぜこうするかの理由を書く。外部文書への参照は付けない。
 # 下記の互換 import は Sender からは使わないが、モジュール直下の名前が
@@ -10,8 +9,9 @@ import threading
 import time
 import traceback
 from collections import deque
+from collections.abc import Callable
 from logging import DEBUG, NullHandler, getLogger
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 import InputLog
 import serial  # noqa: F401
@@ -99,8 +99,8 @@ class Sender:
         self,
         is_show_serial: Any,
         if_print: bool = True,
-        input_log_emit: Optional[Callable[[str], None]] = None,
-        transport: Optional[Transport.Transport] = None,
+        input_log_emit: Callable[[str], None] | None = None,
+        transport: Transport.Transport | None = None,
     ) -> None:
         # 運び方（Transport）を1つ持つ。既定は従来と同じテキスト
         #   シリアルなので、何も指定しなければ挙動は不変。
@@ -368,7 +368,7 @@ class Sender:
         """いま記録しているか。"""
         return bool(self._perf_recording)
 
-    def markEvent(self, source: Optional[str] = None) -> None:
+    def markEvent(self, source: str | None = None) -> None:
         """入口で申告を受けた時刻を記録する。
 
         申告系の入口から必ず呼ぶ。ここを呼び忘れた経路は、
@@ -699,11 +699,11 @@ class Sender:
         (値, revision) を持ち、revision が最大のものを採る。
         """
         if not hasattr(self, "_owner_btn"):
-            self._owner_btn: Dict[str, int] = {}
+            self._owner_btn: dict[str, int] = {}
         if not hasattr(self, "_owner_hat"):
-            self._owner_hat: Dict[str, Any] = {}
+            self._owner_hat: dict[str, Any] = {}
         if not hasattr(self, "_owner_stick"):
-            self._owner_stick: Dict[str, Any] = {}
+            self._owner_stick: dict[str, Any] = {}
 
     def _ownerKey(self, source: Any = None) -> str:
         """所有者の名札を返す。指定が無ければ既定の所有者とする。
@@ -723,7 +723,7 @@ class Sender:
             merged |= int(bits)
         return merged
 
-    def _composeLatest(self, table: Dict[str, Any]) -> Optional[Any]:
+    def _composeLatest(self, table: dict[str, Any]) -> Any | None:
         """revision が最大の申告の値を返す。申告が無ければ None。
 
         辞書の並び順は新しさを意味しないため、順序の根拠を revision に
@@ -818,7 +818,7 @@ class Sender:
             self._ensureSuspended()
             return self._ownerKey(source) in self._owner_saved
 
-    def getSuspended(self) -> Dict[str, Any]:
+    def getSuspended(self) -> dict[str, Any]:
         """退避中の申告の写しを返す（検算用・副作用なし）。"""
         with self._lock:
             self._ensureSuspended()
@@ -827,7 +827,7 @@ class Sender:
     def _ensureSuspended(self) -> None:
         """退避の入れ物を作る（遅延初期化）。"""
         if not hasattr(self, "_owner_saved"):
-            self._owner_saved: Dict[str, Any] = {}
+            self._owner_saved: dict[str, Any] = {}
 
     def dropOwner(self, source: Any = None) -> bool:
         """所有者 1 人分の申告だけを取り下げる。
@@ -851,7 +851,7 @@ class Sender:
             self.putLive(snap, priority=True)
         return had
 
-    def getOwners(self) -> Dict[str, Any]:
+    def getOwners(self) -> dict[str, Any]:
         """所有者ごとの申告の写しを返す（検算用・副作用なし）。"""
         with self._lock:
             self._ensureOwners()
@@ -861,7 +861,7 @@ class Sender:
                 "stick": dict(self._owner_stick),
             }
 
-    def _composeStickSide(self, side: str) -> Optional[Any]:
+    def _composeStickSide(self, side: str) -> Any | None:
         """その側のスティック申告のうち revision が最大の座標を返す。
 
         申告が無ければ None。呼び出し側は self._lock を保持していること。
@@ -921,9 +921,9 @@ class Sender:
         if not hasattr(self, "_hat_held"):
             # 申告者(source) -> Hat の値。誰が押しているかまで持つのは、
             # 系統ごとに離すタイミングが違うため。1つの値では上書きになる。
-            self._hat_held: Dict[str, int] = {}
+            self._hat_held: dict[str, int] = {}
 
-    def _heldHatValue(self) -> Optional[int]:
+    def _heldHatValue(self) -> int | None:
         """押しっぱなしにされている Hat の値。無ければ None。
 
         複数の系統が別々の向きを押している場合は、revision が最大の申告
@@ -934,7 +934,7 @@ class Sender:
         self._ensureOwners()
         return self._composeLatest(self._owner_hat)
 
-    def holdHat(self, hat: Any, source: Optional[str] = None) -> bool:
+    def holdHat(self, hat: Any, source: str | None = None) -> bool:
         """十字キーを押しっぱなしにすることを申告する。
 
         これを申告しておくと、他の系統から中立へ戻す申告が来ても
@@ -956,7 +956,7 @@ class Sender:
             self.applyHat(int(hat))
         return True
 
-    def releaseHat(self, source: Optional[str] = None) -> bool:
+    def releaseHat(self, source: str | None = None) -> bool:
         """十字キーの押しっぱなしをやめる。
 
         自分の分だけ取り下げる。他の系統がまだ押していれば、その向きへ戻る。
@@ -972,7 +972,7 @@ class Sender:
             self.applyHat(None)
         return True
 
-    def getHatHold(self) -> Dict[str, int]:
+    def getHatHold(self) -> dict[str, int]:
         """押しっぱなしの一覧（確認・デバッグ用）。"""
         with self._lock:
             self._ensureHatHold()
@@ -981,8 +981,8 @@ class Sender:
     def applyStick(
         self,
         stick: str,
-        x: Optional[int] = None,
-        y: Optional[int] = None,
+        x: int | None = None,
+        y: int | None = None,
         source: Any = None,
     ) -> None:
         """スティック座標を差分で適用し、変化があれば live に渡す。
@@ -1074,7 +1074,7 @@ class Sender:
         if snap is not None:
             self.putLive(snap, priority=True)
 
-    def getPosture(self) -> Dict[str, int]:
+    def getPosture(self) -> dict[str, int]:
         """現在の姿勢の写しを返す（確認・デバッグ用）。"""
         with self._lock:
             self._ensurePosture()
@@ -1190,20 +1190,20 @@ class Sender:
         古い版から作られた Sender でも動くようにするため。
         """
         if not hasattr(self, "_arb_mode"):
-            self._arb_mode = ARBITRATION_MODE
-            self._arb_cooldown = ARBITRATION_COOLDOWN
+            self._arb_mode: str = ARBITRATION_MODE
+            self._arb_cooldown: float = ARBITRATION_COOLDOWN
             # 最後に書いた時刻。どちらも「まだ誰も書いていない」で始める
-            self._arb_last_human = None
+            self._arb_last_human: float | None = None
             self._arb_last_auto = None
-            self._arb_notifier = None
-            self._arb_last_notify = 0.0
-            self._arb_suppressed = 0
-            self._arb_rejected = {"human": 0, "auto": 0}
+            self._arb_notifier: Callable[[str], None] | None = None
+            self._arb_last_notify: float = 0.0
+            self._arb_suppressed: int = 0
+            self._arb_rejected: dict[str, int] = {"human": 0, "auto": 0}
             # 自動側が明示的に操作を人へ渡している最中か。
             self._arb_handed_over = False
 
     def setArbitration(
-        self, mode: Optional[str] = None, cooldown: Optional[float] = None
+        self, mode: str | None = None, cooldown: float | None = None
     ) -> None:
         """調停の設定を変える。設定画面や起動引数から呼ぶ。
 
@@ -1228,7 +1228,7 @@ class Sender:
             if cooldown is not None:
                 self._arb_cooldown = max(0.0, float(cooldown))
 
-    def getArbitration(self) -> Dict[str, Any]:
+    def getArbitration(self) -> dict[str, Any]:
         """現在の調停の設定と実績を返す（設定画面・確認用）。"""
         with self._lock:
             self._ensureArbitration()
@@ -1239,7 +1239,7 @@ class Sender:
                 "rejected_auto": self._arb_rejected["auto"],
             }
 
-    def setArbitrationNotifier(self, fn: Optional[Callable[[str], None]]) -> None:
+    def setArbitrationNotifier(self, fn: Callable[[str], None] | None) -> None:
         """拒否を知らせる先を差し替える（既定は print とログ）。
 
         GUI ならログ欄へ、CUI なら標準出力へ、といった具合に
@@ -1250,11 +1250,11 @@ class Sender:
             self._arb_notifier = fn
 
     @staticmethod
-    def _isHumanSource(source: Optional[str]) -> bool:
+    def _isHumanSource(source: str | None) -> bool:
         """人の手による操作か。source が無いもの(None)は自動側とみなす。"""
         return str(source).lower() in HUMAN_SOURCES
 
-    def _notifyReject(self, source: Optional[str], winner: str) -> None:
+    def _notifyReject(self, source: str | None, winner: str) -> None:
         """拒否したことを知らせる。黙って捨てない。
 
         ただし毎回出すと、連打や毎フレームの申告で通知が溢れて
@@ -1320,7 +1320,7 @@ class Sender:
             self._ensureArbitration()
             return bool(getattr(self, "_arb_handed_over", False))
 
-    def _accept(self, source: Optional[str], releasing: bool = False) -> bool:
+    def _accept(self, source: str | None, releasing: bool = False) -> bool:
         """その申告を受理してよいか。
 
         ここを書き換えるだけで
@@ -1398,12 +1398,13 @@ class Sender:
                 # 未知の mode は調停しない。黙って優先側として扱うより、
                 # 通して利用者の手で止められる形にする。
                 return True
-        if notify is not None:
-            self._notifyReject(*notify)
-            return False
-        return True
+        # ここへ落ちてくるのは拒否した経路だけである。受理した経路は
+        #   上で True を返しているため、末尾の return True は到達不能で
+        #   置かない（warn_no_return が将来の経路追加を見張る）。
+        self._notifyReject(*notify)
+        return False
 
-    def pressButtons(self, btns: Any, source: Optional[str] = None) -> bool:
+    def pressButtons(self, btns: Any, source: str | None = None) -> bool:
         """ボタンを押す（差分の申告）。受理したら True。
 
         呼び出し側は「押したいボタン」だけを渡す。
@@ -1416,7 +1417,7 @@ class Sender:
         self.applyButtons(press=btns, source=source)
         return True
 
-    def releaseButtons(self, btns: Any, source: Optional[str] = None) -> bool:
+    def releaseButtons(self, btns: Any, source: str | None = None) -> bool:
         """ボタンを離す（差分の申告）。受理したら True。"""
         if not self._accept(source, releasing=True):
             return False
@@ -1424,7 +1425,7 @@ class Sender:
         self.applyButtons(release=btns, source=source)
         return True
 
-    def setHat(self, hat: Any = None, source: Optional[str] = None) -> bool:
+    def setHat(self, hat: Any = None, source: str | None = None) -> bool:
         """十字キーの向きを申告する。None で中立。受理したら True。
 
         向きの申告も所有者ごとに記録する。holdHat だけが記録していた
@@ -1450,9 +1451,9 @@ class Sender:
     def setStick(
         self,
         stick: str,
-        x: Optional[int] = None,
-        y: Optional[int] = None,
-        source: Optional[str] = None,
+        x: int | None = None,
+        y: int | None = None,
+        source: str | None = None,
     ) -> bool:
         """スティックの座標を申告する。常に受理して True を返す。
 
@@ -1465,7 +1466,7 @@ class Sender:
         self.applyStick(stick, x, y, source=source)
         return True
 
-    def sendPosture(self, source: Optional[str] = None) -> bool:
+    def sendPosture(self, source: str | None = None) -> bool:
         """現在姿勢を送る。Pico live経路ではmailboxだけを使う。
 
         送るのは「合成後の全体」である。棄却された系統の値は入って
@@ -1484,7 +1485,7 @@ class Sender:
         self.writeRow(self._buildRow())
         return True
 
-    def sendNeutralAll(self, source: Optional[str] = None) -> bool:
+    def sendNeutralAll(self, source: str | None = None) -> bool:
         """すべて中立へ戻す。live 経路では優先送信で mailbox へ渡す。
 
         既に中立であっても再送する。releaseAll は状態が変わらな
@@ -1514,7 +1515,7 @@ class Sender:
         """いまの revision。読むだけで何も変えない。"""
         return int(getattr(self, "_posture_revision", 0))
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self) -> dict[str, Any]:
         """現在の姿勢の写しを1つ返す（読み取り専用・副作用なし）。
 
         返すのは新しい辞書なので、呼び出し側が書き換えても
@@ -1583,7 +1584,7 @@ class Sender:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def encodePicoState(snap: Dict[str, Any]) -> str:
+    def encodePicoState(snap: dict[str, Any]) -> str:
         """snapshot から Pico 用の1行を組む（純関数・副作用なし）。
 
         引数は snapshot() が返す辞書（btn / hat / lx / ly / rx / ry）。
@@ -1598,7 +1599,7 @@ class Sender:
         )
 
     @staticmethod
-    def _picoField(snap: Dict[str, Any], key: str) -> int:
+    def _picoField(snap: dict[str, Any], key: str) -> int:
         """1項目を Pico が受け取れる範囲へ収める。
 
         範囲外を黙って送らない。btn は16bit、他は8bit が上限で、
@@ -1744,20 +1745,20 @@ class Sender:
                 "inversions": 0,
             }
         if not hasattr(self, "_live_last_snap"):
-            self._live_last_snap = None
+            self._live_last_snap: dict[str, Any] | None = None
         if not hasattr(self, "_live_last_sent_at"):
-            self._live_last_sent_at = None
+            self._live_last_sent_at: float | None = None
         if not hasattr(self, "_live_timer_raised"):
             self._live_timer_raised = False
         if not hasattr(self, "_live_closing"):
             self._live_closing = False
         if not hasattr(self, "_live_last_shown_at"):
-            self._live_last_shown_at = None
+            self._live_last_shown_at: float | None = None
         if not hasattr(self, "_live_last_shown_snap"):
-            self._live_last_shown_snap = None
+            self._live_last_shown_snap: dict[str, Any] | None = None
 
     def putLive(
-        self, snap: Optional[Dict[str, Any]] = None, priority: bool = False
+        self, snap: dict[str, Any] | None = None, priority: bool = False
     ) -> None:
         """最新の状態を容量 1 の mailbox へ置く（古い未送信は破棄する）。
 
@@ -1782,7 +1783,7 @@ class Sender:
         if priority:
             self._live_wake.set()
 
-    def takeLive(self) -> Optional[Dict[str, Any]]:
+    def takeLive(self) -> dict[str, Any] | None:
         """mailbox から取り出す。取り出した後は空にする。
 
         新しい状態がなければ None を返し、worker は送出しない。同じ状態を
@@ -1795,7 +1796,7 @@ class Sender:
         return snap
 
     def _showLiveRow(
-        self, snap: Dict[str, Any], now: float, is_keepalive: bool
+        self, snap: dict[str, Any], now: float, is_keepalive: bool
     ) -> bool:
         """送信行の表示可否を返す。表示は 20 Hz に制限し、解放と中立は即時に
         表示する。keepalive は表示しない。
@@ -1916,7 +1917,7 @@ class Sender:
             # worker の終了時は必ず戻す（異常終了でも通る）。
             self._endPreciseTimer()
 
-    def _recordLiveOrder(self, snap: Dict[str, Any]) -> None:
+    def _recordLiveOrder(self, snap: dict[str, Any]) -> None:
         """revision が逆転していないかを数える。"""
         rev = int(snap.get("revision", 0))
         if rev < self._live_stats["last_revision"]:
@@ -2005,7 +2006,7 @@ class Sender:
         self._queue_unsupported = False
 
     def runQueued(
-        self, duration: float, buttons: Any = None, source: Optional[str] = None
+        self, duration: float, buttons: Any = None, source: str | None = None
     ) -> bool:
         """押下を、Pico のキューで duration だけ実行する。
 
@@ -2194,7 +2195,7 @@ class Sender:
         thread = self._live_thread
         return thread is not None and thread.is_alive()
 
-    def getLiveStats(self) -> Dict[str, Any]:
+    def getLiveStats(self) -> dict[str, Any]:
         """帳簿の写しを返す（読むだけ・副作用なし）。"""
         self._ensureLiveState()
         with self._live_lock:

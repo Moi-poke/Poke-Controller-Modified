@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """launcher.py - Poke-Controller のプロファイルを選んで起動するランチャー.
 
 複数の Switch を並列で自動化するとき、台ごとに設定を分けるための
@@ -29,7 +28,7 @@ import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.simpledialog as tksimple
 import tkinter.ttk as ttk
-from typing import Any, List, Optional
+from typing import Any
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WINDOW_SCRIPT = os.path.join(APP_DIR, "Window.py")
@@ -671,7 +670,7 @@ class LauncherWindow(ttk.Frame):
 # ---------------------------------------------------------------------------
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Poke-Controller ランチャー")
     parser.add_argument(
         "--profile",

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """CommandVision.py - 画像認識 API（VisionMixin）.
 
 画像認識部をまとめたファイルである。
@@ -129,6 +128,12 @@ class VisionMixin:
     このクラス自身は self.camera / self.gsrc などを持たない。用意するのは
       継承側の __init__（_initVision）。
     """
+
+    # 待ち系は継承側（OperateMixin 経由の PythonCommand）が用意する。
+    # Mixin 単体には無いため、型だけ宣言する。
+    wait: Callable[[float], None]
+    _deadline: Callable[[float], Callable[[], bool]]
+    _runElapsed: Callable[[], float]
 
     def _initVision(self, cam: Any, gui: Any = None) -> None:
         """画像認識に使う状態を用意する。継承側の __init__ から呼ぶ。
@@ -704,7 +709,7 @@ class VisionMixin:
         crop=None,
         mask_path=None,
         show_value=False,
-    ) -> Optional[Tuple[int, int]]:
+    ) -> tuple[int, int] | None:
         """一致位置の中心 (x, y) を画面全体の座標で返す。無ければ None。
 
         isContainTemplate も内部では max_loc を出しているが、GUI へ矩形を
@@ -717,8 +722,8 @@ class VisionMixin:
         return center if hit else None
 
     def preloadTemplates(
-        self, template_paths: List[str], use_gray: bool = True
-    ) -> List[str]:
+        self, template_paths: list[str], use_gray: bool = True
+    ) -> list[str]:
         """先読みして、読めなかったパスの一覧を返す。
 
         _imread_or_raise が FileNotFoundError を投げるのは判定の瞬間なので、
@@ -797,7 +802,7 @@ class VisionMixin:
         crop=None,
         max_count: int = 20,
         show_value=False,
-    ) -> List[Tuple[int, int]]:
+    ) -> list[tuple[int, int]]:
         """閾値を超えた箇所すべての中心座標を、相関の高い順に返す。
 
         minMaxLoc は最大の1件しか返さないため、「並んでいる数」を数える
@@ -829,7 +834,7 @@ class VisionMixin:
         dy = crop[1] if len(crop) == 4 else 0
         near_x, near_y = max(1, w // 2), max(1, h // 2)
 
-        found: List[Tuple[int, int]] = []
+        found: list[tuple[int, int]] = []
         for i in order:
             x, y = int(xs[i]), int(ys[i])
             if any(abs(x - px) < near_x and abs(y - py) < near_y for px, py in found):

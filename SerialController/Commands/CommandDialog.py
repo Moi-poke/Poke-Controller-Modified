@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """CommandDialog.py - 入力ダイアログ（DialogMixin / PokeConDialogue）.
 
 PythonCommandBase.py から対話部を切り出したもの。
@@ -30,7 +29,8 @@ import threading
 import tkinter as tk
 import tkinter.ttk as ttk
 import traceback
-from typing import Any, Optional
+from collections.abc import Callable
+from typing import Any, cast
 
 from loguru import logger
 
@@ -167,7 +167,7 @@ class DialogMixin:
             raise RuntimeError(f"dialogue failed:\n{box['error']}")
         return box.get("value")
 
-    def _guiRoot(self) -> Optional[Any]:
+    def _guiRoot(self) -> Any | None:
         """ダイアログを載せる tk のルートを返す。無ければ None。
 
         以前は gui（画像認識コマンドが受け取るプレビュー）しか見て
@@ -188,7 +188,7 @@ class DialogMixin:
         return None
 
 
-class PokeConDialogue(object):
+class PokeConDialogue:
     def __init__(
         self, parent: Any, title: str, message: int | str | list, mode: int = 0
     ) -> None:

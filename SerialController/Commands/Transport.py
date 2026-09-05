@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Transport.py - 送信の下回り（線そのもの）を受け持つ層。
 
 Sender から「線を開く・閉じる・1行を書き出す」処理をここへ移している。
@@ -34,8 +33,9 @@ import platform
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from logging import DEBUG, NullHandler, getLogger
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, cast
 
 import serial
 
@@ -94,8 +94,8 @@ class Transport(abc.ABC):
 
     def set_hooks(
         self,
-        on_write_begin: Optional[Callable[..., None]] = None,
-        on_write_end: Optional[Callable[..., None]] = None,
+        on_write_begin: Callable[..., None] | None = None,
+        on_write_end: Callable[..., None] | None = None,
     ) -> None:
         """実際に書き出す前後で呼ぶ手。Sender の帳簿（計測・直前の行）用。
 
@@ -116,7 +116,9 @@ class Transport(abc.ABC):
         self._on_write_end = self._adapt_hook(on_write_end)
 
     @staticmethod
-    def _adapt_hook(func: Optional[Callable[..., None]]):
+    def _adapt_hook(
+        func: Callable[..., None] | None,
+    ) -> Callable[..., None] | None:
         """手が受け取れる引数の数に合わせて包む。"""
         if func is None:
             return None
@@ -163,13 +165,14 @@ class TextSerialTransport(Transport):
         # 同じスレッドで錠を取り直すため（Lock だとそこで自分自身を待つ）。
         self._lock = threading.RLock()
         self._last_write = 0.0
-        self._pending = None
-        self._before = None
+        self._pending: str | None = None
+        self._before: str | None = None
         self._send_interval = MIN_SEND_INTERVAL
-        self._on_write_begin = None
-        self._on_write_end = None
-        self.listeners: List[Callable[[str], None]] = []
-        self._listener_ng = set()  # 一度落ちた聞き手。同じ苦情を繰り返さない
+        self._on_write_begin: Callable[..., None] | None = None
+        self._on_write_end: Callable[..., None] | None = None
+        self.listeners: list[Callable[[str], None]] = []
+        # 一度落ちた聞き手の id()。同じ苦情を繰り返さない
+        self._listener_ng: set[int] = set()
 
     # -- 聞き手の付け外し ---------------------------------------------------
 
@@ -315,7 +318,7 @@ class TextSerialTransport(Transport):
                     write_timeout=WRITE_TIMEOUT,
                 )
                 return True
-        except IOError as e:
+        except OSError as e:
             print("COM Port: can't be established")
             self._logger.error(f"COM Port: can't be established: {e}")
             return False
@@ -527,7 +530,7 @@ DEFAULT_TRANSPORT = "legacy_text"
 
 # 名前 → {"factory": 呼ぶと Transport を返すもの, "description": 説明,
 #         "capability": 許可済み能力, "builtin": 最初から入っているか}
-_REGISTRY: Dict[str, Dict[str, Any]] = {}
+_REGISTRY: dict[str, dict[str, Any]] = {}
 
 
 def register_transport(
@@ -588,23 +591,23 @@ def unregister_transport(name: str) -> bool:
     return True
 
 
-def list_transports() -> List[str]:
+def list_transports() -> list[str]:
     """登録されているプリセット名の一覧（設定画面の候補に使う）。"""
     return list(_REGISTRY.keys())
 
 
-def describe_transports() -> List[Tuple[str, str]]:
+def describe_transports() -> list[tuple[str, str]]:
     """(名前, 説明) の一覧。画面へ出すときの並びはこの順。"""
     return [(k, v.get("description", "")) for k, v in _REGISTRY.items()]
 
 
-def get_transport_info(name: str) -> Optional[Dict[str, Any]]:
+def get_transport_info(name: str) -> dict[str, Any] | None:
     """1件ぶんの登録内容。無ければ None。"""
     info = _REGISTRY.get(str(name))
     return dict(info) if info is not None else None
 
 
-def resolve_transport_name(name: Optional[str]) -> str:
+def resolve_transport_name(name: str | None) -> str:
     """指定された名前を、実際に使える名前へ直す。
 
     知らない名前は黙って既定へ落とさない。理由を出してから落とす。
@@ -624,7 +627,7 @@ def resolve_transport_name(name: Optional[str]) -> str:
     return DEFAULT_TRANSPORT
 
 
-def create_transport(name: Optional[str] = None, logger: Any = None) -> Transport:
+def create_transport(name: str | None = None, logger: Any = None) -> Transport:
     """名前から運び方を1つ作る。設定画面・起動引数はここを通る。
 
     作れなかった場合も None を返さず、既定の実装を返す。ここで
@@ -653,7 +656,7 @@ def create_transport(name: Optional[str] = None, logger: Any = None) -> Transpor
         return TextSerialTransport(logger=logger)
 
 
-def load_transport_plugins(dir_path: str) -> List[str]:
+def load_transport_plugins(dir_path: str) -> list[str]:
     """フォルダの .py を読み、利用者定義のプリセットを取り込む。
 
     各ファイルはモジュール直下に register(register_transport) を
@@ -663,7 +666,7 @@ def load_transport_plugins(dir_path: str) -> List[str]:
     1本が壊れていても他は読む。読めなかったものは理由を出す。
       黙って飛ばすと「置いたのに出てこない」理由が分からない。
     """
-    added: List[str] = []
+    added: list[str] = []
     if not dir_path or not os.path.isdir(dir_path):
         return added
     import importlib.util

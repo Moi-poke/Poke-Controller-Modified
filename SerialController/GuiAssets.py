@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """GuiAssets.py - Poke-Controller Modified の GUI 部品.
 
 CaptureArea    : カメラ映像を描画する Canvas。マウスでのスティック操作も担う。
@@ -499,12 +498,7 @@ class CaptureArea(tk.Canvas):
 
         ratio_x, ratio_y = self._captureRatio()
         logger.info(
-            "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
-                self.min_x,
-                self.min_y,
-                int(self.min_x * ratio_x),
-                int(self.min_y * ratio_y),
-            )
+            f"Mouse down: Show ({self.min_x}, {self.min_y}) / Capture ({int(self.min_x * ratio_x)}, {int(self.min_y * ratio_y)})"
         )
 
         if self.master.is_use_left_stick_mouse.get():
@@ -524,12 +518,7 @@ class CaptureArea(tk.Canvas):
         """選択範囲を切り出して保存する。"""
         ratio_x, ratio_y = self._captureRatio()
         logger.info(
-            "Mouse up: Show ({}, {}) / Capture ({}, {})".format(
-                self.max_x,
-                self.max_y,
-                int(self.max_x * ratio_x),
-                int(self.max_y * ratio_y),
-            )
+            f"Mouse up: Show ({self.max_x}, {self.max_y}) / Capture ({int(self.max_x * ratio_x)}, {int(self.max_y * ratio_y)})"
         )
         if self.min_x > self.max_x:
             self.min_x, self.max_x = self.max_x, self.min_x
@@ -587,11 +576,7 @@ class CaptureArea(tk.Canvas):
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
         r, g, b = rgb[0, 0]
         h, s, v = hsv[0, 0]
-        logger.info(
-            "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
-                event.x, event.y, px, py
-            )
-        )
+        logger.info(f"Mouse down: Show ({event.x}, {event.y}) / Capture ({px}, {py})")
         logger.info(f"Color [R: {r}, G: {g}, B: {b}] / HSV [H: {h}, S: {s}, V: {v}]")
 
     def mouseCtrlLeftRelease(self, event: Any) -> None:

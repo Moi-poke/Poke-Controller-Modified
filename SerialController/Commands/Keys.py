@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+from __future__ import annotations
 
 import math
 import time
 from collections import OrderedDict
 from enum import Enum, IntEnum, IntFlag, auto
 from logging import DEBUG, NullHandler, getLogger
-from typing import Any, List, Optional
+from typing import Any, ClassVar
 
 
 class Button(IntFlag):
@@ -84,18 +84,18 @@ class SendFormat:
         self.R_stick_changed = False
         self.Hat_pos = Hat.CENTER
 
-    def setButton(self, btns: List[Any]) -> None:
+    def setButton(self, btns: list[Any]) -> None:
         for btn in btns:
             self.format["btn"] |= btn
 
-    def unsetButton(self, btns: List[Any]) -> None:
+    def unsetButton(self, btns: list[Any]) -> None:
         for btn in btns:
             self.format["btn"] &= ~btn
 
     def resetAllButtons(self) -> None:
         self.format["btn"] = 0
 
-    def setHat(self, btns: List[Any]) -> None:
+    def setHat(self, btns: list[Any]) -> None:
         # self._logger.debug(btns)
         if not btns:
             self.format["hat"] = self.Hat_pos
@@ -108,7 +108,7 @@ class SendFormat:
         self.Hat_pos = Hat.CENTER
         self.format["hat"] = self.Hat_pos
 
-    def setAnyDirection(self, dirs: List[Any]) -> None:
+    def setAnyDirection(self, dirs: list[Any]) -> None:
         for dir in dirs:
             if dir.stick == Stick.LEFT:
                 if self.format["lx"] != dir.x or self.format["ly"] != 255 - dir.y:
@@ -123,7 +123,7 @@ class SendFormat:
                 self.format["rx"] = dir.x
                 self.format["ry"] = 255 - dir.y
 
-    def unsetDirection(self, dirs: List[Any]) -> None:
+    def unsetDirection(self, dirs: list[Any]) -> None:
         if Tilt.UP in dirs or Tilt.DOWN in dirs:
             self.format["ly"] = CENTER
             self.format["lx"] = self.fixOtherAxis(self.format["lx"])
@@ -197,13 +197,31 @@ class SendFormat:
 
 # This class handle L stick and R stick at any angles
 class Direction:
+    # よく使う向きの定義済み実体。実体はクラス定義の直後で代入する。
+    UP: ClassVar[Direction]
+    RIGHT: ClassVar[Direction]
+    DOWN: ClassVar[Direction]
+    LEFT: ClassVar[Direction]
+    UP_RIGHT: ClassVar[Direction]
+    DOWN_RIGHT: ClassVar[Direction]
+    DOWN_LEFT: ClassVar[Direction]
+    UP_LEFT: ClassVar[Direction]
+    R_UP: ClassVar[Direction]
+    R_RIGHT: ClassVar[Direction]
+    R_DOWN: ClassVar[Direction]
+    R_LEFT: ClassVar[Direction]
+    R_UP_RIGHT: ClassVar[Direction]
+    R_DOWN_RIGHT: ClassVar[Direction]
+    R_DOWN_LEFT: ClassVar[Direction]
+    R_UP_LEFT: ClassVar[Direction]
+
     def __init__(
         self,
-        stick: "Stick",
-        angle: float,
+        stick: Stick,
+        angle: float | tuple[int, int],
         magnification: float = 1.0,
         isDegree: bool = True,
-        showName: Optional[str] = None,
+        showName: str | None = None,
     ) -> None:
         self._logger = getLogger(__name__)
         self._logger.addHandler(NullHandler())
@@ -237,9 +255,9 @@ class Direction:
 
     def __repr__(self) -> str:
         if self.showName:
-            return "<{}, {}>".format(self.stick, self.showName)
+            return f"<{self.stick}, {self.showName}>"
         else:
-            return "<{}, {}[deg]>".format(self.stick, self.angle_for_show)
+            return f"<{self.stick}, {self.angle_for_show}[deg]>"
 
     def __eq__(self, other: object) -> bool:
         if type(other) is not Direction:
@@ -250,7 +268,7 @@ class Direction:
         else:
             return False
 
-    def getTilting(self) -> List[Any]:
+    def getTilting(self) -> list[Any]:
         tilting = []
         if self.stick == Stick.LEFT:
             if self.x < CENTER:
@@ -482,7 +500,7 @@ class KeyPress:
         self.ser.writeRow("end")
 
     def serialcommand_direct_send(
-        self, serialcommands: List[str], waittime: List[float]
+        self, serialcommands: list[str], waittime: list[float]
     ) -> None:
         for wtime, row in zip(waittime, serialcommands):
             time.sleep(wtime)
@@ -588,7 +606,9 @@ class KeyPress:
     #   外部が読んでいた場合に壊さないため、並行して更新し続ける。
     #   ただし送信行はもう self.format からは作らない。
 
-    def _applyToSender(self, btns: list, saved: Optional[dict] = None) -> bool:
+    def _applyToSender(
+        self, btns: list[Any], saved: dict[str, Any] | None = None
+    ) -> bool:
         """押したものだけを Sender へ申告する（input から呼ぶ）。
 
         戻り値は「1 件でも申告が通ったか」。旧 Sender（姿勢を持たない

@@ -25,13 +25,13 @@ def _update(
 
     video_capture = cv2.VideoCapture(*args)
     if not video_capture.isOpened():
-        raise IOError()
+        raise OSError()
 
     _set_props(video_capture, props)
 
     # 共有メモリにアタッチ
     existing_shm = shared_memory.SharedMemory(name=shm_name)
-    shm_buffer = np.ndarray(shape, dtype=np.uint8, buffer=existing_shm.buf)
+    shm_buffer: np.ndarray = np.ndarray(shape, dtype=np.uint8, buffer=existing_shm.buf)
 
     try:
         while not cancel.is_set():
@@ -69,7 +69,7 @@ def _get_information(
 ) -> tuple[tuple[int, int, int], dict[int, float]]:
     video_capture = cv2.VideoCapture(*args)
     if not video_capture.isOpened():
-        raise IOError()
+        raise OSError()
 
     # 入力されたプロパティを設定してから、現在のプロパティ一覧を取得する
     _set_props(video_capture, in_props)
@@ -78,7 +78,7 @@ def _get_information(
     try:
         ret, mat = cast("tuple[bool, cv2.Mat]", video_capture.read())
         if not ret:
-            raise IOError()
+            raise OSError()
 
         return mat.shape, out_props
 

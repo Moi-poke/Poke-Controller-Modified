@@ -13,7 +13,7 @@ import queue
 import threading
 import tkinter as tk
 import tkinter.ttk as ttk
-from typing import Any, Optional
+from typing import Any
 
 from Commands.WakeLink import drain, query, read_lines, send_line
 
@@ -128,7 +128,7 @@ class WakeSetup:
         finally:
             self._queue.put(("done", ""))
 
-    def _transport(self) -> Optional[Any]:
+    def _transport(self) -> Any | None:
         sender = self._sender
         transport = getattr(sender, "transport", None)
         if transport is None:

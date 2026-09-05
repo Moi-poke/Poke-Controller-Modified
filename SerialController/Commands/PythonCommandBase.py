@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import atexit
@@ -8,7 +7,8 @@ import threading
 import time
 import traceback
 from abc import abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 # Commands配下と同じ絶対importに統一する。相対importでは、パッケージとして
 # 読み込む場合と単体で実行する場合とで、読み込めなくなる側が変わるため。
@@ -70,7 +70,7 @@ _begin_timer_period()
 # Python command
 class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
     def __init__(self) -> None:
-        super(PythonCommand, self).__init__()
+        super().__init__()
         # この操作が「誰のものか」を表す名札。
         #   do_safe が KeyPress を作るときに渡し、入力調停（Sender)が
         #   受理／拒否の判断に使う。既定は "script"（自動実行）。
@@ -196,7 +196,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             except Exception:
                 logger.error(f"postProcess failed: {traceback.format_exc()}")
 
-    def start(self, ser: Any, postProcess: Optional[Callable[[], None]] = None) -> bool:
+    def start(self, ser: Any, postProcess: Callable[[], None] | None = None) -> bool:
         # 実行中かどうかは _running で見る。thread.is_alive() だけだと、
         # do_safe の finally がまだそのスレッドの中で走っている最中に
         # 判定が通り、旧スレッドの末尾処理と新スレッドが同時に走る。
@@ -411,7 +411,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             return
         queue.put(text)
 
-    def _subLogQueue(self) -> Optional[Any]:
+    def _subLogQueue(self) -> Any | None:
         """副ログ用のキューを返す。取れなければ None。
 
         旧実装は __main__ → import Window の順に sub_log_queue を探して
@@ -481,7 +481,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             return False
 
     # direct serial
-    def direct_serial(self, serialcommands: List[str], waittime: List[float]) -> None:
+    def direct_serial(self, serialcommands: list[str], waittime: list[float]) -> None:
         """生の文字列をそのまま送る。1件ごとに停止・一時停止を見る。
 
         旧実装はリストごと Keys 側へ丸投げしていたため、次の3つがあった。
@@ -563,7 +563,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         logger.error(msg)
         return False
 
-    def _serialConfig(self) -> Optional[Dict[str, Any]]:
+    def _serialConfig(self) -> dict[str, Any] | None:
         """Window が写した COM 設定を検証して返す。不正なら None。
 
         代わりの設定をここで作らないのが要点。無ければ「開き直せない」と
@@ -611,7 +611,7 @@ class ImageProcPythonCommand(PythonCommand, VisionMixin):
     """
 
     def __init__(self, cam: Any, gui: Any = None) -> None:
-        super(ImageProcPythonCommand, self).__init__()
+        super().__init__()
         # 画像認識に使う状態（camera / gui / GPU まわり）は VisionMixin が
         #   用意する。cv2.cuda_GpuMat() は CUDA 無効ビルドで AttributeError に
         #   なるため、実際に GPU 版を呼んだときだけ確保する作りも移してある。

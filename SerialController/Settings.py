@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 import configparser
 import hashlib
 import os
 import re
 import tkinter as tk
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -141,7 +140,7 @@ class GuiSettings:
     # 読み書きは必ず load_key_map() / update_key_map() を通す。
     KEYMAP_SECTIONS: tuple = ("KeyMap-Button", "KeyMap-Direction", "KeyMap-Hat")
 
-    def load_key_map(self, section: str) -> Dict[str, str]:
+    def load_key_map(self, section: str) -> dict[str, str]:
         """KeyMap セクションを {項目名: 割り当てキー} で返す。"""
         if section not in self.KEYMAP_SECTIONS:
             raise ValueError(f"KeyMap のセクション名ではありません: {section}")
@@ -151,11 +150,11 @@ class GuiSettings:
             return {k: str(v) for k, v in defaults.items()}
         return dict(self.setting[section])
 
-    def load_all_key_maps(self) -> Dict[str, Dict[str, str]]:
+    def load_all_key_maps(self) -> dict[str, dict[str, str]]:
         """全 KeyMap セクションをまとめて返す。"""
         return {s: self.load_key_map(s) for s in self.KEYMAP_SECTIONS}
 
-    def update_key_map(self, key_maps: Dict[str, Dict[str, str]]) -> None:
+    def update_key_map(self, key_maps: dict[str, dict[str, str]]) -> None:
         """キー割り当てだけを差し替えて保存する。
 
         キーコンフィグ画面は本体とは別の GuiSettings インスタンスなので、
@@ -189,7 +188,7 @@ class GuiSettings:
         self._reload_key_maps()
         logger.debug(f"キー割り当てを保存しました: {list(key_maps)}")
 
-    def reset_key_map(self) -> Dict[str, Dict[str, str]]:
+    def reset_key_map(self) -> dict[str, dict[str, str]]:
         """キー割り当てを既定値へ戻して保存し、その内容を返す。"""
         defaults = {
             s: {k: str(v) for k, v in self._default_sections()[s].items()}
@@ -327,7 +326,7 @@ class GuiSettings:
             self._write_ini()
 
     @staticmethod
-    def _default_sections() -> Dict[str, Dict[str, Any]]:
+    def _default_sections() -> dict[str, dict[str, Any]]:
         """既定値。generate() と _complete_missing() の両方がここを参照する。"""
         return {
             "General Setting": {
@@ -436,7 +435,12 @@ class GuiSettings:
             self.setting[section] = {k: str(v) for k, v in values.items()}
         self._write_ini()
 
-    def save(self, path: Optional[str] = None) -> None:
+    @staticmethod
+    def _str_values(values: dict[str, Any]) -> dict[str, str]:
+        """ini へ書けるよう値を文字列へ揃える（generate と同じ規則）。"""
+        return {k: str(v) for k, v in values.items()}
+
+    def save(self, path: str | None = None) -> None:
         # tkinter の変数はそのまま書けないので値を取り出して詰め直す。
         # KeyMap-* は tk 変数を持たないのでここでは組み直さない。ただし
         # メモリ上の内容は「読み込んだ時点」のもので、その後にキーコンフィグ
@@ -488,7 +492,7 @@ class GuiSettings:
         self._write_ini(path)
         logger.debug("設定ファイルを保存しました")
 
-    def _write_ini(self, path: Optional[str] = None) -> None:
+    def _write_ini(self, path: str | None = None) -> None:
         """一時ファイルへ書いてから置き換える（書き込み中の中断で設定を失わないため）。"""
         path = path or self.setting_path
         tmp_path = path + ".tmp"

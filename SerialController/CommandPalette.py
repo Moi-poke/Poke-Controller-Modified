@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import tkinter as tk
 import tkinter.ttk as ttk
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import CommandStats
 

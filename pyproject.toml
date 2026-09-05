@@ -35,7 +35,7 @@ dev = [
 target-version = "py310"
 
 [tool.ruff.lint]
-extend-select = ["I"]
+extend-select = ["I", "UP006", "UP007", "UP008", "UP035"]
 
 [tool.ruff.lint.isort]
 case-sensitive = true

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
+from typing import Optional
 
 from Commands import CommandBase
 from loguru import logger
@@ -19,11 +19,11 @@ class McuCommand(CommandBase.Command):
                 受け取った文字列に改行を付けて送るだけで、名前が実在するか
                 どうかは検証しない。MCU 側の定義と一致させること。
         """
-        super(McuCommand, self).__init__()
+        super().__init__()
         self.sync_name = sync_name
-        self.postProcess: Optional[Callable[[], None]] = None
+        self.postProcess: Callable[[], None] | None = None
 
-    def start(self, ser, postProcess: Optional[Callable[[], None]] = None):
+    def start(self, ser, postProcess: Callable[[], None] | None = None):
         # ポートが開いていないと writeRow は AttributeError を握り潰すため、
         # 送れていないのに isRunning = True になり「動いているつもり」になる。
         if ser is None or not ser.isOpened():

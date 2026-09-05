@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """InputLogConfig.py - 入力ログの表示書式を決める設定画面.
 
 メニュー「入力ログの書式」から開く。プリセットを選ぶだけでも使えるし、
@@ -16,7 +15,8 @@ from __future__ import annotations
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 import InputLog
 from loguru import logger
@@ -44,8 +44,8 @@ class InputLogConfig:
         self,
         master: tk.Misc,
         settings: Any,
-        on_change: Optional[Callable[[], None]] = None,
-        on_close: Optional[Callable[[], None]] = None,
+        on_change: Callable[[], None] | None = None,
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         """master に載せて開く。
 

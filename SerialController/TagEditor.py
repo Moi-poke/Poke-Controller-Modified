@@ -19,7 +19,8 @@ from __future__ import annotations
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import CommandTags
 from CommandTags import TAG_UNCLASSIFIED

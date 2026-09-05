@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 import time
 
@@ -21,28 +20,28 @@ class CalcTime(ImageProcPythonCommand):
         if cv2.cuda.getCudaEnabledDeviceCount() != 0:
             iter = 1000
             # print(cv2.getBuildInformation())
-            print("Measure Calc.Speed btw. CPU, GPU for {0} iter".format(iter))
+            print(f"Measure Calc.Speed btw. CPU, GPU for {iter} iter")
             start = time.time()
             for i in range(iter):
                 self.isContainTemplate("shiny_mark1.png", 0.7, True, False)
             n = time.time() - start
-            print("CPU, Gray: Total: {0}, Ave: {1}".format(n, n / iter))
+            print(f"CPU, Gray: Total: {n}, Ave: {n / iter}")
             start = time.time()
             for i in range(iter):
                 self.isContainTemplate("shiny_mark1.png", 0.7, False, False)
             n = time.time() - start
-            print("CPU, Color: Total: {0}, Ave: {1}".format(n, n / iter))
+            print(f"CPU, Color: Total: {n}, Ave: {n / iter}")
 
             start = time.time()
             for i in range(iter):
                 self.isContainTemplateGPU("shiny_mark1.png", 0.7, True, False)
             n = time.time() - start
-            print("GPU, Gray: Total: {0}, Ave: {1}".format(n, n / iter))
+            print(f"GPU, Gray: Total: {n}, Ave: {n / iter}")
             start = time.time()
             for i in range(iter):
                 self.isContainTemplateGPU("shiny_mark1.png", 0.7, False, False)
             n = time.time() - start
-            print("GPU, Color: Total: {0}, Ave: {1}".format(n, n / iter))
+            print(f"GPU, Color: Total: {n}, Ave: {n / iter}")
 
 
 # print("テンプレートマッチング　グレースケール")

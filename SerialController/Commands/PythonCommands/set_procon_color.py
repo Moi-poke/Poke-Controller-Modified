@@ -134,7 +134,7 @@ class SetProconColor(PythonCommand):
         for name, value in zip(PART_NAMES, raw):
             fixed = normalize(value)
             if fixed is None:
-                self.print2("{} の色「{}」が読めません。".format(name, value))
+                self.print2(f"{name} の色「{value}」が読めません。")
                 self.print2("6桁の16進で書いてください（例: ff0000）。")
                 self.finish()
                 return
@@ -146,9 +146,9 @@ class SetProconColor(PythonCommand):
         #   取込スキャンが始まってしまう。
         row = "O " + " ".join(colors)
 
-        self.print2("色を「{}」にします。".format(label))
+        self.print2(f"色を「{label}」にします。")
         for name, value in zip(PART_NAMES, colors):
-            self.print2("  {} #{}".format(name, value))
+            self.print2(f"  {name} #{value}")
 
         transport = self._color_transport()
         if transport is not None:

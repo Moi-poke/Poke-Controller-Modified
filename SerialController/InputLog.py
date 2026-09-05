@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """InputLog.py - シリアル送信行から入力イベントを起こしてログに出す.
 
 Sender.writeRow() が送る1行（Keys.SendFormat.convert2str の出力）を feed() に
@@ -21,8 +20,9 @@ import math
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # 送信フォーマットの定義（Keys.SendFormat.convert2str と対で保つ）
@@ -116,17 +116,17 @@ class InputEvent:
     name: str  # Button.A / Hat.TOP / Stick.LEFT
     at: float  # time.perf_counter() の値
     wall: WallTime  # 実時刻
-    duration: Optional[float] = None  # RELEASE のときだけ入る（秒）
-    x: Optional[int] = None
-    y: Optional[int] = None
-    deg: Optional[float] = None
-    mag: Optional[float] = None
+    duration: float | None = None  # RELEASE のときだけ入る（秒）
+    x: int | None = None
+    y: int | None = None
+    deg: float | None = None
+    mag: float | None = None
     raw: str = ""
     held: tuple = ()
     # 倒している間の軌跡。スティックの RELEASE でだけ入る。
-    from_deg: Optional[float] = None  # 倒し始めた向き
-    max_mag: Optional[float] = None  # その間の最大の倒し量
-    turn: Optional[float] = None  # 累積の回転量（度。+が反時計回り）
+    from_deg: float | None = None  # 倒し始めた向き
+    max_mag: float | None = None  # その間の最大の倒し量
+    turn: float | None = None  # 累積の回転量（度。+が反時計回り）
     moves: int = 0  # 向きが変わった回数
 
 
@@ -246,14 +246,14 @@ def format_time(wall: WallTime, pattern: str) -> str:
     if "%" in pattern:
         return wall.strftime(pattern)
     # fff は strftime に無いので、先に実数字へ置き換えてしまう
-    pattern = pattern.replace("fff", "{:03d}".format(wall.microsecond // 1000))
+    pattern = pattern.replace("fff", f"{wall.microsecond // 1000:03d}")
     return wall.strftime(_TIME_RE.sub(lambda m: _TIME_MAP[m.group(0)], pattern))
 
 
 _ALIGN_RE = re.compile(r"^(.?[<>^])?(\d+)$")
 
 
-def _event_mag(ev: InputEvent) -> Optional[float]:
+def _event_mag(ev: InputEvent) -> float | None:
     """その行に書くべき倒し量を選ぶ。
 
     RELEASE は離した瞬間の座標が中立なので、倒していた間の最大を使う。
@@ -266,7 +266,7 @@ def _event_mag(ev: InputEvent) -> Optional[float]:
     return ev.mag if ev.mag is not None else ev.max_mag
 
 
-def snap_direction(deg: Optional[float]) -> str:
+def snap_direction(deg: float | None) -> str:
     """角度を8方向のうち最も近いものの名前へ丸める。
 
     向きの判定は「表示名を作る」「集約の単位を決める」の2か所で要る。
@@ -284,7 +284,7 @@ def snap_direction(deg: Optional[float]) -> str:
     return best
 
 
-def direction_gap(deg: Optional[float]) -> float:
+def direction_gap(deg: float | None) -> float:
     """snap_direction が選んだ向きから、実際の角度が何度ずれているか。"""
     if deg is None:
         return 360.0
@@ -407,7 +407,7 @@ def command_raw_target(ev: InputEvent) -> str:
     return ev.name
 
 
-def format_duration(seconds: Optional[float], spec: str) -> str:
+def format_duration(seconds: float | None, spec: str) -> str:
     """押下時間を書式に従って文字列にする。None なら空文字。
 
     spec は ms / s / s.2 / ms.1 / auto のほか、'>7' のような桁揃えだけの指定も
@@ -420,22 +420,22 @@ def format_duration(seconds: Optional[float], spec: str) -> str:
         return format(format_duration(seconds, ""), spec)
     if not spec or spec == "auto":
         if seconds < 1.0:
-            return "{:.0f}ms".format(seconds * 1000)
-        return "{:.2f}s".format(seconds)
+            return f"{seconds * 1000:.0f}ms"
+        return f"{seconds:.2f}s"
     if spec == "ms":
-        return "{:.0f}".format(seconds * 1000)
+        return f"{seconds * 1000:.0f}"
     if spec == "s":
-        return "{:.3f}".format(seconds)
+        return f"{seconds:.3f}"
     if spec.startswith("s."):
         try:
             return "{:.{}f}".format(seconds, int(spec[2:]))
         except (TypeError, ValueError):
-            return "{:.2f}s".format(seconds)
+            return f"{seconds:.2f}s"
     if spec.startswith("ms."):
         try:
             return "{:.{}f}".format(seconds * 1000, int(spec[3:]))
         except (TypeError, ValueError):
-            return "{:.0f}ms".format(seconds * 1000)
+            return f"{seconds * 1000:.0f}ms"
     try:
         return format(seconds, spec)
     except (TypeError, ValueError):
@@ -568,7 +568,7 @@ class LogFormatter:
 # ---------------------------------------------------------------------------
 
 
-def sample_events() -> List[InputEvent]:
+def sample_events() -> list[InputEvent]:
     """書式の見本を作るための、決め打ちのイベント列を返す。
 
     設定画面で「この書式だとこう出る」を見せるために使う。実機の操作を
@@ -635,7 +635,7 @@ def sample_events() -> List[InputEvent]:
     ]
 
 
-def preview_lines(template: str, actions: Any = None) -> List[str]:
+def preview_lines(template: str, actions: Any = None) -> list[str]:
     """テンプレートを見本イベントに当てて、出力される行を返す。
 
     設定画面はこれを呼ぶだけでよい。書式が壊れていても例外を投げず、
@@ -666,7 +666,7 @@ class InputLogger:
     def __init__(
         self,
         template: str = DEFAULT_FORMAT,
-        emit: Optional[Callable[[str], None]] = None,
+        emit: Callable[[str], None] | None = None,
         enabled: bool = True,
         log_stick_change: bool = False,
         deadzone: float = STICK_DEADZONE,
@@ -691,7 +691,7 @@ class InputLogger:
         self.repeat_flush = REPEAT_FLUSH
         # 保留中の反復。キーは _collapse_key が作る
         # （スティックは向きまで含む）。値は text/count/emitted/at/seq。
-        self._pending: Dict[tuple, Dict[str, Any]] = {}
+        self._pending: dict[tuple, dict[str, Any]] = {}
         self._seq = 0  # 保留の登録順。出力順を押した順に保つ
 
         # 流量制限用。1秒ごとに出した行数を数え、超えた分は捨てる
@@ -728,10 +728,10 @@ class InputLogger:
             "Stick.LEFT": (NEUTRAL, NEUTRAL),
             "Stick.RIGHT": (NEUTRAL, NEUTRAL),
         }
-        self._since = {}  # 押し始めた時刻 {name: perf_counter}
+        self._since: dict[str, float] = {}  # 押し始めた時刻 {name: perf_counter}
         # 倒している間の軌跡 {stick名: {from,last,max_mag,turn,moves}}。
         # 離した瞬間の座標は中立なので、向きはここから取り出す。
-        self._track: Dict[str, Dict[str, Any]] = {}
+        self._track: dict[str, dict[str, Any]] = {}
 
     def reset(self) -> None:
         """保持している押下状態を捨てる（'end' 受信やポート再接続のとき）。
@@ -885,7 +885,7 @@ class InputLogger:
         return lines
 
     @staticmethod
-    def _split_first_arg(args: str) -> Tuple[str, str]:
+    def _split_first_arg(args: str) -> tuple[str, str]:
         """引数の並びを「第1引数」と「それ以降」に分ける。
 
         単純に ', ' で切ると Direction(Stick.LEFT, 27, 0.09) のように
@@ -984,7 +984,7 @@ class InputLogger:
 
     # -- 解析 ---------------------------------------------------------------
 
-    def _parse(self, row: str) -> Optional[Tuple[Any, ...]]:
+    def _parse(self, row: str) -> tuple[Any, ...] | None:
         """'0x00fc 8 80 80' を (btn, hat, lx, ly, rx, ry) にする。
 
         スティックは変化したぶんだけ送られてくる可変長なので、
@@ -1205,7 +1205,7 @@ class InputLogger:
         return self.angle(x, y)[1] > self.deadzone
 
     @staticmethod
-    def angle(x: int, y: int) -> Tuple[float, float]:
+    def angle(x: int, y: int) -> tuple[float, float]:
         """送信値 (x, y) から角度[度]と倒し量[0-1]を求める。
 
         受け取るのは「実際にシリアルへ送った値」であって、Direction が

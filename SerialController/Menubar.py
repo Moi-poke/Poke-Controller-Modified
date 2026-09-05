@@ -143,12 +143,13 @@ class PokeController_Menubar(tk.Menu):
                 self.key_config.destroy()
             except Exception:
                 pass
-            self.key_config: Optional[PokeKeycon] = None
+            self.key_config = None
 
     def OpenWakeSetup(self) -> None:
         logger.debug("Open WakeSetup window")
-        if self._alive(getattr(self.wake_setup, "window", None)):
-            self.wake_setup.window.focus_force()
+        wake_window = getattr(self.wake_setup, "window", None)
+        if wake_window is not None and self._alive(wake_window):
+            wake_window.focus_force()
             return
         self.wake_setup = None
         self.wake_setup = WakeSetup(self.root, self.ser)
@@ -161,7 +162,7 @@ class PokeController_Menubar(tk.Menu):
                 self.wake_setup.close()
             except Exception:
                 pass
-            self.wake_setup: Optional[WakeSetup] = None
+            self.wake_setup = None
 
     def closeAll(self) -> None:
         """子窓をすべて閉じる。終了処理から呼ぶ。

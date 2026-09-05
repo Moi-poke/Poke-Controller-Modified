@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """CommandOperate.py - 操作 API と待ち（OperateMixin）.
 
 内容:
@@ -26,7 +25,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from Commands.Keys import Button, Direction
 from loguru import logger

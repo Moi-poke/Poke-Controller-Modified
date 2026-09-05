@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """KeyConfig.py - キーボードの割り当てを設定する画面.
 
 Switch のボタン / 左スティック(Direction) / 十字キー(Hat) に、どの
@@ -24,7 +23,8 @@ from __future__ import annotations
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 from Settings import GuiSettings
 from loguru import logger
@@ -71,7 +71,7 @@ class TabSpec(NamedTuple):
 
     title: str
     hint: str
-    items: Tuple[KeyItem, ...]
+    items: tuple[KeyItem, ...]
 
 
 def _button(name: str, label: str, color: str) -> KeyItem:
@@ -88,7 +88,7 @@ def _direction(name: str, label: str) -> KeyItem:
 
 # 画面の構成。ここへ1行足せばタブにも保存対象にも自動で反映される。
 # 並び順は実機のコントローラの配置に合わせてある。
-TABS: Tuple[TabSpec, ...] = (
+TABS: tuple[TabSpec, ...] = (
     TabSpec(
         "ボタン",
         "各欄をクリックしてから、割り当てたいキーを押してください。",
@@ -139,10 +139,10 @@ TABS: Tuple[TabSpec, ...] = (
     ),
 )
 
-ALL_ITEMS: Tuple[KeyItem, ...] = tuple(item for tab in TABS for item in tab.items)
+ALL_ITEMS: tuple[KeyItem, ...] = tuple(item for tab in TABS for item in tab.items)
 
 
-def key_to_text(key: Any) -> Optional[str]:
+def key_to_text(key: Any) -> str | None:
     """pynput のキーを settings.ini へ書く文字列にする。
 
     英数字は "a" のような1文字、特殊キーは "Key.up" の形。どちらでも
@@ -190,17 +190,17 @@ class PokeKeycon:
     するものなので、閉じれば元に戻せるほうが扱いやすい。
     """
 
-    def __init__(self, master: Optional[tk.Misc] = None, profile: str = "") -> None:
+    def __init__(self, master: tk.Misc | None = None, profile: str = "") -> None:
         self.master = master
         self.settings = GuiSettings(profile)
 
         # {(section, name): 現在の割り当て}。適用するまでここだけを書き換える
-        self.values: Dict[Tuple[str, str], str] = {}
-        self.entries: Dict[Tuple[str, str], ttk.Entry] = {}
-        self.vars: Dict[Tuple[str, str], tk.StringVar] = {}
+        self.values: dict[tuple[str, str], str] = {}
+        self.entries: dict[tuple[str, str], ttk.Entry] = {}
+        self.vars: dict[tuple[str, str], tk.StringVar] = {}
 
-        self.listener: Optional[keyboard.Listener] = None
-        self.capturing: Optional[KeyItem] = None  # 入力待ちの項目
+        self.listener: keyboard.Listener | None = None
+        self.capturing: KeyItem | None = None  # 入力待ちの項目
         self._dirty: bool = False
 
         self.kc = tk.Toplevel(master)
@@ -341,14 +341,14 @@ class PokeKeycon:
             # だけで機能には影響しないため、握って続行する。
             pass
 
-    def find_duplicates(self) -> Dict[str, List[str]]:
+    def find_duplicates(self) -> dict[str, list[str]]:
         """同じキーが複数の操作に割り当てられていないか調べる。
 
         重複したまま使うと、押したキーがどちらの操作になるかは辞書の
         並び順次第になり、原因の分からない誤動作として現れる。
         戻り値は {キー: [操作名, ...]}（2件以上のものだけ）。
         """
-        used: Dict[str, List[str]] = {}
+        used: dict[str, list[str]] = {}
         for item in ALL_ITEMS:
             value = self.values.get((item.section, item.name), "")
             if not value:
@@ -356,7 +356,7 @@ class PokeKeycon:
             used.setdefault(value, []).append(item.label)
         return {k: v for k, v in used.items() if len(v) > 1}
 
-    def _update_status(self, duplicated: Dict[str, List[str]]) -> None:
+    def _update_status(self, duplicated: dict[str, list[str]]) -> None:
         if duplicated:
             first_key, first_labels = next(iter(duplicated.items()))
             names = " / ".join(first_labels)
@@ -468,7 +468,7 @@ class PokeKeycon:
         if duplicated and not self._confirm_duplicates(duplicated):
             return
 
-        key_maps: Dict[str, Dict[str, str]] = {}
+        key_maps: dict[str, dict[str, str]] = {}
         for item in ALL_ITEMS:
             value = self.values.get((item.section, item.name), "")
             key_maps.setdefault(item.section, {})[item.name] = value
@@ -486,9 +486,9 @@ class PokeKeycon:
             parent=self.kc,
         )
 
-    def _confirm_duplicates(self, duplicated: Dict[str, List[str]]) -> bool:
+    def _confirm_duplicates(self, duplicated: dict[str, list[str]]) -> bool:
         """重複したまま保存してよいか確認する。保存してよければ True。"""
-        lines: List[str] = []
+        lines: list[str] = []
         for value, labels in duplicated.items():
             names = " / ".join(labels)
             lines.append(f"  {text_to_display(value)} → {names}")

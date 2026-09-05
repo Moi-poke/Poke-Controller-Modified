@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """WakeLink.py - wakecon との応答つき通信。GUI 設定画面と python コマンドの共有口。
 
 PokeCon はふだん線を読まない（送りっぱなし）。ここでの読み取りは
@@ -15,7 +14,7 @@ from __future__ import annotations
 import time
 import traceback
 from logging import DEBUG, NullHandler, getLogger
-from typing import Any, List, Optional
+from typing import Any
 
 _logger = getLogger(__name__)
 _logger.addHandler(NullHandler())
@@ -75,9 +74,9 @@ def send_line(transport: Any, line: str, timeout: float = 2.0) -> bool:
         return False
 
 
-def read_lines(transport: Any, duration: float) -> List[str]:
+def read_lines(transport: Any, duration: float) -> list[str]:
     """duration 秒だけ読み、行の一覧を返す。例外は出さない。"""
-    out: List[str] = []
+    out: list[str] = []
     try:
         ser = _ser_of(transport)
         if ser is None:
@@ -121,7 +120,7 @@ def drain(transport: Any) -> None:
         pass
 
 
-def query(transport: Any, line: str, prefixes: Any, timeout: float = 3.0) -> List[str]:
+def query(transport: Any, line: str, prefixes: Any, timeout: float = 3.0) -> list[str]:
     """1行送り、prefixes に合う応答行だけ集めて返す。
 
     prefixes は先頭一致の文字列かその並び。live の S 行は送るだけで
@@ -132,7 +131,7 @@ def query(transport: Any, line: str, prefixes: Any, timeout: float = 3.0) -> Lis
     drain(transport)
     if not send_line(transport, line):
         return []
-    found: List[str] = []
+    found: list[str] = []
     for text in read_lines(transport, timeout):
         for prefix in prefixes:
             if text.startswith(prefix):
@@ -143,7 +142,7 @@ def query(transport: Any, line: str, prefixes: Any, timeout: float = 3.0) -> Lis
 
 def expect(
     transport: Any, line: str, prefixes: Any, timeout: float = 0.5
-) -> Optional[str]:
+) -> str | None:
     """1行送り、合致する最初の応答行を待つ。見つかればその行を返す。
 
     query が期限いっぱいまで集めるのに対し、こちらは1件見つかり次第

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 import configparser
 import os
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
 from Commands.Keys import Button, Direction, Hat
 from Settings import GuiSettings
@@ -14,7 +13,7 @@ from pynput.keyboard import Key, Listener
 # キーボード入力を受け取る基底クラス
 class Keyboard:
     def __init__(self) -> None:
-        self.listener: Optional[Listener] = None
+        self.listener: Listener | None = None
 
     def listen(self) -> None:
         # pynput の Listener は stop() 後に再start できないため、毎回作り直す
@@ -29,7 +28,7 @@ class Keyboard:
         if self.listener is None:
             return
         self.listener.stop()
-        self.listener: Optional[Listener] = None
+        self.listener = None
         logger.debug("キーボード操作を停止しました")
 
     def on_press(self, key: Any) -> None:
@@ -45,14 +44,14 @@ class SwitchKeyboardController(Keyboard):
 
     # settings.ini から読み取ってよい Enum のホワイトリスト。
     # eval を使わずここに載っている名前だけを解決する。
-    _ENUM_TABLE: Dict[str, Type[Any]] = {
+    _ENUM_TABLE: dict[str, type[Any]] = {
         "Button": Button,
         "Direction": Direction,
         "Hat": Hat,
     }
 
     def __init__(self, keyPress: Any) -> None:
-        super(SwitchKeyboardController, self).__init__()
+        super().__init__()
 
         if keyPress is None:
             raise ValueError(
@@ -61,12 +60,12 @@ class SwitchKeyboardController(Keyboard):
 
         self.to_use = Button.A
         self.key = keyPress
-        self.holding: List[Any] = []
-        self.holdingDir: List[Any] = []
-        self.holdingHatDir: List[Any] = []
+        self.holding: list[Any] = []
+        self.holdingDir: list[Any] = []
+        self.holdingHatDir: list[Any] = []
 
         self.setting = configparser.ConfigParser()
-        self.setting.optionxform = str
+        self.setting.optionxform = str  # type: ignore[assignment, method-assign]
 
         logger.debug("キーコンフィグを読み込みます")
         if not os.path.isfile(self.SETTING_PATH):
@@ -75,19 +74,19 @@ class SwitchKeyboardController(Keyboard):
             GuiSettings().generate()
         self.setting.read(self.SETTING_PATH, encoding="utf-8")
 
-        self.key_map: Dict[Any, Any] = {}
+        self.key_map: dict[Any, Any] = {}
         for section in ("KeyMap-Button", "KeyMap-Direction", "KeyMap-Hat"):
             self.key_map.update(self._load_key_map(section))
 
         logger.debug("キーコンフィグの読み込みが完了しました")
 
-    def _load_key_map(self, section: str) -> Dict[Any, Any]:
+    def _load_key_map(self, section: str) -> dict[Any, Any]:
         """settings.ini の1セクションを {入力キー: Enum} の辞書に変換する。"""
         if not self.setting.has_section(section):
             logger.warning(f"{section} セクションがありません。読み飛ばします")
             return {}
 
-        key_map: Dict[Any, Any] = {}
+        key_map: dict[Any, Any] = {}
         for name, value in self.setting.items(section):
             enum_member = self._to_enum(name)
             if enum_member is None:
@@ -101,7 +100,7 @@ class SwitchKeyboardController(Keyboard):
             key_map[input_key] = enum_member
         return key_map
 
-    def _to_enum(self, name: str) -> Optional[Any]:
+    def _to_enum(self, name: str) -> Any | None:
         """'Button.A' のような文字列を Enum / 定数へ変換する（eval は使わない）。
 
         Button と Hat は Enum だが Direction は素のクラスで、UP/LEFT などは
@@ -205,7 +204,7 @@ class SwitchKeyboardController(Keyboard):
                 self.holding.remove(_k)
                 self.key.inputEnd(self.key_map[_k], unset_hat=True)
 
-    def inputDir(self, dirs: List[Any]) -> None:
+    def inputDir(self, dirs: list[Any]) -> None:
         if len(dirs) == 0:
             return
         if len(dirs) == 1:
