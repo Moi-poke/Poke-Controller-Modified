@@ -28,6 +28,16 @@ def _ser_of(transport: Any) -> Any:
     ser = getattr(transport, "ser", None)
     if ser is None:
         return None
+    is_open = getattr(transport, "is_open", None)
+    if callable(is_open):
+        # 開閉の判断は線の持ち主（Transport）に任せる。
+        # pyserial 直の判定は、Transport に聞けない場合の予備である。
+        try:
+            if not is_open():
+                return None
+        except Exception:
+            return None
+        return ser
     if getattr(ser, "isOpen", lambda: False)() is False:
         return None
     return ser

@@ -59,7 +59,7 @@ class WakeSwitch2(PythonCommand):
         if ser is None:
             return None
         try:
-            if not ser.isOpen():
+            if not transport.is_open():
                 return None
         except Exception:
             return None

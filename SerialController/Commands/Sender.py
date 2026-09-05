@@ -2097,14 +2097,14 @@ class Sender:
         if second is not None and second.startswith("QRUN"):
             return True
         # R が通らないと、積んだ Q が次回の R で誤爆する。N で流す。
-        try:
-            expect(transport, "N", ("OK", "ERR"), timeout=0.5)
-        except Exception:
-            pass
+        #   応答は待たない。pico-wakeCon に N は無く、待つと 0.5 秒だけ
+        #   止まる。応答のある旧ファームの OK 行は、次の expect / query
+        #   が読み始めに捨てる（drain）ため、残しても害は無い。
+        self._sendQueueLine(transport, "N")
         return False
 
     @staticmethod
-    def encodeQueuedState(snap: Dict[str, Any], tick: int, dur: int) -> str:
+    def encodeQueuedState(snap: dict[str, Any], tick: int, dur: int) -> str:
         """snapshot から Q 行を組む（純関数・副作用なし）。
 
         書式は Pico ファームのキュー行の解釈と対である。S 行の先頭へ
