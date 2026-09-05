@@ -84,7 +84,8 @@ def read_summary(profile: str) -> dict:
     """一覧に出す項目を settings ファイルから読む。壊れていても落とさない。"""
     info = {"profile": profile, "com": "", "camera": "", "key": "", "fps": ""}
     parser = configparser.ConfigParser()
-    parser.optionxform = str
+    # 大文字小文字を区別する（標準のドキュメントどおりの用法）。
+    parser.optionxform = str  # type: ignore[assignment, method-assign]
     try:
         parser.read(settings_path(profile), encoding="utf-8")
     except (configparser.Error, OSError, ValueError, UnicodeDecodeError):
@@ -360,7 +361,7 @@ def launch(profile: str) -> int:
         encoding="utf-8",
         errors="replace",
     )
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "cwd": APP_DIR,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
@@ -467,7 +468,8 @@ class LauncherWindow(ttk.Frame):
         )
         for key in self.COLUMNS:
             self.tree.heading(key, text=self.HEADINGS[key])
-            anchor = tk.W if key in ("profile", "com") else tk.CENTER
+            # tk.W / tk.CENTER はただの str のため Any で受ける。
+            anchor: Any = tk.W if key in ("profile", "com") else tk.CENTER
             self.tree.column(key, width=self.WIDTHS[key], anchor=anchor)
         self.tree.grid(row=1, column=0, sticky=tk.NSEW)
         self.tree.bind("<Double-1>", self.on_start)
@@ -532,7 +534,7 @@ class LauncherWindow(ttk.Frame):
             )
 
         children = self.tree.get_children()
-        target = selected or "\x00default"
+        target: str | None = selected or "\x00default"
         if target not in children:
             target = children[0] if children else None
         if target:

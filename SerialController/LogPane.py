@@ -137,7 +137,7 @@ def flushQueue(q: queue.Queue, area: tk.Text, autoscroll: bool = True) -> None:
     走る。see("end") もスクロール計算が乗るため、末尾を見ているときだけ
     呼ぶ（過去ログを遡っている最中に勝手に飛ばされるのも防げる）。
     """
-    lines = []
+    lines: list[str] = []
     while len(lines) < FLUSH_MAX_LINES:
         try:
             lines.append(q.get_nowait())

@@ -30,7 +30,9 @@ def get_rank_match_result():
         minutes = (seconds % 3600) // 60
         seconds = seconds % 60
         print(
-            f"最後にランクマッチデータをDLしたのは{hours}時間{minutes}分{seconds}秒前"
+            "最後にランクマッチデータをDLしたのは{0}時間{1}分{2}秒前".format(
+                hours, minutes, seconds
+            )
         )
 
     # ファイルが存在しないまたは最後のDLから24時間経っているときは新しくダウンロードする
@@ -52,11 +54,11 @@ def get_rank_match_result():
             print("Error: レスポンスが得られませんでした。")
             if os.path.exists(path):
                 print("過去にDLしたデータを利用してデータ取得を試みます。")
-                with open(path) as json_file:
+                with open(path, "r") as json_file:
                     data_ = json.load(json_file, encoding="utf-8")
     else:
         print("過去にDLしたランクマッチのデータを利用します。")
-        with open(path) as json_file:
+        with open(path, "r") as json_file:
             data_ = json.load(json_file, encoding="utf-8")
     return data_
 
@@ -408,7 +410,7 @@ class GetFromHomeGUI:
         self.poke_data = poke_w
 
     def setPokemons(self):
-        f = open("db/pokedex.json", encoding="utf-8")
+        f = open("db/pokedex.json", "r", encoding="utf-8")
         json_data = json.load(f)
         df = pd.read_csv("db/poke_form_name.csv", dtype=str)
         df = df.fillna(" ")
@@ -513,7 +515,9 @@ class GetFromHomeGUI:
             minutes = (seconds % 3600) // 60
             seconds = seconds % 60
             print(
-                f"最後にシーズン{self.season.get()}/{self.isSingle.get()}バトルのデータをDLしたのは{hours}時間{minutes}分{seconds}秒前"
+                "最後にシーズン{0}/{1}バトルのデータをDLしたのは{2}時間{3}分{4}秒前".format(
+                    self.season.get(), self.isSingle.get(), hours, minutes, seconds
+                )
             )
         if (
             not os.path.exists(path)
@@ -522,17 +526,21 @@ class GetFromHomeGUI:
         ):
             try:
                 print(
-                    f"シーズン{self.season.get()}/{self.isSingle.get()}バトルのポケモンデータをダウンロード中…",
+                    "シーズン{}/{}バトルのポケモンデータをダウンロード中…".format(
+                        self.season.get(), self.isSingle.get()
+                    ),
                     end="",
                 )
 
                 for i in range(1, 6):
                     response = requests.get(
-                        f"https://resource.pokemon-home.com/battledata/ranking/{isSingle}/{rst}/{ts2}/pdetail-{i}",
+                        "https://resource.pokemon-home.com/battledata/ranking/{0}/{1}/{2}/pdetail-{3}".format(
+                            isSingle, rst, ts2, i
+                        ),
                         headers=headers_rank_poke_data,
                     )
                     _ = response.json()
-                    print(f"{i}/5 完了")
+                    print("{}/5 完了".format(i))
                     poke_dic.update(_)
                 print("保存中…", end="")
                 with open(path, "w") as outfile:
@@ -542,11 +550,11 @@ class GetFromHomeGUI:
                 print("Error: レスポンスが得られませんでした。")
                 if os.path.exists(path):
                     print("過去にDLしたデータを利用します。")
-                    with open(path) as json_file:
+                    with open(path, "r") as json_file:
                         poke_dic = json.load(json_file, encoding="utf-8")
         else:
             print("過去にDLしたデータを利用します。")
-            with open(path) as json_file:
+            with open(path, "r") as json_file:
                 poke_dic = json.load(json_file, encoding="utf-8")
 
         return poke_dic

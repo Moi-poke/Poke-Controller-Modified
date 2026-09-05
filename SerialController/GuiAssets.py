@@ -230,10 +230,12 @@ class CaptureArea(tk.Canvas):
         super().__init__(
             master, borderwidth=0, cursor="tcross", width=show_width, height=show_height
         )
-        self.master = master
+        self.master: Any = master
         self.camera = camera
         self.ser = ser
-        self.keys = None
+        # Misc.keys() と衝突するため keys という属性は置かない。
+        # 旧版にあった self.keys = None は誰も読まない死に代入であり、
+        # tkinter の keys() を隠してしまうため削除した。
         self.is_show_var = is_show
 
         self.radius = 60  # 描画するスティック円の半径
@@ -251,6 +253,7 @@ class CaptureArea(tk.Canvas):
         self._lmag: float | None = None
         self._rangle: float | None = None
         self._rmag: float | None = None
+        self._select_after_id: str | None = None
 
         # 呼び出し側（Window）が settings.ini の値を渡す。未指定なら
         # 従来どおりモジュール定数 isTakeLog を見る。
@@ -294,7 +297,8 @@ class CaptureArea(tk.Canvas):
     # ------------------------------------------------------------------
     def _loadDisabledImage(self) -> ImageTk.PhotoImage:
         """カメラ停止中に出す画像。読めなければ黒画像で代用する。"""
-        img = cv2.imread(DISABLED_IMAGE_PATH, cv2.IMREAD_GRAYSCALE)
+        # imread のスタブは ndarray 固定だが、実機では読めないと None が返る。
+        img: Any = cv2.imread(DISABLED_IMAGE_PATH, cv2.IMREAD_GRAYSCALE)
         if img is None:
             logger.warning(f"disabled image not found: {DISABLED_IMAGE_PATH}")
             pil = Image.new("L", self.show_size)
@@ -499,7 +503,12 @@ class CaptureArea(tk.Canvas):
 
         ratio_x, ratio_y = self._captureRatio()
         logger.info(
-            f"Mouse down: Show ({self.min_x}, {self.min_y}) / Capture ({int(self.min_x * ratio_x)}, {int(self.min_y * ratio_y)})"
+            "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
+                self.min_x,
+                self.min_y,
+                int(self.min_x * ratio_x),
+                int(self.min_y * ratio_y),
+            )
         )
 
         if self.master.is_use_left_stick_mouse.get():
@@ -519,7 +528,12 @@ class CaptureArea(tk.Canvas):
         """選択範囲を切り出して保存する。"""
         ratio_x, ratio_y = self._captureRatio()
         logger.info(
-            f"Mouse up: Show ({self.max_x}, {self.max_y}) / Capture ({int(self.max_x * ratio_x)}, {int(self.max_y * ratio_y)})"
+            "Mouse up: Show ({}, {}) / Capture ({}, {})".format(
+                self.max_x,
+                self.max_y,
+                int(self.max_x * ratio_x),
+                int(self.max_y * ratio_y),
+            )
         )
         if self.min_x > self.max_x:
             self.min_x, self.max_x = self.max_x, self.min_x
@@ -577,7 +591,11 @@ class CaptureArea(tk.Canvas):
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
         r, g, b = rgb[0, 0]
         h, s, v = hsv[0, 0]
-        logger.info(f"Mouse down: Show ({event.x}, {event.y}) / Capture ({px}, {py})")
+        logger.info(
+            "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
+                event.x, event.y, px, py
+            )
+        )
         logger.info(f"Color [R: {r}, G: {g}, B: {b}] / HSV [H: {h}, S: {s}, V: {v}]")
 
     def mouseCtrlLeftRelease(self, event: Any) -> None:
@@ -1162,6 +1180,16 @@ class ControllerGUI:
                     self.applyButtonColor(button)
 
         logger.debug("Create GUI controller")
+
+    def applyButtonSetting(self, button: Any) -> None:
+        """ボタンの幅と配色をまとめて適用する。"""
+        button["width"] = 7
+        self.applyButtonColor(button)
+
+    def applyButtonColor(self, button: Any) -> None:
+        """ボタンの配色を適用する。"""
+        button["bg"] = self.BUTTON_BG
+        button["fg"] = self.BUTTON_FG
 
     def _makeButton(
         self, parent: Any, text: str, name: str, **kwargs: Any

@@ -104,8 +104,9 @@ class PokeController_Menubar(tk.Menu):
 
     def OpenPokeHomeCoop(self) -> None:
         logger.debug("Open Pokemon home cooperate window")
-        if self._alive(self.poke_treeview):
-            self.poke_treeview.focus_force()
+        treeview = self.poke_treeview
+        if treeview is not None and self._alive(treeview):
+            treeview.focus_force()
             return
         self.poke_treeview = None
 

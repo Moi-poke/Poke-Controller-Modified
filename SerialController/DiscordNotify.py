@@ -69,7 +69,7 @@ class Discord_Notify:
             list: Webhook設定リスト（URLと名前）
         """
         try:
-            with open(self.config_file, encoding="utf-8") as f:
+            with open(self.config_file, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
             return list(config.get("webhooks", []))  # Webhooksのリストを返す
         except FileNotFoundError:

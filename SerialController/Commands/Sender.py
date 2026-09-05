@@ -12,7 +12,7 @@ import traceback
 from collections import deque
 from collections.abc import Callable
 from logging import DEBUG, NullHandler, getLogger
-from typing import Any, Dict, Optional
+from typing import Any
 
 import InputLog
 import serial  # noqa: F401
@@ -129,10 +129,10 @@ class Sender:
         # 応答遅延の計測用。既定は切。入れたときだけ記録するので、
         #   通常利用では計測処理に触らず挙動が変わらない。
         self._perf_recording = False
-        self._perf_log = deque(maxlen=10000)
-        self._perf_event_time = None
-        self._perf_event_source = None
-        self._perf_write_start = None
+        self._perf_log: deque[dict[str, Any]] = deque(maxlen=10000)
+        self._perf_event_time: float | None = None
+        self._perf_event_source: str | None = None
+        self._perf_write_start: float | None = None
         # 入力ログ。writeRow が送った1行を InputLogger へ流し、
         # 前回との差分から press / release と押下時間を組み立てて表示する。
         self.input_logger = InputLog.InputLogger(
@@ -1061,11 +1061,11 @@ class Sender:
             # Stop は渡した状態も解く。誰の押下も残さない
             #   経路であり、渡したままだと次の実行で調停が効かない。
             self._ensureArbitration()
-            self._arb_handed_over = False
+            self._arb_handed_over: bool = False
             # 自動側の主導権も手放す。Stop は自動側が終わる合図であり、
             #   cooldown は『最後に自動側が申告してから何秒』で測るため、
             #   履歴を残すと停止後も人の操作が拒否される。
-            self._arb_last_auto = None
+            self._arb_last_auto: float | None = None
             self._L_stick_changed = True
             self._R_stick_changed = True
             if before != self._posture:
@@ -1349,7 +1349,7 @@ class Sender:
           錠の中で行い、通知先の呼び出しは外で行うため、ここでは
           通知の要否だけを覚えて錠を出る。
         """
-        notify = None
+        notify: tuple[str | None, str] | None = None
         if releasing:
             return True
         with self._lock:
@@ -1728,15 +1728,15 @@ class Sender:
         if not hasattr(self, "_live_lock"):
             self._live_lock = threading.Lock()
         if not hasattr(self, "_live_box"):
-            self._live_box = None
+            self._live_box: dict[str, Any] | None = None
         if not hasattr(self, "_live_wake"):
             self._live_wake = threading.Event()
         if not hasattr(self, "_live_stop"):
             self._live_stop = threading.Event()
         if not hasattr(self, "_live_thread"):
-            self._live_thread = None
+            self._live_thread: threading.Thread | None = None
         if not hasattr(self, "_live_stats"):
-            self._live_stats = {
+            self._live_stats: dict[str, int] = {
                 "put": 0,
                 "replaced": 0,
                 "sent": 0,

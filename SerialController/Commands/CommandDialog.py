@@ -43,6 +43,11 @@ class DialogMixin:
       1文字も変えていない。既存コマンドは1行も直さずに動く。
     """
 
+    # 親（PythonCommand）が用意するもの。Mixin 単体には無いため型だけ宣言する。
+    message_dialogue: Any
+    _stop_event: threading.Event
+    checkIfAlive: Callable[[], bool]
+
     # 停止要求のあと、ダイアログが閉じ切るのを待つ上限(秒)。
     _DIALOGUE_CLOSE_WAIT = 1.0
     # ダイアログが開かないまま待ち続けたときに警告を出す間隔(秒)。
@@ -73,8 +78,8 @@ class DialogMixin:
         呼び出し規約（戻り値）は従来と同じなので既存コマンドは無修正で動く。
         """
         done = threading.Event()
-        box = {}
-        holder = {}
+        box: dict[str, Any] = {}
+        holder: dict[str, Any] = {}
 
         def build() -> None:
             # ここは GUI スレッド。widget の生成と mainloop 的な待ちは
@@ -210,8 +215,8 @@ class PokeConDialogue:
         digit | int : 有効桁数
         return : なし
         """
-        self._ls = None
-        self.isOK = None
+        self._ls: list[Any] | None = None
+        self.isOK: bool | None = None
 
         self.message_dialogue = parent
         self.message_dialogue.title(title)
@@ -226,7 +231,7 @@ class PokeConDialogue:
             column=0, columnspan=2, ipadx="10", ipady="10", row=0, sticky="nsew"
         )
 
-        self.dialogue_ls = {}
+        self.dialogue_ls: dict[Any, Any] = {}
         # winfo_width()/height() は最初の描画前だと 1 を返すため、
         # update_idletasks() でジオメトリを確定させてから読む。
         self.message_dialogue.update_idletasks()
@@ -244,7 +249,10 @@ class PokeConDialogue:
         if mode == 0:
             self.mode0(message)
         else:
-            self.mode1(message)
+            # mode=1 の約束は「設定のリスト」。それ以外は呼び出し側の誤りで
+            #   あり、従来は mode1 内の len() で TypeError になっていた。
+            #   ここでは型だけ整え、実行時の挙動は変えない。
+            self.mode1(cast("list", message))
 
         self.inputs.grid(
             column=0, columnspan=2, ipadx="10", ipady="10", row=1, sticky="nsew"
@@ -281,11 +289,14 @@ class PokeConDialogue:
 
     def mode1(self, dialogue_list: list) -> None:
         n = len(dialogue_list)
-        frame = []
+        frame: list[Any] = []
 
-        scale_label_list = []  # scaleの値を表示するlabelを格納するリスト
-        scale_index_list = []  # scaleが何番目のwidgetなのかを格納するリスト
-        scale_digit_list = []  # scaleの有効桁数を格納するリスト
+        scale_label_list: list[Any] = []  # scaleの値を表示するlabelを格納するリスト
+        scale_index_list: list[int] = []  # scaleが何番目のwidgetなのかを格納するリスト
+        scale_digit_list: list[int] = []  # scaleの有効桁数を格納するリスト
+
+        # 種別ごとに作り直す使い捨て変数。型は一定しない。
+        widget: Any
 
         def change_scale_value(
             event: object = None,

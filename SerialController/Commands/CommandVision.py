@@ -85,7 +85,10 @@ def _imread_or_raise(template_path: str, flags: int) -> np.ndarray:
     差し替えたときは clear_template_cache() を呼ぶ。
     """
     filespec = _get_template_filespec(template_path)
-    image = cv2.imread(filespec, flags)
+    # imread のスタブは ndarray 固定だが、実機では読めないと None が返る。
+    # Any で受けて None を見る（isinstance では MatLike が ndarray の
+    #   別名のため到達不能と見なされてしまう）。
+    image: Any = cv2.imread(filespec, flags)
     if image is None:
         # ライトユーザーが最も詰まる箇所なので、理由と置き場所を
         # 具体的に出す。「無い」のか「壊れている（読めない）」のかを
@@ -179,7 +182,8 @@ class VisionMixin:
         key = (dtype, method)
         matcher = self._cuda_matchers.get(key)
         if matcher is None:
-            matcher = cv2.cuda.createTemplateMatching(dtype, method)
+            # CUDA 系は実行時にだけ存在する（スタブに無い）。
+            matcher = cv2.cuda.createTemplateMatching(dtype, method)  # type: ignore[attr-defined]
             self._cuda_matchers[key] = matcher
         return matcher
 
@@ -192,7 +196,7 @@ class VisionMixin:
                 template_path,
                 cv2.IMREAD_GRAYSCALE if use_gray else cv2.IMREAD_COLOR,
             )
-            gtmpl = cv2.cuda_GpuMat()
+            gtmpl = cv2.cuda_GpuMat()  # type: ignore[attr-defined]
             gtmpl.upload(template)
             self._cuda_templates[key] = gtmpl
         return gtmpl

@@ -44,8 +44,8 @@ class CommandLoader:
         # return command class types
         return self.getCommandClasses()
 
-    def getCommandClasses(self):
-        classes = []
+    def getCommandClasses(self) -> list[type]:
+        classes: list[type] = []
         for mod in self.modules:
             classes.extend(
                 [

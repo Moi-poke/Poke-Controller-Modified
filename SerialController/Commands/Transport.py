@@ -154,7 +154,7 @@ class TextSerialTransport(Transport):
     name = "legacy_text"
 
     def __init__(self, logger: Any = None) -> None:
-        self.ser = None
+        self.ser: serial.Serial | None = None
         self._logger = logger if logger is not None else getLogger(__name__)
         if logger is None:
             self._logger.addHandler(NullHandler())
@@ -445,7 +445,10 @@ class TextSerialTransport(Transport):
                 self._on_write_begin(row, measure_perf)
 
             # 送る文字列は ASCII 固定なので utf-8 経由より安く作れる
-            self.ser.write(row.encode("ascii") + b"\r\n")
+            # 開く前の線は None のままである。その場合の AttributeError は
+            #   下の except で「開いていない線」として扱う（従来どおり）。
+            ser = cast("serial.Serial", self.ser)
+            ser.write(row.encode("ascii") + b"\r\n")
             self._last_write = time.perf_counter()
             ok = True
 
@@ -554,7 +557,11 @@ def register_transport(
     if not key:
         print("  注記: プリセット名が空です。登録しませんでした。")
         return False
-    if not callable(factory):
+    # factory は注釈上 Callable だが、利用者プラグインの誤登録を実行時に
+    #   弾く。注釈のまま callable() を書くと到達不能と見なされるため、
+    #   Any を経由して判定する。検査自体は外さない。
+    factory_maybe: Any = factory
+    if not callable(factory_maybe):
         print(f"  注記: プリセット '{key}' の作り方が呼び出せません。")
         return False
     if key in _REGISTRY and not replace:

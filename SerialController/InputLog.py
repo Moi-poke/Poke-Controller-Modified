@@ -247,7 +247,7 @@ def format_time(wall: WallTime, pattern: str) -> str:
     if "%" in pattern:
         return wall.strftime(pattern)
     # fff は strftime に無いので、先に実数字へ置き換えてしまう
-    pattern = pattern.replace("fff", f"{wall.microsecond // 1000:03d}")
+    pattern = pattern.replace("fff", "{:03d}".format(wall.microsecond // 1000))
     return wall.strftime(_TIME_RE.sub(lambda m: _TIME_MAP[m.group(0)], pattern))
 
 
@@ -421,22 +421,22 @@ def format_duration(seconds: float | None, spec: str) -> str:
         return format(format_duration(seconds, ""), spec)
     if not spec or spec == "auto":
         if seconds < 1.0:
-            return f"{seconds * 1000:.0f}ms"
-        return f"{seconds:.2f}s"
+            return "{:.0f}ms".format(seconds * 1000)
+        return "{:.2f}s".format(seconds)
     if spec == "ms":
-        return f"{seconds * 1000:.0f}"
+        return "{:.0f}".format(seconds * 1000)
     if spec == "s":
-        return f"{seconds:.3f}"
+        return "{:.3f}".format(seconds)
     if spec.startswith("s."):
         try:
             return "{:.{}f}".format(seconds, int(spec[2:]))
         except (TypeError, ValueError):
-            return f"{seconds:.2f}s"
+            return "{:.2f}s".format(seconds)
     if spec.startswith("ms."):
         try:
             return "{:.{}f}".format(seconds * 1000, int(spec[3:]))
         except (TypeError, ValueError):
-            return f"{seconds * 1000:.0f}ms"
+            return "{:.0f}ms".format(seconds * 1000)
     try:
         return format(seconds, spec)
     except (TypeError, ValueError):
@@ -482,9 +482,9 @@ class LogFormatter:
         return segments
 
     @staticmethod
-    def _split_fields(text: str) -> list:
+    def _split_fields(text: str) -> list[str | tuple[str, str]]:
         """文字列を「素の文字」と「(欄名, 書式)」の並びにする。"""
-        parts = []
+        parts: list[str | tuple[str, str]] = []
         pos = 0
         for m in _FIELD_RE.finditer(text):
             if m.start() > pos:
@@ -678,7 +678,7 @@ class InputLogger:
         self.enabled = enabled
         self.log_stick_change = log_stick_change
         self.deadzone = deadzone
-        self.actions = None
+        self.actions: tuple[str, ...] | None = None
         self.set_format(template, actions)
         self.started = time.perf_counter()
         # 状態を守るロック。再入不可(Lock)なので、

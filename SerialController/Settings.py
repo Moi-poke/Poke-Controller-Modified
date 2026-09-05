@@ -449,32 +449,38 @@ class GuiSettings:
         # 戻してしまう。書き出す直前にファイル側を読み直して合わせる。
         self._reload_key_maps()
 
-        self.setting["General Setting"] = {
-            "camera_id": self.camera_id.get(),
-            "camera_key": self.camera_key.get(),
-            "com_port": self.com_port.get(),
-            "com_port_name": self.com_port_name.get(),
-            "baud_rate": self.baud_rate.get(),
-            "fps": self.fps.get(),
-            "show_size": self.show_size.get(),
-            "is_show_realtime": self.is_show_realtime.get(),
-            "is_show_serial": self.is_show_serial.get(),
-            "is_use_keyboard": self.is_use_keyboard.get(),
-            "is_use_left_stick_mouse": self.is_use_left_stick_mouse.get(),
-            "is_use_right_stick_mouse": self.is_use_right_stick_mouse.get(),
-            "is_take_stick_log": self.is_take_stick_log.get(),
-        }
-        self.setting["Window"] = {
-            "geometry": self.window_geometry.get(),
-            "restore_geometry": self.restore_geometry.get(),
-            "log_sash_ratio": self.log_sash_ratio.get(),
-        }
-        self.setting["Input Log"] = {
-            "format": self.input_log_format.get(),
-            "enabled": self.input_log_enabled.get(),
-            "log_stick_change": self.input_log_stick_change.get(),
-            "actions": self.input_log_actions.get(),
-        }
+        self.setting["General Setting"] = self._str_values(
+            {
+                "camera_id": self.camera_id.get(),
+                "camera_key": self.camera_key.get(),
+                "com_port": self.com_port.get(),
+                "com_port_name": self.com_port_name.get(),
+                "baud_rate": self.baud_rate.get(),
+                "fps": self.fps.get(),
+                "show_size": self.show_size.get(),
+                "is_show_realtime": self.is_show_realtime.get(),
+                "is_show_serial": self.is_show_serial.get(),
+                "is_use_keyboard": self.is_use_keyboard.get(),
+                "is_use_left_stick_mouse": self.is_use_left_stick_mouse.get(),
+                "is_use_right_stick_mouse": self.is_use_right_stick_mouse.get(),
+                "is_take_stick_log": self.is_take_stick_log.get(),
+            }
+        )
+        self.setting["Window"] = self._str_values(
+            {
+                "geometry": self.window_geometry.get(),
+                "restore_geometry": self.restore_geometry.get(),
+                "log_sash_ratio": self.log_sash_ratio.get(),
+            }
+        )
+        self.setting["Input Log"] = self._str_values(
+            {
+                "format": self.input_log_format.get(),
+                "enabled": self.input_log_enabled.get(),
+                "log_stick_change": self.input_log_stick_change.get(),
+                "actions": self.input_log_actions.get(),
+            }
+        )
         self.setting["Transport"] = {
             "name": self.transport_name.get(),
             "plugin_dir": self.transport_plugin_dir.get(),

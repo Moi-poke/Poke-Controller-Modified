@@ -256,9 +256,9 @@ class Direction:
 
     def __repr__(self) -> str:
         if self.showName:
-            return f"<{self.stick}, {self.showName}>"
+            return "<{}, {}>".format(self.stick, self.showName)
         else:
-            return f"<{self.stick}, {self.angle_for_show}[deg]>"
+            return "<{}, {}[deg]>".format(self.stick, self.angle_for_show)
 
     def __eq__(self, other: object) -> bool:
         if type(other) is not Direction:
@@ -329,7 +329,7 @@ class KeyPress:
         # human モードでは人の手入力として優先される。
         self.source = str(source) if source else "script"
         self.format = SendFormat()
-        self.holdButton = []
+        self.holdButton: list[Any] = []
         self.btn_name2 = [
             "LEFT",
             "RIGHT",
@@ -342,10 +342,10 @@ class KeyPress:
         ]
 
         self.pushing_to_show = None
-        self.pushing = None
-        self.pushing2 = None
-        self._pushing = None
-        self._chk_neutral = None
+        self.pushing: dict[str, Any] | None = None
+        self.pushing2: dict[str, Any] | None = None
+        self._pushing: dict[str, Any] | None = None
+        self._chk_neutral: bool | None = None
         self.NEUTRAL = dict(self.format.format)
 
         self.input_time_0 = time.perf_counter()

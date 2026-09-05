@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Optional
 
 from Commands import CommandBase
 from loguru import logger

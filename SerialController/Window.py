@@ -123,7 +123,7 @@ class PokeControllerApp:
 
         # 標準出力をログエリアにリダイレクト
         sys.stdout = LogPane.QueueStdoutRedirector(self.logArea)
-        self._display_after_id = self.logArea.after(
+        self._display_after_id: Any = self.logArea.after(
             LogPane.FLUSH_INTERVAL_MS, self.display_text
         )
         self.loadSettings()
@@ -140,6 +140,9 @@ class PokeControllerApp:
 
         self.mainwindow = self.frame_1
         self.root.protocol("WM_DELETE_WINDOW", self.exit)
+        # _build_preview が済んでいるため、ここでは必ずある。
+        if self.preview is None:
+            raise RuntimeError("preview is not built")
         self.preview.startCapture()
 
         self.menu = PokeController_Menubar(self)
@@ -279,52 +282,47 @@ class PokeControllerApp:
 
         self.fps = tk.StringVar()
         self.fps_cb = ttk.Combobox(self.camera_f2)
-        self.fps_cb.config(
+        # values の int 群は実行時に文字列化される。注釈だけの問題のため無視する。
+        self.fps_cb.config(  # type: ignore[call-overload]
             justify="right",
             state="readonly",
             textvariable=self.fps,
             values=FPS_VALUES,
-            width="5",
+            width=5,
         )
-        self.fps_cb.grid(column="1", padx="10", row="0", sticky="ew")
+        self.fps_cb.grid(column=1, padx="10", row=0, sticky="ew")
         self.fps_cb.bind("<<ComboboxSelected>>", self.applyFps, add="")
 
         self.separator_3 = ttk.Separator(self.camera_f2)
         self.separator_3.config(orient="vertical")
-        self.separator_3.grid(column="2", row="0", sticky="ns")
+        self.separator_3.grid(column=2, row=0, sticky="ns")
 
         self.show_size_label = ttk.Label(self.camera_f2)
         self.show_size_label.config(text="Show Size:")
-        self.show_size_label.grid(column="3", padx="5", row="0", sticky="ew")
+        self.show_size_label.grid(column=3, padx="5", row=0, sticky="ew")
 
         self.show_size = tk.StringVar()
         self.show_size_cb = ttk.Combobox(self.camera_f2)
         self.show_size_cb.config(
             textvariable=self.show_size, state="readonly", values=SHOW_SIZE_VALUES
         )
-        self.show_size_cb.grid(column="4", padx="10", row="0", sticky="ew")
+        self.show_size_cb.grid(column=4, padx="10", row=0, sticky="ew")
         self.show_size_cb.bind("<<ComboboxSelected>>", self.applyWindowSize, add="")
-        self.camera_f2.grid(column="0", columnspan="7", row="3", sticky="nsew")
+        self.camera_f2.grid(column=0, columnspan=7, row=3, sticky="nsew")
 
         # -- カメラ名
         self.camera_name_l = ttk.Label(self.camera_lf)
         self.camera_name_l.config(anchor="center", text="Camera Name: ")
-        self.camera_name_l.grid(column="0", padx="5", row="1", sticky="ew")
+        self.camera_name_l.grid(column=0, padx="5", row=1, sticky="ew")
 
         self.camera_name_fromDLL = tk.StringVar()
         self.Camera_Name = ttk.Combobox(self.camera_lf)
         self.Camera_Name.config(state="readonly", textvariable=self.camera_name_fromDLL)
-        self.Camera_Name.grid(
-            column="1", columnspan="6", padx="5", row="1", sticky="ew"
-        )
+        self.Camera_Name.grid(column=1, columnspan=6, padx="5", row=1, sticky="ew")
         self.Camera_Name.bind("<<ComboboxSelected>>", self.set_cameraid, add="")
 
-        # CaptureArea が master 経由で参照するフラグ（GuiAssets 側の仕様に合わせる）
-        self.camera_lf.is_use_left_stick_mouse = tk.BooleanVar()
-        self.camera_lf.is_use_right_stick_mouse = tk.BooleanVar()
-
-        self.camera_lf.config(height="200", text="Camera", width="200")
-        self.camera_lf.grid(columnspan="3", padx="5", sticky="ew")
+        self.camera_lf.config(height=200, text="Camera", width=200)
+        self.camera_lf.grid(columnspan=3, padx="5", sticky="ew")
 
     def _build_serial_frame(self) -> None:
         self.serial_lf = ttk.Labelframe(self.frame_1)
@@ -342,40 +340,41 @@ class PokeControllerApp:
         self._com_port_map: dict[str, str] = {}
         self.com_port_cb = ttk.Combobox(self.serial_lf)
         self.com_port_cb.config(
-            state="readonly", textvariable=self.com_port_text, width="28"
+            state="readonly", textvariable=self.com_port_text, width=28
         )
-        self.com_port_cb.grid(column="1", padx="5", row="0", sticky="ew")
+        self.com_port_cb.grid(column=1, padx="5", row=0, sticky="ew")
         self.com_port_cb.bind("<<ComboboxSelected>>", self.onComPortSelected, add="")
 
         self.baud_rate_label = ttk.Label(self.serial_lf)
         self.baud_rate_label.config(text="Baud Rate: ")
-        self.baud_rate_label.grid(column="2", padx="5", row="0", sticky="ew")
+        self.baud_rate_label.grid(column=2, padx="5", row=0, sticky="ew")
 
         self.baud_rate = tk.StringVar()
         self.baud_rate_cb = ttk.Combobox(self.serial_lf)
-        self.baud_rate_cb.config(
+        # values の int 群は実行時に文字列化される。注釈だけの問題のため無視する。
+        self.baud_rate_cb.config(  # type: ignore[call-overload]
             justify="right",
             state=self.baud_rate_state,
             textvariable=self.baud_rate,
             values=BAUD_RATE_VALUES,
-            width="6",
+            width=6,
         )
-        self.baud_rate_cb.grid(column="3", padx="5", row="0", sticky="ew")
+        self.baud_rate_cb.grid(column=3, padx="5", row=0, sticky="ew")
         self.baud_rate_cb.bind("<<ComboboxSelected>>", self.applyBaudRate, add="")
 
         self.reloadComPort = ttk.Button(self.serial_lf)
         self.reloadComPort.config(text="Reload Port", command=self.reloadSerialPort)
-        self.reloadComPort.grid(column="4", padx="5", row="0")
+        self.reloadComPort.grid(column=4, padx="5", row=0)
 
         self.disconnectComPort = ttk.Button(self.serial_lf)
         self.disconnectComPort.config(
             text="Disconnect Port", command=self.inactivateSerial
         )
-        self.disconnectComPort.grid(column="5", padx="5", row="0")
+        self.disconnectComPort.grid(column=5, padx="5", row=0)
 
         self.separator_4 = ttk.Separator(self.serial_lf)
         self.separator_4.config(orient="vertical")
-        self.separator_4.grid(column="6", padx="5", row="0", sticky="ns")
+        self.separator_4.grid(column=6, padx="5", row=0, sticky="ns")
 
         self.is_show_serial = tk.BooleanVar()
         self.cb_show_serial = ttk.Checkbutton(self.serial_lf)
@@ -947,7 +946,11 @@ class PokeControllerApp:
                 os.path.join(BASE_DIR, "..", "DirectShowLib", "DirectShowLib-2005")
             )
             clr.AddReference(dll_path)
-            from DirectShowLib import DsDevice, FilterCategory
+            # clr で読み込む .NET アセンブリであり、スタブには見えない。
+            from DirectShowLib import (  # type: ignore[attr-defined]
+                DsDevice,
+                FilterCategory,
+            )
 
             captureDevices = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice)
             for device in captureDevices:
@@ -2357,7 +2360,7 @@ class PokeControllerApp:
         if cmd is None:
             return True
 
-        thread = getattr(cmd, "thread", None)
+        thread: Any = getattr(cmd, "thread", None)
         running = thread is not None and thread.is_alive()
         if not running and not getattr(cmd, "alive", False):
             return True

@@ -80,8 +80,8 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         #   調停が off（既定）の間はどの名札でも挙動は変わらない。
         self.input_source: str = "script"
 
-        self.keys = None
-        self.thread = None
+        self.keys: Any = None
+        self.thread: threading.Thread | None = None
         self._running: bool = False  # start〜do_safe 終了までの実行中フラグ
         self.alive: bool = True
         # 停止要求。wait() はこれで待つので、長い待ちの最中でも

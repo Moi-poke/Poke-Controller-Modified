@@ -19,7 +19,7 @@ class Fossil_shiny(ImageProcPythonCommand):
         i = 0
         while True:
             for j in range(30):
-                print(str(30 * i + j + 1) + f"体目 ({j + 1}/30 of a box)")
+                print(str(30 * i + j + 1) + "体目 ({}/30 of a box)".format(j + 1))
                 self.press(Button.A, wait=0.75)
                 self.press(Button.A, wait=0.75)
 

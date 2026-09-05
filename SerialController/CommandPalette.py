@@ -90,7 +90,8 @@ class CommandPalette:
 
         self.win = tk.Toplevel(master)
         self.win.title("コマンドを検索")
-        self.win.transient(master)
+        # スタブは引数型を絞りすぎているため無視する（実行時は正しい）。
+        self.win.transient(master)  # type: ignore[call-overload]
         self.win.resizable(True, False)
 
         frame = ttk.Frame(self.win, padding=8)

@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -48,6 +49,14 @@ class OperateMixin:
     外向きの API（press / pressRep / hold / holdEnd / wait / short_wait /
       checkIfAlive / timeLeap）は名前・引数・意味とも1文字も変えていない。
     """
+
+    # 親（PythonCommand）が用意するもの。Mixin 単体には無いため型だけ宣言する。
+    keys: Any
+    alive: bool
+    _stop_event: threading.Event
+    _resume_event: threading.Event
+    _cleanup: Callable[..., None]
+    _pausedSeconds: Callable[[], float]
 
     # 待ちを刻む幅は _TICK 側で持つ。_SPIN_MARGIN はスピンを廃止した
     # 現在は未使用だが、外部コマンドが参照している可能性があるため

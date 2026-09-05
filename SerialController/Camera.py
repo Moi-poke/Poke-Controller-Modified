@@ -56,7 +56,8 @@ def _configure_capture(camera: Any, capture_size: tuple, fps: int = 0) -> None:
     「最初に」指定するのが要点で、後から変えると解像度が既定へ戻る
     ドライバがある。
     """
-    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    # VideoWriter_fourcc は実行時に存在するが、opencv のスタブに無い。
+    camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))  # type: ignore[attr-defined]
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, capture_size[0])
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, capture_size[1])
     if fps and int(fps) > 0:
