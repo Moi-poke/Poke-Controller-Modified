@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """launcher.py - Poke-Controller のプロファイルを選んで起動するランチャー.
 
 複数の Switch を並列で自動化するとき、台ごとに設定を分けるための

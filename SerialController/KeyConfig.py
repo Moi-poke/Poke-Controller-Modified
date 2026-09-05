@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """KeyConfig.py - キーボードの割り当てを設定する画面.
 
 Switch のボタン / 左スティック(Direction) / 十字キー(Hat) に、どの

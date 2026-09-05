@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 from Commands.Keys import Direction, Stick
 from Commands.PythonCommandBase import PythonCommand

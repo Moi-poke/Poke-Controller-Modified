@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """CommandVision.py - 画像認識 API（VisionMixin）.
 
 画像認識部をまとめたファイルである。

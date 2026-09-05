@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Camera.py - カメラ制御.
 
 cv2 でキャプチャし、別スレッド（Camera）または別プロセス（CameraQueue）で

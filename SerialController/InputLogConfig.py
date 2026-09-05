@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """InputLogConfig.py - 入力ログの表示書式を決める設定画面.
 
 メニュー「入力ログの書式」から開く。プリセットを選ぶだけでも使えるし、

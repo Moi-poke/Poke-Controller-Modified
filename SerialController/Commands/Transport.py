@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Transport.py - 送信の下回り（線そのもの）を受け持つ層。
 
 Sender から「線を開く・閉じる・1行を書き出す」処理をここへ移している。

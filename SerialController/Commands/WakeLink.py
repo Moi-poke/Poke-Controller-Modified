@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """WakeLink.py - wakecon との応答つき通信。GUI 設定画面と python コマンドの共有口。
 
 PokeCon はふだん線を読まない（送りっぱなし）。ここでの読み取りは

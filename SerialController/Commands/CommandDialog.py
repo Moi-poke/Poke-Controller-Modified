@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """CommandDialog.py - 入力ダイアログ（DialogMixin / PokeConDialogue）.
 
 PythonCommandBase.py から対話部を切り出したもの。

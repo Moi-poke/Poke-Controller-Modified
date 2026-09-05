@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Window.py - Poke-Controller Modified のメインウィンドウ.
 
 PokeControllerApp : アプリ本体。UI 構築・カメラ・シリアル・コマンド実行を束ねる。

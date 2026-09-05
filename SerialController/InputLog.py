@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """InputLog.py - シリアル送信行から入力イベントを起こしてログに出す.
 
 Sender.writeRow() が送る1行（Keys.SendFormat.convert2str の出力）を feed() に

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Switch2 を起こす。保存済みの wake ビーコンを B で再生する。
 
 保存が無ければ起こせない。その場合は GUI の「Switch2 Wake設定」か

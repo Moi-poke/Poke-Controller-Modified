@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # Sender.py - 姿勢（押下状態）を1つに持ち、Transport へ渡す層。
 # コメント方針: なぜこうするかの理由を書く。外部文書への参照は付けない。
 # 下記の互換 import は Sender からは使わないが、モジュール直下の名前が

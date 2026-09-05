@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """CommandOperate.py - 操作 API と待ち（OperateMixin）.
 
 内容:
