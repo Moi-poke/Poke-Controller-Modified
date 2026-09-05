@@ -1,23 +1,24 @@
 import importlib
 import sys
+from types import ModuleType
 
-import Utility as util
+from core import Utility as util
 
 
 class CommandLoader:
-    def __init__(self, base_path, base_class):
-        self.path = base_path
-        self.base_type = base_class
-        self.modules = []
+    def __init__(self, base_path: str, base_class: type) -> None:
+        self.path: str = base_path
+        self.base_type: type = base_class
+        self.modules: list[ModuleType] = []
 
-    def load(self):
+    def load(self) -> list[type]:
         if not self.modules:  # load if empty
             self.modules = util.importAllModules(self.path)
 
         # return command class types
         return self.getCommandClasses()
 
-    def reload(self):
+    def reload(self) -> list[type]:
         loaded_module_dic = {mod.__name__: mod for mod in self.modules}
         cur_module_names = util.getModuleNames(self.path)
 

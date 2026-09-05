@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from collections.abc import Callable
 
-from Commands import CommandBase
+from core import CommandBase
 from loguru import logger
 
 

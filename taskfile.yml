@@ -26,17 +26,23 @@ tasks:
     cmds:
       - uv run --frozen mypy SerialController tools
 
+  bounds:
+    desc: core/ の境界検査（GUI・アプリ層依存の混入防止）
+    cmds:
+      - uv run --frozen python tools/check_core.py
+
   check:
-    desc: 検査＋整形＋型検査（修正モード）
+    desc: 検査＋整形＋型検査＋境界検査（修正モード）
     cmds:
       - task: lint
         vars:
           CLI_ARGS: --fix
       - task: format
       - task: typecheck
+      - task: bounds
 
   ci:
-    desc: 検査＋整形確認＋型検査（修正なし・CI用）
+    desc: 検査＋整形確認＋型検査＋境界検査（修正なし・CI用）
     cmds:
       - task: lint
       - task: format

@@ -14,18 +14,17 @@ from collections.abc import Callable
 from logging import DEBUG, NullHandler, getLogger
 from typing import Any
 
-import InputLog
 import serial  # noqa: F401
 
 # 送信の下回り（線を開く・閉じる・1行書き出す）は Transport が持つ。
 #   Sender は「姿勢」と「入力ログ」を持ち、何で運ぶかは知らない。
 #   運び方を替えるときは Transport を差し替える。
-from Commands import Transport
+from core import InputLog, Transport
 
 # 互換のため、従来 Sender の直下にあった定数をここからも見えるようにする。
 #   実体は Transport 側の1つ。外部が Sender.MIN_SEND_INTERVAL と
 #     書いていても壊れない（設定・検証コードが読む可能性がある）。
-from Commands.Transport import (
+from core.Transport import (
     MIN_SEND_INTERVAL,
 )
 
@@ -2084,7 +2083,7 @@ class Sender:
         と覚える。R には QRUN を期待し、通らなければ積んだ Q を N で
         流してから False を返す。
         """
-        from Commands.WakeLink import expect
+        from core.WakeLink import expect
 
         first = expect(transport, line, ("QOK", "QFULL", "ERR", "BUSY"), timeout=0.5)
         if first is None or first.startswith("ERR"):

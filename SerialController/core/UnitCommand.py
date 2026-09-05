@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 from time import sleep
 
-from . import CommandBase
-from .Keys import Button, Hat, KeyPress
+from core import CommandBase
+from core.Keys import Button, Hat, KeyPress
 
 
 # Sigle button command

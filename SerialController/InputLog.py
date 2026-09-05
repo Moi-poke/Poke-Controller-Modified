@@ -1,0 +1,51 @@
+"""InputLog.py - 後方互換の再公開口.
+
+実体は core/InputLog.py へ移った。既存のコードは
+    import InputLog
+と書いたまま変えずに使える。新規のコードは core 側から読むこと。
+"""
+
+from core.InputLog import (
+    BUTTON_NAMES as BUTTON_NAMES,
+    BUTTON_SHIFT as BUTTON_SHIFT,
+    CHANGE_MIN_DEG as CHANGE_MIN_DEG,
+    CHANGE_MIN_MAG as CHANGE_MIN_MAG,
+    DEFAULT_DATE_PATTERN as DEFAULT_DATE_PATTERN,
+    DEFAULT_FORMAT as DEFAULT_FORMAT,
+    DEFAULT_TIME_PATTERN as DEFAULT_TIME_PATTERN,
+    DIRECTION_ANGLES as DIRECTION_ANGLES,
+    DIRECTION_FULL_MAG as DIRECTION_FULL_MAG,
+    DIRECTION_SNAP_DEG as DIRECTION_SNAP_DEG,
+    FIELD_HELP as FIELD_HELP,
+    FLAG_L_STICK as FLAG_L_STICK,
+    FLAG_R_STICK as FLAG_R_STICK,
+    HAT_CENTER as HAT_CENTER,
+    HAT_NAMES as HAT_NAMES,
+    MARKS as MARKS,
+    MAX_LINES_PER_SEC as MAX_LINES_PER_SEC,
+    NEUTRAL as NEUTRAL,
+    PRESETS as PRESETS,
+    PRESET_ACTIONS as PRESET_ACTIONS,
+    PRESET_LABELS as PRESET_LABELS,
+    REPEAT_FLUSH as REPEAT_FLUSH,
+    REPEAT_WINDOW as REPEAT_WINDOW,
+    ROTATE_MIN_DEG as ROTATE_MIN_DEG,
+    STICK_DEADZONE as STICK_DEADZONE,
+    InputEvent as InputEvent,
+    InputLogger as InputLogger,
+    LogFormatter as LogFormatter,
+    WallTime as WallTime,
+    command_raw_target as command_raw_target,
+    command_target as command_target,
+    direction_gap as direction_gap,
+    direction_name as direction_name,
+    direction_raw as direction_raw,
+    format_duration as format_duration,
+    format_time as format_time,
+    is_rotation as is_rotation,
+    preview_lines as preview_lines,
+    rotation_text as rotation_text,
+    sample_events as sample_events,
+    short_name as short_name,
+    snap_direction as snap_direction,
+)

@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 
-import Utility as util
+from core import Utility as util
 from loguru import logger
 
 TAGS_JSON = "Commands/tags.json"

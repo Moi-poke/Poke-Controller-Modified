@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 from logging import getLogger
 from time import sleep
 
-from . import CommandBase
-from .Keys import Direction, KeyPress, Stick
+from core import CommandBase
+from core.Keys import Direction, KeyPress, Stick
 
 
 # Single button command

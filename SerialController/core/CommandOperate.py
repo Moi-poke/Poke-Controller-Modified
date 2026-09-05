@@ -30,7 +30,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from Commands.Keys import Button, Direction
+from core.Keys import Button, Direction
 from loguru import logger
 
 
