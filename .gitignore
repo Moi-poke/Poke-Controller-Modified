@@ -92,8 +92,8 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# pyenv
-.python-version
+# pyenv の名残。.python-version 自体は追跡する
+# （アプリ開発では固定が普通。uv が全員同じ 3.12.7 を使う）
 
 # celery beat schedule file
 celerybeat-schedule
@@ -138,6 +138,9 @@ SerialController/launch_error_*.log
 SerialController/Commands/PythonCommands/PokopiaAutoCoin.py
 SerialController/Commands/PythonCommands/PokopiaAutoCoin_fast.py
 SerialController/Template/pokopia/
+
+# Pico 用ファームの作業場（専用品は別 repo pico-wakeCon。手元専用）
+pico_firmware/
 
 # 検証スクリプト・測定残渣・実行時デバッグ出力（コミット不要）
 SerialController/verify_phase*.py
