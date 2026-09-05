@@ -119,21 +119,14 @@ Poke-Controller-Modified-master\Poke-Controller-Modified-master> python .\Serial
 
 ## Installation
 
-必要なライブラリ(+推奨するライブラリ)が増えています。 構築した環境にインストールしてください。
+uvで管理しています。`pyproject.toml` + `uv.lock` が正本です。
 
-```python
-pygubu
-requests
-pandas
-numpy
-scipy
+```cmd
+pip install uv
+uv sync
+.\.venv\Scripts\activate
+python .\SerialController\Window.py
 ```
-
-> [requirements.txt](./requirements.txt)を使用して、必要なライブラリを一括でインストールできます。
-> 
-> ```
-> pip install -r .\requirements.txt
-> ```
 
 ## おまけ
 
