@@ -20,6 +20,18 @@ from typing import Any
 
 from loguru import logger
 
+# アプリの場所。このファイルの位置から決める（起動場所に依存しない）。
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+OPEN_DIR_ICON_PATH = os.path.join(APP_DIR, "assets", "icons8-OpenDir-16.png")
+
+# 選択肢の候補値。画面に書き並べず、ここを唯一の表にする。
+# 候補に無い値の扱いは読む側が決める（矯正すると利用者の設定が壊れる）。
+FPS_VALUES = [60, 45, 30, 15, 5]
+BAUD_RATE_VALUES = [9600, 4800, 19200, 38400, 57600, 115200]
+SHOW_SIZE_VALUES = ["640x360", "1280x720", "1920x1080"]
+COM_PORT_NOT_FOUND = "(ポートが見つかりません)"
+
 
 def listComPorts() -> list[tuple[str, str]]:
     """接続されているシリアルポートを (デバイス名, 表示名) で返す。

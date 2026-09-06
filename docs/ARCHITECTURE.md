@@ -13,9 +13,9 @@ Poke-Controller Modified の構成メモ。詳細な開発手順は `AGENTS.md`�
         │  press / hold / wait / isContainTemplate
         ▼
 core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の import 禁止）
-        │  Sender: 姿勢・調停・live worker
-        │  Transport: 線の開閉・1行送信（TextSerial / PicoUart）
-        │  Keys: Button/Direction/Hat/Stick と行の組み立て
+        │  serial/: Sender 本体・Arbiter（入力調停）・encoding（行書式）
+        │  transport/: base（抽象）・text_serial・registry（名前から選択）
+        │  Keys: Button/Direction/Hat/Stick（行組み立ては encoding へ一本化）
         │  WakeLink: 応答つき通信（O行・設定確認用）
         │  Camera: 最新1枚だけを配る capture
         │  InputLog / CommandLoader / Utility / CommandVision ほか
@@ -23,8 +23,24 @@ core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の imp
 ファーム (Arduino Leonardo / Pico；専用品は別 repo Moi-poke/pico-wakeCon)
 ```
 
+エントリは `SerialController/__main__.py`（`python -m SerialController`）と
+`Window.py` 直起動（`launcher.py` が使う従来経路）の2口で、どちらも
+`Window.main()` へ集まる。利用者スクリプトの公開面（`Commands.Keys` /
+`Commands.PythonCommandBase` / `Commands.McuCommandBase` /
+`Commands.WakeLink`）と `settings*.ini` の書式は凍結。書式知識の実体は
+`config.py`（Tk なし）にあり、`Settings.GuiSettings` は Tk との鏡と
+入出力の手順だけを持つ。
+
 GUI 層（`Window.py`・`GuiAssets.py`・`Settings.py` ほか）は `core/` の利用者。
-逆向きの依存は `tools/check_core.py`（`task bounds`）で禁止している。
+`Window.py` は起動の組立・設定の出し入れ・終了処理だけを持ち、画面の
+部品ごとの手順は `ui/` の Mixin（`camera_panel` / `serial_panel` /
+`command_panel` / `log_panel`）に分かれる。Mixin は `self` 越しに触る
+属性を宣言しておく（mypy のため）。`ui/` から `Window` 本体の import は
+禁止（循環になる）。実行の手順は `services/`（`command_runner.py`: 起動・
+停止・見張り・後始末の状態機械、`serial_service.py`: Sender の所有・
+接続・切替・キーボードの寿命管理）へ委ねる。`services/` は tkinter を
+import しない。逆向きの依存は `tools/check_core.py`（`task bounds`）で
+禁止している。
 
 ## core/ への移し方
 
@@ -60,7 +76,8 @@ GUI 層（`Window.py`・`GuiAssets.py`・`Settings.py` ほか）は `core/` の�
 
 ## 検証の考え方
 
-`task ci`（ruff check / format --check / mypy / bounds）が緑であること。
-単体テストは無いため、純粋ロジックの変更は小さな実行スクリプトで
-確認する（例: `Direction` の生成、`acceptsGuiArg` の新旧一致）。
+`task ci`（ruff check / format --check / mypy / bounds / userapi / test）が
+緑であること。実機なしで回せる純粋ロジックは `tests/` の pytest で
+確認する（例: Transport の間引き、`CommandRunner` の状態遷移、
+未知 capability の legacy 等価動作）。
 COM ポート・キャプチャボードが要る動作は実機でのみ確認できる。

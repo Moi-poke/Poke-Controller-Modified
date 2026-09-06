@@ -272,6 +272,13 @@ class CaptureArea(tk.Canvas):
         # 描画ループの制御用。stopCapture() で after を確実に止める
         self._capturing = False
         self._after_id: str | None = None
+        # 表示実測（getStats で読むたびに区切り直す）
+        self._stat_shown = 0
+        self._stat_began_at: float | None = None
+        # 描画本体の所要(ms)の指数移動平均と区間最大。平均は粛々と、
+        # 最大はスタッター（瞬間的な落ち込み）の犯人探しに使う。
+        self._stat_draw_ms = 0.0
+        self._stat_draw_max_ms = 0.0
 
         # スティック送信の間引き用。最後に送った時刻
         self._last_sent = 0.0
@@ -351,6 +358,16 @@ class CaptureArea(tk.Canvas):
             showing = bool(self.is_show_var.get())
             if showing:
                 self._drawFrame(self.camera.readFrame())
+                if self._stat_began_at is None:
+                    self._stat_began_at = started
+                self._stat_shown += 1
+                draw_ms = (time.perf_counter() - started) * 1000.0
+                if self._stat_draw_ms <= 0.0:
+                    self._stat_draw_ms = draw_ms
+                else:
+                    self._stat_draw_ms = self._stat_draw_ms * 0.9 + draw_ms * 0.1
+                if draw_ms > self._stat_draw_max_ms:
+                    self._stat_draw_max_ms = draw_ms
         except Exception as e:
             logger.error(f"capture failed: {e}")
         finally:
@@ -398,14 +415,7 @@ class CaptureArea(tk.Canvas):
         if frame is None:
             self._showDisabled()
             return
-        # 先に縮小してから色変換すると変換対象が減って軽い
-        cv2.resize(
-            frame,
-            self.show_size,
-            dst=self._resize_buf,
-            interpolation=cv2.INTER_AREA,
-        )
-        cv2.cvtColor(self._resize_buf, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+        self._convert(frame)
         # frombuffer は fromarray と違い配列を複製しない
         self._photo.paste(
             Image.frombuffer("RGB", self.show_size, self._rgb_buf, "raw", "RGB", 0, 1)
@@ -414,11 +424,53 @@ class CaptureArea(tk.Canvas):
             self.im = self._photo
             self.itemconfig(self.im_, image=self._photo)
 
+    def _convert(self, frame: Any) -> None:
+        """BGR フレームを表示用 RGB バッファへ変換する（Tk を触らない）。
+
+        サイズが一致するときは縮小を省いて直接色変換する。720p 表示では
+        ただでさえ 16.7ms 予算が厳しく、意味の無い INTER_AREA 一発分
+        （数ms）がカクつきに直結するため。サイズが違うときは従来どおり
+        先に縮小してから色変換する（変換対象が減って軽い）。
+        """
+        if frame.shape[1] == self.show_width and frame.shape[0] == self.show_height:
+            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+            return
+        cv2.resize(
+            frame,
+            self.show_size,
+            dst=self._resize_buf,
+            interpolation=cv2.INTER_AREA,
+        )
+        cv2.cvtColor(self._resize_buf, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+
     def _showDisabled(self) -> None:
         """停止中の画像に切り替える（既に表示中なら何もしない）。"""
         if self.im is not self.disabled_tk:
             self.im = self.disabled_tk
             self.itemconfig(self.im_, image=self.disabled_tk)
+
+    def getStats(self) -> dict[str, float]:
+        """表示実測を返す。呼ぶたびに区切り直す（期間fps方式）。
+
+        戻り値は {"fps": 実際に描いた枚数/秒}。Camera.getStats と
+        並べると「機器が遅いか描画が遅いか」が分かる。
+        """
+        now = time.perf_counter()
+        shown, began_at = self._stat_shown, self._stat_began_at
+        draw_ms, draw_max_ms = self._stat_draw_ms, self._stat_draw_max_ms
+        self._stat_shown = 0
+        self._stat_began_at = None
+        self._stat_draw_max_ms = 0.0
+        if began_at is None or shown <= 0:
+            return {"fps": 0.0, "draw_ms": round(draw_ms, 1), "draw_max_ms": 0.0}
+        elapsed = now - began_at
+        if elapsed < 1e-6:
+            return {"fps": 0.0, "draw_ms": round(draw_ms, 1), "draw_max_ms": 0.0}
+        return {
+            "fps": round(shown / elapsed, 1),
+            "draw_ms": round(draw_ms, 1),
+            "draw_max_ms": round(draw_max_ms, 1),
+        }
 
     def setFps(self, fps: Any) -> None:
         """描画間隔を設定する。

@@ -21,7 +21,7 @@ import tkinter.ttk as ttk
 from collections.abc import Callable
 from typing import Any
 
-import CommandStats
+from core import CommandStats
 
 # 一度に見せる候補の数。多すぎると目で追えず、少なすぎると探し直しになる。
 MAX_ROWS = 12

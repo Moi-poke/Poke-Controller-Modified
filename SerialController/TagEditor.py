@@ -22,8 +22,8 @@ import tkinter.ttk as ttk
 from collections.abc import Callable
 from typing import Any
 
-import CommandTags
-from CommandTags import TAG_UNCLASSIFIED
+from core import CommandTags
+from core.CommandTags import TAG_UNCLASSIFIED
 from loguru import logger
 
 # チェックボックスを横に並べる数。増やすと窓が横に伸びて画面からはみ出す。
