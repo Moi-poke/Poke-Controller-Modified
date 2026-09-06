@@ -12,6 +12,7 @@ live worker が S 行を流し続けていても構わない。読みに出る�
 
 from __future__ import annotations
 
+import threading
 import time
 import traceback
 from logging import DEBUG, NullHandler, getLogger
@@ -102,7 +103,29 @@ def send_line(transport: Any, line: str, timeout: float = 2.0) -> bool:
 
 
 def read_lines(transport: Any, duration: float) -> list[str]:
-    """duration 秒だけ読み、行の一覧を返す。例外は出さない。"""
+    """duration 秒だけ読み、行の一覧を返す。例外は出さない。
+
+    読みポンプ稼働中は購読で集める (ポンプと二重に read しない)。
+    """
+    pump = _pump_of(transport)
+    if pump is not None:
+        collected: list[str] = []
+        lock = threading.Lock()
+
+        def _collect(text: str) -> None:
+            with lock:
+                collected.append(text)
+
+        unsub = pump.subscribe_rx(_collect)
+        try:
+            try:
+                time.sleep(max(0.0, float(duration)))
+            except (TypeError, ValueError):
+                pass
+        finally:
+            _unsub_quietly(unsub)
+        with lock:
+            return list(collected)
     out: list[str] = []
     try:
         ser = _ser_of(transport)
@@ -135,7 +158,13 @@ def read_lines(transport: Any, duration: float) -> list[str]:
 
 
 def drain(transport: Any) -> None:
-    """受信の残りを捨てる。応答待ちの前に呼ぶ。"""
+    """受信の残りを捨てる。応答待ちの前に呼ぶ。
+
+    読みポンプ稼働中は何もしない。ポンプが読む前の行まで捨てると、
+    応答待ちとモニタの両方から消える。ポンプ停止中のみ従来通り捨てる。
+    """
+    if _pump_of(transport) is not None:
+        return
     try:
         ser = _ser_of(transport)
         if ser is None:
@@ -148,14 +177,77 @@ def drain(transport: Any) -> None:
         _logger.debug("drain に失敗", exc_info=True)
 
 
+def _pump_of(transport: Any) -> Any | None:
+    """読みポンプ稼働中の Transport を返す。使えなければ None。
+
+    口の有無だけ見て、 movements は Transport 側に任せる。
+    旧来の直読み経路 (ser なし方式・ポンプ停止中) では None になり、
+    呼び出し側は従来の直接読みへ回る。
+    """
+    if transport is None:
+        return None
+    running = getattr(transport, "rx_pump_running", None)
+    subscribe = getattr(transport, "subscribe_rx", None)
+    if not callable(running) or not callable(subscribe):
+        return None
+    try:
+        if not running():
+            return None
+    except Exception:
+        _logger.debug("rx_pump_running に失敗", exc_info=True)
+        return None
+    return transport
+
+
+def _unsub_quietly(unsub: Any) -> None:
+    """購読解除。解除自体の失敗では落とさない。"""
+    try:
+        unsub()
+    except Exception:
+        _logger.debug("購読解除に失敗", exc_info=True)
+
+
 def query(transport: Any, line: str, prefixes: Any, timeout: float = 3.0) -> list[str]:
     """1行送り、prefixes に合う応答行だけ集めて返す。
 
     prefixes は先頭一致の文字列かその並び。live の S 行は送るだけで
     読みには出ないため、拾うのはファームの応答だけになる。
+
+    読みポンプ稼働中は、送る前に購読を登録してから送る。送ってから
+    登録すると、ポンプが先に読んで応答が待ちに届かない。
     """
     if isinstance(prefixes, str):
         prefixes = (prefixes,)
+    try:
+        limit = max(0.0, float(timeout))
+    except (TypeError, ValueError):
+        limit = 0.0
+    pump = _pump_of(transport)
+    if pump is not None:
+        matched: list[str] = []
+        lock = threading.Lock()
+
+        def _collect(text: str) -> None:
+            for prefix in prefixes:
+                try:
+                    hit = text.startswith(prefix)
+                except Exception:
+                    continue
+                if hit:
+                    with lock:
+                        matched.append(text)
+                    break
+
+        unsub = pump.subscribe_rx(_collect)
+        try:
+            drain(transport)
+            if not send_line(transport, line):
+                return []
+            time.sleep(limit)
+        finally:
+            _unsub_quietly(unsub)
+        with lock:
+            return list(matched)
     drain(transport)
     if not send_line(transport, line):
         return []
@@ -176,9 +268,42 @@ def expect(
     query が期限いっぱいまで集めるのに対し、こちらは1件見つかり次第
     戻る。QOK / QRUN のような即応の確認に向く。見つからなければ None。
     呼び出しは作業スレッドで行い、Tk の変数には触らない（query と同じ）。
+
+    読みポンプ稼働中は、送る前に待ちを登録してから送る。送ってから
+    登録すると、ポンプが先に読んで待ちに届かない。
     """
     if isinstance(prefixes, str):
         prefixes = (prefixes,)
+    try:
+        limit = max(0.0, float(timeout))
+    except (TypeError, ValueError):
+        limit = 0.0
+    pump = _pump_of(transport)
+    if pump is not None:
+        matched: dict[str, str] = {}
+        done = threading.Event()
+
+        def _match(text: str) -> None:
+            for prefix in prefixes:
+                try:
+                    hit = text.startswith(prefix)
+                except Exception:
+                    continue
+                if hit:
+                    matched.setdefault("line", text)
+                    done.set()
+                    break
+
+        unsub = pump.subscribe_rx(_match)
+        try:
+            drain(transport)
+            if not send_line(transport, line):
+                return None
+            if not done.wait(limit):
+                return None
+            return matched.get("line")
+        finally:
+            _unsub_quietly(unsub)
     drain(transport)
     if not send_line(transport, line):
         return None

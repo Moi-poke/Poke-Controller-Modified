@@ -160,3 +160,34 @@ class Transport(abc.ABC):
         if lock is None:
             return _NullLock()
         return lock
+
+    def subscribe_rx(self, func: Callable[[str], None]) -> Callable[[], None]:
+        """受信1行ごとの購読。戻り値は解除用の呼び出し。
+
+        既定は何も届かない購読。ser を持たない方式はこのまま
+        (モニタへは何も出ず、WakeLink は従来の直接読みへ回る)。
+        """
+
+        def _unsub() -> None:
+            return None
+
+        return _unsub
+
+    def wait_rx(self, prefixes: Any, timeout: float = 0.5) -> str | None:
+        """最初に前方一致した1行を待つ。見つかればその行を返す。
+
+        既定は None (受信手段が無い)。prefixes は文字列かその並び。
+        """
+        _ = (prefixes, timeout)
+        return None
+
+    def rx_pump_running(self) -> bool:
+        """読みポンプが動いているか。既定は False。"""
+        return False
+
+    def start_rx_pump(self) -> bool:
+        """読みポンプを起動する。動いていれば True。既定は何もしない。"""
+        return False
+
+    def stop_rx_pump(self) -> None:
+        """読みポンプを止める。既定は何もしない。"""

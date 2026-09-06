@@ -4,6 +4,7 @@ from typing import Any
 import DiscordNotify
 from InputLogConfig import InputLogConfig
 from KeyConfig import PokeKeycon
+from SerialMonitor import SerialMonitor
 from WakeSetup import WakeSetup
 from get_pokestatistics import GetFromHomeGUI
 from loguru import logger
@@ -19,6 +20,7 @@ class PokeController_Menubar(tk.Menu):
         self.poke_treeview: Any | None = None
         self.key_config: PokeKeycon | None = None
         self.wake_setup: WakeSetup | None = None
+        self.serial_monitor: SerialMonitor | None = None
         self.input_log_config: InputLogConfig | None = None
 
         self.menu = tk.Menu(self, tearoff=False)
@@ -77,6 +79,9 @@ class PokeController_Menubar(tk.Menu):
         )
         self.menu_command.add(
             "command", command=self.OpenWakeSetup, label="Switch2 Wake設定"
+        )
+        self.menu_command.add(
+            "command", command=self.OpenSerialMonitor, label="シリアルモニタ"
         )
         self.menu_command.add(
             "command", command=self.OpenInputLogConfig, label="入力ログの書式"
@@ -164,6 +169,27 @@ class PokeController_Menubar(tk.Menu):
             except Exception:
                 pass
             self.wake_setup = None
+
+    def OpenSerialMonitor(self) -> None:
+        logger.debug("Open SerialMonitor window")
+        mon_window = getattr(self.serial_monitor, "window", None)
+        if mon_window is not None and self._alive(mon_window):
+            mon_window.focus_force()
+            return
+        self.serial_monitor = None
+        self.serial_monitor = SerialMonitor(self.root, self.ser)
+        self.serial_monitor.window.protocol(
+            "WM_DELETE_WINDOW", self.closingSerialMonitor
+        )
+
+    def closingSerialMonitor(self) -> None:
+        logger.debug("Close SerialMonitor window")
+        if self.serial_monitor is not None:
+            try:
+                self.serial_monitor.close()
+            except Exception:
+                pass
+            self.serial_monitor = None
 
     def closeAll(self) -> None:
         """子窓をすべて閉じる。終了処理から呼ぶ。

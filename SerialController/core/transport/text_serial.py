@@ -67,6 +67,14 @@ class TextSerialTransport(Transport):
         self.listeners: list[Callable[[str], None]] = []
         # 一度落ちた聞き手の id()。同じ苦情を繰り返さない
         self._listener_ng: set[int] = set()
+        # 受信の分配先。読みスレッドは1本だけで、購読者と応答待ちの
+        # 両方へ同じ行を届ける。2か所で read すると横取りが起きるため、
+        # 読み口はここへ一本化する (WakeLink もここを通る)。
+        self._rx_lock = threading.Lock()
+        self._rx_subs: list[Callable[[str], None]] = []
+        self._rx_waiters: list[tuple[tuple[str, ...], threading.Event, dict]] = []
+        self._rx_thread: threading.Thread | None = None
+        self._rx_stop = threading.Event()
 
     # -- 聞き手の付け外し ---------------------------------------------------
 
@@ -86,6 +94,127 @@ class TextSerialTransport(Transport):
             if func in self.listeners:
                 self.listeners.remove(func)
             self._listener_ng.discard(id(func))
+
+    # -- 受信の読みポンプ -----------------------------------------------------
+    # 読みスレッドは1本だけにする。WakeLink の応答待ちとモニタ表示が
+    # 別々に read すると、相手の行を横取りして応答が消える。
+    # ポンプが読んだ行は購読者全員と、待機中の wait_rx へ届ける。
+
+    def subscribe_rx(self, func: Callable[[str], None]) -> Callable[[], None]:
+        """受信1行ごとの購読。戻り値は解除用の呼び出し。"""
+        with self._rx_lock:
+            if func not in self._rx_subs:
+                self._rx_subs.append(func)
+
+        def _unsub() -> None:
+            with self._rx_lock:
+                if func in self._rx_subs:
+                    self._rx_subs.remove(func)
+
+        return _unsub
+
+    def wait_rx(self, prefixes: Any, timeout: float = 0.5) -> str | None:
+        """最初に前方一致した1行を待つ。見つかればその行を返す。
+
+        ポンプが動いていないときは None を返し、呼び出し側は
+        従来の直接読みへ回る。購読者にも同じ行が届く (横取りしない)。
+        """
+        if isinstance(prefixes, str):
+            prefixes = (prefixes,)
+        try:
+            want = tuple(prefixes)
+            limit = max(0.0, float(timeout))
+        except (TypeError, ValueError):
+            return None
+        if not self.rx_pump_running():
+            return None
+        found: dict[str, str] = {}
+        done = threading.Event()
+        entry = (want, done, found)
+        with self._rx_lock:
+            self._rx_waiters.append(entry)
+        try:
+            if not done.wait(limit):
+                return None
+            return found.get("line")
+        finally:
+            with self._rx_lock:
+                if entry in self._rx_waiters:
+                    self._rx_waiters.remove(entry)
+
+    def rx_pump_running(self) -> bool:
+        """読みポンプが動いているか（読むだけ）。"""
+        thread = self._rx_thread
+        return thread is not None and thread.is_alive()
+
+    def start_rx_pump(self) -> bool:
+        """読みポンプを1本だけ起動する。動いていれば True。"""
+        if self.rx_pump_running():
+            return True
+        if self.ser is None:
+            return False
+        self._rx_stop.clear()
+        thread = threading.Thread(
+            target=self._rx_loop, name="PokeConRxPump", daemon=True
+        )
+        self._rx_thread = thread
+        thread.start()
+        return True
+
+    def stop_rx_pump(self) -> None:
+        """読みポンプを止める。止まるまで待つ (読みタイムアウトが上限)。"""
+        self._rx_stop.set()
+        thread = self._rx_thread
+        if thread is None:
+            return
+        thread.join(READ_TIMEOUT + 0.5)
+        if not thread.is_alive():
+            self._rx_thread = None
+
+    def _dispatch_rx(self, text: str) -> None:
+        """1行を購読者と待機中の wait_rx へ届ける。"""
+        with self._rx_lock:
+            subs = list(self._rx_subs)
+            waiters = list(self._rx_waiters)
+        for func in subs:
+            try:
+                func(text)
+            except Exception:
+                self._logger.debug("rx 購読者で例外", exc_info=True)
+        for want, done, found in waiters:
+            try:
+                if any(text.startswith(prefix) for prefix in want):
+                    found.setdefault("line", text)
+                    done.set()
+            except Exception:
+                self._logger.debug("rx 待機の照合で例外", exc_info=True)
+
+    def _rx_loop(self) -> None:
+        """受信を読み続け、行ができたら分配する。例外では落ちない。"""
+        buf = bytearray()
+        while not self._rx_stop.is_set():
+            ser = self.ser
+            if ser is None:
+                break
+            try:
+                chunk = ser.read(64)
+            except Exception:
+                self._logger.debug("rx 読み取りで例外", exc_info=True)
+                break
+            if not chunk:
+                continue
+            buf.extend(chunk)
+            while True:
+                idx = buf.find(b"\n")
+                if idx < 0:
+                    break
+                raw = bytes(buf[:idx])
+                del buf[: idx + 1]
+                try:
+                    text = raw.decode("ascii", errors="replace").strip()
+                except Exception:
+                    continue
+                self._dispatch_rx(text)
 
     # -- 線の開け閉め -------------------------------------------------------
 
@@ -173,17 +302,26 @@ class TextSerialTransport(Transport):
         self._send_interval = self.calc_send_interval(baudrate)
 
         if portName is not None and portName != "":
-            return self._open_serial(portName, baudrate)
-        path = self._default_port_path(portNum)
-        if path is None:
-            # 未知OSでも portName 指定があれば上へ流れて開けに行く。
-            # ここへ来るのは portName 無しの場合のみ。
-            print("Not supported OS")
-            self._logger.warning("Not supported OS: portName を直接指定してください")
-            return False
-        return self._open_serial(path, baudrate)
+            opened = self._open_serial(portName, baudrate)
+        else:
+            path = self._default_port_path(portNum)
+            if path is None:
+                # 未知OSでも portName 指定があれば上へ流れて開けに行く。
+                # ここへ来るのは portName 無しの場合のみ。
+                print("Not supported OS")
+                self._logger.warning(
+                    "Not supported OS: portName を直接指定してください"
+                )
+                return False
+            opened = self._open_serial(path, baudrate)
+        if opened:
+            self.start_rx_pump()
+        return opened
 
     def close(self) -> None:
+        # 読みポンプを先に止める。閉じたポートへ読みに行かせない。
+        # ポンプは書き錠を取らないので、ここで待っても詰まらない。
+        self.stop_rx_pump()
         # 切断の一連を1つの区切りとして守る。閉じている最中に別スレッドが
         # send_row を呼ぶと、閉じたポートへ書き込むことになる。
         with self._lock:
