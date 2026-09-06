@@ -72,7 +72,7 @@ class SendFormat:
         self._logger.propagate = True
 
         # This format structure needs to be the same as the one written in Joystick.c
-        self.format = OrderedDict(
+        self.format: OrderedDict[str, Any] = OrderedDict(
             [
                 ("btn", 0),  # send bit array for buttons
                 ("hat", Hat.CENTER),
@@ -163,7 +163,7 @@ class SendFormat:
     def convert2str(self) -> str:
         # 行の組み立ては encoding.format_legacy_row へ寄せる。
         # Sender._buildRow も同じ関数を通すので、両者が食い違う余地が無い。
-        row = encoding.format_legacy_row(
+        row: str = encoding.format_legacy_row(
             self.format["btn"],
             self.format["hat"],
             self.format["lx"],
