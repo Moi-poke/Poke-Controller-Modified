@@ -55,15 +55,19 @@ class SerialService:
         notify_user: Callable[[str], None],
         base_dir: str,
         input_log_emit: Callable[[str], None] | None,
+        keyboard_active: Callable[[], bool] | None = None,
     ) -> None:
         """notify_user は利用者への1行通知（Window は print を渡す）。
 
         base_dir は transport プラグインフォルダの相対解決用。
         input_log_emit は入力ログの送り先（LogPane.emitInputLog）。
+        keyboard_active は押下を受け付けるかの判定（Window は窓の
+        フォーカスを渡す）。省略時は常時受け付ける。
         """
         self._notify = notify_user
         self._base_dir = base_dir
         self._emit = input_log_emit
+        self._keyboard_active = keyboard_active
         self.sender: Sender | None = None
         self.key_press: KeyPress | None = None
         self.keyboard: SwitchKeyboardController | None = None
@@ -288,7 +292,9 @@ class SerialService:
         if self.keyboard is None:
             try:
                 self.keyboard = SwitchKeyboardController(
-                    self.key_press, setting_path=setting_path
+                    self.key_press,
+                    setting_path=setting_path,
+                    is_active=self._keyboard_active,
                 )
                 self.keyboard.listen()
             except Exception as e:

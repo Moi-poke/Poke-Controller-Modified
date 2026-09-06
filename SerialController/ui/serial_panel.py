@@ -52,6 +52,7 @@ class SerialPanelMixin:
     arbitration_cb: Any
     control_lf: Any
     is_use_keyboard: Any
+    _kb_window_active: Any
     cb_use_keyboard: Any
     cb_left_stick_mouse: Any
     cb_right_stick_mouse: Any
@@ -405,6 +406,12 @@ class SerialPanelMixin:
         # 古い値のまま書き戻される。常に全項目を集めてから書く
         # _on_setting_changed() に一本化する。
         self.is_use_keyboard.set(connected and keyboard_active)
+        # 接続経路でもキーボードだけが生きるため、ここで結線する。
+        # チェック切替時だけだと、繋ぎ直した回は監視なしになる。
+        if connected and keyboard_active:
+            self._bindKeyboardFocus()
+        else:
+            self._unbindKeyboardFocus()
         self._on_setting_changed()
         self._update_title()
 
@@ -415,6 +422,7 @@ class SerialPanelMixin:
         状態になり、次に接続したとき勝手に動き出したように見える。
         """
         self.serial.disconnect()
+        self._unbindKeyboardFocus()
         self.is_use_keyboard.set(False)
         self._on_setting_changed()
         self._update_title()
@@ -424,34 +432,41 @@ class SerialPanelMixin:
 
         実体の寿命は serial サービスが持つ。ここでは画面の辻褄
         （チェックの巻き戻し・フォーカス追従の結線）だけを見る。
+        フォーカス追従は全 OS で行う（Tk の FocusIn/Out は共通）。
         """
-        is_windows = self.os_name == "Windows"
-
         if self.is_use_keyboard.get():
             err = self.serial.set_keyboard_enabled(True, self.settings.setting_path)
             if err is not None:
                 self.is_use_keyboard.set(False)
                 return
-            if not is_windows:
-                return
-            self.root.bind("<FocusIn>", self.onFocusInController)
-            self.root.bind("<FocusOut>", self.onFocusOutController)
+            self._bindKeyboardFocus()
         else:
-            # 旧コードは Windows 以外だと停止処理ごと素通りしていた
             self.serial.stop_keyboard()
-            if not is_windows:
-                return
-            self.root.unbind("<FocusIn>")
-            self.root.unbind("<FocusOut>")
+            self._unbindKeyboardFocus()
+
+    def _bindKeyboardFocus(self) -> None:
+        """フォーカス追従を結線し、現在の状態へ即時合わせる。
+
+        結線だけだと結線前の状態が残るため、直後に同期する。
+        bind は同じ結び直しで置き換わるので重ね掛けは無害。
+        """
+        self.root.bind("<FocusIn>", self.onFocusInController)
+        self.root.bind("<FocusOut>", self.onFocusOutController)
+        self._syncKeyboardFocus()
+
+    def _unbindKeyboardFocus(self) -> None:
+        """フォーカス追従を外し、門を下ろす。"""
+        self.root.unbind("<FocusIn>")
+        self.root.unbind("<FocusOut>")
+        self._kb_window_active.clear()
 
     def onFocusInController(self, event: Any) -> None:
-        """Windows で窓に戻ったときキーボード操作を復帰させる。
+        """窓内へフォーカスが戻ったら打鍵を受け付ける。
 
-        切断して作り直す経路があり、接続とチェックの両方が生きている
-        ときに限る。実体の有無はサービスが見ている。
+        部品間の移動でも来るが、立てるだけなので無害。実体が無い
+        ときの作り直し（切断後の復帰用）は従来どおり残す。
         """
-        if event.widget != self.root:
-            return
+        self._kb_window_active.set()
         if self.serial.keyboard is not None:
             return
         if not self.is_use_keyboard.get():
@@ -461,8 +476,28 @@ class SerialPanelMixin:
             self.is_use_keyboard.set(False)
 
     def onFocusOutController(self, event: Any) -> None:
-        if event.widget == self.root and self.serial.keyboard is not None:
-            self.serial.stop_keyboard()
+        """窓外へ出たら打鍵を止める。
+
+        部品間の移動でも来るため、その場で下ろさず直後に確かめる。
+        従来の widget 照合（root のみ）は、子部品にフォーカスがある
+        まま他アプリへ移ると外れて止まらなかった。終了間際の破棄で
+        after 自体が例外のときは下ろしておく。
+        """
+        try:
+            self.root.after(100, self._syncKeyboardFocus)
+        except Exception:
+            self._kb_window_active.clear()
+
+    def _syncKeyboardFocus(self) -> None:
+        """遅延判定：いま窓内のどこにも無ければ下ろす。"""
+        try:
+            focused = self.root.focus_get() is not None
+        except Exception:
+            focused = False
+        if focused:
+            self._kb_window_active.set()
+        else:
+            self._kb_window_active.clear()
 
     def createControllerWindow(self) -> None:
         if self.controller is not None:

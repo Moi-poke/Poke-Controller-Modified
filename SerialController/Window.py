@@ -14,6 +14,7 @@ import argparse
 import os
 import platform
 import sys
+import threading
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
@@ -129,10 +130,16 @@ class PokeControllerApp(
         self.camera: Camera | None = None
         # 送り先と実行状態の所有者。実体は services が持つ。
         # Window は tk 変数の読み書きと見た目の反映だけを行う。
+        # 窓のフォーカス有無（キーボード操作の門）。pynput は OS 全体の
+        # 打鍵を拾うため、Listener 側では窓内外を区別できない。別スレッド
+        # から Tk を触れないので、GUI 側が Event へ写し、述語だけ渡す。
+        # 初期は下ろしておく（結線直後の即時同期で正される）。
+        self._kb_window_active = threading.Event()
         self.serial = SerialService(
             notify_user=print,
             base_dir=BASE_DIR,
             input_log_emit=LogPane.emitInputLog,
+            keyboard_active=self._kb_window_active.is_set,
         )
         self.serial.transport_override = self._transport_override
         # いま使っている通信方式の名前（画面表示と保存に使う）

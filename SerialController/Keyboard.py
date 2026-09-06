@@ -3,6 +3,7 @@
 
 import configparser
 import os
+from collections.abc import Callable
 from typing import Any
 
 from Commands.Keys import Button, Direction, Hat
@@ -51,12 +52,23 @@ class SwitchKeyboardController(Keyboard):
         "Hat": Hat,
     }
 
-    def __init__(self, keyPress: Any, setting_path: str | None = None) -> None:
+    def __init__(
+        self,
+        keyPress: Any,
+        setting_path: str | None = None,
+        is_active: Callable[[], bool] | None = None,
+    ) -> None:
         """keyPress のキー割り当てを settings.ini から読む。
 
         setting_path を渡すとそのファイルを、省略時は従来の既定を
         読む。並列起動（profile 別 ini）では呼び出し側が渡すこと。
         渡さないと既定 ini を見て別 profile の割り当てと食い違う。
+
+        is_active は押下を受け付けるかの判定（通常は窓のフォーカス）。
+        省略時は常時受け付ける（従来どおり）。pynput の Listener は
+        OS 全体の打鍵を拾うため、窓外の打鍵まで流れて誤爆になる。
+        離鍵は常時通す。押下を捨てた分は holding に残らないため、
+        離鍵まで塞ぐと押しっぱなしが残る。
         """
         super().__init__()
 
@@ -90,6 +102,8 @@ class SwitchKeyboardController(Keyboard):
         self.key_map: dict[Any, Any] = {}
         for section in ("KeyMap-Button", "KeyMap-Direction", "KeyMap-Hat"):
             self.key_map.update(self._load_key_map(section))
+
+        self.is_active = is_active
 
         logger.debug("キーコンフィグの読み込みが完了しました")
 
@@ -171,6 +185,9 @@ class SwitchKeyboardController(Keyboard):
     def on_press(self, key: Any) -> None:
         if key is None:
             logger.warning("未知のキーが入力されました")
+            return
+
+        if self.is_active is not None and not self.is_active():
             return
 
         _k, key_type = self._resolve_input(key)
