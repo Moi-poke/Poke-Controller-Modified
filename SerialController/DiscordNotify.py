@@ -6,8 +6,8 @@ from tkinter import messagebox, simpledialog
 import cv2
 import requests
 import yaml
-from Camera import Camera
 from PIL import Image
+from core.Camera import Camera
 from deprecated import deprecated
 from loguru import logger
 

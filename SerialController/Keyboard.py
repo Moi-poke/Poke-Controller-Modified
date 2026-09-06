@@ -51,7 +51,13 @@ class SwitchKeyboardController(Keyboard):
         "Hat": Hat,
     }
 
-    def __init__(self, keyPress: Any) -> None:
+    def __init__(self, keyPress: Any, setting_path: str | None = None) -> None:
+        """keyPress のキー割り当てを settings.ini から読む。
+
+        setting_path を渡すとそのファイルを、省略時は従来の既定を
+        読む。並列起動（profile 別 ini）では呼び出し側が渡すこと。
+        渡さないと既定 ini を見て別 profile の割り当てと食い違う。
+        """
         super().__init__()
 
         if keyPress is None:
@@ -68,12 +74,18 @@ class SwitchKeyboardController(Keyboard):
         self.setting = configparser.ConfigParser()
         self.setting.optionxform = str  # type: ignore[assignment, method-assign]
 
-        logger.debug("キーコンフィグを読み込みます")
-        if not os.path.isfile(self.SETTING_PATH):
-            # 設定ファイルが無いと items() が NoSectionError になるため先に生成する
-            logger.info("settings.ini が無いため既定値で生成します")
-            GuiSettings().generate()
-        self.setting.read(self.SETTING_PATH, encoding="utf-8")
+        path = setting_path or self.SETTING_PATH
+        logger.debug(f"キーコンフィグを読み込みます: {path}")
+        if not os.path.isfile(path):
+            if path == self.SETTING_PATH:
+                # 既定の場所に無いときだけ生成する（従来どおり）。
+                # profile 別の場所に無い場合は生成せず警告に留める。
+                # 勝手に作ると profile の ini が二重管理になるため。
+                logger.info("settings.ini が無いため既定値で生成します")
+                GuiSettings().generate()
+            else:
+                logger.warning(f"キーコンフィグが無いため割り当ては空です: {path}")
+        self.setting.read(path, encoding="utf-8")
 
         self.key_map: dict[Any, Any] = {}
         for section in ("KeyMap-Button", "KeyMap-Direction", "KeyMap-Hat"):

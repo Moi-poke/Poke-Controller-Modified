@@ -3,7 +3,7 @@ name = "Poke-controller-modified"
 version = "3.6.0"
 description = "Automation NS by using python and Arduino"
 readme = "README.md"
-requires-python = ">=3.10.0"
+requires-python = ">=3.12.0"
 dependencies = [
     "deprecated>=1.2.18",
     "icecream>=2.1.4",
@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     "mypy>=1.19.0",
     "pygubu-designer>=0.40.2",
+    "pytest>=9.1.1",
     "ruff>=0.9.7",
     "types-deprecated>=1.2.15.20250304",
     "types-pyyaml>=6.0.12.20250326",
@@ -32,7 +33,7 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 extend-select = ["I", "UP006", "UP007", "UP008", "UP035"]
@@ -42,7 +43,7 @@ case-sensitive = true
 combine-as-imports = true
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_unreachable = true
 warn_unused_configs = true
 pretty = true

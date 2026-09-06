@@ -228,6 +228,10 @@ class Camera:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._error: str | None = None
+        # 供給実測（getStats で読むたびに区切り直す）。
+        self._stat_puts = 0
+        self._stat_began_at: float | None = None
+        self._stat_avg_ms = 0.0
 
     # -- 開閉 ---------------------------------------------------------------
 
@@ -276,6 +280,24 @@ class Camera:
     def getError(self) -> str | None:
         """取得スレッドが異常終了した理由。正常なら None。"""
         return self._error
+
+    def getStats(self) -> dict[str, float]:
+        """供給実測を返す。呼ぶたびに区切り直す（期間fps方式）。
+
+        戻り値は {"fps": 実際にputした枚数/秒, "avg_ms": read所要の
+        移動平均(ms)}。まだ1枚も来ていない・区間が短すぎる場合は 0。
+        表示側の実測と並べると「機器が遅いか描画が遅いか」が分かる。
+        """
+        now = time.perf_counter()
+        puts, began_at, avg_ms = self._stat_puts, self._stat_began_at, self._stat_avg_ms
+        self._stat_puts = 0
+        self._stat_began_at = None
+        if began_at is None or puts <= 0:
+            return {"fps": 0.0, "avg_ms": round(avg_ms, 1)}
+        elapsed = now - began_at
+        if elapsed < 1e-6:
+            return {"fps": 0.0, "avg_ms": round(avg_ms, 1)}
+        return {"fps": round(puts / elapsed, 1), "avg_ms": round(avg_ms, 1)}
 
     def destroy(self) -> bool:
         """取得スレッドを止めてからカメラを解放する。
@@ -429,6 +451,10 @@ class Camera:
                 continue
 
             self.frame_queue.put(frame)
+            if self._stat_began_at is None:
+                self._stat_began_at = started
+            self._stat_puts += 1
+            self._stat_avg_ms = read_avg * 1000.0
 
             # read がカメラ周期ぶん待っている場合、その上さらに待つと
             # 取りこぼす。カメラのほうが速いときだけ差分を待つ。

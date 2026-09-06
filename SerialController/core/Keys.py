@@ -9,6 +9,8 @@ from enum import Enum, IntEnum, IntFlag, auto
 from logging import DEBUG, NullHandler, getLogger
 from typing import Any, ClassVar
 
+from core.serial import encoding
+
 
 class Button(IntFlag):
     Y = auto()
@@ -159,41 +161,23 @@ class SendFormat:
         self.Hat_pos = Hat.CENTER
 
     def convert2str(self) -> str:
-        str_format = ""
-        str_L = ""
-        str_R = ""
-        str_Hat = ""
-        space = " "
-
-        # set bits array with stick flags
-        send_btn = int(self.format["btn"]) << 2
-        # send_btn |= 0x3
-        if self.L_stick_changed:
-            send_btn |= 0x2
-            str_L = (
-                format(self.format["lx"], "x") + space + format(self.format["ly"], "x")
-            )
-        if self.R_stick_changed:
-            send_btn |= 0x1
-            str_R = (
-                format(self.format["rx"], "x") + space + format(self.format["ry"], "x")
-            )
-        # if self.Hat_changed:
-        str_Hat = str(int(self.format["hat"]))
-        # format(send_btn, 'x') + \
-        # print(hex(send_btn))
-        str_format = (
-            format(send_btn, "#06x")
-            + (space + str_Hat)
-            + (space + str_L if self.L_stick_changed else "")
-            + (space + str_R if self.R_stick_changed else "")
+        # 行の組み立ては encoding.format_legacy_row へ寄せる。
+        # Sender._buildRow も同じ関数を通すので、両者が食い違う余地が無い。
+        row = encoding.format_legacy_row(
+            self.format["btn"],
+            self.format["hat"],
+            self.format["lx"],
+            self.format["ly"],
+            self.format["rx"],
+            self.format["ry"],
+            self.L_stick_changed,
+            self.R_stick_changed,
         )
 
         self.L_stick_changed = False
         self.R_stick_changed = False
 
-        # print(str_format)
-        return str_format  # the last space is not needed
+        return row
 
 
 # This class handle L stick and R stick at any angles
@@ -244,7 +228,9 @@ class Direction:
             self.x = angle[0]
             self.y = angle[1]
             self.showName = "(" + str(self.x) + ", " + str(self.y) + ")"
-            print("押し込み量", self.showName)
+            # GUI（print）には出さない。座標指定のたびに出るとログ欄が埋まる。
+            # ファイル側にだけ残す。
+            self._logger.debug(f"押し込み量 {self.showName}")
         else:
             angle = math.radians(angle) if isDegree else angle
 

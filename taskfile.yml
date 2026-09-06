@@ -14,22 +14,32 @@ tasks:
   lint:
     desc: ruffによる静的検査
     cmds:
-      - uv run --frozen ruff check {{.CLI_ARGS}} SerialController tools
+      - uv run --frozen ruff check {{.CLI_ARGS}} SerialController tools tests
 
   format:
     desc: ruffによる整形
     cmds:
-      - uv run --frozen ruff format {{.CLI_ARGS}} SerialController tools
+      - uv run --frozen ruff format {{.CLI_ARGS}} SerialController tools tests
 
   typecheck:
     desc: mypyによる型検査
     cmds:
-      - uv run --frozen mypy SerialController tools
+      - uv run --frozen mypy SerialController tools tests
 
   bounds:
     desc: core/ の境界検査（GUI・アプリ層依存の混入防止）
     cmds:
       - uv run --frozen python tools/check_core.py
+
+  userapi:
+    desc: 利用者スクリプトの公開API面検査（凍結経路外のimport防止）
+    cmds:
+      - uv run --frozen python tools/check_user_api.py
+
+  test:
+    desc: pytestによる単体検査（実機不要分）
+    cmds:
+      - uv run --frozen pytest tests -q
 
   check:
     desc: 検査＋整形＋型検査＋境界検査（修正モード）
@@ -40,9 +50,11 @@ tasks:
       - task: format
       - task: typecheck
       - task: bounds
+      - task: userapi
+      - task: test
 
   ci:
-    desc: 検査＋整形確認＋型検査＋境界検査（修正なし・CI用）
+    desc: 検査＋整形確認＋型検査＋境界検査＋公開API面＋単体検査（修正なし・CI用）
     cmds:
       - task: lint
       - task: format
@@ -50,6 +62,8 @@ tasks:
           CLI_ARGS: --check
       - task: typecheck
       - task: bounds
+      - task: userapi
+      - task: test
 
   app:
     desc: 本体を起動する（PROFILE変数でプロファイル指定、例: task app PROFILE=switch1）

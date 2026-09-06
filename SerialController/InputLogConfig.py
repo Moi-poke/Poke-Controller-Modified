@@ -19,7 +19,7 @@ import tkinter.ttk as ttk
 from collections.abc import Callable
 from typing import Any
 
-import InputLog
+from core import InputLog
 from loguru import logger
 
 # 対象イベントのチェックボックス。(内部名, 画面に出す名前)
