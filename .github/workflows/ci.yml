@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  ci:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+      - name: Sync deps
+        run: uv sync --frozen
+      - name: ruff check
+        run: uv run --frozen ruff check SerialController tools tests
+      - name: ruff format check
+        run: uv run --frozen ruff format --check SerialController tools tests
+      - name: mypy
+        run: uv run --frozen mypy SerialController tools tests
+      - name: bounds
+        run: uv run --frozen python tools/check_core.py
+      - name: userapi
+        run: uv run --frozen python tools/check_user_api.py
+      - name: pytest
+        run: uv run --frozen pytest tests -q

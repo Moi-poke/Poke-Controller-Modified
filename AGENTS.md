@@ -15,7 +15,7 @@ python .\SerialController\Window.py
 - Task runner: `task <name>` (needs `winget install Task.Task` once + `task setup_dev` for hooks). Without it, run the `uv run ...` lines inside `taskfile.yml` directly. Tasks: `sync` / `lint` / `format` / `typecheck` / `bounds` / `userapi` / `test` / `check` (fix mode) / `ci` (no-touch mode) / `app` / `launcher` / `clean`.
 - Gate: `ruff check` + `ruff format --check` + `mypy` + `bounds` + `userapi` + `test` must all pass (`task ci`). The tree is fully typed; don't add new type errors. tkinter/`cv2` stub friction is handled with `Any`-boundaries and a few commented `type: ignore`s — prefer those over restructuring.
 - Multi-instance: `python .\SerialController\launcher.py` (profile picker) or `python .\SerialController\Window.py --profile <name> [--transport <name>]`. Each profile gets `SerialController/settings.<name>.ini` (auto-created with defaults) and a `pokecon[.profile].lock` file — never commit/remove locks manually.
-- No tests, no CI. Verify with the gate above + `python -m py_compile <file>` and, if possible, a real GUI run. Full verification needs hardware (COM-port microcontroller + capture board), so most changes can't be exercised headless — say so in the summary.
+- Tests in `tests/` run via `task test`; CI (`.github/workflows/ci.yml`) runs `task ci` equivalent. Verify with the gate above + `python -m py_compile <file>` and, if possible, a real GUI run. Full verification needs hardware (COM-port microcontroller + capture board), so most changes can't be exercised headless — say so in the summary.
 
 ## Architecture (`SerialController/` is the app; details in `docs/ARCHITECTURE.md`)
 

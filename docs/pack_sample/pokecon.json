@@ -1,0 +1,9 @@
+{
+  "name": "my-pack",
+  "version": "1.0.0",
+  "author": "alice",
+  "description": "配布サンプル",
+  "entry": "MyPack.py",
+  "minAppVersion": "4.0.0",
+  "templates": ["my-pack/a.png"]
+}

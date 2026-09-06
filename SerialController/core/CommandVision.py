@@ -97,7 +97,8 @@ def _imread_or_raise(template_path: str, flags: int) -> np.ndarray:
             reason = "ファイルがありません"
             hint = (
                 f"画像を {TEMPLATE_PATH} からの相対で置いてください "
-                f"（例: {path.join(TEMPLATE_PATH, 'shiny_mark.png')}）"
+                f"（例: {path.join(TEMPLATE_PATH, 'my-pack', 'a.png')}）。"
+                "配布物は `Template/<パッケージ名>/` に置く規約です"
             )
         else:
             reason = "ファイルはありますが画像として読めません（破損・形式違い）"

@@ -2,6 +2,7 @@ import tkinter as tk
 from typing import Any
 
 import DiscordNotify
+import WindowUtils
 from InputLogConfig import InputLogConfig
 from KeyConfig import PokeKeycon
 from SerialMonitor import SerialMonitor
@@ -93,6 +94,12 @@ class PokeController_Menubar(tk.Menu):
             "command",
             command=self.open_discord_notify_setting,
             label="Discord通知の設定",
+        )
+        self.menu_command.add(
+            "command", command=self.OpenScriptInstall, label="スクリプトの導入..."
+        )
+        self.menu_command.add(
+            "command", command=self.OpenScriptUninstall, label="スクリプトの削除..."
         )
 
     @staticmethod
@@ -256,6 +263,28 @@ class PokeController_Menubar(tk.Menu):
     def open_discord_notify_setting(self) -> None:
         webhook = DiscordNotify.Discord_Notify()
         DiscordNotify.WebhookGUI(self.root, webhook=webhook)
+
+    def OpenScriptInstall(self) -> None:
+        """配布zipを選んで導入する。実手順は ui.script_pack_dialogs。"""
+        from ui import script_pack_dialogs
+
+        script_pack_dialogs.install_script_zip(
+            self.root,
+            WindowUtils.APP_DIR,
+            is_busy=lambda: self.app.runner.is_busy(),
+            reload_commands=self.app.reloadCommands,
+        )
+
+    def OpenScriptUninstall(self) -> None:
+        """導入済みを選んで削除する。実手順は ui.script_pack_dialogs。"""
+        from ui import script_pack_dialogs
+
+        script_pack_dialogs.uninstall_script_dialog(
+            self.root,
+            WindowUtils.APP_DIR,
+            is_busy=lambda: self.app.runner.is_busy(),
+            reload_commands=self.app.reloadCommands,
+        )
 
     def exit(self) -> None:
         # 終了処理は Window.exit() に一本化する

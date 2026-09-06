@@ -1,0 +1,1 @@
+ここに a.png を置く（バイナリはリポジトリに入れない。配置例: Template/my-pack/a.png）。
