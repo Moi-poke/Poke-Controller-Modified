@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """encoding.py - 送信行の組み立て（純関数のみ）。
 
-legacy の可変長行と Pico の full-state S 行・Q 行の書式を1箇所に置く。
+legacy の可変長行と Pico の full-state S 行の書式を1箇所に置く。
 以前は Keys.SendFormat.convert2str と Sender._buildRow に同じ書式が
 二重に書かれており、1文字違うだけで実機の誤動作になる形だった。
 どちらもここを通すので、書式はここだけ見ればよい。
@@ -101,17 +101,6 @@ def encode_pico_state(snap: dict[str, Any]) -> str:
         format(pico_field(snap, key), "x")
         for key in ("btn", "hat", "lx", "ly", "rx", "ry")
     )
-
-
-def encode_queued_state(snap: dict[str, Any], tick: int, dur: int) -> str:
-    """snapshot から Q 行を組む（純関数・副作用なし）。
-
-    書式は Pico ファームのキュー行の解釈と対である。S 行の先頭へ
-    tick と dur を足しただけなので、encode_pico_state と同じ並びを
-    そのまま使う。書式の解釈を 2 か所に分けない。
-    """
-    body = encode_pico_state(snap)
-    return "Q %04x %04x %s" % (tick & 0xFFFF, dur & 0xFFFF, body[2:])
 
 
 def verify_pico_encoder() -> bool:

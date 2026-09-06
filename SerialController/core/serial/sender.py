@@ -232,8 +232,6 @@ class Sender:
                 self._logger.warning(msg)
             if self._liveCapable():
                 self.startLiveWorker(self.transport)
-            # 運び先が変わるので、キュー対応の記憶は捨てる。
-            self._forgetQueueSupport()
             return self._input_log_linked
 
     def getTransportName(self) -> str:
@@ -421,9 +419,6 @@ class Sender:
         opened = self.transport.open(portNum, portName, baudrate, **extra)
         if opened and self._liveCapable():
             self.startLiveWorker()
-        if opened:
-            # 相手が変わるので、キュー対応の記憶は捨てる。
-            self._forgetQueueSupport()
         return opened
 
     def closeSerial(self) -> None:
@@ -1453,15 +1448,6 @@ class Sender:
     CLOSE_DRAIN_S = 0.05
     # 切断時に worker の停止を待つ上限。閉じられない状態を作らない。
     CLOSE_JOIN_S = 0.30
-    # この長さ未満の press は Pico の時刻付きキューへ回す。
-    #   8 ms 未満の押下は mailbox の構造により
-    #   線に出ない回がある。mailbox は容量 1 で上書きするため、
-    #   worker が見に来る前に押して離すと押下が解放に上書きされる。
-    #   周期の乱れではなく設計の帰結なので、PC 側では解けない。
-    #   0 にすればこの経路を使わなくなる（実質の無効化）。
-    QUEUE_THRESHOLD_S = 0.008
-    # キューの実行が終わるのを待つ上限。押下の長さ＋往復の余裕。
-    QUEUE_WAIT_MARGIN_S = 0.5
 
     def _ensureLiveState(self) -> None:
         """live 経路の mailbox、worker 状態、統計、表示状態を初期化する。"""
@@ -1692,186 +1678,6 @@ class Sender:
         )
         self._live_thread = thread
         thread.start()
-        return True
-
-    def queueThreshold(self) -> float:
-        """短い press をキューへ回す境目（秒）を返す。
-
-        判断の場所を 1 つに保つ。呼び出し側が定数を直接読むと、
-        将来この条件へ何かを足したときに片方だけ直す事故が起きる。
-        """
-        return float(getattr(self, "QUEUE_THRESHOLD_S", 0.0))
-
-    def shouldQueue(self, duration: float) -> bool:
-        """この press を Pico のキューへ回すべきかを返す。
-
-        条件は 3 つある。閾値より短いこと、live 経路であること、
-        キュー対応が否定されていないこと。
-        legacy（Leonardo）にはキューが無いので、必ず False になる。
-        閾値が 0 ならこの経路を使わない（実質の無効化）。
-        live 経路でも、Q 応答が無い相手（wakecon など）だと分かれば
-        使わない。送りっぱなしでは非対応を見分けられず、押下が黙って
-        消えるためである（対応の有無は runQueued が1度だけ確かめる）。
-        """
-        if self._queueKnownUnsupported():
-            return False
-        limit = self.queueThreshold()
-        if limit <= 0:
-            return False
-        try:
-            if float(duration) >= limit:
-                return False
-        except (TypeError, ValueError):
-            return False
-        return self._liveCapable()
-
-    def _queueKnownUnsupported(self) -> bool:
-        """キュー非対応と確定済みか（読むだけ）。"""
-        return bool(getattr(self, "_queue_unsupported", False))
-
-    def _noteQueueSupported(self, supported: bool) -> None:
-        """キュー対応の有無を覚える。非対応と分かれば以後 Q へ回さない。
-
-        対応は QOK で確定する。満杯（QFULL）は対応の証拠なので、
-        非対応にはしない（混んでいるだけで、従来経路へ落とす）。
-        無応答・書式違い（ERR）は非対応とみなす。
-        繋ぎ直し・通信方式の切替えでは _forgetQueueSupport で消す。
-        """
-        if supported:
-            self._queue_unsupported = False
-        else:
-            self._queue_unsupported = True
-
-    def _forgetQueueSupport(self) -> None:
-        """キュー対応の記憶を消す。相手が変わる場面で呼ぶ。"""
-        self._queue_unsupported = False
-
-    def runQueued(
-        self, duration: float, buttons: Any = None, source: str | None = None
-    ) -> bool:
-        """押下を、Pico のキューで duration だけ実行する。
-
-        押して待って離すのを PC 側で行わず、Pico に時刻と長さを渡す。
-        mailbox を通らないので、8 ms 未満でも押下が消えない。
-
-        buttons を受け取る形にしてある。呼び出し側が事前に姿勢を作ると、
-          Q 行と S 行の両方で押す形になり、S 行は mailbox を通るため
-          消えうる。消えない経路を作る意味がなくなるので、ここで
-          buttons を受け取れば呼び出し側は姿勢を作らなくてよい。
-
-        受理されたら True を返す。False のときは呼び出し側が従来の
-        経路へ落とす。キューが満杯・実行中・応答が来ないといった
-        場面で操作そのものが消えるのは最悪だからである。
-
-        UART への書き出しは錠の外で行う。錠の中で線を待つと、その間
-        姿勢の読み取りまで止まる。写しと行文は錠の中で作り、送るのは
-        外で行う。Q の前に mailbox の古い S を破棄する。さもないと
-        Q より古い状態が後から送出され、押下が一瞬戻る。
-        なお実行中の S ワーカーまでは止めない。Q の実行と S の送出の
-        調停は Pico 側が行う前提であり、PC が待つのは次の操作と
-        混ざらないためだけである。
-
-        N は送らない。N は Pico 側で全体を中立に戻すため、hold
-        で押しっぱなしにしている姿勢まで解除され、短い press のたびに
-        hold が途切れる。Q 行自体が完全な姿勢を持つので N は不要である。
-
-        Q と R は応答で確かめる。Q には QOK、R には QRUN を期待する。
-        送りっぱなしでは、キューを持たない相手（wakecon など）でも
-        送れたことになり、押下が黙って消える。QFULL（混雑）は対応の
-        証拠なので非対応にせず、従来経路へ落とすだけにする。
-        無応答・ERR は非対応と覚え、以後 Q へ回さない。
-        R が通らなかったときは、積んだ Q が次回の R で誤爆しないよう
-        N で流す。N はキューを空にする最後の砦である。
-        """
-        transport = self.transport
-        if transport is None or not self._liveCapable():
-            return False
-
-        # いまの姿勢を土台にし、押すボタンだけを足す。
-        #   hold で押しっぱなしのものを土台が持っているので、
-        #   キュー経由でも hold が維持される。
-        snap = self.snapshot()
-        if buttons is not None:
-            bits = int(snap["btn"])
-            for btn in buttons if isinstance(buttons, (list, tuple)) else [buttons]:
-                try:
-                    bits |= int(btn)
-                except (TypeError, ValueError):
-                    return False  # 解釈できない値は従来経路へ落とす
-            snap = dict(snap)
-            snap["btn"] = bits
-
-        try:
-            ms = max(1, int(round(float(duration) * 1000.0)))
-        except (TypeError, ValueError):
-            return False
-        line = self.encodeQueuedState(snap, tick=0, dur=ms)
-        try:
-            self.discardLive()
-            answered = self._runQueueExchange(transport, line)
-            if not answered:
-                return False
-            return self._waitQueueDone(transport, duration)
-        except Exception:
-            # 送れなかった理由は問わない。呼び出し側が従来経路へ落とす。
-            return False
-
-    def _runQueueExchange(self, transport: Any, line: str) -> bool:
-        """Q と R を応答付きで送る。実行まで漕ぎ着けたら True。
-
-        Q には QOK を期待する。QFULL は混雑（対応はしている）なので
-        非対応にはせず False で従来経路へ落とす。無応答・ERR は非対応
-        と覚える。R には QRUN を期待し、通らなければ積んだ Q を N で
-        流してから False を返す。
-        """
-        from core.WakeLink import expect
-
-        first = expect(transport, line, ("QOK", "QFULL", "ERR", "BUSY"), timeout=0.5)
-        if first is None or first.startswith("ERR"):
-            # 無応答・書式違いはキュー非対応。以後は Q へ回さない。
-            self._noteQueueSupported(False)
-            return False
-        if not first.startswith("QOK"):
-            # QFULL / BUSY: 対応はしているが今は混んでいる。
-            return False
-        self._noteQueueSupported(True)
-        second = expect(transport, "R", ("QRUN", "QEMPTY", "ERR", "BUSY"), timeout=0.5)
-        if second is not None and second.startswith("QRUN"):
-            return True
-        # R が通らないと、積んだ Q が次回の R で誤爆する。N で流す。
-        #   応答は待たない。pico-wakeCon に N は無く、待つと 0.5 秒だけ
-        #   止まる。応答のある旧ファームの OK 行は、次の expect / query
-        #   が読み始めに捨てる（drain）ため、残しても害は無い。
-        self._sendQueueLine(transport, "N")
-        return False
-
-    @staticmethod
-    def encodeQueuedState(snap: dict[str, Any], tick: int, dur: int) -> str:
-        """snapshot から Q 行を組む。実体は encoding が持つ。"""
-        return encoding.encode_queued_state(snap, tick=tick, dur=dur)
-
-    def _sendQueueLine(self, transport: Any, line: str) -> bool:
-        """Q 行や R 行を 1 本送る。送れたら True。
-
-        後方互換のため残す。runQueued は応答付きの _runQueueExchange を
-        使う。送りっぱなしでは非対応を見分けられないため、新規には
-        こちらの使用を推奨しない。
-        """
-        writer = getattr(transport, "send_row", None)
-        if not callable(writer):
-            return False
-        writer(line, measure_perf=False)
-        return True
-
-    def _waitQueueDone(self, transport: Any, duration: float) -> bool:
-        """実行が終わるまで待つ。
-
-        R まで通った後の待ちである。Pico は自分の時計で実行するので、
-        PC が待たなくても押下は正しく行われる。
-        PC が待つのは「次の操作と混ざらないため」だけである。
-        対象は 8 ms 未満なので、待っても実害が無い。
-        """
-        time.sleep(float(duration))
         return True
 
     def discardLive(self) -> bool:

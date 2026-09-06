@@ -1,6 +1,9 @@
-"""WakeSetup.py - Switch2 wake の初期設定をする小窓。
+"""WakeSetup.py - Switch2 wake の初期設定とwakecon操作をする小窓。
 
-wakecon へ C（取込）/ L（一覧）/ B（再生）を送り、応答を読む。
+wakecon へ C（取込）/ L（一覧）/ B（再生）/ P（疎通）/ ?（状態）/
+W（有線無線の表示切替）/ D・M（表示切替）/ X（破棄）/ K（鍵削除）を送り、
+応答を読む。S・N は操作系（Controller/Keyboard）で、O（色）は
+コマンド一覧の「プロコンの色を変える」で扱うためここには置かない。
 読み書きは作業スレッドで行い、画面の更新だけ after() で戻す。
 GUI スレッドで線を待たない。
 
@@ -12,6 +15,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
+import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
 from typing import Any
 
@@ -63,6 +67,33 @@ class WakeSetup:
         self._btn_status.pack(side=tk.LEFT, padx=2)
         self._btn_wake = ttk.Button(row2, text="起こす", command=self._on_wake)
         self._btn_wake.pack(side=tk.LEFT, padx=2)
+        self._btn_ping = ttk.Button(row2, text="疎通(P)", command=self._on_ping)
+        self._btn_ping.pack(side=tk.LEFT, padx=2)
+
+        row3 = ttk.Frame(body)
+        row3.pack(fill=tk.X, pady=2)
+        self._btn_winfo = ttk.Button(row3, text="W表示", command=self._on_wireless_info)
+        self._btn_winfo.pack(side=tk.LEFT, padx=2)
+        self._btn_w0 = ttk.Button(row3, text="W0無線", command=self._on_wireless_off)
+        self._btn_w0.pack(side=tk.LEFT, padx=2)
+        self._btn_w1 = ttk.Button(row3, text="W1有線", command=self._on_wireless_on)
+        self._btn_w1.pack(side=tk.LEFT, padx=2)
+        self._btn_hci = ttk.Button(row3, text="D表示切替", command=self._on_display_hci)
+        self._btn_hci.pack(side=tk.LEFT, padx=2)
+        self._btn_mon = ttk.Button(
+            row3, text="M表示切替", command=self._on_display_monitor
+        )
+        self._btn_mon.pack(side=tk.LEFT, padx=2)
+
+        row4 = ttk.Frame(body)
+        row4.pack(fill=tk.X, pady=2)
+        self._btn_clear = ttk.Button(row4, text="X破棄", command=self._on_clear)
+        self._btn_clear.pack(side=tk.LEFT, padx=2)
+        self._btn_keys = ttk.Button(row4, text="K鍵削除", command=self._on_delete_keys)
+        self._btn_keys.pack(side=tk.LEFT, padx=2)
+        ttk.Label(
+            row4, text="色変更はコマンド一覧の「プロコンの色を変える」から (O行)"
+        ).pack(side=tk.LEFT, padx=8)
 
         self._log = tk.Text(body, height=14, width=72, state=tk.DISABLED)
         self._log.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
@@ -86,7 +117,20 @@ class WakeSetup:
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         state = tk.DISABLED if busy else tk.NORMAL
-        for btn in (self._btn_cap, self._btn_list, self._btn_status, self._btn_wake):
+        for btn in (
+            self._btn_cap,
+            self._btn_list,
+            self._btn_status,
+            self._btn_wake,
+            self._btn_ping,
+            self._btn_winfo,
+            self._btn_w0,
+            self._btn_w1,
+            self._btn_hci,
+            self._btn_mon,
+            self._btn_clear,
+            self._btn_keys,
+        ):
             btn.configure(state=state)
 
     def _append(self, text: str) -> None:
@@ -182,7 +226,9 @@ class WakeSetup:
             transport = self._transport()
             if transport is None:
                 return
-            found = query(transport, "?", ("st ", "saved ", "color "), timeout=3.0)
+            found = query(
+                transport, "?", ("st ", "saved ", "color ", "usb "), timeout=3.0
+            )
             if not found:
                 self._queue.put(("log", "応答がありません。"))
             for text in found:
@@ -202,5 +248,131 @@ class WakeSetup:
             for text in read_lines(transport, 4.0):
                 if text.startswith("BCN"):
                     self._queue.put(("log", text))
+
+        self._run(job)
+
+    def _on_ping(self) -> None:
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            found = query(transport, "P", ("PONG",), timeout=2.0)
+            self._queue.put(("log", "PONG: 疎通OK" if found else "応答がありません。"))
+
+        self._run(job)
+
+    def _on_wireless_info(self) -> None:
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            found = query(transport, "W", ("usb ",), timeout=2.0)
+            if not found:
+                self._queue.put(("log", "応答がありません。"))
+            for text in found:
+                self._queue.put(("log", text))
+
+        self._run(job)
+
+    def _on_wireless_off(self) -> None:
+        if tkmsg.askquestion("確認", "W 0: 無線に戻します。続けますか?") != "yes":
+            return
+
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            found = query(transport, "W 0", ("usb ",), timeout=3.0)
+            if not found:
+                self._queue.put(("log", "応答がありません。"))
+            for text in found:
+                self._queue.put(("log", text))
+
+        self._run(job)
+
+    def _on_wireless_on(self) -> None:
+        if (
+            tkmsg.askquestion(
+                "確認", "W 1: 有線(USB直結・BT停止) に切り替えます。続けますか?"
+            )
+            != "yes"
+        ):
+            return
+
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            found = query(transport, "W 1", ("usb ",), timeout=3.0)
+            if not found:
+                self._queue.put(("log", "応答がありません。"))
+            for text in found:
+                self._queue.put(("log", text))
+
+        self._run(job)
+
+    def _on_display_hci(self) -> None:
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            found = query(transport, "D", ("hci verbose ",), timeout=2.0)
+            if not found:
+                self._queue.put(("log", "応答がありません。"))
+            for text in found:
+                self._queue.put(("log", text))
+
+        self._run(job)
+
+    def _on_display_monitor(self) -> None:
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            found = query(transport, "M", ("monitor ",), timeout=2.0)
+            if not found:
+                self._queue.put(("log", "応答がありません。"))
+            for text in found:
+                self._queue.put(("log", text))
+
+        self._run(job)
+
+    def _on_clear(self) -> None:
+        if tkmsg.askquestion("確認", "取込一覧と保存を破棄しますか?") != "yes":
+            return
+
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            # 成功時は無応答。実行中のみ "X ERR BUSY" が返る。
+            found = query(transport, "X", ("X ERR",), timeout=2.0)
+            if found:
+                for text in found:
+                    self._queue.put(("log", text))
+            else:
+                self._queue.put(("log", "破棄しました (応答なしは正常)。"))
+
+        self._run(job)
+
+    def _on_delete_keys(self) -> None:
+        if (
+            tkmsg.askquestion(
+                "確認",
+                "Pico側リンク鍵を全削除します(Switch側の登録解除も必要)。続けますか?",
+            )
+            != "yes"
+        ):
+            return
+
+        def job() -> None:
+            transport = self._transport()
+            if transport is None:
+                return
+            found = query(transport, "K", ("link keys deleted",), timeout=3.0)
+            if not found:
+                self._queue.put(("log", "応答がありません。"))
+            for text in found:
+                self._queue.put(("log", text))
 
         self._run(job)

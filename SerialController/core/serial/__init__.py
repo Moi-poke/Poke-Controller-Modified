@@ -17,7 +17,6 @@ from core.serial.arbitration import (
 )
 from core.serial.encoding import (
     encode_pico_state as encode_pico_state,
-    encode_queued_state as encode_queued_state,
     format_legacy_row as format_legacy_row,
     pico_field as pico_field,
     verify_pico_encoder as verify_pico_encoder,

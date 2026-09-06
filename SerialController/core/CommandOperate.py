@@ -68,50 +68,11 @@ class OperateMixin:
     # press button at duration times(s)
     def press(self, buttons: Any, duration: float = 0.1, wait: float = 0.1) -> None:
         self._gate()
-        # 短い押下だけ Pico の時刻付きキューに任せる。
-        #   受け渡し場所は容量1で上書きされるため、作業側が見に来る前に押して
-        #   離すと押下が解放に上書きされて消えることがある。短すぎる押下は
-        #   線に出ないことがある。
-        #   受理されなければ従来経路で送るので、操作は消えない。
-        if self._pressQueued(buttons, duration):
-            self.wait(wait)
-            self.checkIfAlive()
-            return
         self.keys.input(buttons)
         self.wait(duration)
         self.keys.inputEnd(buttons)
         self.wait(wait)
         self.checkIfAlive()
-
-    def _pressQueued(self, buttons: Any, duration: float) -> bool:
-        """短い押下を Pico の時刻付きキューへ回す。回せたら True。
-
-        ここでは「回せたか」だけを返す。待ちと生存確認は呼び出し側が
-        従来どおり行うので、成功しても失敗しても press の見た目は変わらない。
-        Leonardo（legacy）では shouldQueue が False を返すため、
-        この関数は必ず False になり、従来の経路がそのまま通る。
-        """
-        keys = getattr(self, "keys", None)
-        ser = getattr(keys, "ser", None) if keys is not None else None
-        if ser is None:
-            return False
-        decide = getattr(ser, "shouldQueue", None)
-        run = getattr(ser, "runQueued", None)
-        if not callable(decide) or not callable(run):
-            return False  # 古い Sender でもそのまま動く
-        try:
-            if not decide(duration):
-                return False
-            # keys.input は呼ばない。
-            #   keys.input は受け渡し場所へも申告するので、作業側が
-            #     S 行を送ってしまう。つまり Q 行と S 行の両方で
-            #     押すことになり、二重に送っていた。
-            #   buttons を runQueued へ直接渡す。姿勢の土台は
-            #     Sender が snapshot で持つので hold も維持される。
-            return bool(run(duration, buttons=buttons))
-        except Exception:
-            # 理由は問わず、従来経路へ落とすのが最も安全である。
-            return False
 
     # press button at duration times(s) repeatedly
     def pressRep(
