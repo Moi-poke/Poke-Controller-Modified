@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Blocklyエディタ</title>
+<script src="./blockly_compressed.js"></script>
+<script src="./blocks_compressed.js"></script>
+<script src="./python_compressed.js"></script>
+<script src="./msg/ja.js"></script>
+<script src="./pokecon_blocks.js"></script>
+<style>
+html, body { height: 100%; margin: 0; }
+#bar { padding: 8px; display: flex; gap: 8px; align-items: center; }
+#ws { height: calc(100% - 48px); width: 100%; }
+#status { color: #333; }
+</style>
+</head>
+<body>
+<div id="bar">
+<label>保存名 <input id="stem" value="MyBlock"></label>
+<button id="save">保存</button>
+<span id="status"></span>
+</div>
+<div id="bar2" style="padding: 0 8px 8px; display: flex; gap: 8px; align-items: center;">
+<label>保存済み <select id="files"></select></label>
+<button id="open">開く</button>
+<button id="del">削除</button>
+</div>
+<div id="ws"></div>
+<script>
+(function () {
+  'use strict';
+  // 生成器は Blockly.Python に付く（pythonGenerator 大域は無い）。
+  var pythonGenerator =
+    (typeof Blockly !== 'undefined' && Blockly.Python) || null;
+  var ws = Blockly.inject('ws', {
+    toolbox: {
+      kind: 'categoryToolbox',
+      contents: [
+        {
+          kind: 'category', name: 'PokeCon',
+          contents: [
+            { kind: 'block', type: 'pokecon_program' },
+            { kind: 'block', type: 'pokecon_press' },
+            { kind: 'block', type: 'pokecon_wait' },
+          ],
+        },
+        {
+          kind: 'category', name: '標準',
+          contents: [
+            { kind: 'block', type: 'controls_repeat' },
+            { kind: 'block', type: 'controls_if' },
+            { kind: 'block', type: 'math_number' },
+          ],
+        },
+      ],
+    },
+  });
+  function setStatus(s, isErr) {
+    var el = document.getElementById('status');
+    el.textContent = s;
+    el.style.color = isErr ? '#c00' : '#333';
+    el.style.fontWeight = isErr ? 'bold' : 'normal';
+  }
+  function refreshFiles(keep) {
+    fetch('./list').then(function (r) { return r.json(); }).then(function (j) {
+      var sel = document.getElementById('files');
+      sel.textContent = '';
+      (j.stems || []).forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      if (keep) { sel.value = keep; }
+    }).catch(function (e) { setStatus('一覧を読めません: ' + e, true); });
+  }
+  document.getElementById('save').addEventListener('click', function () {
+    if (!pythonGenerator) {
+      setStatus('生成器がありません（python_compressed.js の読込を確認してください）', true);
+      return;
+    }
+    var hasProgram = ws.getTopBlocks(false).some(function (b) { return b.type === 'pokecon_program'; });
+    if (!hasProgram) {
+      setStatus('「プログラム」ブロックを置き、その中に操作を並べてください（単体では保存できません）', true);
+      return;
+    }
+    var stem = document.getElementById('stem').value;
+    var state = Blockly.serialization.workspaces.save(ws);
+    var code = pythonGenerator.workspaceToCode(ws);
+    fetch('./save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stem: stem, workspaceJson: JSON.stringify(state), pythonCode: code }),
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      setStatus(j.message || (j.ok ? '保存しました' : '保存できません'), !j.ok);
+      if (j.ok) { refreshFiles(stem); }
+    }).catch(function (e) { setStatus('保存できません: ' + e, true); });
+  });
+  document.getElementById('open').addEventListener('click', function () {
+    var sel = document.getElementById('files');
+    var stem = sel.value;
+    if (!stem) { setStatus('開くものを選んでください', true); return; }
+    if (ws.getAllBlocks(false).length > 0 &&
+        !window.confirm('編集中の内容を捨てて「' + stem + '」を開きますか？')) {
+      return;
+    }
+    fetch('./load?stem=' + encodeURIComponent(stem)).then(function (r) {
+      return r.json();
+    }).then(function (j) {
+      if (!j.ok) { setStatus(j.message || '開けません', true); return; }
+      ws.clear();
+      Blockly.serialization.workspaces.load(JSON.parse(j.workspaceJson), ws);
+      document.getElementById('stem').value = j.stem || stem;
+      setStatus('開きました: ' + stem, false);
+    }).catch(function (e) { setStatus('開けません: ' + e, true); });
+  });
+  document.getElementById('del').addEventListener('click', function () {
+    var sel = document.getElementById('files');
+    var stem = sel.value;
+    if (!stem) { setStatus('消すものを選んでください', true); return; }
+    if (!window.confirm('「' + stem + '」を削除しますか？（.py と編集データの対を消します）')) {
+      return;
+    }
+    fetch('./delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stem: stem }),
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      setStatus(j.message || (j.ok ? '削除しました' : '削除できません'), !j.ok);
+      refreshFiles();
+    }).catch(function (e) { setStatus('削除できません: ' + e, true); });
+  });
+  refreshFiles();
+})();
+</script>
+</body>
+</html>

@@ -101,6 +101,9 @@ class PokeController_Menubar(tk.Menu):
         self.menu_command.add(
             "command", command=self.OpenScriptUninstall, label="スクリプトの削除..."
         )
+        self.menu_command.add(
+            "command", command=self.OpenBlocklyEditor, label="Blocklyエディタ..."
+        )
 
     @staticmethod
     def _alive(window: Any) -> bool:
@@ -204,6 +207,12 @@ class PokeController_Menubar(tk.Menu):
         開きっぱなしのまま root.destroy() へ進むと、破棄途中の
         ウィジェットを after 予約が触って TclError になる。
         """
+        try:
+            from ui import blockly_editor
+
+            blockly_editor.stop_blockly_editor()
+        except Exception:
+            pass
         for name in ("wake_setup", "key_config", "poke_treeview", "input_log_config"):
             window = getattr(self, name, None)
             if window is None:
@@ -282,6 +291,16 @@ class PokeController_Menubar(tk.Menu):
         script_pack_dialogs.uninstall_script_dialog(
             self.root,
             WindowUtils.APP_DIR,
+            is_busy=lambda: self.app.runner.is_busy(),
+            reload_commands=self.app.reloadCommands,
+        )
+
+    def OpenBlocklyEditor(self) -> None:
+        """Blocklyエディタを開く。実手順は ui.blockly_editor。"""
+        from ui import blockly_editor
+
+        blockly_editor.open_blockly_editor(
+            self.root,
             is_busy=lambda: self.app.runner.is_busy(),
             reload_commands=self.app.reloadCommands,
         )
