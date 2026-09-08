@@ -25,6 +25,8 @@ html, body { height: 100%; margin: 0; }
 <label>保存済み <select id="files"></select></label>
 <button id="open">開く</button>
 <button id="del">削除</button>
+<label>画像 <select id="tpllist"></select></label>
+<button id="tplapply">選択中へ反映</button>
 </div>
 <div id="ws"></div>
 <script>
@@ -43,6 +45,17 @@ html, body { height: 100%; margin: 0; }
             { kind: 'block', type: 'pokecon_program' },
             { kind: 'block', type: 'pokecon_press' },
             { kind: 'block', type: 'pokecon_wait' },
+          ],
+        },
+        {
+          kind: 'category', name: '画像認識',
+          contents: [
+            { kind: 'block', type: 'pokecon_vision_contains' },
+            { kind: 'block', type: 'pokecon_vision_wait_appear' },
+            { kind: 'block', type: 'pokecon_vision_wait_gone' },
+            { kind: 'block', type: 'pokecon_vision_position' },
+            { kind: 'block', type: 'pokecon_vision_wait_stable' },
+            { kind: 'block', type: 'pokecon_vision_color' },
           ],
         },
         {
@@ -75,6 +88,51 @@ html, body { height: 100%; margin: 0; }
       if (keep) { sel.value = keep; }
     }).catch(function (e) { setStatus('一覧を読めません: ' + e, true); });
   }
+  function refreshTemplates() {
+    fetch('./templates').then(function (r) { return r.json(); }).then(function (j) {
+      var sel = document.getElementById('tpllist');
+      sel.textContent = '';
+      (j.templates || []).forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+    }).catch(function () { /* 候補なしでも保存はできる */ });
+  }
+  // ボタン押下でDOMフォーカスがBlockly外へ移るとFocusManagerが選択を外すため、
+  // click時点の getSelected() は空になる。SELECTEDイベントでテンプレ欄つき
+  // ブロックを覚えておき、空のときの fallback に使う（解除時は保持、
+  // テンプレ欄なしへの切替時は破棄）。
+  var lastTplBlockId = null;
+  var SELECTED_TYPE =
+    (Blockly.Events && Blockly.Events.SELECTED) || 'selected';
+  ws.addChangeListener(function (e) {
+    if (!e || e.type !== SELECTED_TYPE) { return; }
+    var id = e.newElementId || null;
+    var b = id ? ws.getBlockById(id) : null;
+    if (b && typeof b.getField === 'function' && b.getField('TEMPLATE')) {
+      lastTplBlockId = id;
+    } else if (id) {
+      lastTplBlockId = null;
+    }
+  });
+  document.getElementById('tplapply').addEventListener('click', function () {
+    var name = document.getElementById('tpllist').value;
+    if (!name) { setStatus('画像を選んでください', true); return; }
+    var target =
+      (typeof Blockly.getSelected === 'function') ? Blockly.getSelected() : null;
+    if (!target || typeof target.getField !== 'function' || !target.getField('TEMPLATE')) {
+      target = lastTplBlockId ? ws.getBlockById(lastTplBlockId) : null;
+    }
+    if (!target || typeof target.getField !== 'function' || !target.getField('TEMPLATE')) {
+      setStatus('テンプレ欄のあるブロックを選んでください', true);
+      return;
+    }
+    target.setFieldValue(name, 'TEMPLATE');
+    setStatus('反映しました: ' + name, false);
+    setStatus('反映しました: ' + name, false);
+  });
   document.getElementById('save').addEventListener('click', function () {
     if (!pythonGenerator) {
       setStatus('生成器がありません（python_compressed.js の読込を確認してください）', true);
@@ -93,7 +151,9 @@ html, body { height: 100%; margin: 0; }
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stem: stem, workspaceJson: JSON.stringify(state), pythonCode: code }),
     }).then(function (r) { return r.json(); }).then(function (j) {
-      setStatus(j.message || (j.ok ? '保存しました' : '保存できません'), !j.ok);
+      var msg = j.message || (j.ok ? '保存しました' : '保存できません');
+      if (j.warnings && j.warnings.length) { msg += '\n' + j.warnings.join('\n'); }
+      setStatus(msg, !j.ok);
       if (j.ok) { refreshFiles(stem); }
     }).catch(function (e) { setStatus('保存できません: ' + e, true); });
   });
@@ -132,6 +192,7 @@ html, body { height: 100%; margin: 0; }
     }).catch(function (e) { setStatus('削除できません: ' + e, true); });
   });
   refreshFiles();
+  refreshTemplates();
 })();
 </script>
 </body>

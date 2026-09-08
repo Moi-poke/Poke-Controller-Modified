@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import WindowUtils
-from services import blockly_save
+from services import blockly_save, blockly_templates
 
 _BLOCKLY_DIR = Path(WindowUtils.APP_DIR) / "assets" / "blockly"
 
@@ -56,6 +56,10 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             self._reply(
                 True, res.message, {"stem": stem, "workspaceJson": res.workspace_json}
             )
+            return
+        if path == "/templates":
+            names = blockly_templates.list_image_templates(WindowUtils.APP_DIR)
+            self._reply(True, "", {"templates": names})
             return
         super().do_GET()
 
@@ -93,7 +97,7 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                 str(payload.get("pythonCode", "")),
             )
             print(res.message)
-            self._reply(res.status == "saved", res.message)
+            self._reply(res.status == "saved", res.message, {"warnings": res.warnings})
             return
         self.send_error(404)
 

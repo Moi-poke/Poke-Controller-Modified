@@ -113,3 +113,44 @@ def test_delete_bad_stem_returns_failed(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     res = blockly_save.delete_blockly(app, "my-pack")
     assert res.status == "failed"
+
+
+def test_vision_code_with_subdir_saves_without_warnings(tmp_path: Path) -> None:
+    from services import blockly_templates
+
+    app = make_app(tmp_path)
+    code = (
+        "from Commands.PythonCommandBase import ImageProcPythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(ImageProcPythonCommand):\n"
+        '    NAME = "画像認識"\n'
+        "\n"
+        "    def __init__(self, cam, gui=None):\n"
+        "        super().__init__(cam, gui)\n"
+        "\n"
+        "    def do(self) -> None:\n"
+        '        self.waitTemplate("my-pack/a.png", timeout=10.0, threshold=0.7)\n'
+    )
+    assert blockly_templates.validate_template_refs(code) == []
+    res = blockly_save.save_blockly(app, "VisionOk", good_ws(), code)
+    assert res.status == "saved"
+    assert res.warnings == []
+
+
+def test_dotdot_template_fails_without_files(tmp_path: Path) -> None:
+    app = make_app(tmp_path)
+    code = (
+        "from Commands.PythonCommandBase import ImageProcPythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(ImageProcPythonCommand):\n"
+        '    NAME = "画像認識"\n'
+        "\n"
+        "    def __init__(self, cam, gui=None):\n"
+        "        super().__init__(cam, gui)\n"
+        "\n"
+        "    def do(self) -> None:\n"
+        '        self.waitTemplate("../evil.png", timeout=10.0, threshold=0.7)\n'
+    )
+    res = blockly_save.save_blockly(app, "VisionNg", good_ws(), code)
+    assert res.status == "failed"
+    assert list((app / "Commands" / "PythonCommands").iterdir()) == []

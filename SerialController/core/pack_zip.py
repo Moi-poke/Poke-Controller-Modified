@@ -204,6 +204,10 @@ def create_pack(src_dir: str | Path, out_zip: str | Path) -> list[str]:
     targets = [PurePosixPath("Commands/PythonCommands") / manifest.entry] + [
         PurePosixPath("Template") / t for t in manifest.templates
     ]
+    entry_rel = PurePosixPath("Commands/PythonCommands") / manifest.entry
+    json_rel = entry_rel.with_suffix(".blockly.json")
+    if (base / json_rel.as_posix()).is_file():
+        targets.append(json_rel)
     names: list[str] = [ZIP_MANIFEST]
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(base / ZIP_MANIFEST, ZIP_MANIFEST)

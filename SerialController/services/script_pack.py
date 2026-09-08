@@ -148,9 +148,15 @@ def install_zip(
                     f"版 {manifest.version} に更新します。上書きしてよいですか。"
                 ),
             )
-        rels = [
+        entry_rel = (
             "Commands/PythonCommands/" + PurePosixPath(manifest.entry).as_posix()
-        ] + ["Template/" + PurePosixPath(t).as_posix() for t in manifest.templates]
+        )
+        rels = [entry_rel] + [
+            "Template/" + PurePosixPath(t).as_posix() for t in manifest.templates
+        ]
+        json_rel = PurePosixPath(entry_rel).with_suffix(".blockly.json").as_posix()
+        if (staged / json_rel).is_file():
+            rels.append(json_rel)
         stamp = (
             time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000_000:09d}"
         )

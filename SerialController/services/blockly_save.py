@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 
 from core import blockly_validate
 from loguru import logger
+from services import blockly_templates
 
 PY_DIR_REL = "Commands/PythonCommands"
 
@@ -29,6 +30,7 @@ class SaveResult:
     py_rel: str = ""
     json_rel: str = ""
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _atomic_write(target: Path, text: str) -> None:
@@ -63,6 +65,13 @@ def save_blockly(
             message="保存できません:\n- " + "\n- ".join(errors),
             errors=errors,
         )
+    ref_errors = blockly_templates.validate_template_refs(python_code)
+    if ref_errors:
+        return SaveResult(
+            status="failed",
+            message="保存できません:\n- " + "\n- ".join(ref_errors),
+            errors=ref_errors,
+        )
     app = Path(app_dir)
     py_rel = (PurePosixPath(PY_DIR_REL) / f"{stem}.py").as_posix()
     json_rel = (PurePosixPath(PY_DIR_REL) / f"{stem}.blockly.json").as_posix()
@@ -84,12 +93,17 @@ def save_blockly(
         return SaveResult(
             status="failed", message=f"保存できません: {e}", errors=[str(e)]
         )
+    warnings = blockly_templates.warn_template_refs(python_code)
+    message = f"保存しました: {py_rel}"
+    if warnings:
+        message += "\n注意:\n- " + "\n- ".join(warnings)
     logger.info(f"Blockly保存: {py_rel}")
     return SaveResult(
         status="saved",
-        message=f"保存しました: {py_rel}",
+        message=message,
         py_rel=py_rel,
         json_rel=json_rel,
+        warnings=warnings,
     )
 
 
