@@ -54,7 +54,7 @@ import しない。逆向きの依存は `tools/check_core.py`（`task bounds`�
 - legacy（Leonardo 系）: `S` に相当する数字行を送りっぱなし
 - Pico live: 姿勢スナップショットを 8ms スロットで送出、無変化時は
   88ms で再送（200ms watchdog 対策）。8ms 未満の押下はPC側タイミング
-  (S行で押して待って離す) で送る (pico-wakeCon にQ/Rは無いためQ経路は持たない)
+  (S行で押して待って離す) で送る
 
 ## コマンドの発見と実行
 
