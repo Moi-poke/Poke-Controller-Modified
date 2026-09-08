@@ -11,7 +11,7 @@
 - 内部構造の大整理（`services/`・`ui/`・`core/serial/`・`core/transport/` に分割、`Window.py` は組立専用に）
 - シリアル通信の堅牢化（接続失敗時の復帰・未知の通信方式の受容・ログ方針の統一）
 - 単体テスト基盤の追加（`task test`、`task ci` に組込）
-- Python 3.12以降が必要に（3.10/3.11はEOLのため対象外）
+- Python 3.12以降が必要に（3.11のEOLが近いため、安定版の3.12を採用）
 - 自作スクリプト（`Commands.*`）と `settings.ini` の形式はそのまま使えます
 - シリアルモニタの追加（メニュー→「シリアルモニタ」。Tx＋Rxの時系列表示、フィルタ切替、全量ログ保存。監視しても応答横取りなし。詳細は `docs/SERIAL_MONITOR.md`）
 - 自作スクリプトのzip配布（`pokecon.json`＋本体＋画像を梱包。メニューから導入・削除、CLIあり。詳細は `docs/PACK_FORMAT_v0.md`）
