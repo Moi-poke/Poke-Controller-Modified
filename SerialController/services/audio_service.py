@@ -109,18 +109,6 @@ class AudioService:
         """入出力の推定遅延ms。不明は -1。ジッタ滞留は含まない。"""
         return (self._est_for(True, in_spec), self._est_for(False, out_spec))
 
-    def fastest_output(self) -> str:
-        """最も速い出力の番号（文字列）。推定の最小。無ければ空。"""
-        cached = self._probe_cache.get(False, [])
-        best = ""
-        best_score = float("inf")
-        for index, _name, est in cached:
-            score = est if est >= 0 else float("inf")
-            if score < best_score:
-                best_score = score
-                best = str(index)
-        return best
-
     def auto_input(self, camera_name: str) -> str:
         """取込口の番号（文字列）。ゲーム音はキャプチャボードからしか
         取れないため、カメラ名から推定する。分からなければ空（既定）。"""

@@ -49,7 +49,6 @@ class AudioPanelMixin:
     audio_reload_button: Any
     audio_record_button: Any
     audio_measure_button: Any
-    audio_fastest_button: Any
     _audio_meter_after_id: Any
     _probe_thread: Any
     _probe_done: bool
@@ -117,13 +116,8 @@ class AudioPanelMixin:
         )
         self.audio_measure_button.grid(padx="5", row=2, column=0)
 
-        self.audio_fastest_button = ttk.Button(
-            self.audio_lf, text="最速を選択", command=self.pickFastest
-        )
-        self.audio_fastest_button.grid(padx="5", row=2, column=1)
-
         ttk.Label(self.audio_lf, textvariable=self.audio_measure_result).grid(
-            row=2, column=2, columnspan=4, sticky="w"
+            row=2, column=1, columnspan=5, sticky="w"
         )
 
         # 配置は明示rowで固定する。row省略の自動配置はgridした時点で
@@ -502,29 +496,3 @@ class AudioPanelMixin:
             self._update_latency_label()
         except tk.TclError:
             return
-
-    def pickFastest(self) -> None:
-        """最も速い出力を選ぶ。推定の最小。入力は触らない。
-
-        入力は実質固定（キャプチャボード）のため、自動では変えない。
-        変えたい場合は入力欄から手で選ぶ。
-        """
-        out_spec = self.audio_service.fastest_output()
-        if not out_spec:
-            print("選べる出力がありません（絞り込みを待ってください）")
-            return
-        display = self.audio_service.display_output(out_spec)
-        self.audio_output_name.set(display)
-        capture = getattr(self.audio_service, "capture", None)
-        try:
-            monitoring = bool(capture is not None and capture.isMonitorEnabled())
-        except Exception:
-            monitoring = False
-        if monitoring:
-            # 再生中は開き直し経路へ任せる（失敗時の復元つき）。
-            self._onAudioOutputSelected()
-            return
-        self.settings.audio_output.set(out_spec)
-        self._update_latency_label()
-        self._on_setting_changed()
-        print(f"最も速い出力を選びました: {display}")

@@ -116,16 +116,6 @@ def test_display_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert svc.display_output("") == ""
 
 
-def test_fastest_output_picks_min_est() -> None:
-    svc, _, _ = make_service()
-    svc._probe_cache = {
-        False: [(3, "A", 90.0), (5, "B", 20.0)],
-    }
-    assert svc.fastest_output() == "5"
-    svc._probe_cache = {}
-    assert svc.fastest_output() == ""
-
-
 def test_auto_input_guesses_board(monkeypatch: pytest.MonkeyPatch) -> None:
     svc, _, _ = make_service()
     monkeypatch.setattr(
