@@ -14,6 +14,7 @@ PortAudio が無い環境では import 自体が落ちるため、読めたと�
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from typing import Any
@@ -78,6 +79,12 @@ def list_output_devices() -> list[str]:
     return _device_names(False)
 
 
+def apply_volume(frames: np.ndarray, volume: float) -> np.ndarray:
+    """音量を掛けて [-1, 1] に収める純粋関数。"""
+    out = frames.astype(np.float64) * float(volume)
+    return np.clip(out, -1.0, 1.0).astype(np.float32)
+
+
 class AudioCapture:
     """入力1ストリームの所有者。直近 RING_SECONDS 秒を配る。"""
 
@@ -86,6 +93,7 @@ class AudioCapture:
         rate: int = AUDIO_RATE,
         ring_seconds: float = 5.0,
         input_factory: Any = None,
+        output_factory: Any = None,
     ) -> None:
         self._rate = int(rate)
         capacity = max(AUDIO_CHUNK, int(self._rate * float(ring_seconds)))
@@ -96,6 +104,11 @@ class AudioCapture:
         self._stream: Any = None
         self._input_name = ""
         self._factory = input_factory
+        self._factory_out = output_factory
+        self._monitor_volume = 0.8
+        self._out_stream: Any = None
+        self._out_device = ""
+        self._pipe: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
 
     def openInput(self, device: str | int | None) -> bool:
         """入力を開く。既に開いていれば閉じてから開き直す。成否を返す。"""
@@ -148,6 +161,18 @@ class AudioCapture:
                 self._ring[: end - self._ring.size] = mono[first:]
             self._pos = end % self._ring.size
             self._filled = min(self._filled + mono.size, self._ring.size)
+        if self._out_stream is not None:
+            try:
+                self._pipe.put_nowait(mono.copy())
+            except queue.Full:
+                try:
+                    self._pipe.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._pipe.put_nowait(mono.copy())
+                except queue.Full:
+                    pass
 
     def isOpened(self) -> bool:
         return self._stream is not None
@@ -156,6 +181,7 @@ class AudioCapture:
         return self._input_name
 
     def close(self) -> None:
+        self._stop_output()
         stream, self._stream = self._stream, None
         if stream is None:
             return
@@ -211,3 +237,84 @@ class AudioCapture:
         if window is None:
             return np.zeros(0, dtype=np.float32)
         return window
+
+    # -- モニター再生 ---------------------------------------------------
+    def setMonitorVolume(self, volume: float) -> None:
+        try:
+            v = float(volume)
+        except (TypeError, ValueError):
+            return
+        self._monitor_volume = min(1.0, max(0.0, v))
+
+    def isMonitorEnabled(self) -> bool:
+        return self._out_stream is not None
+
+    def setMonitorEnabled(self, on: bool, device: str | int | None = None) -> bool:
+        """モニター再生のON/OFF。ON時は出力ストリームを開く。成否を返す。"""
+        if not on:
+            self._stop_output()
+            return True
+        if self._stream is None:
+            print("モニターを開始できません: 音声入力が開いていません")
+            logger.warning("モニター開始に失敗（入力未open）")
+            return False
+        sd = _import_sounddevice()
+        if sd is None:
+            return False
+        self._stop_output()
+        try:
+            if self._factory_out is not None:
+                out = self._factory_out(
+                    samplerate=self._rate,
+                    channels=AUDIO_CHANNELS,
+                    blocksize=AUDIO_CHUNK,
+                    device=device,
+                    callback=self._on_output,
+                )
+            else:
+                out = sd.OutputStream(
+                    samplerate=self._rate,
+                    channels=AUDIO_CHANNELS,
+                    dtype="float32",
+                    blocksize=AUDIO_CHUNK,
+                    device=device,
+                    callback=self._on_output,
+                )
+            out.start()
+        except Exception as e:
+            logger.error(f"モニター出力を開けません: {e}")
+            return False
+        self._out_stream = out
+        return True
+
+    def _stop_output(self) -> None:
+        out, self._out_stream = self._out_stream, None
+        if out is None:
+            return
+        try:
+            out.stop()
+        except Exception:
+            pass
+        try:
+            out.close()
+        except Exception as e:
+            logger.warning(f"モニター出力の解放で例外: {e}")
+
+    def _on_output(self, outdata: Any, frames: int, _time: Any, _status: Any) -> None:
+        """出力コールバック。pipe の最新を音量つきで書く。無ければ無音。"""
+        try:
+            data = self._pipe.get_nowait()
+        except queue.Empty:
+            data = None
+        buf = np.asarray(outdata)
+        if data is None:
+            buf[:] = 0
+            return
+        mono = np.asarray(data, dtype=np.float32).ravel()
+        if mono.size >= frames:
+            chunk = mono[-frames:]
+        else:
+            chunk = np.zeros(frames, dtype=np.float32)
+            chunk[-mono.size :] = mono
+        shaped = np.tile(chunk.reshape(-1, 1), (1, AUDIO_CHANNELS))
+        buf[:] = apply_volume(shaped, self._monitor_volume)

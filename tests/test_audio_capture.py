@@ -91,3 +91,41 @@ def test_record_collects_seconds() -> None:
     assert data.size > 0
     assert float(np.mean(data)) == 0.25
     cap.close()
+
+
+def test_monitor_toggle_and_volume() -> None:
+    inbox: dict[str, FakeStream] = {}
+    outbox: dict[str, FakeStream] = {}
+
+    def in_factory(**kwargs: Any) -> FakeStream:
+        stream = FakeStream(**kwargs)
+        inbox["stream"] = stream
+        return stream
+
+    def out_factory(**kwargs: Any) -> FakeStream:
+        stream = FakeStream(**kwargs)
+        outbox["stream"] = stream
+        return stream
+
+    cap = AC.AudioCapture(input_factory=in_factory, output_factory=out_factory)
+    assert cap.isMonitorEnabled() is False
+    assert cap.openInput("dummy") is True
+    # 出力先未指定でも既定出力で開く（device=None 透過）
+    assert cap.setMonitorEnabled(True) is True
+    assert cap.isMonitorEnabled() is True
+    cap.setMonitorVolume(0.5)
+    inbox["stream"].fire(np.full(1024, 0.4, dtype=np.float32))
+    buf = np.zeros((1024, 1), dtype=np.float32)
+    outbox["stream"].callback(buf, 1024, None, None)
+    assert float(np.max(np.abs(buf))) > 0.0
+    assert float(np.max(np.abs(buf))) <= 0.5 + 1e-6
+    cap.setMonitorEnabled(False)
+    assert cap.isMonitorEnabled() is False
+    cap.close()
+
+
+def test_apply_volume_clips() -> None:
+    frames = np.full(4, 0.9, dtype=np.float32)
+    doubled = AC.apply_volume(frames, 2.0)
+    assert float(np.max(np.abs(doubled))) <= 1.0
+    assert float(AC.apply_volume(frames, 0.0)[0]) == 0.0
