@@ -41,12 +41,19 @@ class AudioPanelMixin:
     audio_volume: Any
     audio_level: Any
     audio_latency: Any
+    audio_measure_result: Any
     audio_reload_button: Any
     audio_record_button: Any
+    audio_measure_button: Any
+    audio_fastest_button: Any
     _audio_meter_after_id: Any
     _probe_thread: Any
     _probe_done: bool
     _probe_after_id: Any
+    _measure_thread: Any
+    _measure_done: bool
+    _measure_result: Any
+    _measure_after_id: Any
     _on_setting_changed: Any
 
     def _build_audio_frame(self) -> None:
@@ -57,6 +64,7 @@ class AudioPanelMixin:
         self.audio_volume = tk.DoubleVar()
         self.audio_level = tk.StringVar(value="--")
         self.audio_latency = tk.StringVar(value="推定 --")
+        self.audio_measure_result = tk.StringVar(value="実測 --")
 
         ttk.Label(self.audio_lf, text="Input:").grid(padx="5", row=0, column=0)
         self.audio_input_cb = ttk.Combobox(
@@ -99,6 +107,20 @@ class AudioPanelMixin:
             self.audio_lf, text="Test Rec 3s", command=self.recordAudioTest
         )
         self.audio_record_button.grid(padx="5", row=1, column=5)
+
+        self.audio_measure_button = ttk.Button(
+            self.audio_lf, text="遅延計測", command=self.measureLatency
+        )
+        self.audio_measure_button.grid(padx="5", row=2, column=0)
+
+        self.audio_fastest_button = ttk.Button(
+            self.audio_lf, text="最速を選択", command=self.pickFastest
+        )
+        self.audio_fastest_button.grid(padx="5", row=2, column=1)
+
+        ttk.Label(self.audio_lf, textvariable=self.audio_measure_result).grid(
+            row=2, column=2, columnspan=4, sticky="w"
+        )
 
         # 配置は明示rowで固定する。row省略の自動配置はgridした時点で
         # 空いている行へ置かれるため、後に明示配置されるSerial/Command枠の
@@ -365,3 +387,104 @@ class AudioPanelMixin:
             print(f"録音の保存に失敗しました: {e}")
             return
         print(f"テスト録音を保存しました: {filespec}")
+
+    def measureLatency(self) -> None:
+        """選択中の出力の往復遅延を実測する（数秒かかる。裏で回す）。
+
+        モニター再生中は回り込むため測らない。入力は現在開いている物を
+        使う（マイクなら音響片道、ケーブル対なら電気片道）。
+        """
+        thread = getattr(self, "_measure_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        capture = getattr(self.audio_service, "capture", None)
+        if capture is None or not capture.isOpened():
+            print("計測できません: 音声入力が開いていません")
+            return
+        try:
+            monitoring = bool(capture.isMonitorEnabled())
+        except Exception:
+            monitoring = False
+        if monitoring:
+            print("計測できません: モニター再生を止めてから測ってください")
+            return
+        out = self.audio_output_name.get()
+        self.audio_measure_result.set("計測中...")
+        self._measure_done = False
+        self._measure_result = None
+
+        def work() -> None:
+            try:
+                self._measure_result = self.audio_service.measure_latency(out)
+            except Exception as e:
+                logger.error(f"遅延計測に失敗しました: {e}")
+                self._measure_result = {
+                    "detected": 0,
+                    "total": 0,
+                    "median_ms": -1.0,
+                    "error": str(e),
+                }
+            self._measure_done = True
+
+        self._measure_thread = threading.Thread(
+            target=work, name="AudioMeasure", daemon=True
+        )
+        self._measure_thread.start()
+        self._poll_measure()
+
+    def _poll_measure(self) -> None:
+        """計測の完了を GUI スレッドで待つ。終われば結果を出す。"""
+        try:
+            self._measure_after_id = self.root.after(500, self._poll_measure)
+        except tk.TclError:
+            return
+        if not getattr(self, "_measure_done", False):
+            return
+        try:
+            self.root.after_cancel(self._measure_after_id)
+        except (tk.TclError, ValueError):
+            pass
+        self._measure_after_id = None
+        try:
+            result = getattr(self, "_measure_result", None) or {}
+            error = result.get("error", "")
+            if error:
+                self.audio_measure_result.set(f"計測失敗: {error}")
+                print(f"遅延計測に失敗しました: {error}")
+                return
+            detected = int(result.get("detected", 0))
+            total = int(result.get("total", 0))
+            median = float(result.get("median_ms", -1.0))
+            if detected <= 0:
+                self.audio_measure_result.set(
+                    f"実測 --（検出 {detected}/{total}。音量・配線を確認）"
+                )
+                return
+            self.audio_measure_result.set(
+                f"実測 {median:.0f}ms（検出 {detected}/{total}）"
+            )
+            self._update_latency_label()
+        except tk.TclError:
+            return
+
+    def pickFastest(self) -> None:
+        """最も速い出力を選ぶ。実測優先、なければ推定。"""
+        spec = self.audio_service.fastest_output()
+        if not spec:
+            print("選べる出力がありません（絞り込みを待ってください）")
+            return
+        display = self.audio_service.display_output(spec)
+        self.audio_output_name.set(display)
+        capture = getattr(self.audio_service, "capture", None)
+        try:
+            monitoring = bool(capture is not None and capture.isMonitorEnabled())
+        except Exception:
+            monitoring = False
+        if monitoring:
+            # 再生中は開き直し経路へ任せる（失敗時の復元つき）。
+            self._onAudioOutputSelected()
+            return
+        self.settings.audio_output.set(spec)
+        self._update_latency_label()
+        self._on_setting_changed()
+        print(f"最も速い出力を選びました: {display}")

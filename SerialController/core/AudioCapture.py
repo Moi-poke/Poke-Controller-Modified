@@ -14,9 +14,11 @@ PortAudio が無い環境では import 自体が落ちるため、読めたと�
 
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
+from collections import deque
 from typing import Any
 
 import numpy as np
@@ -40,8 +42,6 @@ AUDIO_LATENCY = "low"
 
 def _resample_factors(src_rate: int, dst_rate: int) -> tuple[int, int]:
     """resample_poly 用の (up, down)。等速なら (1, 1)。"""
-    import math
-
     src, dst = int(src_rate), int(dst_rate)
     if src <= 0 or dst <= 0 or src == dst:
         return (1, 1)
@@ -260,6 +260,66 @@ def resolve_device(want_input: bool, spec: str | int | None) -> int | str | None
     return text
 
 
+def open_raw_output(
+    device_spec: str | int | None,
+    callback: Any = None,
+) -> tuple[Any, int, float]:
+    """計測用の素通し出力ストリームを開く。(stream, 自レート, 遅延秒)。
+
+    callback 付きでは PortAudio スレッドから呼ばれる。なしでは
+    blocking write で鳴らす。開けなければ理由付き例外。
+    閉じるのは close_raw_output。
+    """
+    sd = _import_sounddevice()
+    if sd is None:
+        raise RuntimeError("音声バックエンドがありません")
+    resolved = resolve_device(False, device_spec)
+    if isinstance(resolved, int):
+        rate = native_rate(sd, False, resolved)
+    elif resolved is None:
+        rate = native_rate(sd, False, None)
+    else:
+        rate = AUDIO_RATE
+    kwargs: dict[str, Any] = {
+        "samplerate": rate,
+        "channels": AUDIO_CHANNELS,
+        "dtype": "float32",
+        "blocksize": AUDIO_CHUNK,
+        "device": resolved,
+        "latency": AUDIO_LATENCY,
+    }
+    if callback is not None:
+        kwargs["callback"] = callback
+    stream = sd.OutputStream(**kwargs)
+    try:
+        stream.start()
+    except Exception:
+        try:
+            stream.close()
+        except Exception:
+            pass
+        raise
+    try:
+        latency = float(stream.latency)
+    except Exception:
+        latency = 0.0
+    return stream, int(rate), latency
+
+
+def close_raw_output(stream: Any) -> None:
+    """計測用ストリームを片付ける。失敗は握る。"""
+    if stream is None:
+        return
+    try:
+        stream.stop()
+    except Exception:
+        pass
+    try:
+        stream.close()
+    except Exception as e:
+        logger.warning(f"計測用出力の解放で例外: {e}")
+
+
 def list_input_devices() -> list[str]:
     """録音に使えるデバイス名の一覧。"""
     return _device_names(True)
@@ -292,6 +352,10 @@ class AudioCapture:
         self._ring = np.zeros(capacity, dtype=np.float32)
         self._pos = 0
         self._filled = 0
+        self._total = 0
+        # 取り込み時刻の Tap（遅延実測用）。(コールバック時刻, 通算件数)。
+        # 参照代入は不可分だが、total との組は Lock 内で読む。
+        self._tap: deque[tuple[float, int]] = deque(maxlen=1024)
         self._lock = threading.Lock()
         # _stream / _out_stream は別スレッドからの参照・差し替えが
         # 重なる（benign race）。参照代入は不可分で、古い参照を
@@ -397,6 +461,8 @@ class AudioCapture:
                 self._ring[: end - self._ring.size] = frame[first:]
             self._pos = end % self._ring.size
             self._filled = min(self._filled + frame.size, self._ring.size)
+            self._total += frame.size
+            self._tap.append((time.perf_counter(), self._total))
         # モニターへの受け渡しは常時行う。ONの瞬間に溜まっている分から
         # 鳴り始められる（深さぶんの遅延）。溢れたら古い方を捨てる。
         # put_nowait / get_nowait のみで、コールバック内で待たない。
@@ -449,6 +515,33 @@ class AudioCapture:
             else:
                 out = np.concatenate((self._ring[start:], self._ring[:end])).copy()
         return out[-want:] if out.size > want else out
+
+    def input_latency(self) -> float:
+        """入力遅延の秒数。取れなければ 0。"""
+        try:
+            stream = self._stream
+            if stream is None:
+                return 0.0
+            return float(stream.latency)
+        except Exception:
+            return 0.0
+
+    def read_stamped(
+        self, seconds: float
+    ) -> tuple[np.ndarray, int, list[tuple[float, int]], float, int] | None:
+        """(窓の複製, 通算件数, Tap複製, 入力遅延, 内部レート)。
+
+        遅延実測が収録サンプルへ時刻を付けるための口。取れなければ None。
+        """
+        window = self.readWindow(seconds)
+        if window is None:
+            return None
+        with self._lock:
+            total = self._total
+            tap = list(self._tap)
+        if not tap:
+            return None
+        return (window, total, tap, self.input_latency(), self._rate)
 
     def _level(self) -> np.ndarray | None:
         return self.readWindow(0.1)

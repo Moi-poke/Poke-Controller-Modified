@@ -14,12 +14,15 @@ from collections.abc import Callable
 from typing import Any
 
 from core.AudioCapture import (
+    AUDIO_RATE,
     AudioCapture,
     audio_available,
+    close_raw_output,
     device_entries,
     display_entries,
     display_for,
     format_display,
+    open_raw_output,
     probe_details,
 )
 from loguru import logger
@@ -34,6 +37,8 @@ class AudioService:
         # 試し開きの結果（(番号, 名前, 推定ms)）。裏スレッドが埋める。
         # 空の間は display_* が速い列挙（推定なし）で代用する。
         self._probe_cache: dict[bool, list[tuple[int, str, float]]] = {}
+        # 実測の記録（出力番号 -> 中央値ms）。計測のたびに上書きする。
+        self.measured: dict[int, float] = {}
 
     # -- 選択 -----------------------------------------------------------
 
@@ -107,6 +112,152 @@ class AudioService:
     def pair_est(self, in_spec: str, out_spec: str) -> tuple[float, float]:
         """入出力の推定遅延ms。不明は -1。ジッタ滞留は含まない。"""
         return (self._est_for(True, in_spec), self._est_for(False, out_spec))
+
+    def fastest_output(self) -> str:
+        """最も速い出力の番号（文字列）。実測優先、なければ推定。無ければ空。"""
+        cached = self._probe_cache.get(False, [])
+        best = ""
+        best_score = float("inf")
+        for index, _name, est in cached:
+            score = self.measured.get(index, est if est >= 0 else float("inf"))
+            if score < best_score:
+                best_score = score
+                best = str(index)
+        return best
+
+    def measure_latency(self, out_spec: str) -> dict[str, Any]:
+        """選択中の出力の往復遅延を実測する。重いので裏で呼ぶこと。
+
+        入力は現在開いている物を使い、出力へ計測ブリップを鳴らして
+        戻りを検出する。モニター再生中は回り込みで誤検出するため拒む。
+        """
+        from core import audio_latency as AL
+
+        capture = self.capture
+        if capture is None or not capture.isOpened():
+            return {
+                "detected": 0,
+                "total": 0,
+                "median_ms": -1.0,
+                "error": "音声入力が開いていません",
+            }
+        try:
+            monitoring = bool(capture.isMonitorEnabled())
+        except Exception:
+            monitoring = False
+        if monitoring:
+            return {
+                "detected": 0,
+                "total": 0,
+                "median_ms": -1.0,
+                "error": "モニター再生を止めてから計測してください",
+            }
+        try:
+            out, rate, latency = open_raw_output(out_spec or None)
+        except Exception as e:
+            return {
+                "detected": 0,
+                "total": 0,
+                "median_ms": -1.0,
+                "error": f"出力を開けません: {e}",
+            }
+        # 発射器の給電コールバックで開き直す。blocking write では
+        # 返りのタイミングが振れて中央値が暴れるため使わない。
+        close_raw_output(out)
+        try:
+            needle44 = AL.make_chirp(AUDIO_RATE)
+            emitter = AL.Emitter(AL.to_device_chirp(needle44, rate), rate, latency)
+            out, rate, latency = open_raw_output(
+                out_spec or None, callback=emitter.callback
+            )
+
+            def wait_capture(seconds: float) -> Any:
+                return capture.read_stamped(seconds)
+
+            delays = self._collect_delays(capture, emitter, needle44, wait_capture)
+            result = AL.summarize(delays)
+            result["delays_ms"] = [round(v, 1) for v in delays]
+            result["out_underflow"] = int(emitter.underruns)
+        except Exception as e:
+            logger.error(f"遅延計測に失敗しました: {e}")
+            result = {
+                "detected": 0,
+                "total": 0,
+                "median_ms": -1.0,
+                "error": f"計測に失敗しました: {e}",
+            }
+        finally:
+            close_raw_output(out)
+        try:
+            index = self._measured_index(out_spec)
+            if index is not None and result.get("median_ms", -1.0) >= 0:
+                self.measured[index] = float(result["median_ms"])
+        except Exception:
+            pass
+        return result
+
+    @staticmethod
+    def _collect_delays(
+        capture: Any, emitter: Any, needle44: Any, wait_capture: Any
+    ) -> list[float]:
+        """発射と検出を集めて時刻近接で組にする。
+
+        全発射が終わり、戻りが途絶えるまで集める。組自体は
+        pair_delays に任せ、見逃し・誤検出に引きずられない。
+        """
+        import time as _time
+
+        from core import audio_latency as AL
+
+        found_caps: list[float] = []
+        search_from = 0
+        deadline = _time.monotonic() + 25.0
+        quiet_from: float | None = None
+        while _time.monotonic() < deadline:
+            _time.sleep(0.2)
+            try:
+                stamped = wait_capture(2.5)
+            except Exception:
+                continue
+            if stamped is None:
+                continue
+            window, total, tap, in_latency, in_rate = stamped
+            base = total - window.size
+            advanced = False
+            while True:
+                at = AL.find_impulse(window, needle44, start=max(0, search_from - base))
+                if at is None:
+                    break
+                absolute = base + at
+                search_from = absolute + needle44.size
+                got_at = AL.locate_played(tap, absolute, in_latency, in_rate)
+                if got_at is None:
+                    break
+                found_caps.append(got_at)
+                advanced = True
+            if emitter.done:
+                if advanced:
+                    quiet_from = None
+                elif quiet_from is None:
+                    quiet_from = _time.monotonic()
+                elif _time.monotonic() - quiet_from >= 2.0:
+                    break
+        return AL.pair_delays(emitter.play_times, found_caps)
+
+    def _measured_index(self, out_spec: str) -> int | None:
+        """実測の記録先の出力番号。分からなければ None。"""
+        from core.AudioCapture import parse_display
+
+        text = str(out_spec or "").strip()
+        if not text:
+            return None
+        if text.isdigit():
+            return int(text)
+        for index, name, _est in self._probe_cache.get(False, []):
+            if text == name or text == f"{index}: {name}":
+                return index
+        parsed = parse_display(text)
+        return parsed
 
     def _est_for(self, want_input: bool, spec: str) -> float:
         text = str(spec or "").strip()

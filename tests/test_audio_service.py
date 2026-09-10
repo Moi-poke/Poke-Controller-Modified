@@ -32,6 +32,9 @@ class FakeCapture:
         self.monitor = bool(on)
         return True
 
+    def isMonitorEnabled(self) -> bool:
+        return self.monitor
+
     def setMonitorVolume(self, volume: float) -> None:
         self.volume = float(volume)
 
@@ -111,3 +114,31 @@ def test_display_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert svc.list_inputs() == ["7: Ok Mic"]
     assert svc.list_outputs() == []
     assert svc.display_output("") == ""
+
+
+def test_measure_latency_needs_input() -> None:
+    svc, _, _ = make_service()
+    result = svc.measure_latency("3")
+    assert result["detected"] == 0
+    assert "入力" in str(result.get("error", ""))
+
+
+def test_measure_latency_refuses_monitoring() -> None:
+    svc, _, _ = make_service()
+    assert svc.open("mic") is True
+    assert svc.set_monitor(True, "sp", 0.5) is True
+    result = svc.measure_latency("3")
+    assert result["detected"] == 0
+    assert "モニター" in str(result.get("error", ""))
+
+
+def test_fastest_output_prefers_measured() -> None:
+    svc, _, _ = make_service()
+    svc._probe_cache = {
+        False: [(3, "A", 90.0), (5, "B", 20.0)],
+    }
+    assert svc.fastest_output() == "5"
+    svc.measured = {3: 10.0}
+    assert svc.fastest_output() == "3"
+    svc._probe_cache = {}
+    assert svc.fastest_output() == ""
