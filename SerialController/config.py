@@ -100,6 +100,18 @@ def default_sections() -> dict[str, dict[str, Any]]:
             # 優先された側が書いてから、反対側を断る秒数。
             "cooldown": "2.0",
         },
+        "Audio": {
+            # 音声入力（キャプチャボードのUSBオーディオ等）のデバイス名。
+            # 空なら既定の入力を使う。名前は起動時に列挙して選ぶ。
+            "input_device": "",
+            # モニター再生の出力先デバイス名。空なら既定の出力を使う。
+            "output_device": "",
+            # ゲーム音のモニター再生。既定OFF（ハウリング・遅延・
+            # 無音環境の混乱を避けるため、使う人だけが入れる）。
+            "monitor_enabled": False,
+            # モニター音量。0.0〜1.0。範囲外は補正で既定へ戻す。
+            "monitor_volume": 0.8,
+        },
         "Pokemon Home": {
             "Season": 1,
             "Single or Double": "シングル",
@@ -206,6 +218,18 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if cooldown is None or cooldown < 0:
             arb["cooldown"] = "2.0"
             changed.append("Arbitration.cooldown")
+    if parser.has_section("Audio"):
+        audio = parser["Audio"]
+        if audio.get("monitor_enabled", "").strip() not in ("True", "False"):
+            audio["monitor_enabled"] = "False"
+            changed.append("Audio.monitor_enabled")
+        try:
+            volume = float(audio.get("monitor_volume", ""))
+        except (TypeError, ValueError):
+            volume = None
+        if volume is None or not 0.0 <= volume <= 1.0:
+            audio["monitor_volume"] = "0.8"
+            changed.append("Audio.monitor_volume")
     return changed
 
 
