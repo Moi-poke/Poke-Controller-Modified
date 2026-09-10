@@ -69,6 +69,11 @@ class CameraPanelMixin:
     show_size_label: Any
     show_size: Any
     show_size_cb: Any
+    separator_4: Any
+    filt_enabled: Any
+    filt_check: Any
+    filt_setting_button: Any
+    _filt_params: dict[str, Any]
     camera_name_l: Any
     camera_name_fromDLL: Any
     Camera_Name: Any
@@ -160,6 +165,29 @@ class CameraPanelMixin:
         )
         self.show_size_cb.grid(column=4, padx="10", row=0, sticky="ew")
         self.show_size_cb.bind("<<ComboboxSelected>>", self.applyWindowSize, add="")
+
+        self.separator_4 = ttk.Separator(self.camera_f2)
+        self.separator_4.config(orient="vertical")
+        self.separator_4.grid(column=5, row=0, sticky="ns")
+
+        # 表示専用フィルタ（セッションのみ。ini には保存しない）
+        self._filt_params = {
+            "lower": [0, 0, 0],
+            "upper": [179, 255, 255],
+            "mode": "gray_out",
+        }
+        self.filt_enabled = tk.BooleanVar(value=False)
+        self.filt_check = ttk.Checkbutton(self.camera_f2)
+        self.filt_check.config(
+            text="色フィルタ",
+            variable=self.filt_enabled,
+            command=self.applyPreviewFilter,
+        )
+        self.filt_check.grid(column=6, row=0)
+
+        self.filt_setting_button = ttk.Button(self.camera_f2)
+        self.filt_setting_button.config(text="設定...", command=self.openFilterDialog)
+        self.filt_setting_button.grid(column=7, row=0)
         self.camera_f2.grid(column=0, columnspan=7, row=3, sticky="nsew")
 
         # -- カメラ名
@@ -524,6 +552,77 @@ class CameraPanelMixin:
             self.show_size_cb.current(self.show_size_tmp)
             width_bef, height_bef = map(int, self.show_size.get().split("x"))
             self.preview.setShowsize(height_bef, width_bef)
+
+    def applyPreviewFilter(self) -> None:
+        """表示専用フィルタのON/OFFをプレビューへ反映する（セッションのみ）。"""
+        if self.preview is None:
+            return
+        if bool(self.filt_enabled.get()):
+            params = self._filt_params
+            self.preview.setPreviewFilter(
+                True,
+                list(params["lower"]),
+                list(params["upper"]),
+                str(params["mode"]),
+            )
+        else:
+            self.preview.clearPreviewFilter()
+
+    def openFilterDialog(self) -> None:
+        """色フィルタ設定ダイアログを開く。閉じても設定は保持される。"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("色フィルタ設定")
+        params = self._filt_params
+        scales: dict[str, tk.Scale] = {}
+        specs = (
+            ("lower_H", "下限 H", 0, 179, params["lower"][0]),
+            ("lower_S", "下限 S", 0, 255, params["lower"][1]),
+            ("lower_V", "下限 V", 0, 255, params["lower"][2]),
+            ("upper_H", "上限 H", 0, 179, params["upper"][0]),
+            ("upper_S", "上限 S", 0, 255, params["upper"][1]),
+            ("upper_V", "上限 V", 0, 255, params["upper"][2]),
+        )
+        for row, (key, label, lo, hi, init) in enumerate(specs):
+            ttk.Label(dlg, text=label).grid(column=0, row=row, padx=5, sticky="ew")
+            sc = tk.Scale(dlg, from_=lo, to=hi, orient=tk.HORIZONTAL, length=200)
+            sc.set(init)
+            sc.grid(column=1, row=row, padx=5, sticky="ew")
+            scales[key] = sc
+
+        mode_var = tk.StringVar(value=str(params["mode"]))
+
+        def _on_change(*_args: Any) -> None:
+            params["lower"] = [
+                int(scales["lower_H"].get()),
+                int(scales["lower_S"].get()),
+                int(scales["lower_V"].get()),
+            ]
+            params["upper"] = [
+                int(scales["upper_H"].get()),
+                int(scales["upper_S"].get()),
+                int(scales["upper_V"].get()),
+            ]
+            params["mode"] = mode_var.get()
+            if bool(self.filt_enabled.get()):
+                self.applyPreviewFilter()
+
+        for sc in scales.values():
+            sc.config(command=lambda _v: _on_change())
+
+        ttk.Radiobutton(
+            dlg,
+            text="対象外をグレー化",
+            variable=mode_var,
+            value="gray_out",
+            command=_on_change,
+        ).grid(column=0, columnspan=2, row=6, sticky="w")
+        ttk.Radiobutton(
+            dlg,
+            text="マスク表示",
+            variable=mode_var,
+            value="mask",
+            command=_on_change,
+        ).grid(column=0, columnspan=2, row=7, sticky="w")
 
     def OpenCaptureDir(self) -> None:
         WindowUtils.openDirectory(

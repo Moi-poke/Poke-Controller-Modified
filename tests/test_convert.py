@@ -40,3 +40,41 @@ def test_convert_720p_display() -> None:
     area._convert(frame)
     expected = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     assert np.array_equal(area._rgb_buf, expected)
+
+
+def test_preview_filter_gray_out_full_match_keeps_color() -> None:
+    """全面が対象色なら gray_out でも無地参照と一致する（表示だけ変わる）。"""
+    area = make_area(64, 48)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    frame[:] = (0, 255, 0)  # BGR の緑。H≈60 で [50..70] に入る
+    area.setPreviewFilter(True, [50, 100, 100], [70, 255, 255], "gray_out")
+    area._convert(frame)
+    expected = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    assert np.array_equal(area._rgb_buf, expected)
+
+
+def test_preview_filter_mask_does_not_mutate_input() -> None:
+    """mask でも入力 frame は変えない（認識・保存に影響しない）。"""
+    area = make_area(64, 48)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    frame[:] = (0, 255, 0)
+    before = frame.copy()
+    area.setPreviewFilter(True, [50, 100, 100], [70, 255, 255], "mask")
+    area._convert(frame)
+    assert np.array_equal(frame, before)
+    # 全面一致の mask は白一色の BGR→RGB になる
+    assert np.array_equal(area._rgb_buf, np.full((48, 64, 3), 255, dtype=np.uint8))
+
+
+def test_alloc_buffers_filter_buf_follows_size() -> None:
+    """表示サイズ変更後の _allocBuffers で _filter_buf も追従する。
+
+    setShowsize 本体は PhotoImage（要 Tk）のため頭出しできない。
+    バッファ部分（_allocBuffers に委譲）だけ tk なしで確認する。
+    """
+    area = make_area(640, 360)
+    assert area._filter_buf.shape == (360, 640, 3)
+    area.show_width, area.show_height = 320, 180
+    area.show_size = (320, 180)
+    area._allocBuffers()
+    assert area._filter_buf.shape == (180, 320, 3)

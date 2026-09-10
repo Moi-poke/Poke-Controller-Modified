@@ -294,6 +294,10 @@ class CaptureArea(tk.Canvas):
 
         # 描画の作業バッファ（毎フレームの確保を避ける）
         self._allocBuffers()
+        self._filter_enabled = False
+        self._filter_lower = [0, 0, 0]
+        self._filter_upper = [179, 255, 255]
+        self._filter_mode = "gray_out"
 
         # 映像用の PhotoImage は1枚だけ作って使い回す
         self._photo = ImageTk.PhotoImage(Image.new("RGB", self.show_size))
@@ -406,6 +410,24 @@ class CaptureArea(tk.Canvas):
         h, w = self.show_height, self.show_width
         self._resize_buf = np.empty((h, w, 3), np.uint8)
         self._rgb_buf = np.empty((h, w, 3), np.uint8)
+        self._filter_buf = np.empty((h, w, 3), np.uint8)
+
+    def setPreviewFilter(
+        self, enabled: bool, lower: list[int], upper: list[int], mode: str
+    ) -> None:
+        """表示専用フィルタ。認識・保存には影響しない。変更時はseq dedupを無効化する。"""
+        from core import preview_filter as _pf
+
+        lo, hi = _pf.validate_hsv(lower, upper)
+        if str(mode) not in ("gray_out", "mask"):
+            raise ValueError("modeは gray_out / mask で指定してください")
+        self._filter_enabled = bool(enabled)
+        self._filter_lower, self._filter_upper, self._filter_mode = lo, hi, str(mode)
+        self._last_frame_seq = None
+
+    def clearPreviewFilter(self) -> None:
+        self._filter_enabled = False
+        self._last_frame_seq = None
 
     def _readLatest(self) -> tuple[Any, int | None]:
         """最新フレームと世代番号を返す。seq 不明のカメラでは None。
@@ -472,15 +494,30 @@ class CaptureArea(tk.Canvas):
         先に縮小してから色変換する（変換対象が減って軽い）。
         """
         if frame.shape[1] == self.show_width and frame.shape[0] == self.show_height:
+            src = frame
+        else:
+            cv2.resize(
+                frame,
+                self.show_size,
+                dst=self._resize_buf,
+                interpolation=cv2.INTER_AREA,
+            )
+            src = self._resize_buf
+        if getattr(self, "_filter_enabled", False):
+            from core import preview_filter as _pf
+
+            np.copyto(
+                self._filter_buf,
+                _pf.apply_filter(
+                    src, self._filter_lower, self._filter_upper, self._filter_mode
+                ),
+            )
+            cv2.cvtColor(self._filter_buf, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+            return
+        if src is frame:
             cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
             return
-        cv2.resize(
-            frame,
-            self.show_size,
-            dst=self._resize_buf,
-            interpolation=cv2.INTER_AREA,
-        )
-        cv2.cvtColor(self._resize_buf, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+        cv2.cvtColor(src, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
 
     def _showDisabled(self) -> None:
         """停止中の画像に切り替える（既に表示中なら何もしない）。"""
