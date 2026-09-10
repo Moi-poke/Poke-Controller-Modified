@@ -22,12 +22,14 @@ from pathlib import Path
 from typing import Any
 
 import WindowUtils
-from services import blockly_save, blockly_templates
+from services import blockly_capture, blockly_match, blockly_save, blockly_templates
 
 _BLOCKLY_DIR = Path(WindowUtils.APP_DIR) / "assets" / "blockly"
 
 _server: http.server.ThreadingHTTPServer | None = None
 _thread: threading.Thread | None = None
+
+_GET_FRAME: Callable[[], bytes | None] | None = None
 
 
 class _Handler(http.server.SimpleHTTPRequestHandler):
@@ -61,6 +63,59 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             names = blockly_templates.list_image_templates(WindowUtils.APP_DIR)
             self._reply(True, "", {"templates": names})
             return
+        if path == "/frame":
+            getter = _GET_FRAME
+            if getter is None:
+                self._reply(False, blockly_capture.NO_CAMERA_MESSAGE)
+                return
+            try:
+                png = getter()
+            except Exception:
+                png = None
+            if png is None:
+                self._reply(False, blockly_capture.FRAME_FAIL_MESSAGE)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(png)))
+            self.end_headers()
+            self.wfile.write(png)
+            return
+        if path == "/template_image":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            name = query.get("name", [""])[0]
+            reason = blockly_capture.validate_template_name(name.strip())
+            if reason is not None:
+                self._reply(False, f"画像を出せません: {reason}")
+                return
+            base = Path(WindowUtils.APP_DIR) / "Template"
+            target = (base / Path(str(name).replace("\\", "/"))).resolve()
+            try:
+                target.relative_to(base.resolve())
+            except ValueError:
+                self._reply(False, "画像を出せません: `..` は使えません")
+                return
+            content_types = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".bmp": "image/bmp",
+            }
+            ctype = content_types.get(target.suffix.lower())
+            if ctype is None or not target.is_file():
+                self._reply(False, f"画像を出せません: Template/{name} がありません")
+                return
+            try:
+                body = target.read_bytes()
+            except OSError as e:
+                self._reply(False, f"画像を出せません: {e}")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         super().do_GET()
 
     def _read_json(self) -> dict[str, Any] | None:
@@ -85,6 +140,77 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             )
             print(res.message)
             self._reply(res.status == "deleted", res.message)
+            return
+        if urllib.parse.urlsplit(self.path).path == "/template":
+            payload = self._read_json()
+            if payload is None:
+                return
+            getter = _GET_FRAME
+            if getter is None:
+                self._reply(False, blockly_capture.NO_CAMERA_MESSAGE)
+                return
+            try:
+                png = getter()
+            except Exception:
+                png = None
+            if png is None:
+                self._reply(False, blockly_capture.FRAME_FAIL_MESSAGE)
+                return
+            res = blockly_capture.save_template(
+                WindowUtils.APP_DIR,
+                str(payload.get("name", "")),
+                png,
+                payload.get("rect"),
+            )
+            print(res.message)
+            extra = {"path": res.rel} if res.status == "saved" else {}
+            self._reply(res.status == "saved", res.message, extra)
+            return
+        if urllib.parse.urlsplit(self.path).path == "/match":
+            payload = self._read_json()
+            if payload is None:
+                return
+            source = str(payload.get("source", "frame"))
+            if source == "upload":
+                try:
+                    png = blockly_match.decode_upload_image(
+                        str(payload.get("image", ""))
+                    )
+                except ValueError as e:
+                    self._reply(False, f"照合できません: {e}")
+                    return
+            else:
+                getter = _GET_FRAME
+                if getter is None:
+                    self._reply(False, blockly_capture.NO_CAMERA_MESSAGE)
+                    return
+                try:
+                    png = getter()
+                except Exception:
+                    png = None
+                if png is None:
+                    self._reply(False, blockly_capture.FRAME_FAIL_MESSAGE)
+                    return
+            res = blockly_match.match_template(
+                WindowUtils.APP_DIR,
+                png,
+                str(payload.get("template", "")),
+                payload.get("threshold", 0.7),
+                bool(payload.get("use_gray", True)),
+                payload.get("crop", None),
+            )
+            print(res.message)
+            extra = (
+                {
+                    "score": res.score,
+                    "matched": res.matched,
+                    "count": res.count,
+                    "rect": res.rect,
+                }
+                if res.status == "ok"
+                else {}
+            )
+            self._reply(res.status == "ok", res.message, extra)
             return
         if urllib.parse.urlsplit(self.path).path == "/save":
             payload = self._read_json()
@@ -148,6 +274,7 @@ def open_blockly_editor(
     *,
     is_busy: Callable[[], bool],
     reload_commands: Callable[[], None],
+    get_frame: Callable[[], bytes | None] | None = None,
 ) -> None:
     """エディタを開く。終わったら一覧を作り直す。"""
     import tkinter as tk
@@ -157,6 +284,8 @@ def open_blockly_editor(
         print("実行中はBlocklyエディタを開けません")
         tkmsg.showwarning("Blockly", "実行中はBlocklyエディタを開けません", parent=root)
         return
+    global _GET_FRAME
+    _GET_FRAME = get_frame
     _stop_server()
     handler = functools.partial(_Handler)
     global _server, _thread

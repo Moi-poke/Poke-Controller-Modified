@@ -8,11 +8,17 @@
 <script src="./python_compressed.js"></script>
 <script src="./msg/ja.js"></script>
 <script src="./pokecon_blocks.js"></script>
+<script src="./pokecon_capture.js"></script>
 <style>
 html, body { height: 100%; margin: 0; }
 #bar { padding: 8px; display: flex; gap: 8px; align-items: center; }
 #ws { height: calc(100% - 48px); width: 100%; }
 #status { color: #333; }
+#capmodal { display: none; position: fixed; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; overflow: auto; }
+#capmodalbox { background: #fff; margin: 2vh auto; padding: 12px; width: fit-content; max-width: 96vw; }
+#capbigimg { max-width: 90vw; max-height: 66vh; border: 1px solid #999; cursor: crosshair; }
+.caphandle { position: absolute; width: 8px; height: 8px; background: #f00; border: 1px solid #fff; display: none; }
+.capdim { position: absolute; background: rgba(0,0,0,0.65); color: #fff; font-size: 11px; padding: 1px 4px; display: none; pointer-events: none; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -27,6 +33,68 @@ html, body { height: 100%; margin: 0; }
 <button id="del">削除</button>
 <label>画像 <select id="tpllist"></select></label>
 <button id="tplapply">選択中へ反映</button>
+</div>
+<div id="bar3" style="padding: 0 8px 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+<button id="capget">キャプチャ取得</button>
+<span id="capwrap" style="position: relative; display: none;">
+<img id="capimg" alt="キャプチャ" style="max-width: 320px; max-height: 180px; border: 1px solid #999; cursor: crosshair;">
+<div id="caprect" style="position: absolute; border: 2px solid #f00; display: none; pointer-events: none;"></div>
+</span>
+<label>保存名 <input id="capname" value="" placeholder="例: mark"></label>
+<button id="capsave" disabled>切出し保存</button>
+<span id="capstatus"></span>
+</div>
+<div id="capmodal">
+<div id="capmodalbox">
+<div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+<span id="capmodalhint">範囲を選択してください（枠内ドラッグで移動・赤い点で大きさ変更・数値でも指定可）</span>
+<span id="capmodelabel" style="color: #666;"></span>
+<button id="capmodalclose">× 閉じる</button>
+</div>
+<div id="capblockrow" style="display: none; gap: 8px; align-items: center; margin-bottom: 8px;">
+<label>テンプレ <select id="capblocktpl"></select></label>
+</div>
+<span id="capbigwrap" style="position: relative; display: inline-block;">
+<img id="capbigimg" alt="キャプチャ拡大">
+<div id="capbigrect" style="position: absolute; border: 2px solid #f00; display: none; pointer-events: none;"></div>
+<div id="capmatchrect" style="position: absolute; border: 3px solid #00f; display: none; pointer-events: none;"></div>
+<div id="caph-nw" class="caphandle" style="cursor: nwse-resize;"></div>
+<div id="caph-n" class="caphandle" style="cursor: ns-resize;"></div>
+<div id="caph-ne" class="caphandle" style="cursor: nesw-resize;"></div>
+<div id="caph-e" class="caphandle" style="cursor: ew-resize;"></div>
+<div id="caph-se" class="caphandle" style="cursor: nwse-resize;"></div>
+<div id="caph-s" class="caphandle" style="cursor: ns-resize;"></div>
+<div id="caph-sw" class="caphandle" style="cursor: nesw-resize;"></div>
+<div id="caph-w" class="caphandle" style="cursor: ew-resize;"></div>
+<div id="capdimxy" class="capdim"></div>
+<div id="capdimwh" class="capdim"></div>
+</span>
+<div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
+<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">x <input id="capx" type="number" step="1" style="width: 5em;"><input id="caprx" type="range" min="0" value="0" style="width: 90px;"></span>
+<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">y <input id="capy" type="number" step="1" style="width: 5em;"><input id="capry" type="range" min="0" value="0" style="width: 90px;"></span>
+<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">幅 <input id="capw" type="number" step="1" style="width: 5em;"><input id="caprw" type="range" min="0" value="0" style="width: 90px;"></span>
+<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">高さ <input id="caph" type="number" step="1" style="width: 5em;"><input id="caprh" type="range" min="0" value="0" style="width: 90px;"></span>
+<span style="color: #666; white-space: nowrap;">（実画像の画素・マウスでも上下可）</span>
+<span style="display: inline-flex; gap: 8px; align-items: center; white-space: nowrap;"><button id="capretake">取り直す</button><button id="capok">確定</button><button id="capcancel">キャンセル</button></span>
+<span id="capmodalstatus"></span>
+</div>
+<div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
+<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">テンプレ <select id="capmatchtpl"></select><span id="capmatchsize" style="color: #666;"></span></span>
+<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">しきい値 <input id="capth" type="number" step="0.01" min="0" max="1" value="0.7" style="width: 5em;"><input id="caprth" type="range" min="0" max="1" step="0.01" value="0.7" style="width: 120px;"></span>
+<label style="white-space: nowrap;"><input type="checkbox" id="capgray" checked> グレー</label>
+<label style="white-space: nowrap;"><input type="checkbox" id="caproionly"> 赤枠内のみ</label>
+<span id="capmatchstatus"></span>
+<span id="capmatchcrop" style="color: #666;"></span>
+</div>
+<div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
+<label>画像ファイル <input id="capupload" type="file" accept="image/*"></label>
+<span id="capuploadname" style="color: #666;"></span>
+</div>
+<div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
+<label>保存名 <input id="capmodalname" value="" placeholder="例: mark"></label>
+<button id="capmodalsave">切出し保存</button>
+</div>
+</div>
 </div>
 <div id="ws"></div>
 <script>
@@ -89,7 +157,7 @@ html, body { height: 100%; margin: 0; }
     }).catch(function (e) { setStatus('一覧を読めません: ' + e, true); });
   }
   function refreshTemplates() {
-    fetch('./templates').then(function (r) { return r.json(); }).then(function (j) {
+    return fetch('./templates').then(function (r) { return r.json(); }).then(function (j) {
       var sel = document.getElementById('tpllist');
       sel.textContent = '';
       (j.templates || []).forEach(function (name) {
@@ -98,6 +166,7 @@ html, body { height: 100%; margin: 0; }
         opt.textContent = name;
         sel.appendChild(opt);
       });
+      Blockly.PokeconTemplates = j.templates || [];
     }).catch(function () { /* 候補なしでも保存はできる */ });
   }
   // ボタン押下でDOMフォーカスがBlockly外へ移るとFocusManagerが選択を外すため、
@@ -117,15 +186,27 @@ html, body { height: 100%; margin: 0; }
       lastTplBlockId = null;
     }
   });
-  document.getElementById('tplapply').addEventListener('click', function () {
-    var name = document.getElementById('tpllist').value;
-    if (!name) { setStatus('画像を選んでください', true); return; }
+  // 選択中→記憶の順でテンプレ欄つきブロックを探す。needCrop が真のときは
+  // 範囲欄も必須にする（ブロック用modal向け）。
+  function resolveTplBlock(needCrop) {
     var target =
       (typeof Blockly.getSelected === 'function') ? Blockly.getSelected() : null;
     if (!target || typeof target.getField !== 'function' || !target.getField('TEMPLATE')) {
       target = lastTplBlockId ? ws.getBlockById(lastTplBlockId) : null;
     }
     if (!target || typeof target.getField !== 'function' || !target.getField('TEMPLATE')) {
+      return null;
+    }
+    if (needCrop && !target.getField('CROP')) {
+      return null;
+    }
+    return target;
+  }
+  document.getElementById('tplapply').addEventListener('click', function () {
+    var name = document.getElementById('tpllist').value;
+    if (!name) { setStatus('画像を選んでください', true); return; }
+    var target = resolveTplBlock(false);
+    if (!target) {
       setStatus('テンプレ欄のあるブロックを選んでください', true);
       return;
     }
@@ -165,12 +246,26 @@ html, body { height: 100%; margin: 0; }
         !window.confirm('編集中の内容を捨てて「' + stem + '」を開きますか？')) {
       return;
     }
-    fetch('./load?stem=' + encodeURIComponent(stem)).then(function (r) {
+    // 候補取得を待ってから開く。TEMPLATE欄がdropdownのため、
+    // 一覧未到達で開くと保存値が候補外ではねられて既定値に化ける。
+    refreshTemplates().then(function () {
+      return fetch('./load?stem=' + encodeURIComponent(stem));
+    }).then(function (r) {
       return r.json();
     }).then(function (j) {
       if (!j.ok) { setStatus(j.message || '開けません', true); return; }
       ws.clear();
       Blockly.serialization.workspaces.load(JSON.parse(j.workspaceJson), ws);
+      ws.getAllBlocks(false).forEach(function (b) {
+        if (typeof b.getField !== 'function') { return; }
+        var t = b.getField('TEMPLATE'), p = b.getField('PREVIEW');
+        if (t && p) {
+          var v = t.getValue();
+          p.setValue(v
+            ? './template_image?name=' + encodeURIComponent(v)
+            : 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
+        }
+      });
       document.getElementById('stem').value = j.stem || stem;
       setStatus('開きました: ' + stem, false);
     }).catch(function (e) { setStatus('開けません: ' + e, true); });
@@ -191,6 +286,645 @@ html, body { height: 100%; margin: 0; }
       refreshFiles();
     }).catch(function (e) { setStatus('削除できません: ' + e, true); });
   });
+  var capRect01 = null;
+  var dragStart = null;
+  function capSetStatus(s, isErr) {
+    var el = document.getElementById('capstatus');
+    el.textContent = s;
+    el.style.color = isErr ? '#c00' : '#333';
+    el.style.fontWeight = isErr ? 'bold' : 'normal';
+  }
+  function capDraw() {
+    var box = document.getElementById('caprect');
+    var img = document.getElementById('capimg');
+    if (!capRect01) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    box.style.left = (capRect01.x * img.offsetWidth) + 'px';
+    box.style.top = (capRect01.y * img.offsetHeight) + 'px';
+    box.style.width = (capRect01.width * img.offsetWidth) + 'px';
+    box.style.height = (capRect01.height * img.offsetHeight) + 'px';
+  }
+  function capFetch() {
+    capSetStatus('取得しています…', false);
+    fetch('./frame').then(function (r) {
+      var ct = r.headers.get('Content-Type') || '';
+      if (ct.indexOf('image/png') !== -1) {
+        return r.blob().then(function (b) { return { img: b }; });
+      }
+      return r.json().then(function (j) { return { err: j.message || '取得できません' }; });
+    }).then(function (res) {
+      if (res.err) {
+        capSetStatus(res.err, true);
+        document.getElementById('capsave').disabled = true;
+        return;
+      }
+      var img = document.getElementById('capimg');
+      if (img.src && img.src.indexOf('blob:') === 0) { URL.revokeObjectURL(img.src); }
+      img.src = URL.createObjectURL(res.img);
+      document.getElementById('capwrap').style.display = 'inline-block';
+      capRect01 = null; capDraw();
+      document.getElementById('capsave').disabled = false;
+      capSetStatus('拡大表示で開きました', false);
+      var big = document.getElementById('capbigimg');
+      big.src = img.src;
+      capUploadDataUrl = null;
+      document.getElementById('capuploadname').textContent = '';
+      capMatchHide();
+      if (capPendingBlock) {
+        var pid = capPendingBlock; capPendingBlock = null;
+        capOpenBlockModal(pid);
+      } else {
+        capModalOpen();
+      }
+    }).catch(function (e) { capSetStatus('取得できません: ' + e, true); });
+  }
+  document.getElementById('capget').addEventListener('click', capFetch);
+  document.getElementById('capimg').addEventListener('mousedown', function (ev) {
+    var r = this.getBoundingClientRect();
+    dragStart = {
+      x: (ev.clientX - r.left) / r.width,
+      y: (ev.clientY - r.top) / r.height,
+    };
+    capRect01 = null; capDraw();
+    ev.preventDefault();
+  });
+  window.addEventListener('mousemove', function (ev) {
+    if (!dragStart) { return; }
+    var img = document.getElementById('capimg');
+    var r = img.getBoundingClientRect();
+    var cur = {
+      x: (ev.clientX - r.left) / r.width,
+      y: (ev.clientY - r.top) / r.height,
+    };
+    capRect01 = PokeconCapture.normalizeDrag01(dragStart.x, dragStart.y, cur.x, cur.y);
+    capDraw();
+  });
+  window.addEventListener('mouseup', function () { dragStart = null; });
+  // テンプレ保存の共通手順。成功時は候補を更新してtpllistへ反映する。
+  // afterSave があれば成功時に呼ぶ（bar3は枠消去、modalは開いたまま）。
+  function capPostTemplate(name, rect01, img, statusFn, afterSave) {
+    if (!rect01) { statusFn('画像上でドラッグして範囲を選んでください', true); return; }
+    if (!img.naturalWidth) { statusFn('画像の読込中です。取り直してください', true); return; }
+    if (!PokeconCapture.isValidPixels(rect01, img.naturalWidth, img.naturalHeight)) {
+      statusFn('範囲が小さすぎます（実画像で8px未満の辺があります）', true);
+      return;
+    }
+    if (!name.trim()) { statusFn('保存名を書いてください', true); return; }
+    fetch('./template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, rect: rect01 }),
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      statusFn(j.message || (j.ok ? '保存しました' : '保存できません'), !j.ok);
+      if (j.ok) {
+        if (afterSave) { afterSave(); }
+        refreshTemplates().then(function () {
+          if (j.path) { document.getElementById('tpllist').value = j.path; }
+        });
+      }
+    }).catch(function (e) { statusFn('保存できません: ' + e, true); });
+  }
+  document.getElementById('capsave').addEventListener('click', function () {
+    capPostTemplate(
+      document.getElementById('capname').value,
+      capRect01,
+      document.getElementById('capimg'),
+      capSetStatus,
+      function () { capRect01 = null; capDraw(); });
+  });
+  // 拡大モーダルでの範囲編集。編集中は capModalRect を触り、
+  // [確定] で bar3 の capRect01 へ書き戻す。保存自体は bar3 のまま。
+  var capModalRect = null;
+  var capModalDrag = null;
+  var HANDLE_IDS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+  var HANDLE_CURSORS = {
+    nw: 'nwse-resize', se: 'nwse-resize',
+    ne: 'nesw-resize', sw: 'nesw-resize',
+    n: 'ns-resize', s: 'ns-resize',
+    e: 'ew-resize', w: 'ew-resize',
+  };
+  // 当たり位置に応じたカーソル。グリップ真上は各点の固定指定が優先される。
+  function capHoverCursor(nx, ny) {
+    var img = document.getElementById('capbigimg');
+    var r = img.getBoundingClientRect();
+    var hit = PokeconCapture.hitHandle(capModalRect, nx, ny, 10 / Math.min(r.width, r.height));
+    img.style.cursor = !hit ? 'crosshair' : (hit === 'inside' ? 'move' : HANDLE_CURSORS[hit]);
+  }
+  function capModalSetStatus(s, isErr) {
+    var el = document.getElementById('capmodalstatus');
+    el.textContent = s;
+    el.style.color = isErr ? '#c00' : '#333';
+    el.style.fontWeight = isErr ? 'bold' : 'normal';
+  }
+  function capHideHandles() {
+    HANDLE_IDS.forEach(function (h) {
+      document.getElementById('caph-' + h).style.display = 'none';
+    });
+  }
+  // 数値欄の強調表示。どの数が今の操作対象かを示す。空なら全解除。
+  var DIM_IDS = ['capx', 'capy', 'capw', 'caph'];
+  var HANDLE_DIMS = {
+    n: ['capy', 'caph'], s: ['caph'], e: ['capw'], w: ['capx', 'capw'],
+    nw: ['capx', 'capy', 'capw', 'caph'], ne: ['capy', 'capw', 'caph'],
+    sw: ['capx', 'capw', 'caph'], se: ['capw', 'caph'],
+  };
+  function capHiDim(ids) {
+    DIM_IDS.forEach(function (id) {
+      document.getElementById(id).style.background = ids.indexOf(id) !== -1 ? '#fff3cd' : '';
+    });
+  }
+  function capModalDraw() {
+    var img = document.getElementById('capbigimg');
+    var box = document.getElementById('capbigrect');
+    var dimxy = document.getElementById('capdimxy');
+    var dimwh = document.getElementById('capdimwh');
+    if (!capModalRect) {
+      box.style.display = 'none'; capHideHandles();
+      dimxy.style.display = 'none'; dimwh.style.display = 'none';
+      return;
+    }
+    var W = img.offsetWidth, H = img.offsetHeight;
+    if (!W || !H) { return; }
+    box.style.display = 'block';
+    box.style.left = (capModalRect.x * W) + 'px';
+    box.style.top = (capModalRect.y * H) + 'px';
+    box.style.width = (capModalRect.width * W) + 'px';
+    box.style.height = (capModalRect.height * H) + 'px';
+    var pts = {
+      nw: [capModalRect.x, capModalRect.y],
+      n: [capModalRect.x + capModalRect.width / 2, capModalRect.y],
+      ne: [capModalRect.x + capModalRect.width, capModalRect.y],
+      e: [capModalRect.x + capModalRect.width, capModalRect.y + capModalRect.height / 2],
+      se: [capModalRect.x + capModalRect.width, capModalRect.y + capModalRect.height],
+      s: [capModalRect.x + capModalRect.width / 2, capModalRect.y + capModalRect.height],
+      sw: [capModalRect.x, capModalRect.y + capModalRect.height],
+      w: [capModalRect.x, capModalRect.y + capModalRect.height / 2],
+    };
+    HANDLE_IDS.forEach(function (h) {
+      var el = document.getElementById('caph-' + h);
+      el.style.display = 'block';
+      el.style.left = (pts[h][0] * W - 4) + 'px';
+      el.style.top = (pts[h][1] * H - 4) + 'px';
+    });
+    if (!img.naturalWidth) {
+      dimxy.style.display = 'none'; dimwh.style.display = 'none';
+      return;
+    }
+    var dpx = PokeconCapture.rect01ToPx(capModalRect, img.naturalWidth, img.naturalHeight);
+    dimxy.style.display = 'block';
+    dimwh.style.display = 'block';
+    dimxy.textContent = dpx.x + ',' + dpx.y;
+    dimwh.textContent = dpx.width + '×' + dpx.height;
+    dimxy.style.left = (capModalRect.x * W - 2) + 'px';
+    dimxy.style.top = Math.max(0, capModalRect.y * H - 20) + 'px';
+    dimwh.style.left = (capModalRect.x * W - 2) + 'px';
+    dimwh.style.top = ((capModalRect.y + capModalRect.height) * H + 4) + 'px';
+  }
+  function capModalSyncInputs() {
+    var img = document.getElementById('capbigimg');
+    if (!capModalRect || !img.naturalWidth) { return; }
+    var px = PokeconCapture.rect01ToPx(capModalRect, img.naturalWidth, img.naturalHeight);
+    document.getElementById('capx').value = px.x;
+    document.getElementById('capy').value = px.y;
+    document.getElementById('capw').value = px.width;
+    document.getElementById('caph').value = px.height;
+    document.getElementById('caprx').value = px.x;
+    document.getElementById('capry').value = px.y;
+    document.getElementById('caprw').value = px.width;
+    document.getElementById('caprh').value = px.height;
+  }
+  // スライダーの上限を実画像寸法に合わせる（開く・読込のたび）。
+  function capModalSyncSliderMax() {
+    var img = document.getElementById('capbigimg');
+    if (!img.naturalWidth) { return; }
+    document.getElementById('caprx').max = img.naturalWidth;
+    document.getElementById('caprw').max = img.naturalWidth;
+    document.getElementById('capry').max = img.naturalHeight;
+    document.getElementById('caprh').max = img.naturalHeight;
+  }
+  function capModalOpen() {
+    capHiDim([]);
+    capModalRect = capRect01
+      ? { x: capRect01.x, y: capRect01.y, width: capRect01.width, height: capRect01.height }
+      : null;
+    document.getElementById('capmodal').style.display = 'block';
+    capFitModalBox();
+    capModalSyncSliderMax();
+    capModalDraw(); capModalSyncInputs();
+    capModalSetStatus('', false);
+    capMatchHide();
+    capMatchSetStatus('', false);
+    capMatchTplFill(capBlockMode ? null : document.getElementById('tpllist').value);
+  }
+  function capModalClose() {
+    capHiDim([]);
+    capMatchSeq++;
+    if (capMatchTimer) { clearTimeout(capMatchTimer); capMatchTimer = null; }
+    document.getElementById('capmodal').style.display = 'none';
+    capModalDrag = null;
+    capBlockMode = null;
+    document.getElementById('capblockrow').style.display = 'none';
+    document.getElementById('capok').style.display = '';
+  }
+  // ブロック用モード：対象ブロックID。nullのときは切出し用モード。
+  var capBlockMode = null;
+  // ブロックのCROP欄から矩形を初期化する。画像未読込・不正CROPなら何もしない。
+  function capBlockPreload() {
+    if (!capBlockMode || capModalRect) { return; }
+    var b = ws.getBlockById(capBlockMode);
+    var img = document.getElementById('capbigimg');
+    if (!b || typeof b.getField !== 'function' || !img.naturalWidth) { return; }
+    var c = b.getField('CROP');
+    if (!c) { return; }
+    var parsed = PokeconCapture.parseCropText(c.getValue());
+    if (!parsed) { return; }
+    capModalRect = PokeconCapture.pxToRect01(
+      parsed.x1, parsed.y1, parsed.x2 - parsed.x1, parsed.y2 - parsed.y1,
+      img.naturalWidth, img.naturalHeight);
+    capModalDraw(); capModalSyncInputs();
+  }
+  // ブロックのTHRESHOLD欄からしきい値欄を初期化する。不正値なら何もしない。
+  function capBlockThresholdInit() {
+    if (!capBlockMode) { return; }
+    var b = ws.getBlockById(capBlockMode);
+    if (!b || typeof b.getField !== 'function') { return; }
+    var t = b.getField('THRESHOLD');
+    if (!t) { return; }
+    var v = parseFloat(t.getValue());
+    if (isNaN(v) || v < 0 || v > 1) { return; }
+    document.getElementById('capth').value = String(v);
+    document.getElementById('caprth').value = String(v);
+  }
+  // ブロックへの即時反映。変更のたびにTEMPLATE・CROP・THRESHOLDを書き戻す。
+  // CROPは有効矩形があるときだけ、THRESHOLDは0〜1のときだけ書く。書けなければ黙る。
+  function capBlockSync() {
+    if (!capBlockMode) { return; }
+    var b = ws.getBlockById(capBlockMode);
+    if (!b || typeof b.setFieldValue !== 'function') {
+      capModalSetStatus('対象のブロックが無くなりました', true);
+      return;
+    }
+    var wrote = false;
+    var name = document.getElementById('capblocktpl').value;
+    if (name) { b.setFieldValue(name, 'TEMPLATE'); wrote = true; }
+    var img = document.getElementById('capbigimg');
+    if (capModalRect && img.naturalWidth &&
+        PokeconCapture.isValidPixels(capModalRect, img.naturalWidth, img.naturalHeight)) {
+      var px = PokeconCapture.rect01ToPx(capModalRect, img.naturalWidth, img.naturalHeight);
+      b.setFieldValue(
+        PokeconCapture.formatCrop(px.x, px.y, px.x + px.width, px.y + px.height), 'CROP');
+      wrote = true;
+    }
+    var th = parseFloat(document.getElementById('capth').value);
+    var tf = b.getField('THRESHOLD');
+    if (!isNaN(th) && th >= 0 && th <= 1 && tf) {
+      b.setFieldValue(String(th), 'THRESHOLD');
+      wrote = true;
+    }
+    if (wrote) { capModalSetStatus('ブロックへ反映しました', false); }
+  }
+  // スライダー連打のundo汚染を抑える追従書き込み。
+  var capBlockSyncTimer = null;
+  function capBlockSyncSoon() {
+    if (capBlockSyncTimer) { clearTimeout(capBlockSyncTimer); capBlockSyncTimer = null; }
+    capBlockSyncTimer = setTimeout(function () { capBlockSyncTimer = null; capBlockSync(); }, 150);
+  }
+  document.getElementById('capblocktpl').addEventListener('change', function () {
+    capBlockSync();
+  });
+  // 取得待ちのブロック用起動。画像なしで開こうとした場合に使う。
+  var capPendingBlock = null;
+  // ブロック用モーダルを開く。画像の有無は呼ばない側で確認済みのこと。
+  function capOpenBlockModal(blockId) {
+    var target = blockId ? ws.getBlockById(blockId) : null;
+    if (!target || typeof target.getField !== 'function' ||
+        !target.getField('TEMPLATE') || !target.getField('CROP')) {
+      setStatus('テンプレ欄と範囲欄のあるブロックを選んでください', true);
+      return;
+    }
+    capBlockMode = target.id;
+    capHiDim([]);
+    capModalRect = null;
+    document.getElementById('capblockrow').style.display = 'flex';
+    document.getElementById('capok').style.display = 'none';
+    fetch('./templates').then(function (r) { return r.json(); }).then(function (j) {
+      var sel = document.getElementById('capblocktpl');
+      sel.textContent = '';
+      (j.templates || []).forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      var b = ws.getBlockById(capBlockMode);
+      if (b && typeof b.getField === 'function' && b.getField('TEMPLATE')) {
+        sel.value = b.getField('TEMPLATE').getValue();
+      }
+    }).catch(function () { /* 候補なしでも範囲だけは選べる */ });
+    document.getElementById('capmodal').style.display = 'block';
+    capFitModalBox();
+    capModalSyncSliderMax();
+    capBlockPreload();
+    capBlockThresholdInit();
+    capModalDraw(); capModalSyncInputs();
+    capModalSetStatus('', false);
+    capMatchHide();
+    capMatchSetStatus('', false);
+    capMatchTplFill(
+      (function () {
+        var b = capBlockMode ? ws.getBlockById(capBlockMode) : null;
+        var t = b && typeof b.getField === 'function' ? b.getField('TEMPLATE') : null;
+        return t ? t.getValue() : null;
+      })());
+  }
+  // ブロック上の📷ボタンから呼ばれる（pokecon_blocks.js の CapOpenField）。
+  // 明示選択のみ受け付け、記憶fallbackは使わない（意図しない反映を防ぐ）。
+  Blockly.PokeconOpenBlockModal = function (blockId) {
+    var big = document.getElementById('capbigimg');
+    if (!big.src) {
+      capPendingBlock = blockId;
+      capFetch();
+      return;
+    }
+    capOpenBlockModal(blockId);
+  };
+  var capUploadDataUrl = null;
+  function capMatchSetStatus(s, isErr) {
+    var el = document.getElementById('capmatchstatus');
+    el.textContent = s;
+    el.style.color = isErr ? '#c00' : '#333';
+    el.style.fontWeight = isErr ? 'bold' : 'normal';
+  }
+  function capMatchDraw(rect, matched) {
+    var box = document.getElementById('capmatchrect');
+    var img = document.getElementById('capbigimg');
+    if (!rect || !img.offsetWidth || !img.naturalWidth) { box.style.display = 'none'; return; }
+    var sx = img.offsetWidth / img.naturalWidth, sy = img.offsetHeight / img.naturalHeight;
+    box.style.display = 'block';
+    box.style.borderColor = matched ? '#00f' : '#f00';
+    box.style.left = (rect.x * sx) + 'px';
+    box.style.top = (rect.y * sy) + 'px';
+    box.style.width = (rect.width * sx) + 'px';
+    box.style.height = (rect.height * sy) + 'px';
+  }
+  function capMatchHide() {
+    document.getElementById('capmatchrect').style.display = 'none';
+    document.getElementById('capmatchcrop').textContent = '';
+  }
+  var capMatchSeq = 0;
+  var capMatchTimer = null;
+  function capMatchSoon(immediate) {
+    if (capMatchTimer) { clearTimeout(capMatchTimer); capMatchTimer = null; }
+    if (immediate) { capMatch(); return; }
+    capMatchTimer = setTimeout(function () { capMatchTimer = null; capMatch(); }, 250);
+  }
+  function capSetModelabel(s) {
+    document.getElementById('capmodelabel').textContent = s ? '［' + s + '］' : '';
+  }
+  function capMatchTplFill(preselect) {
+    fetch('./templates').then(function (r) { return r.json(); }).then(function (j) {
+      var sel = document.getElementById('capmatchtpl');
+      var keep = preselect || sel.value;
+      sel.textContent = '';
+      (j.templates || []).forEach(function (name) {
+        var opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      if (keep) { sel.value = keep; }
+      capMatchSize();
+      capMatchSoon(true);
+    }).catch(function () { /* 候補なしでも枠だけは選べる */ capMatchSoon(true); });
+  }
+  function capMatchSize() {
+    var sel = document.getElementById('capmatchtpl');
+    var label = document.getElementById('capmatchsize');
+    var v = sel.value;
+    if (!v) { label.textContent = ''; return; }
+    var im = new Image();
+    im.onload = function () { label.textContent = im.naturalWidth + '×' + im.naturalHeight; };
+    im.onerror = function () { label.textContent = ''; };
+    im.src = './template_image?name=' + encodeURIComponent(v);
+  }
+  function capMatch() {
+    if (document.getElementById('capmodal').style.display === 'none') { return; }
+    var seq = ++capMatchSeq;
+    var tpl = document.getElementById('capmatchtpl').value;
+    if (!tpl) { capMatchHide(); capMatchSetStatus('画像を選んでください', true); return; }
+    var th = parseFloat(document.getElementById('capth').value);
+    if (isNaN(th) || th < 0 || th > 1) {
+      capMatchHide(); capMatchSetStatus('しきい値は0〜1で書いてください', true); return;
+    }
+    var body = { template: tpl, threshold: th,
+      use_gray: document.getElementById('capgray').checked,
+      source: capUploadDataUrl ? 'upload' : 'frame' };
+    if (capUploadDataUrl) { body.image = capUploadDataUrl.split(',', 2)[1]; }
+    if (document.getElementById('caproionly').checked) {
+      var img = document.getElementById('capbigimg');
+      if (!capModalRect || !img.naturalWidth) {
+        capMatchHide(); capMatchSetStatus('赤枠を選んでください', true); return;
+      }
+      var px = PokeconCapture.rect01ToPx(capModalRect, img.naturalWidth, img.naturalHeight);
+      body.crop = [px.x, px.y, px.x + px.width, px.y + px.height];
+    }
+    capMatchSetStatus('照合しています…', false);
+    capSetModelabel('照合中');
+    fetch('./match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (seq !== capMatchSeq) { return; }
+      if (!j.ok) {
+        capMatchHide(); capMatchSetStatus(j.message || '照合できません', true);
+        capSetModelabel('通常'); return;
+      }
+      capMatchDraw(j.rect, j.matched);
+      capMatchSetStatus(j.message || ('一致度 ' + (j.score * 100).toFixed(1) + '%'), !j.matched);
+      var rc = j.rect || {};
+      document.getElementById('capmatchcrop').textContent =
+        'crop = img[' + rc.y + ':' + (rc.y + rc.height) + ', ' + rc.x + ':' + (rc.x + rc.width) + ']';
+      capSetModelabel('通常');
+    }).catch(function (e) {
+      if (seq !== capMatchSeq) { return; }
+      capMatchHide(); capMatchSetStatus('照合できません: ' + e, true);
+      capSetModelabel('通常');
+    });
+  }
+  document.getElementById('capth').addEventListener('input', function () {
+    document.getElementById('caprth').value = this.value;
+    capMatchSoon(false);
+    capBlockSyncSoon();
+  });
+  document.getElementById('caprth').addEventListener('input', function () {
+    document.getElementById('capth').value = this.value;
+    capMatchSoon(false);
+    capBlockSyncSoon();
+  });
+  document.getElementById('capmatchtpl').addEventListener('change', function () {
+    capMatchSize();
+    capMatchSoon(true);
+  });
+  document.getElementById('capgray').addEventListener('change', function () {
+    capMatchSoon(true);
+  });
+  document.getElementById('caproionly').addEventListener('change', function () {
+    capMatchSoon(true);
+  });
+  document.getElementById('capupload').addEventListener('change', function () {
+    var f = this.files && this.files[0];
+    if (!f) { return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var big = document.getElementById('capbigimg');
+      big.src = reader.result;
+      capUploadDataUrl = reader.result;
+      document.getElementById('capuploadname').textContent = f.name + ' で試します';
+      capModalSetStatus('手動画像を表示しました', false);
+      capMatchSoon(true);
+    };
+    reader.readAsDataURL(f);
+  });
+  // 白枠の幅を表示画像に合わせる。fit-contentのままだと折り返し前の
+  // 操作行の長さに引っ張られて右に余白ができるため。
+  function capFitModalBox() {
+    var img = document.getElementById('capbigimg');
+    if (!img.offsetWidth) { return; }
+    document.getElementById('capmodalbox').style.width = (img.offsetWidth + 24) + 'px';
+  }
+  document.getElementById('capbigimg').addEventListener('load', function () {
+    if (document.getElementById('capmodal').style.display !== 'none') {
+      capFitModalBox();
+      capModalSyncSliderMax();
+      capBlockPreload();
+      capModalDraw(); capModalSyncInputs();
+    }
+  });
+  // mousedownは枠・グリップからのバブルも受けるラッパで受ける。
+  // 画像直付けでは枠上のクリックが届かない。
+  document.getElementById('capbigwrap').addEventListener('mousedown', function (ev) {
+    var r = document.getElementById('capbigimg').getBoundingClientRect();
+    var nx = (ev.clientX - r.left) / r.width, ny = (ev.clientY - r.top) / r.height;
+    var hit = PokeconCapture.hitHandle(capModalRect, nx, ny, 10 / Math.min(r.width, r.height));
+    capHiDim([]);
+    if (hit && hit !== 'inside') {
+      capModalDrag = { mode: 'resize', handle: hit, sx: nx, sy: ny, orig: {
+        x: capModalRect.x, y: capModalRect.y, width: capModalRect.width, height: capModalRect.height,
+      } };
+      document.getElementById('capbigimg').style.cursor = HANDLE_CURSORS[hit];
+      capHiDim(HANDLE_DIMS[hit]);
+    } else if (hit === 'inside') {
+      capModalDrag = { mode: 'move', sx: nx, sy: ny, orig: {
+        x: capModalRect.x, y: capModalRect.y, width: capModalRect.width, height: capModalRect.height,
+      } };
+      document.getElementById('capbigimg').style.cursor = 'move';
+      capHiDim(['capx', 'capy']);
+    } else {
+      capModalDrag = { mode: 'new', sx: nx, sy: ny };
+      capModalRect = null; capModalDraw();
+    }
+    ev.preventDefault();
+  });
+  window.addEventListener('mousemove', function (ev) {
+    if (!capModalDrag) {
+      // 待機中は位置に応じたカーソルだけ更新する（modal表示中のみ）。
+      if (document.getElementById('capmodal').style.display === 'none') { return; }
+      var hoverImg = document.getElementById('capbigimg');
+      var hr = hoverImg.getBoundingClientRect();
+      if (!hr.width || !hr.height) { return; }
+      capHoverCursor((ev.clientX - hr.left) / hr.width, (ev.clientY - hr.top) / hr.height);
+      return;
+    }
+    if (document.getElementById('capmodal').style.display === 'none') { return; }
+    var img = document.getElementById('capbigimg');
+    var r = img.getBoundingClientRect();
+    var nx = (ev.clientX - r.left) / r.width, ny = (ev.clientY - r.top) / r.height;
+    var d = capModalDrag;
+    if (d.mode === 'new') {
+      capModalRect = PokeconCapture.normalizeDrag01(d.sx, d.sy, nx, ny);
+    } else if (d.mode === 'move') {
+      capModalRect = PokeconCapture.moveRect01(d.orig, nx - d.sx, ny - d.sy);
+    } else {
+      capModalRect = PokeconCapture.resizeRect01(d.orig, d.handle, nx - d.sx, ny - d.sy);
+    }
+    capModalDraw(); capModalSyncInputs();
+  });
+  window.addEventListener('mouseup', function () {
+    var wasDrag = !!capModalDrag;
+    capModalDrag = null;
+    document.getElementById('capbigimg').style.cursor = 'crosshair';
+    if (wasDrag) { capMatchSoon(true); capBlockSync(); }
+  });
+  window.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && document.getElementById('capmodal').style.display !== 'none') {
+      capModalClose();
+    }
+  });
+  // 数値欄・スライダー共通の反映処理。v は実画像画素の {x, y, w, h}。
+  // 入力途中の空欄・ハイフン等は黙って無視する（確定・保存時に改めて検証する）。
+  function capApplyPx(v) {
+    var img = document.getElementById('capbigimg');
+    if (!img.naturalWidth) { capModalSetStatus('画像の読込中です。取り直してください', true); return; }
+    if (isNaN(v.x) || isNaN(v.y) || isNaN(v.w) || isNaN(v.h)) { return; }
+    if (v.w <= 0 || v.h <= 0) { capModalSetStatus('幅と高さは1以上にしてください', true); return; }
+    capModalRect = PokeconCapture.pxToRect01(v.x, v.y, v.w, v.h, img.naturalWidth, img.naturalHeight);
+    capModalDraw(); capModalSyncInputs();
+    capHiDim([]);
+    capMatchSoon(false);
+    capBlockSyncSoon();
+    if (!PokeconCapture.isValidPixels(capModalRect, img.naturalWidth, img.naturalHeight)) {
+      capModalSetStatus('範囲が小さめです（実画像で8px未満の辺があります）', true);
+    } else {
+      capModalSetStatus('数値を反映しました', false);
+    }
+  }
+  ['capx', 'capy', 'capw', 'caph'].forEach(function (id) {
+    // ホイール・スピナー・キー入力のいずれもinputで拾う（changeはblur待ちになるため）。
+    document.getElementById(id).addEventListener('input', function () {
+      capApplyPx({
+        x: parseInt(document.getElementById('capx').value, 10),
+        y: parseInt(document.getElementById('capy').value, 10),
+        w: parseInt(document.getElementById('capw').value, 10),
+        h: parseInt(document.getElementById('caph').value, 10),
+      });
+    });
+  });
+  ['caprx', 'capry', 'caprw', 'caprh'].forEach(function (id) {
+    document.getElementById(id).addEventListener('input', function () {
+      capApplyPx({
+        x: parseInt(document.getElementById('caprx').value, 10),
+        y: parseInt(document.getElementById('capry').value, 10),
+        w: parseInt(document.getElementById('caprw').value, 10),
+        h: parseInt(document.getElementById('caprh').value, 10),
+      });
+    });
+  });
+  document.getElementById('capok').addEventListener('click', function () {
+    var img = document.getElementById('capbigimg');
+    if (!capModalRect) { capModalSetStatus('範囲を選んでください', true); return; }
+    if (!img.naturalWidth ||
+        !PokeconCapture.isValidPixels(capModalRect, img.naturalWidth, img.naturalHeight)) {
+      capModalSetStatus('範囲が小さすぎます（実画像で8px未満の辺があります）', true); return;
+    }
+    capRect01 = {
+      x: capModalRect.x, y: capModalRect.y, width: capModalRect.width, height: capModalRect.height,
+    };
+    capDraw();
+    capModalClose();
+    capSetStatus('範囲を反映しました。保存名を書いて「切出し保存」を押してください', false);
+  });
+  document.getElementById('capcancel').addEventListener('click', capModalClose);
+  document.getElementById('capmodalclose').addEventListener('click', capModalClose);
+  document.getElementById('capmodalsave').addEventListener('click', function () {
+    capPostTemplate(
+      document.getElementById('capmodalname').value,
+      capModalRect,
+      document.getElementById('capbigimg'),
+      capModalSetStatus,
+      null);
+  });
+  document.getElementById('capretake').addEventListener('click', capFetch);
   refreshFiles();
   refreshTemplates();
 })();

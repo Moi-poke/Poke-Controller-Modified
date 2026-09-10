@@ -297,12 +297,14 @@ class PokeController_Menubar(tk.Menu):
 
     def OpenBlocklyEditor(self) -> None:
         """Blocklyエディタを開く。実手順は ui.blockly_editor。"""
+        from services import blockly_capture
         from ui import blockly_editor
 
         blockly_editor.open_blockly_editor(
             self.root,
             is_busy=lambda: self.app.runner.is_busy(),
             reload_commands=self.app.reloadCommands,
+            get_frame=blockly_capture.build_get_frame(lambda: self.camera),
         )
 
     def exit(self) -> None:

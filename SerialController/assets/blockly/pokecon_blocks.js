@@ -73,52 +73,115 @@
     },
   ]);
 
+  // ブロック上の📷ボタン。押すと範囲選択モーダルをそのブロック用に開く。
+  // FieldLabel継承で文面描画だけ借り、showEditor_上書きでクリック可能にする
+  //（クリック可否はshowEditor_の上書き有無で決まる）。
+  // 値を持たない（EDITABLE=false・SERIALIZABLE=false）ため保存物・生成コードに影響しない。
+  // 開く先は editor.html が Blockly.PokeconOpenBlockModal に登録する。
+  class CapOpenField extends Blockly.FieldLabel {
+    constructor(text) {
+      super(text == null ? "📷" : text);
+      this.EDITABLE = false;
+      this.SERIALIZABLE = false;
+    }
+    showEditor_() {
+      var b = this.getSourceBlock();
+      if (b && typeof Blockly.PokeconOpenBlockModal === "function") {
+        Blockly.PokeconOpenBlockModal(b.id);
+      }
+    }
+    static fromJson(options) {
+      return new CapOpenField(options ? options.text : undefined);
+    }
+  }
+  Blockly.fieldRegistry.register("field_capopen", CapOpenField);
+
   Blockly.defineBlocksWithJsonArray([
     {
       type: "pokecon_vision_contains",
-      message0: "画像 %1 がある 閾値 %2 範囲 %3",
+      message0: "画像 %1 がある 閾値 %2 範囲 %3 %4 %5",
       args0: [
-        { type: "field_input", name: "TEMPLATE", text: "my-pack/a.png" },
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
       output: "Boolean",
       colour: 210,
     },
     {
       type: "pokecon_vision_wait_appear",
-      message0: "画像 %1 が出るまで待つ 上限 %2 閾値 %3 範囲 %4",
+      message0: "画像 %1 が出るまで待つ 上限 %2 閾値 %3 範囲 %4 %5 %6",
       args0: [
-        { type: "field_input", name: "TEMPLATE", text: "my-pack/a.png" },
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
       previousStatement: null,
       nextStatement: null,
       colour: 210,
     },
     {
       type: "pokecon_vision_wait_gone",
-      message0: "画像 %1 が消えるまで待つ 上限 %2 閾値 %3 範囲 %4",
+      message0: "画像 %1 が消えるまで待つ 上限 %2 閾値 %3 範囲 %4 %5 %6",
       args0: [
-        { type: "field_input", name: "TEMPLATE", text: "my-pack/a.png" },
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
       previousStatement: null,
       nextStatement: null,
       colour: 210,
     },
     {
       type: "pokecon_vision_position",
-      message0: "画像 %1 の位置 閾値 %2 範囲 %3",
+      message0: "画像 %1 の位置 閾値 %2 範囲 %3 %4 %5",
       args0: [
-        { type: "field_input", name: "TEMPLATE", text: "my-pack/a.png" },
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
       output: null,
       colour: 210,
     },
@@ -150,6 +213,56 @@
     },
   ]);
 
+  // TEMPLATE欄の候補一覧。editor.html が ./templates の取得結果で更新する。
+  // 未登録名は先頭に足して保持する（打ち間違いの既存保存物を壊さない）。
+  // Array.isArray で見る（instanceof はvm等の別レルム配列で偽になるため）。
+  Blockly.Extensions.register("pokecon_template_options", function () {
+    var f = this.getField("TEMPLATE");
+    if (!f) {
+      return;
+    }
+    f.menuGenerator_ = function () {
+      var list =
+        typeof Blockly.PokeconTemplates !== "undefined" &&
+        Array.isArray(Blockly.PokeconTemplates)
+          ? Blockly.PokeconTemplates
+          : [];
+      var opts = list.map(function (n) {
+        return [n, n];
+      });
+      var cur = f.getValue();
+      if (cur && !opts.some(function (o) { return o[1] === cur; })) {
+        opts.unshift([cur, cur]);
+      }
+      // 空欄も常時選べる（従来の空テキストと同等。保存時は書式検査ではねられる）。
+      opts.push(["(空欄)", ""]);
+      return opts;
+    };
+  });
+  // TEMPLATE欄の変更をダミーPREVIEW欄へ反映する。生成コードには触らない。
+  // 欠損時は透明placeholderのままにする（保存は塞がない）。
+  var PREVIEW_EMPTY =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  function previewUrl(v) {
+    return "./template_image?name=" + encodeURIComponent(v);
+  }
+  Blockly.Extensions.register("pokecon_template_preview", function () {
+    var tpl = this.getField("TEMPLATE");
+    var prev = this.getField("PREVIEW");
+    if (!tpl || !prev) {
+      return;
+    }
+    tpl.setValidator(function (v) {
+      var b = this.getSourceBlock();
+      if (b) {
+        var p = b.getField("PREVIEW");
+        if (p) {
+          p.setValue(v ? previewUrl(v) : PREVIEW_EMPTY);
+        }
+      }
+      return v;
+    });
+  });
   // リポジトリは4スペース字下げ（ruff format）。既定の2スペースのままでは通らない。
   pythonGenerator.INDENT = "    ";
 
