@@ -107,7 +107,7 @@
   Blockly.defineBlocksWithJsonArray([
     {
       type: "pokecon_vision_contains",
-      message0: "画像 %1 がある 閾値 %2 範囲 %3 %4 %5",
+      message0: "画像 %1 がある 閾値 %2 範囲 %3 グレー %4 %5 %6",
       args0: [
         { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
@@ -120,6 +120,7 @@
           height: 90,
           alt: "*",
         },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
         { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
       extensions: ["pokecon_template_preview", "pokecon_template_options"],
@@ -128,7 +129,7 @@
     },
     {
       type: "pokecon_vision_wait_appear",
-      message0: "画像 %1 が出るまで待つ 上限 %2 閾値 %3 範囲 %4 %5 %6",
+      message0: "画像 %1 が出るまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
       args0: [
         { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
@@ -142,6 +143,7 @@
           height: 90,
           alt: "*",
         },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
         { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
       extensions: ["pokecon_template_preview", "pokecon_template_options"],
@@ -151,7 +153,7 @@
     },
     {
       type: "pokecon_vision_wait_gone",
-      message0: "画像 %1 が消えるまで待つ 上限 %2 閾値 %3 範囲 %4 %5 %6",
+      message0: "画像 %1 が消えるまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
       args0: [
         { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
@@ -165,6 +167,7 @@
           height: 90,
           alt: "*",
         },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
         { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
       extensions: ["pokecon_template_preview", "pokecon_template_options"],
@@ -174,7 +177,7 @@
     },
     {
       type: "pokecon_vision_position",
-      message0: "画像 %1 の位置 閾値 %2 範囲 %3 %4 %5",
+      message0: "画像 %1 の位置 閾値 %2 範囲 %3 グレー %4 %5 %6",
       args0: [
         { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
@@ -187,6 +190,7 @@
           height: 90,
           alt: "*",
         },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
         { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
       extensions: ["pokecon_template_preview", "pokecon_template_options"],
@@ -340,6 +344,13 @@
       : "";
   }
 
+  function visionGray(block) {
+    var g = typeof block.getFieldValue === "function" ? block.getFieldValue("USE_GRAY") : null;
+    if (g === "TRUE") { return ", use_gray=True"; }
+    if (g === "FALSE") { return ", use_gray=False"; }
+    return "";
+  }
+
   pythonGenerator.forBlock["pokecon_vision_contains"] = function (
     block,
     generator
@@ -350,6 +361,7 @@
       ", threshold=" +
       block.getFieldValue("THRESHOLD") +
       visionCrop(block) +
+      visionGray(block) +
       ")";
     return [code, generator.ORDER_ATOMIC];
   };
@@ -363,6 +375,7 @@
       ", threshold=" +
       block.getFieldValue("THRESHOLD") +
       visionCrop(block) +
+      visionGray(block) +
       ")\n"
     );
   };
@@ -376,6 +389,7 @@
       ", threshold=" +
       block.getFieldValue("THRESHOLD") +
       visionCrop(block) +
+      visionGray(block) +
       ")\n"
     );
   };
@@ -390,6 +404,7 @@
       ", threshold=" +
       block.getFieldValue("THRESHOLD") +
       visionCrop(block) +
+      visionGray(block) +
       ")";
     return [code, generator.ORDER_ATOMIC];
   };

@@ -362,12 +362,115 @@ def test_browser_vision_codegen_switches_base() -> None:
     code = proc.stdout[start:end]
     assert "ImageProcPythonCommand" in code
     assert "def __init__(self, cam, gui=None):" in code
-    assert 'self.waitTemplate("my-pack/a.png", timeout=10, threshold=0.7)' in code
-    assert 'self.isContainTemplate("my-pack/a.png", threshold=0.7)' in code
+    # USE_GRAY無しの旧保存物は定義既定(FALSE=カラー)が補われ、明示で出る。
+    assert (
+        'self.waitTemplate("my-pack/a.png", timeout=10, threshold=0.7, use_gray=False)'
+        in code
+    )
+    assert (
+        'self.isContainTemplate("my-pack/a.png", threshold=0.7, use_gray=False)' in code
+    )
     assert "self.press(Button.A" in code
     assert blockly_validate.validate_generated_code(code) == []
     assert blockly_templates.validate_template_refs(code) == []
     assert blockly_templates.warn_template_refs(code) == []
+
+
+def test_vision_blocks_expose_use_gray() -> None:
+    """テンプレ4ブロックはUSE_GRAY切替を持ち、生成コードにuse_grayを出すこと。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert "USE_GRAY" in src
+    assert "use_gray=" in src
+    assert "visionGray" in src
+
+
+PROBE_GRAY_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('BROWSER-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+// 実ブロック経由：保存物を読み込ませ、定義既定の適用まで含めて生成する。
+function genFor(type, fields) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks: [{ type: type, fields: fields }] } }, ws);
+  const blk = ws.getAllBlocks(false)[0];
+  const out = gen.forBlock[type](blk, gen);
+  const code = Array.isArray(out) ? out[0] : out;
+  ws.dispose();
+  return code;
+}
+function expectContains(code, sub, label) {
+  if (code.indexOf(sub) === -1) {
+    fail(label + ': ' + JSON.stringify(sub) + ' が無い: ' + code);
+  }
+}
+const cases = [
+  ['pokecon_vision_contains', 'self.isContainTemplate('],
+  ['pokecon_vision_wait_appear', 'self.waitTemplate('],
+  ['pokecon_vision_wait_gone', 'self.waitTemplateGone('],
+  ['pokecon_vision_position', 'self.getTemplatePosition('],
+];
+for (const [type, head] of cases) {
+  const base = { TEMPLATE: 'my-pack/a.png', THRESHOLD: 0.7, CROP: '' };
+  if (type === 'pokecon_vision_wait_appear' || type === 'pokecon_vision_wait_gone') {
+    base.TIMEOUT = 10;
+  }
+  const off = genFor(type, Object.assign({}, base, { USE_GRAY: 'FALSE' }));
+  expectContains(off, head, type + ' FALSE');
+  expectContains(off, ', use_gray=False', type + ' FALSE');
+  const on = genFor(type, Object.assign({}, base, { USE_GRAY: 'TRUE' }));
+  expectContains(on, ', use_gray=True', type + ' TRUE');
+}
+// 旧保存物相当：USE_GRAYを知らない偽ブロックは引数を省略する。
+const legacy = gen.forBlock['pokecon_vision_contains']({
+  getFieldValue: function (n) {
+    if (n === 'TEMPLATE') { return 'my-pack/a.png'; }
+    if (n === 'THRESHOLD') { return 0.7; }
+    return null;
+  },
+}, gen);
+const legacyCode = Array.isArray(legacy) ? legacy[0] : legacy;
+if (legacyCode.indexOf('use_gray') !== -1) {
+  fail('旧field欠損で use_gray が出た: ' + legacyCode);
+}
+console.log('GRAY-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_vision_use_gray_codegen() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_GRAY_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "GRAY-PROBE-OK" in proc.stdout
 
 
 CAPTURE_PROBE_JS = """\
