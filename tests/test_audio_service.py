@@ -88,7 +88,7 @@ def test_monitor_output_failure_notifies() -> None:
     def _fail(_on: bool, _device: Any = None) -> bool:
         return False
 
-    fake.setMonitorEnabled = _fail  # type: ignore[method-assign]
+    fake.setMonitorEnabled = _fail  # type: ignore[assignment]
     assert svc.set_monitor(True, "sp", 0.5) is False
     assert notes  # 利用者向けに1行出る
 
