@@ -31,8 +31,10 @@ from Menubar import PokeController_Menubar
 from core import CommandStats, PokeConLogger
 from core.Camera import Camera
 from loguru import logger
+from services.audio_service import AudioService
 from services.command_runner import CommandRunner
 from services.serial_service import SerialService
+from ui.audio_panel import AudioPanelMixin
 from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
 from ui.log_panel import LogPanelMixin
@@ -55,6 +57,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class PokeControllerApp(
     CameraPanelMixin,
+    AudioPanelMixin,
     SerialPanelMixin,
     CommandPanelMixin,
     LogPanelMixin,
@@ -99,6 +102,7 @@ class PokeControllerApp(
         self._setup_camera_name()
 
         self._start_camera()
+        self._start_audio()
         self._start_serial()
         self._build_preview()
         self._update_title()
@@ -128,6 +132,7 @@ class PokeControllerApp(
         self.controller: ControllerGUI | None = None
         self.poke_treeview: Any = None
         self.camera: Camera | None = None
+        self.audio_service = AudioService(notify_user=print)
         # 送り先と実行状態の所有者。実体は services が持つ。
         # Window は tk 変数の読み書きと見た目の反映だけを行う。
         # 窓のフォーカス有無（キーボード操作の門）。pynput は OS 全体の
@@ -211,6 +216,7 @@ class PokeControllerApp(
     def _build_ui(self) -> None:
         self.frame_1 = ttk.Frame(self.root)
         self._build_camera_frame()
+        self._build_audio_frame()
         self._build_serial_frame()
         self._build_control_frame()
         self._build_command_frame()
@@ -275,6 +281,7 @@ class PokeControllerApp(
 
         # 前回のウィンドウ位置とサイズを戻す
         self._restore_geometry()
+        self._apply_audio_widgets()
 
         # ここまでは「設定を GUI へ流し込む」段階なので保存してはいけない。
         # 以降の変更（＝利用者の操作）だけを保存対象にする。
@@ -416,6 +423,14 @@ class PokeControllerApp(
         # 映像を止めたあとで解放する。順序を逆にすると解放済みメモリを読む
         if self.camera is not None:
             self.camera.destroy()
+        try:
+            self._stop_meter()
+        except Exception as e:
+            logger.warning(f"音声メーターの停止で例外: {e}")
+        try:
+            self.audio_service.shutdown()
+        except Exception as e:
+            logger.warning(f"音声の停止で例外: {e}")
         cv2.destroyAllWindows()
 
         # 標準出力を元に戻さないと、破棄済みウィジェットへ書きに行くことがある
@@ -447,6 +462,10 @@ class PokeControllerApp(
         self.settings.baud_rate.set(self._currentBaudRate())
         self.settings.camera_id.set(self._cameraIdOrNone() or 0)
         self.settings.camera_key.set(self.camera_key.get())
+        self.settings.audio_input.set(self.audio_input_name.get())
+        self.settings.audio_output.set(self.audio_output_name.get())
+        self.settings.audio_monitor_enabled.set(self.audio_monitor.get())
+        self.settings.audio_monitor_volume.set(self.audio_volume.get())
         self.settings.input_log_enabled.set(self.show_input_log.get())
         # 通信方式。起動引数で一時的に替えている場合も、
         #   画面に出ている値＝実際に使っている値なのでそのまま保存する。

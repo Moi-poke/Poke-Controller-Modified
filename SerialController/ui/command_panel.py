@@ -54,6 +54,7 @@ class CommandPanelMixin:
     mcu_cur_command: Any
     camera: Any
     preview: Any
+    audio_service: Any
     _running_command: str
     _paused: bool
     open_folder_img: Any
@@ -512,6 +513,18 @@ class CommandPanelMixin:
                     command = cmd_class(self.camera, gui)
                 else:
                     command = cmd_class(self.camera)
+                # 画像＋音声の併用コマンドには音声源を属性で渡す。
+                # gui_root と同じく、渡せなくても致命扱いにしない。
+                try:
+                    command.audio = self.audio_service.capture
+                except Exception as e:
+                    logger.debug(f"audio を渡せませんでした: {e}")
+            elif issubclass(cmd_class, PythonCommandBase.AudioPythonCommand):
+                audio = self.audio_service.capture
+                if WindowUtils.acceptsAudioArg(cmd_class):
+                    command = cmd_class(audio)
+                else:
+                    command = cmd_class()
             else:
                 command = cmd_class()
         except Exception:
