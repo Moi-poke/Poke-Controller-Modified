@@ -5,6 +5,9 @@
 
 version: '3'
 
+vars:
+  FILES: SerialController tools tests
+
 tasks:
   sync:
     desc: 依存関係の同期（uv管理）
@@ -12,19 +15,19 @@ tasks:
       - uv sync
 
   lint:
-    desc: ruffによる静的検査
+    desc: ruffによる静的検査（追加引数は `task lint -- <args>`）
     cmds:
-      - uv run --frozen ruff check {{.CLI_ARGS}} SerialController tools tests
+      - uv run --frozen ruff check {{.CLI_ARGS}} {{.FILES}}
 
   format:
-    desc: ruffによる整形
+    desc: ruffによる整形（確認のみは `task format -- --check`）
     cmds:
-      - uv run --frozen ruff format {{.CLI_ARGS}} SerialController tools tests
+      - uv run --frozen ruff format {{.CLI_ARGS}} {{.FILES}}
 
   typecheck:
     desc: mypyによる型検査
     cmds:
-      - uv run --frozen mypy SerialController tools tests
+      - uv run --frozen mypy {{.FILES}}
 
   bounds:
     desc: core/ の境界検査（GUI・アプリ層依存の混入防止）
@@ -37,12 +40,12 @@ tasks:
       - uv run --frozen python tools/check_user_api.py
 
   test:
-    desc: pytestによる単体検査（実機不要分）
+    desc: pytestによる単体検査（実機不要分、絞り込みは `task test -- -k <expr> -q`）
     cmds:
-      - uv run --frozen pytest tests -q
+      - uv run --frozen pytest tests {{.CLI_ARGS}} -q
 
   check:
-    desc: 検査＋整形＋型検査＋境界検査（修正モード）
+    desc: 検査＋整形＋型検査＋境界検査（修正モード、直列実行）
     cmds:
       - task: lint
         vars:
@@ -54,23 +57,23 @@ tasks:
       - task: test
 
   ci:
-    desc: 検査＋整形確認＋型検査＋境界検査＋公開API面＋単体検査（修正なし・CI用）
-    cmds:
-      - task: lint
+    desc: 検査＋整形確認＋型検査＋境界検査＋公開API面＋単体検査（修正なし・CI用、並列実行）
+    deps:
+      - lint
       - task: format
         vars:
           CLI_ARGS: --check
-      - task: typecheck
-      - task: bounds
-      - task: userapi
-      - task: test
+      - typecheck
+      - bounds
+      - userapi
+      - test
 
   app:
-    desc: 本体を起動する（PROFILE変数でプロファイル指定、例: task app PROFILE=switch1）
+    desc: "本体を起動する（PROFILE変数でプロファイル指定、例: task app PROFILE=switch1）"
     vars:
       PROFILE: '{{.PROFILE | default ""}}'
     cmds:
-      - uv run --frozen python SerialController/Window.py --profile {{.PROFILE}}
+      - '{{if .PROFILE}}uv run --frozen python SerialController/Window.py --profile {{.PROFILE}}{{else}}uv run --frozen python SerialController/Window.py{{end}}'
 
   launcher:
     desc: プロファイル選択ランチャーを起動する
@@ -78,11 +81,9 @@ tasks:
       - uv run --frozen python SerialController/launcher.py
 
   clean:
-    desc: 生成物（__pycache__ / .mypy_cache / 起動ログ残骸）の掃除
+    desc: 生成物（__pycache__ / .mypy_cache / 起動ログ残骸）の掃除（OS共通）
     cmds:
-      - powershell -NoProfile -Command "Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force"
-      - powershell -NoProfile -Command "if (Test-Path .mypy_cache) { Remove-Item -Recurse -Force .mypy_cache }"
-      - powershell -NoProfile -Command "Get-ChildItem -Path $env:TEMP -Filter 'pokecon_boot_*.log' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue"
+      - uv run --frozen python -c "import pathlib,shutil,tempfile; [shutil.rmtree(p,ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]; shutil.rmtree('.mypy_cache',ignore_errors=True); [p.unlink(missing_ok=True) for p in pathlib.Path(tempfile.gettempdir()).glob('pokecon_boot_*.log')]"
 
   setup_dev:
     desc: 開発環境の準備（pre-commitフックの有効化）
