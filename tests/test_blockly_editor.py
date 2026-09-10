@@ -467,3 +467,59 @@ def test_save_spoofed_huge_length_fails_fast(server: str) -> None:
     assert elapsed < 8.0, f"応答が遅すぎます: {elapsed:.1f}s"
     assert b"200" in data.split(b"\r\n", 1)[0]
     assert _body_json(data)["ok"] is False
+
+
+def make_red_png(width: int = 20, height: int = 20) -> bytes:
+    import cv2
+    import numpy as np
+
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    img[:] = (0, 0, 255)
+    ok, buf = cv2.imencode(".png", img)
+    assert ok
+    return bytes(buf)
+
+
+def test_color_ratio_hit(server: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    frame = make_red_png()
+    monkeypatch.setattr(blockly_editor, "_GET_FRAME", lambda: frame)
+    data = post_json(
+        server,
+        "/color_ratio",
+        {"source": "frame", "lower": [0, 100, 100], "upper": [10, 255, 255]},
+    )
+    assert data["ok"] is True
+    assert data["ratio"] > 0.9
+
+
+def test_filter_preview_gray_out(server: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import base64
+
+    frame = make_red_png()
+    monkeypatch.setattr(blockly_editor, "_GET_FRAME", lambda: frame)
+    data = post_json(
+        server,
+        "/filter_preview",
+        {
+            "source": "frame",
+            "lower": [0, 100, 100],
+            "upper": [10, 255, 255],
+            "mode": "gray_out",
+        },
+    )
+    assert data["ok"] is True
+    assert base64.b64decode(data["image"])[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_filter_bad_mode_fails(server: str) -> None:
+    data = post_json(
+        server,
+        "/filter_preview",
+        {
+            "source": "frame",
+            "lower": [0, 100, 100],
+            "upper": [10, 255, 255],
+            "mode": "weird",
+        },
+    )
+    assert data["ok"] is False

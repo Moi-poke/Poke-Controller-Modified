@@ -11,6 +11,7 @@ tkinterを触らず、ファイル書きの結果だけをJSONで返す。再読
 
 from __future__ import annotations
 
+import base64
 import functools
 import http.server
 import json
@@ -22,7 +23,13 @@ from pathlib import Path
 from typing import Any
 
 import WindowUtils
-from services import blockly_capture, blockly_match, blockly_save, blockly_templates
+from services import (
+    blockly_capture,
+    blockly_color,
+    blockly_match,
+    blockly_save,
+    blockly_templates,
+)
 
 _BLOCKLY_DIR = Path(WindowUtils.APP_DIR) / "assets" / "blockly"
 
@@ -239,6 +246,90 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                 else {}
             )
             self._reply(res.status == "ok", res.message, extra)
+            return
+        if urllib.parse.urlsplit(self.path).path == "/color_ratio":
+            payload = self._read_json(MAX_UPLOAD_BODY_BYTES)
+            if payload is None:
+                return
+            source = str(payload.get("source", "frame"))
+            frame = None
+            if source == "upload":
+                try:
+                    # 復号は1回だけ（decode→ndarray→ratioへ受渡し）。
+                    # 文言は従来のbytes APIと同一に保つ。
+                    frame = blockly_match.decode_upload_array(
+                        str(payload.get("image", ""))
+                    )
+                except ValueError as e:
+                    self._reply(False, f"色を見られません: {e}")
+                    return
+            else:
+                getter = _GET_FRAME
+                if getter is None:
+                    self._reply(False, blockly_capture.NO_CAMERA_MESSAGE)
+                    return
+                try:
+                    frame = getter()
+                except Exception:
+                    frame = None
+                if frame is None:
+                    self._reply(False, blockly_capture.FRAME_FAIL_MESSAGE)
+                    return
+            ratio, err = blockly_color.ratio_on_png(
+                frame,
+                payload.get("lower"),
+                payload.get("upper"),
+                payload.get("crop", None),
+            )
+            if err is not None:
+                self._reply(False, f"色を見られません: {err}")
+                return
+            message = f"割合 {ratio * 100:.1f}%"
+            print(message)
+            self._reply(True, message, {"ratio": ratio})
+            return
+        if urllib.parse.urlsplit(self.path).path == "/filter_preview":
+            payload = self._read_json(MAX_UPLOAD_BODY_BYTES)
+            if payload is None:
+                return
+            source = str(payload.get("source", "frame"))
+            frame = None
+            if source == "upload":
+                try:
+                    # 復号は1回だけ（decode→ndarray→filterへ受渡し）。
+                    # 文言は従来のbytes APIと同一に保つ。
+                    frame = blockly_match.decode_upload_array(
+                        str(payload.get("image", ""))
+                    )
+                except ValueError as e:
+                    self._reply(False, f"色を見られません: {e}")
+                    return
+            else:
+                getter = _GET_FRAME
+                if getter is None:
+                    self._reply(False, blockly_capture.NO_CAMERA_MESSAGE)
+                    return
+                try:
+                    frame = getter()
+                except Exception:
+                    frame = None
+                if frame is None:
+                    self._reply(False, blockly_capture.FRAME_FAIL_MESSAGE)
+                    return
+            out, ratio, err = blockly_color.filter_png(
+                frame,
+                payload.get("lower"),
+                payload.get("upper"),
+                payload.get("mode"),
+                payload.get("crop", None),
+            )
+            if err is not None or out is None:
+                self._reply(False, f"色を見られません: {err}")
+                return
+            message = f"割合 {ratio * 100:.1f}%"
+            print(message)
+            image = base64.b64encode(out).decode("ascii")
+            self._reply(True, message, {"ratio": ratio, "image": image})
             return
         if urllib.parse.urlsplit(self.path).path == "/save":
             payload = self._read_json()
