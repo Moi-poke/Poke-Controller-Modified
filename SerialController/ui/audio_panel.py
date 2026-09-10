@@ -91,8 +91,10 @@ class AudioPanelMixin:
         )
         self.audio_record_button.grid(padx="5", row=1, column=5)
 
-        # 明示rowなし（tk自動配置）。camera枠の次へ置かれる。
-        self.audio_lf.grid(columnspan=3, padx="5", sticky="ew")
+        # 配置は明示rowで固定する。row省略の自動配置はgridした時点で
+        # 空いている行へ置かれるため、後に明示配置されるSerial/Command枠の
+        # 下敷きになる（row=1へ入り込んで隠れる）。兄弟枠と同じ流儀にする。
+        self.audio_lf.grid(columnspan=3, padx="5", row=3, sticky="ew")
 
     def _refreshAudioDevices(self) -> None:
         """入出力の候補を列挙して流し込む。失敗時は空のまま。"""
