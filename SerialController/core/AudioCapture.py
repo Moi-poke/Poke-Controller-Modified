@@ -28,6 +28,12 @@ from loguru import logger
 AUDIO_RATE = audio_dsp.SAMPLE_RATE
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK = 1024
+# モニターのジッタ吸収段数。入出力は別クロックで回るため、深さ1では
+# 位相ずれのたびに無音が入る（実測で出力の約50%が欠落）。12段で
+# 約280msの遅延と引き換えに欠落を吸収する。モニター用途の遅延として許容。
+JITTER_CHUNKS = 12
+# 出力コールバックの待ち上限（秒）。1チャンクの周期より短くする。
+MONITOR_GET_TIMEOUT = 0.02
 
 
 def _import_sounddevice() -> Any | None:
@@ -197,6 +203,7 @@ class AudioCapture:
         ring_seconds: float = 5.0,
         input_factory: Any = None,
         output_factory: Any = None,
+        jitter_chunks: int = JITTER_CHUNKS,
     ) -> None:
         self._rate = int(rate)
         capacity = max(AUDIO_CHUNK, int(self._rate * float(ring_seconds)))
@@ -215,7 +222,14 @@ class AudioCapture:
         self._monitor_volume = 0.8
         self._out_stream: Any = None
         self._out_device = ""
-        self._pipe: queue.Queue[np.ndarray] = queue.Queue(maxsize=1)
+        self._jitter = max(1, int(jitter_chunks))
+        self._pipe: queue.Queue[np.ndarray] = queue.Queue(maxsize=self._jitter)
+        self._mon_stats = {
+            "silence": 0,
+            "drops": 0,
+            "in_overflow": 0,
+            "out_underflow": 0,
+        }
 
     def openInput(self, device: str | int | None) -> bool:
         """入力を開く。既に開いていれば閉じてから開き直す。成否を返す。"""
@@ -261,7 +275,9 @@ class AudioCapture:
 
     def _on_input(self, indata: Any, frames: int, _time: Any, status: Any) -> None:
         """PortAudioスレッドから呼ばれる。重い処理は置かない。"""
-        if status:
+        if status and getattr(status, "input_overflow", False):
+            self._mon_stats["in_overflow"] += 1
+        elif status:
             logger.debug(f"音声入力の状態: {status}")
         mono = np.asarray(indata, dtype=np.float32).ravel()
         if mono.size == 0:
@@ -276,20 +292,21 @@ class AudioCapture:
                 self._ring[: end - self._ring.size] = mono[first:]
             self._pos = end % self._ring.size
             self._filled = min(self._filled + mono.size, self._ring.size)
-        # _out_stream の参照は Lock なしで読む（benign race）。
-        # コールバック内で待つと音が途切れるため、無ければ捨てるだけ。
-        if self._out_stream is not None:
+        # モニターへの受け渡しは常時行う。ONの瞬間に溜まっている分から
+        # 鳴り始められる（深さぶん約280msの遅延）。溢れたら古い方を捨てる。
+        # put_nowait / get_nowait のみで、コールバック内で待たない。
+        try:
+            self._pipe.put_nowait(mono.copy())
+        except queue.Full:
+            self._mon_stats["drops"] += 1
+            try:
+                self._pipe.get_nowait()
+            except queue.Empty:
+                pass
             try:
                 self._pipe.put_nowait(mono.copy())
             except queue.Full:
-                try:
-                    self._pipe.get_nowait()
-                except queue.Empty:
-                    pass
-                try:
-                    self._pipe.put_nowait(mono.copy())
-                except queue.Full:
-                    pass
+                pass
 
     def isOpened(self) -> bool:
         return self._stream is not None
@@ -424,11 +441,22 @@ class AudioCapture:
         except Exception as e:
             logger.warning(f"モニター出力の解放で例外: {e}")
 
-    def _on_output(self, outdata: Any, frames: int, _time: Any, _status: Any) -> None:
-        """出力コールバック。pipe の最新を音量つきで書く。無ければ無音。"""
+    def getMonitorStats(self) -> dict[str, int]:
+        """モニターの欠落計数の複製（診断用）。"""
+        return dict(self._mon_stats)
+
+    def _on_output(self, outdata: Any, frames: int, _time: Any, status: Any) -> None:
+        """出力コールバック。pipe から順に書く。尽きたら短く待って無音。
+
+        深さ1＋即無音の旧方式では、入出力クロックのずれで約半数が
+        無音になっていた。ジッタ段数ぶん待てる形にし、溢れた分だけ捨てる。
+        """
+        if status and getattr(status, "output_underflow", False):
+            self._mon_stats["out_underflow"] += 1
         try:
-            data = self._pipe.get_nowait()
+            data = self._pipe.get(timeout=MONITOR_GET_TIMEOUT)
         except queue.Empty:
+            self._mon_stats["silence"] += 1
             data = None
         buf = np.asarray(outdata)
         if data is None:

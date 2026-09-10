@@ -131,6 +131,64 @@ def test_apply_volume_clips() -> None:
     assert float(AC.apply_volume(frames, 0.0)[0]) == 0.0
 
 
+def _monitor_pair(
+    jitter: int = 4,
+) -> tuple[AC.AudioCapture, dict[str, FakeStream]]:
+    box: dict[str, FakeStream] = {}
+
+    def in_factory(**kwargs: Any) -> FakeStream:
+        stream = FakeStream(**kwargs)
+        box["in"] = stream
+        return stream
+
+    def out_factory(**kwargs: Any) -> FakeStream:
+        stream = FakeStream(**kwargs)
+        box["out"] = stream
+        return stream
+
+    cap = AC.AudioCapture(
+        input_factory=in_factory,  # type: ignore[arg-type]
+        output_factory=out_factory,  # type: ignore[arg-type]
+        jitter_chunks=jitter,
+    )
+    assert cap.openInput("dummy") is True
+    assert cap.setMonitorEnabled(True) is True
+    return cap, box
+
+
+def test_monitor_jitter_absorbs() -> None:
+    cap, box = _monitor_pair(jitter=4)
+    for _ in range(6):
+        box["in"].fire(np.full(1024, 0.4, dtype=np.float32))
+    buf = np.zeros((1024, 1), dtype=np.float32)
+    box["out"].callback(buf, 1024, None, None)
+    assert float(np.max(np.abs(buf))) > 0.0
+    assert cap.getMonitorStats()["silence"] == 0
+    cap.close()
+
+
+def test_monitor_starved_silence_and_stats() -> None:
+    cap, box = _monitor_pair(jitter=4)
+    buf = np.zeros((1024, 1), dtype=np.float32)
+    box["out"].callback(buf, 1024, None, None)
+    assert float(np.max(np.abs(buf))) == 0.0
+    assert cap.getMonitorStats()["silence"] == 1
+    cap.close()
+
+
+def test_monitor_drops_keep_latest() -> None:
+    cap, box = _monitor_pair(jitter=2)
+    for i in range(5):
+        box["in"].fire(np.full(1024, 0.1 * (i + 1), dtype=np.float32))
+    stats = cap.getMonitorStats()
+    assert stats["drops"] >= 1
+    buf = np.zeros((1024, 1), dtype=np.float32)
+    box["out"].callback(buf, 1024, None, None)
+    # 順次再生のため、残ったうち最も古い物（0.4×音量0.8=0.32）が出る
+    assert abs(float(np.max(buf)) - 0.32) < 1e-6
+    cap.close()
+
+
 class FakeSD:
     """sounddevice モジュールの偽物。列挙と試し開きの成否を再現する。"""
 

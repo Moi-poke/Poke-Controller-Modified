@@ -36,7 +36,7 @@ ui/audio_panel.py …… 入出力デバイス選択＋モニタートグル＋�
 
 ## 4. コンポーネント
 
-- `core/AudioCapture.py`: 入力デバイス列挙（`query_devices` の薄い包み。例外時は空＋ログ）、`openInput(device) -> bool`、`close()`、リングバッファ（44100Hz mono float32、既定5秒＝約0.9MB。`threading.Lock`＋単調書込）、`readWindow(seconds) -> np.ndarray | None`（複製を返す。PortAudioスレッドの配列を外へ漏らさない。`seconds` はリング長以下であること）、`peak()/rms()`（レベルメーター用）、モニター送出（出力ストリーム。入力コールバック内で複製を出力側へ受渡し。キュー深さ1で遅延を溜めない。既定OFF）。デバイス抜去・open失敗は False＋ログで返し、例外で落とさない（AGENTS.md の graceful 方針）。
+- `core/AudioCapture.py`: 入力デバイス列挙（`query_devices` の薄い包み。例外時は空＋ログ）、`openInput(device) -> bool`、`close()`、リングバッファ（44100Hz mono float32、既定5秒＝約0.9MB。`threading.Lock`＋単調書込）、`readWindow(seconds) -> np.ndarray | None`（複製を返す。PortAudioスレッドの配列を外へ漏らさない。`seconds` はリング長以下であること）、`peak()/rms()`（レベルメーター用）、モニター送出（出力ストリーム。入力を常時pipeへ受渡し、出力側は順次再生。ジッタ吸収12段＝約280ms遅延。入出力は別クロックのため深さ1では半数が無音になる実測があり、別プロセス化ではなくバッファで解決する。既定OFF）。デバイス抜去・open失敗は False＋ログで返し、例外で落とさない（AGENTS.md の graceful 方針）。デバイス指定は番号（"番号: 名前" の番号。同名重複があるため）。一覧は試し開きで開ける物だけに絞る（裏スレッド）。
 - `core/audio_dsp.py`: tkinter・sounddevice 非依存の純粋関数。`band_power(x, rate, lo, hi)`（窓関数＋rFFT。listen_shiny の 3100Hz/4200Hz デュアルバンド判定を一般化）、`is_tone(x, rate, bands, thresholds)`、`match_template(x, rate, wav)`（正規化相互相関。`scipy` は既存依存。サンプルレート不一致は `scipy.signal.resample` で吸収）、`load_wav_mono(path)`（wav読込→mono float32化。対応形式は wave モジュール範囲＋後追いで拡張可）。全てヘッドレスでpytest可能。
 - `services/audio_service.py`: `AudioCapture` の所有・デバイス切替・終了時の `close()`。`serial_service.py` 対応（接続→切断→再接続の手順だけ。tkinterなし）。
 - `ui/audio_panel.py`: `CameraPanelMixin` 対応の `AudioPanelMixin`。入力／出力デバイスの Combobox（列挙失敗時は手入力可の Entry へ-gradeful 縮退）、モニターのトグル（既定OFF。ON時は出力デバイス必須）、レベル表示（`after()` 駆動のポーリング。ワーカースレッドからwidgetを触らない）、テスト録音ボタン（`recordClip` のGUI版。保存先は `APP_DIR/AudioClips/`。cwd 相対は使わない）。
@@ -55,7 +55,7 @@ ui/audio_panel.py …… 入出力デバイス選択＋モニタートグル＋�
 
 - 取込: PortAudio入力コールバック → リングバッファへ追記（Lock内はmemcpyのみ）→ 検知・メーターは `readWindow()` の複製を読む。
 - 検知: コマンドの `waitTone/waitSound` → `readWindow()` → `audio_dsp` 純粋関数 → 命中で True（`waitTemplate` 対応）。期限切れは False（例外にしない）。
-- モニター: ON時のみ入力コールバックの複製を出力ストリームへ（深さ1キュー。溢れたら捨てる＝遅延を溜めない。Camera の queue-of-1 対応）。
+- モニター: 入力を常時pipeへ送り、出力側は順次再生する（ジッタ12段。溢れた古い分だけ捨てる。出力が尽きたら短く待ってから無音）。
 - 終了: `exit` 時に service 経由で `close()`（Camera の `destroy` 対応。join は短時間＋切上げ）。
 
 ## 6. エラー処理
