@@ -156,6 +156,30 @@ def _monitor_pair(
     return cap, box
 
 
+def test_streams_use_low_latency_params() -> None:
+    seen: dict[str, dict[str, Any]] = {}
+
+    def in_factory(**kwargs: Any) -> FakeStream:
+        seen["in"] = kwargs
+        return FakeStream(**kwargs)
+
+    def out_factory(**kwargs: Any) -> FakeStream:
+        seen["out"] = kwargs
+        return FakeStream(**kwargs)
+
+    cap = AC.AudioCapture(
+        input_factory=in_factory,  # type: ignore[arg-type]
+        output_factory=out_factory,  # type: ignore[arg-type]
+    )
+    assert cap.openInput(None) is True
+    assert cap.setMonitorEnabled(True) is True
+    assert seen["in"]["blocksize"] == 512
+    assert seen["in"]["latency"] == "low"
+    assert seen["out"]["blocksize"] == 512
+    assert seen["out"]["latency"] == "low"
+    cap.close()
+
+
 def test_monitor_jitter_absorbs() -> None:
     cap, box = _monitor_pair(jitter=4)
     for _ in range(6):

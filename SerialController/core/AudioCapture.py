@@ -27,7 +27,13 @@ from loguru import logger
 # 別々の数値で持つと乖離する（検知の前提が崩れる）ため参照で揃える。
 AUDIO_RATE = audio_dsp.SAMPLE_RATE
 AUDIO_CHANNELS = 1
-AUDIO_CHUNK = 1024
+# 1チャンクの秒数。1024（23ms）から512（12ms）へ縮めた。
+# CABLEループバック実測：latency low＋512で片道約105ms・欠落0.2%。
+# 256以下は改善が頭打ち（出力側の素遅延が支配的）のため採らない。
+AUDIO_CHUNK = 512
+# ストリームの遅延指定。'low' で出力186ms→93msを確認（同上実測）。
+# 開けない機種では open 失敗として扱われ、従来通り False＋ログに落ちる。
+AUDIO_LATENCY = "low"
 # モニターのジッタ吸収段数。入出力は別クロックで回るため、深さ1では
 # 位相ずれのたびに無音が入る（実測で出力の約50%が欠落）。12段で
 # 約280msの遅延と引き換えに欠落を吸収する。モニター用途の遅延として許容。
@@ -130,22 +136,20 @@ def probe_openable(want_input: bool) -> list[tuple[int, str]]:
     found = []
     for index, name in _device_entries_sd(sd, want_input):
         try:
+            # 運用時と同じ条件で試す（不一致だと「開ける」と出た物が
+            # 実際には開けない逆も起きる）。
+            params = {
+                "samplerate": AUDIO_RATE,
+                "channels": AUDIO_CHANNELS,
+                "dtype": "float32",
+                "blocksize": AUDIO_CHUNK,
+                "device": index,
+                "latency": AUDIO_LATENCY,
+            }
             if want_input:
-                stream = sd.InputStream(
-                    samplerate=AUDIO_RATE,
-                    channels=AUDIO_CHANNELS,
-                    dtype="float32",
-                    blocksize=AUDIO_CHUNK,
-                    device=index,
-                )
+                stream = sd.InputStream(**params)
             else:
-                stream = sd.OutputStream(
-                    samplerate=AUDIO_RATE,
-                    channels=AUDIO_CHANNELS,
-                    dtype="float32",
-                    blocksize=AUDIO_CHUNK,
-                    device=index,
-                )
+                stream = sd.OutputStream(**params)
             try:
                 stream.close()
             except Exception:
@@ -252,6 +256,7 @@ class AudioCapture:
                     channels=AUDIO_CHANNELS,
                     blocksize=AUDIO_CHUNK,
                     device=resolved,
+                    latency=AUDIO_LATENCY,
                     callback=self._on_input,
                 )
             else:
@@ -262,6 +267,7 @@ class AudioCapture:
                     dtype="float32",
                     blocksize=AUDIO_CHUNK,
                     device=resolved,
+                    latency=AUDIO_LATENCY,
                     callback=self._on_input,
                 )
             stream.start()
@@ -409,6 +415,7 @@ class AudioCapture:
                     channels=AUDIO_CHANNELS,
                     blocksize=AUDIO_CHUNK,
                     device=resolved,
+                    latency=AUDIO_LATENCY,
                     callback=self._on_output,
                 )
             else:
@@ -419,6 +426,7 @@ class AudioCapture:
                     dtype="float32",
                     blocksize=AUDIO_CHUNK,
                     device=resolved,
+                    latency=AUDIO_LATENCY,
                     callback=self._on_output,
                 )
             out.start()
