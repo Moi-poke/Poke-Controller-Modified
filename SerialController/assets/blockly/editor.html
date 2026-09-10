@@ -886,10 +886,30 @@ html, body { height: 100%; margin: 0; }
     var p = capFiltParams();
     if (p.mode === 'off') {
       if (imgEl) { imgEl.style.display = 'none'; }
+      capFiltSetRatio('');
       return;
     }
     var body = { lower: p.lower, upper: p.upper, mode: p.mode, source: p.source };
     if (capUploadDataUrl) { body.image = capUploadDataUrl.split(',', 2)[1]; }
+    var filtImg = document.getElementById('capbigimg');
+    if (document.getElementById('caproionly').checked) {
+      if (!capModalRect || !filtImg.naturalWidth ||
+          !PokeconCapture.isValidPixels(capModalRect, filtImg.naturalWidth, filtImg.naturalHeight)) {
+        if (imgEl) { imgEl.style.display = 'none'; }
+        capFiltSetRatio('赤枠を選んでください');
+        return;
+      }
+      var fpx = PokeconCapture.rect01ToPx(capModalRect, filtImg.naturalWidth, filtImg.naturalHeight);
+      body.crop = [fpx.x, fpx.y, fpx.x + fpx.width, fpx.y + fpx.height];
+    } else {
+      var filtTarget = capBlockMode ? ws.getBlockById(capBlockMode) : null;
+      var filtHasH1 = !!(filtTarget && typeof filtTarget.getField === 'function' && filtTarget.getField('H1'));
+      if (filtHasH1 && capModalRect && filtImg.naturalWidth &&
+          PokeconCapture.isValidPixels(capModalRect, filtImg.naturalWidth, filtImg.naturalHeight)) {
+        var cpx = PokeconCapture.rect01ToPx(capModalRect, filtImg.naturalWidth, filtImg.naturalHeight);
+        body.crop = [cpx.x, cpx.y, cpx.x + cpx.width, cpx.y + cpx.height];
+      }
+    }
     capFiltSetRatio('計算しています…');
     fetch('./filter_preview', {
       method: 'POST',
@@ -942,7 +962,7 @@ html, body { height: 100%; margin: 0; }
   ['caph1', 'caps1', 'capv1', 'caph2', 'caps2', 'capv2'].forEach(function (id) {
     var el = document.getElementById(id);
     if (!el) { return; }
-    el.addEventListener('input', function () { capFiltSoon(false); });
+    el.addEventListener('input', function () { capFiltSoon(false); capBlockSyncSoon(); });
   });
   (function () {
     var el = document.getElementById('capratio');

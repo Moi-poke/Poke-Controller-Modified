@@ -188,7 +188,7 @@ class CameraPanelMixin:
         self.filt_setting_button = ttk.Button(self.camera_f2)
         self.filt_setting_button.config(text="設定...", command=self.openFilterDialog)
         self.filt_setting_button.grid(column=7, row=0)
-        self.camera_f2.grid(column=0, columnspan=7, row=3, sticky="nsew")
+        self.camera_f2.grid(column=0, columnspan=8, row=3, sticky="nsew")
 
         # -- カメラ名
         self.camera_name_l = ttk.Label(self.camera_lf)
