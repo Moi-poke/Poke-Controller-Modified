@@ -40,12 +40,12 @@ class AudioPanelMixin:
     audio_monitor: Any
     audio_volume: Any
     audio_level: Any
+    audio_latency: Any
     audio_reload_button: Any
     audio_record_button: Any
     _audio_meter_after_id: Any
     _probe_thread: Any
     _probe_done: bool
-    _probe_result: Any
     _probe_after_id: Any
     _on_setting_changed: Any
 
@@ -56,6 +56,7 @@ class AudioPanelMixin:
         self.audio_monitor = tk.BooleanVar()
         self.audio_volume = tk.DoubleVar()
         self.audio_level = tk.StringVar(value="--")
+        self.audio_latency = tk.StringVar(value="推定 --")
 
         ttk.Label(self.audio_lf, text="Input:").grid(padx="5", row=0, column=0)
         self.audio_input_cb = ttk.Combobox(
@@ -90,6 +91,9 @@ class AudioPanelMixin:
         ttk.Label(self.audio_lf, text="Level:").grid(padx="5", row=1, column=0)
         ttk.Label(self.audio_lf, textvariable=self.audio_level).grid(
             row=1, column=1, sticky="w"
+        )
+        ttk.Label(self.audio_lf, textvariable=self.audio_latency).grid(
+            row=1, column=2, columnspan=2, sticky="w"
         )
         self.audio_record_button = ttk.Button(
             self.audio_lf, text="Test Rec 3s", command=self.recordAudioTest
@@ -127,18 +131,9 @@ class AudioPanelMixin:
         if thread is not None and thread.is_alive():
             return
         self._probe_done = False
-        self._probe_result = None
 
         def work() -> None:
-            try:
-                result = (
-                    self.audio_service.probe_inputs(),
-                    self.audio_service.probe_outputs(),
-                )
-            except Exception as e:
-                logger.warning(f"音声デバイスの絞り込みに失敗しました: {e}")
-                result = ([], [])
-            self._probe_result = result
+            self.audio_service.refresh_probe_cache()
             self._probe_done = True
 
         self._probe_thread = threading.Thread(
@@ -160,9 +155,9 @@ class AudioPanelMixin:
         except (tk.TclError, ValueError):
             pass
         self._probe_after_id = None
-        result: Any = getattr(self, "_probe_result", None) or ([], [])
         try:
-            inputs, outputs = result
+            inputs = self.audio_service.cached_inputs()
+            outputs = self.audio_service.cached_outputs()
             if inputs:
                 self.audio_input_cb["values"] = inputs
                 self._restore_selection(
@@ -179,6 +174,7 @@ class AudioPanelMixin:
                     self.settings.audio_output.get(),
                     outputs,
                 )
+            self._update_latency_label()
         except tk.TclError:
             # 終了間際に発火した分。鎖は切れているので再予約しない。
             return
@@ -237,6 +233,20 @@ class AudioPanelMixin:
         )
         self.audio_monitor.set(self.settings.audio_monitor_enabled.get())
         self.audio_volume.set(self.settings.audio_monitor_volume.get())
+        self._update_latency_label()
+
+    def _update_latency_label(self) -> None:
+        """選択中ペアの推定遅延を表示する。不明は -- のまま。"""
+        try:
+            est_in, est_out = self.audio_service.pair_est(
+                self._selected_index(self.audio_input_name.get()),
+                self._selected_index(self.audio_output_name.get()),
+            )
+        except Exception:
+            return
+        left = f"in {est_in:.0f}ms" if est_in >= 0 else "in --"
+        right = f"out {est_out:.0f}ms" if est_out >= 0 else "out --"
+        self.audio_latency.set(f"推定 {left}＋{right}")
 
     def _selected_index(self, display: str) -> str:
         """表示名（"番号: 名前"）から保存用の番号を取り出す。"""
@@ -248,6 +258,7 @@ class AudioPanelMixin:
         spec = self._selected_index(display)
         if self.audio_service.reopen(spec):
             self.settings.audio_input.set(spec)
+            self._update_latency_label()
             self._on_setting_changed()
         else:
             print(f"音声入力を開けませんでした: {display}")
@@ -267,6 +278,7 @@ class AudioPanelMixin:
         if self.audio_service.set_monitor(True, spec, vol):
             self.settings.audio_output.set(spec)
             self.settings.audio_monitor_volume.set(vol)
+            self._update_latency_label()
             self._on_setting_changed()
         else:
             self.audio_output_name.set(self.audio_service.display_output(previous))
@@ -280,6 +292,7 @@ class AudioPanelMixin:
             self.settings.audio_monitor_enabled.set(on)
             self.settings.audio_output.set(spec)
             self.settings.audio_monitor_volume.set(vol)
+            self._update_latency_label()
             self._on_setting_changed()
         else:
             # 失敗時は表示を実態へ戻す（ONに見えたままにしない）

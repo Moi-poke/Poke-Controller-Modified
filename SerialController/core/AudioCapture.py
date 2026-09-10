@@ -22,9 +22,11 @@ from typing import Any
 import numpy as np
 from core import audio_dsp
 from loguru import logger
+from scipy.signal import resample_poly
 
 # 録音・検知の基準。audio_dsp.SAMPLE_RATE をそのまま使う。
 # 別々の数値で持つと乖離する（検知の前提が崩れる）ため参照で揃える。
+# デバイス自レート（48kHz等）で開いた場合も、内部はこのレートへ直して扱う。
 AUDIO_RATE = audio_dsp.SAMPLE_RATE
 AUDIO_CHANNELS = 1
 # 1チャンクの秒数。1024（23ms）から512（12ms）へ縮めた。
@@ -34,6 +36,64 @@ AUDIO_CHUNK = 512
 # ストリームの遅延指定。'low' で出力186ms→93msを確認（同上実測）。
 # 開けない機種では open 失敗として扱われ、従来通り False＋ログに落ちる。
 AUDIO_LATENCY = "low"
+
+
+def _resample_factors(src_rate: int, dst_rate: int) -> tuple[int, int]:
+    """resample_poly 用の (up, down)。等速なら (1, 1)。"""
+    import math
+
+    src, dst = int(src_rate), int(dst_rate)
+    if src <= 0 or dst <= 0 or src == dst:
+        return (1, 1)
+    g = math.gcd(src, dst)
+    return (dst // g, src // g)
+
+
+def to_internal(mono: np.ndarray, src_rate: int) -> np.ndarray:
+    """デバイスレート波形を内部レート（44.1k）へ直す。等速は素通し。"""
+    up, down = _resample_factors(src_rate, AUDIO_RATE)
+    if up == down:
+        return np.asarray(mono, dtype=np.float32)
+    return resample_poly(np.asarray(mono, dtype=np.float64), up, down).astype(
+        np.float32
+    )
+
+
+def to_device(chunk44: np.ndarray, dst_rate: int, frames: int) -> np.ndarray:
+    """内部レート波形をデバイスレートへ直し、ちょうど frames 件にする。"""
+    up, down = _resample_factors(AUDIO_RATE, dst_rate)
+    if up == down:
+        out = np.asarray(chunk44, dtype=np.float32).ravel()
+    else:
+        out = resample_poly(
+            np.asarray(chunk44, dtype=np.float64).ravel(), up, down
+        ).astype(np.float32)
+    if out.size > frames:
+        return out[:frames]
+    if out.size < frames:
+        padded = np.zeros(frames, dtype=np.float32)
+        padded[: out.size] = out
+        return padded
+    return out
+
+
+def native_rate(sd: Any, want_input: bool, index: int | None) -> int:
+    """デバイスの自レート。分からなければ内部レートへ落とす。"""
+    try:
+        if index is None:
+            default = sd.default.device
+            index = default[0] if want_input else default[1]
+        index = int(index)
+        if index < 0:
+            return AUDIO_RATE
+        rate = int(float(sd.query_devices()[index].get("default_samplerate") or 0))
+        if rate > 0:
+            return rate
+    except Exception:
+        pass
+    return AUDIO_RATE
+
+
 # モニターのジッタ吸収段数。入出力は別クロックで回るため、深さ1では
 # 位相ずれのたびに無音が入る（実測で出力の約50%が欠落）。12段で
 # 約280msの遅延と引き換えに欠落を吸収する。モニター用途の遅延として許容。
@@ -95,9 +155,17 @@ def _device_entries_sd(sd: Any, want_input: bool) -> list[tuple[int, str]]:
     return found
 
 
+def format_display(index: int, name: str, est_ms: float = -1.0) -> str:
+    """選択欄の表示名。推定遅延が分かれば "番号: 名前 [est. XXms]"。"""
+    base = f"{index}: {name}"
+    if est_ms is None or est_ms < 0:
+        return base
+    return f"{base} [est. {int(round(est_ms))}ms]"
+
+
 def display_entries(entries: list[tuple[int, str]]) -> list[str]:
     """選択欄の表示名（"番号: 名前"）。番号で同名を区別する。"""
-    return [f"{index}: {name}" for index, name in entries]
+    return [format_display(index, name) for index, name in entries]
 
 
 def parse_display(text: str) -> int | None:
@@ -124,22 +192,23 @@ def display_for(want_input: bool, spec: str | int | None) -> str:
     return text
 
 
-def probe_openable(want_input: bool) -> list[tuple[int, str]]:
-    """実際に開ける (番号, 名前) だけを返す。重いので裏で回すこと。
+def probe_details(want_input: bool) -> list[tuple[int, str, float]]:
+    """開ける (番号, 名前, 推定遅延ms) だけを返す。重いので裏で回すこと。
 
-    列挙だけでは分からない失敗（48kHz専用機を44.1kHzで開く・WDM-KSの
-    非対応等）を試し開きで落とす。1台ごとの失敗は握って次へ進む。
+    自レートで試し開きし、そのときの stream.latency を推定遅延にする。
+    48kHz専用機も自レートで開ければ候補に入る。WDM-KS等の非対応は落とす。
     """
     sd = _import_sounddevice()
     if sd is None:
         return []
-    found = []
+    found: list[tuple[int, str, float]] = []
     for index, name in _device_entries_sd(sd, want_input):
         try:
             # 運用時と同じ条件で試す（不一致だと「開ける」と出た物が
             # 実際には開けない逆も起きる）。
+            rate = native_rate(sd, want_input, index)
             params = {
-                "samplerate": AUDIO_RATE,
+                "samplerate": rate,
                 "channels": AUDIO_CHANNELS,
                 "dtype": "float32",
                 "blocksize": AUDIO_CHUNK,
@@ -151,13 +220,22 @@ def probe_openable(want_input: bool) -> list[tuple[int, str]]:
             else:
                 stream = sd.OutputStream(**params)
             try:
+                est_ms: float = round(float(stream.latency) * 1000.0)
+            except Exception:
+                est_ms = -1.0
+            try:
                 stream.close()
             except Exception:
                 pass
-            found.append((index, name))
+            found.append((index, name, est_ms))
         except Exception as e:
             logger.debug(f"音声デバイスを使えません [{index}]{name}: {e}")
     return found
+
+
+def probe_openable(want_input: bool) -> list[tuple[int, str]]:
+    """実際に開ける (番号, 名前) だけを返す。重いので裏で回すこと。"""
+    return [(index, name) for index, name, _ in probe_details(want_input)]
 
 
 def resolve_device(want_input: bool, spec: str | int | None) -> int | str | None:
@@ -221,11 +299,16 @@ class AudioCapture:
         # PortAudio コールバック内では待たせないことが優先。
         self._stream: Any = None
         self._input_name = ""
+        # デバイス自レート（48kHz等）と内部レート（44.1k）の差は
+        # リサンプルで吸収する。検知・録音・pipe は内部レートで統一する。
+        self._in_rate = self._rate
         self._factory = input_factory
         self._factory_out = output_factory
         self._monitor_volume = 0.8
         self._out_stream: Any = None
         self._out_device = ""
+        self._out_rate = self._rate
+        self._out_carry: np.ndarray = np.zeros(0, dtype=np.float32)
         self._jitter = max(1, int(jitter_chunks))
         self._pipe: queue.Queue[np.ndarray] = queue.Queue(maxsize=self._jitter)
         self._mon_stats = {
@@ -236,7 +319,11 @@ class AudioCapture:
         }
 
     def openInput(self, device: str | int | None) -> bool:
-        """入力を開く。既に開いていれば閉じてから開き直す。成否を返す。"""
+        """入力を開く。既に開いていれば閉じてから開き直す。成否を返す。
+
+        デバイス自レートで開き、内部レートへ直して扱う。48kHz専用機も
+        開けるようになる（検知の前提レートは変えない）。
+        """
         self.close()
         # factory 注入時（テスト）は実バックエンドの有無を問わない。
         # PortAudio なしOSでも合成ストリームで検証できるよう gate を抜ける。
@@ -249,6 +336,12 @@ class AudioCapture:
             sd = None
         name = "" if device is None else str(device)
         resolved = resolve_device(True, device)
+        rate = self._rate
+        if self._factory is None and isinstance(resolved, int):
+            assert sd is not None  # gate 通過済み
+            rate = native_rate(sd, True, resolved)
+        elif self._factory is None and resolved is None and sd is not None:
+            rate = native_rate(sd, True, None)
         try:
             if self._factory is not None:
                 stream = self._factory(
@@ -262,7 +355,7 @@ class AudioCapture:
             else:
                 assert sd is not None  # factory なしは gate 通過済み
                 stream = sd.InputStream(
-                    samplerate=self._rate,
+                    samplerate=rate,
                     channels=AUDIO_CHANNELS,
                     dtype="float32",
                     blocksize=AUDIO_CHUNK,
@@ -275,7 +368,10 @@ class AudioCapture:
             logger.error(f"音声入力を開けません ({name or '既定'}): {e}")
             return False
         self._stream = stream
+        self._in_rate = int(rate)
         self._input_name = name
+        if rate != self._rate:
+            logger.info(f"音声入力は {rate}Hz で開き、内部は {self._rate}Hz で扱います")
         logger.debug(f"音声入力を開きました: {name or '既定'}")
         return True
 
@@ -288,21 +384,24 @@ class AudioCapture:
         mono = np.asarray(indata, dtype=np.float32).ravel()
         if mono.size == 0:
             return
+        # 自レートと内部レートが違えば直してから格納する。
+        # ring・pipe は内部レートで統一し、検知側の前提を崩さない。
+        frame = to_internal(mono, self._in_rate)
         with self._lock:
-            end = self._pos + mono.size
+            end = self._pos + frame.size
             if end <= self._ring.size:
-                self._ring[self._pos : end] = mono
+                self._ring[self._pos : end] = frame
             else:
                 first = self._ring.size - self._pos
-                self._ring[self._pos :] = mono[:first]
-                self._ring[: end - self._ring.size] = mono[first:]
+                self._ring[self._pos :] = frame[:first]
+                self._ring[: end - self._ring.size] = frame[first:]
             self._pos = end % self._ring.size
-            self._filled = min(self._filled + mono.size, self._ring.size)
+            self._filled = min(self._filled + frame.size, self._ring.size)
         # モニターへの受け渡しは常時行う。ONの瞬間に溜まっている分から
-        # 鳴り始められる（深さぶん約280msの遅延）。溢れたら古い方を捨てる。
+        # 鳴り始められる（深さぶんの遅延）。溢れたら古い方を捨てる。
         # put_nowait / get_nowait のみで、コールバック内で待たない。
         try:
-            self._pipe.put_nowait(mono.copy())
+            self._pipe.put_nowait(frame.copy())
         except queue.Full:
             self._mon_stats["drops"] += 1
             try:
@@ -310,7 +409,7 @@ class AudioCapture:
             except queue.Empty:
                 pass
             try:
-                self._pipe.put_nowait(mono.copy())
+                self._pipe.put_nowait(frame.copy())
             except queue.Full:
                 pass
 
@@ -408,6 +507,12 @@ class AudioCapture:
             sd = None
         self._stop_output()
         resolved = resolve_device(False, device)
+        rate = self._rate
+        if self._factory_out is None and isinstance(resolved, int):
+            assert sd is not None  # gate 通過済み
+            rate = native_rate(sd, False, resolved)
+        elif self._factory_out is None and resolved is None and sd is not None:
+            rate = native_rate(sd, False, None)
         try:
             if self._factory_out is not None:
                 out = self._factory_out(
@@ -421,7 +526,7 @@ class AudioCapture:
             else:
                 assert sd is not None  # factory なしは gate 通過済み
                 out = sd.OutputStream(
-                    samplerate=self._rate,
+                    samplerate=rate,
                     channels=AUDIO_CHANNELS,
                     dtype="float32",
                     blocksize=AUDIO_CHUNK,
@@ -434,6 +539,12 @@ class AudioCapture:
             logger.error(f"モニター出力を開けません: {e}")
             return False
         self._out_stream = out
+        self._out_rate = int(rate)
+        self._out_carry = np.zeros(0, dtype=np.float32)
+        if rate != self._rate:
+            logger.info(
+                f"モニター出力は {rate}Hz で開き、内部は {self._rate}Hz で扱います"
+            )
         return True
 
     def _stop_output(self) -> None:
@@ -456,25 +567,40 @@ class AudioCapture:
     def _on_output(self, outdata: Any, frames: int, _time: Any, status: Any) -> None:
         """出力コールバック。pipe から順に書く。尽きたら短く待って無音。
 
-        深さ1＋即無音の旧方式では、入出力クロックのずれで約半数が
-        無音になっていた。ジッタ段数ぶん待てる形にし、溢れた分だけ捨てる。
+        pipe は内部レート（44.1k）の塊、frames は自レートの件数。
+        持ち越し（carry）と合わせて必要ぶん集め、自レートへ直して書く。
         """
         if status and getattr(status, "output_underflow", False):
             self._mon_stats["out_underflow"] += 1
+        # 自レート frames 件を作るのに要る内部レートの件数（+余裕1）。
+        need = int(frames * self._rate / max(1, self._out_rate)) + 1
+        pieces = [self._out_carry]
+        self._out_carry = np.zeros(0, dtype=np.float32)
+        have = pieces[0].size
         try:
-            data = self._pipe.get(timeout=MONITOR_GET_TIMEOUT)
+            pieces.append(self._pipe.get(timeout=MONITOR_GET_TIMEOUT))
+            have += pieces[-1].size
         except queue.Empty:
+            pass
+        while have < need:
+            try:
+                pieces.append(self._pipe.get_nowait())
+                have += pieces[-1].size
+            except queue.Empty:
+                break
+        if have < need:
             self._mon_stats["silence"] += 1
-            data = None
+        window = (
+            np.concatenate(pieces)
+            if len(pieces) > 1
+            else np.asarray(pieces[0], dtype=np.float32)
+        )
+        if window.size < need:
+            padded = np.zeros(need, dtype=np.float32)
+            padded[: window.size] = window
+            window = padded
+        self._out_carry = np.asarray(window[need:], dtype=np.float32).copy()
+        native = to_device(window[:need], self._out_rate, frames)
+        shaped = np.tile(native.reshape(-1, 1), (1, AUDIO_CHANNELS))
         buf = np.asarray(outdata)
-        if data is None:
-            buf[:] = 0
-            return
-        mono = np.asarray(data, dtype=np.float32).ravel()
-        if mono.size >= frames:
-            chunk = mono[-frames:]
-        else:
-            chunk = np.zeros(frames, dtype=np.float32)
-            chunk[-mono.size :] = mono
-        shaped = np.tile(chunk.reshape(-1, 1), (1, AUDIO_CHANNELS))
         buf[:] = apply_volume(shaped, self._monitor_volume)

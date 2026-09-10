@@ -94,11 +94,11 @@ def test_probe_lists_display(monkeypatch: pytest.MonkeyPatch) -> None:
     svc, _, _ = make_service()
     monkeypatch.setattr(
         audio_service,
-        "probe_openable",
-        lambda want: [(7, "Ok Mic")] if want else [(3, "Ok Spk")],
+        "probe_details",
+        lambda want: [(7, "Ok Mic", 12.0)] if want else [(3, "Ok Spk", 93.0)],
     )
-    assert svc.probe_inputs() == ["7: Ok Mic"]
-    assert svc.probe_outputs() == ["3: Ok Spk"]
+    assert svc.probe_inputs() == ["7: Ok Mic [est. 12ms]"]
+    assert svc.probe_outputs() == ["3: Ok Spk [est. 93ms]"]
 
 
 def test_display_helpers(monkeypatch: pytest.MonkeyPatch) -> None:

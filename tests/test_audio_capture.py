@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from core import AudioCapture as AC
+from core import AudioCapture as AC, audio_dsp
 
 
 def test_unavailable_without_backend(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -292,3 +292,35 @@ def test_device_entries_indexed() -> None:
         assert AC.display_for(True, "unknown") == "unknown"
     finally:
         AC._import_sounddevice = real  # type: ignore[assignment]
+
+
+def _sine(freq: float, seconds: float, rate: int) -> np.ndarray:
+    t = np.arange(int(seconds * rate), dtype=np.float64) / rate
+    return (0.5 * np.sin(2.0 * np.pi * freq * t)).astype(np.float32)
+
+
+def test_rate_convert_roundtrip() -> None:
+    src = _sine(1000.0, 0.5, 48000)
+    internal = AC.to_internal(src, 48000)
+    assert abs(internal.size - int(src.size * 44100 / 48000)) <= 2
+    # 周波数成分が保たれる
+    hit = audio_dsp.band_power(internal, 44100, 900.0, 1100.0)
+    miss = audio_dsp.band_power(internal, 44100, 5000.0, 5200.0)
+    assert hit > miss * 10.0
+    # 等速は素通し
+    same = AC.to_internal(src, 44100)
+    assert np.array_equal(np.asarray(same), np.asarray(src, dtype=np.float32))
+    # 出力側はちょうど frames 件にする
+    assert AC.to_device(internal, 48000, 559).size == 559
+    assert AC.to_device(internal, 44100, 512).size == 512
+
+
+def test_native_rate_fallback() -> None:
+    class RateSD:
+        @staticmethod
+        def query_devices() -> list[dict[str, object]]:
+            return [{"default_samplerate": 48000.0}]
+
+    assert AC.native_rate(RateSD, True, 0) == 48000
+    assert AC.native_rate(RateSD, True, 99) == 44100
+    assert AC.native_rate(object(), True, 5) == 44100
