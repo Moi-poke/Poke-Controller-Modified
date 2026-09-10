@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import pytest
 from services import audio_service
 
 
@@ -87,3 +88,26 @@ def test_monitor_output_failure_notifies() -> None:
     fake.setMonitorEnabled = _fail  # type: ignore[method-assign]
     assert svc.set_monitor(True, "sp", 0.5) is False
     assert notes  # 利用者向けに1行出る
+
+
+def test_probe_lists_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc, _, _ = make_service()
+    monkeypatch.setattr(
+        audio_service,
+        "probe_openable",
+        lambda want: [(7, "Ok Mic")] if want else [(3, "Ok Spk")],
+    )
+    assert svc.probe_inputs() == ["7: Ok Mic"]
+    assert svc.probe_outputs() == ["3: Ok Spk"]
+
+
+def test_display_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc, _, _ = make_service()
+    monkeypatch.setattr(
+        audio_service,
+        "device_entries",
+        lambda want: [(7, "Ok Mic")] if want else [],
+    )
+    assert svc.list_inputs() == ["7: Ok Mic"]
+    assert svc.list_outputs() == []
+    assert svc.display_output("") == ""

@@ -48,27 +48,128 @@ def audio_available() -> bool:
 
 def _device_names(want_input: bool) -> list[str]:
     """入力／出力に出せるデバイス名の一覧。失敗時は空リスト。"""
+    return [name for _, name in device_entries(want_input)]
+
+
+def device_entries(want_input: bool) -> list[tuple[int, str]]:
+    """(番号, 名前) の一覧。番号は sounddevice のデバイス番号そのもの。
+
+    同名デバイスが複数ある（USBオーディオの重複登録等）ため、名前だけでは
+    一意に選べない。設定には番号を保存し、表示は "番号: 名前" にする。
+    """
     sd = _import_sounddevice()
     if sd is None:
         return []
+    return _device_entries_sd(sd, want_input)
+
+
+def _device_entries_sd(sd: Any, want_input: bool) -> list[tuple[int, str]]:
+    """指定バックエンドから (番号, 名前) を集める。失敗時は空リスト。"""
     try:
         devices = sd.query_devices()
     except Exception as e:
         logger.warning(f"音声デバイスを列挙できません: {e}")
         return []
-    names = []
-    for dev in devices:
+    found = []
+    for index, dev in enumerate(devices):
         try:
-            ok = (
-                dev["max_input_channels"] > 0
-                if want_input
-                else dev["max_output_channels"] > 0
+            channels = (
+                dev["max_input_channels"] if want_input else dev["max_output_channels"]
             )
-            if ok:
-                names.append(str(dev["name"]))
-        except (KeyError, TypeError):
+            if int(channels or 0) > 0:
+                found.append((index, str(dev["name"])))
+        except (KeyError, TypeError, ValueError):
             continue
-    return names
+    return found
+
+
+def display_entries(entries: list[tuple[int, str]]) -> list[str]:
+    """選択欄の表示名（"番号: 名前"）。番号で同名を区別する。"""
+    return [f"{index}: {name}" for index, name in entries]
+
+
+def parse_display(text: str) -> int | None:
+    """表示名から番号を取り出す。形が違えば None。"""
+    head, sep, _ = str(text).partition(":")
+    if not sep:
+        return None
+    try:
+        return int(head.strip())
+    except ValueError:
+        return None
+
+
+def display_for(want_input: bool, spec: str | int | None) -> str:
+    """設定値に対応する表示名。見つからなければ設定値そのまま。"""
+    if spec is None:
+        return ""
+    text = str(spec).strip()
+    if not text:
+        return ""
+    for index, name in device_entries(want_input):
+        if text == str(index) or text == name:
+            return f"{index}: {name}"
+    return text
+
+
+def probe_openable(want_input: bool) -> list[tuple[int, str]]:
+    """実際に開ける (番号, 名前) だけを返す。重いので裏で回すこと。
+
+    列挙だけでは分からない失敗（48kHz専用機を44.1kHzで開く・WDM-KSの
+    非対応等）を試し開きで落とす。1台ごとの失敗は握って次へ進む。
+    """
+    sd = _import_sounddevice()
+    if sd is None:
+        return []
+    found = []
+    for index, name in _device_entries_sd(sd, want_input):
+        try:
+            if want_input:
+                stream = sd.InputStream(
+                    samplerate=AUDIO_RATE,
+                    channels=AUDIO_CHANNELS,
+                    dtype="float32",
+                    blocksize=AUDIO_CHUNK,
+                    device=index,
+                )
+            else:
+                stream = sd.OutputStream(
+                    samplerate=AUDIO_RATE,
+                    channels=AUDIO_CHANNELS,
+                    dtype="float32",
+                    blocksize=AUDIO_CHUNK,
+                    device=index,
+                )
+            try:
+                stream.close()
+            except Exception:
+                pass
+            found.append((index, name))
+        except Exception as e:
+            logger.debug(f"音声デバイスを使えません [{index}]{name}: {e}")
+    return found
+
+
+def resolve_device(want_input: bool, spec: str | int | None) -> int | str | None:
+    """設定値を open に渡せる形へ直す。空は既定（None）。
+
+    番号はそのまま通す（open時に検証）。名前は番号へ一本化して
+    同名重複の曖昧さを潰す。未知の名前はそのまま渡し、open時の
+    成否に任せる（旧設定の後方互換）。
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, int):
+        return spec
+    text = str(spec).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    for index, name in device_entries(want_input):
+        if name == text:
+            return index
+    return text
 
 
 def list_input_devices() -> list[str]:
@@ -129,13 +230,14 @@ class AudioCapture:
         else:
             sd = None
         name = "" if device is None else str(device)
+        resolved = resolve_device(True, device)
         try:
             if self._factory is not None:
                 stream = self._factory(
                     samplerate=self._rate,
                     channels=AUDIO_CHANNELS,
                     blocksize=AUDIO_CHUNK,
-                    device=device,
+                    device=resolved,
                     callback=self._on_input,
                 )
             else:
@@ -145,7 +247,7 @@ class AudioCapture:
                     channels=AUDIO_CHANNELS,
                     dtype="float32",
                     blocksize=AUDIO_CHUNK,
-                    device=device,
+                    device=resolved,
                     callback=self._on_input,
                 )
             stream.start()
@@ -282,13 +384,14 @@ class AudioCapture:
         else:
             sd = None
         self._stop_output()
+        resolved = resolve_device(False, device)
         try:
             if self._factory_out is not None:
                 out = self._factory_out(
                     samplerate=self._rate,
                     channels=AUDIO_CHANNELS,
                     blocksize=AUDIO_CHUNK,
-                    device=device,
+                    device=resolved,
                     callback=self._on_output,
                 )
             else:
@@ -298,7 +401,7 @@ class AudioCapture:
                     channels=AUDIO_CHANNELS,
                     dtype="float32",
                     blocksize=AUDIO_CHUNK,
-                    device=device,
+                    device=resolved,
                     callback=self._on_output,
                 )
             out.start()

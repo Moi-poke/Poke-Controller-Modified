@@ -129,3 +129,84 @@ def test_apply_volume_clips() -> None:
     doubled = AC.apply_volume(frames, 2.0)
     assert float(np.max(np.abs(doubled))) <= 1.0
     assert float(AC.apply_volume(frames, 0.0)[0]) == 0.0
+
+
+class FakeSD:
+    """sounddevice モジュールの偽物。列挙と試し開きの成否を再現する。"""
+
+    FAIL = {1, 3}
+
+    DEVICES = [
+        {"name": "Good Mic", "max_input_channels": 2, "max_output_channels": 0},
+        {"name": "Rate Mic", "max_input_channels": 2, "max_output_channels": 0},
+        {"name": "Good Spk", "max_input_channels": 0, "max_output_channels": 2},
+        {"name": "KS Spk", "max_input_channels": 0, "max_output_channels": 2},
+        {"name": "Dup", "max_input_channels": 2, "max_output_channels": 0},
+        {"name": "Dup", "max_input_channels": 2, "max_output_channels": 0},
+    ]
+
+    @staticmethod
+    def query_devices() -> list[dict[str, object]]:
+        return FakeSD.DEVICES
+
+    class _Stream:
+        def __init__(self, **kwargs: Any) -> None:
+            if int(kwargs.get("device", -1)) in FakeSD.FAIL:
+                raise RuntimeError("open fail")
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class InputStream(_Stream):
+        pass
+
+    class OutputStream(_Stream):
+        pass
+
+
+def test_probe_openable_filters() -> None:
+    real = AC._import_sounddevice
+    AC._import_sounddevice = lambda: FakeSD  # type: ignore[assignment]
+    try:
+        assert AC.probe_openable(True) == [(0, "Good Mic"), (4, "Dup"), (5, "Dup")]
+        assert AC.probe_openable(False) == [(2, "Good Spk")]
+    finally:
+        AC._import_sounddevice = real  # type: ignore[assignment]
+
+
+def test_display_parse_roundtrip() -> None:
+    assert AC.display_entries([(23, "Foo"), (4, "Dup")]) == ["23: Foo", "4: Dup"]
+    assert AC.parse_display("23: Foo") == 23
+    assert AC.parse_display("nope") is None
+    assert AC.parse_display("") is None
+
+
+def test_resolve_device() -> None:
+    real = AC._import_sounddevice
+    AC._import_sounddevice = lambda: FakeSD  # type: ignore[assignment]
+    try:
+        assert AC.resolve_device(True, None) is None
+        assert AC.resolve_device(True, "") is None
+        assert AC.resolve_device(True, 5) == 5
+        assert AC.resolve_device(True, "5") == 5
+        # 同名重複は先頭番号へ一本化（名前指定の曖昧さを潰す）
+        assert AC.resolve_device(True, "Dup") == 4
+        # 未知の名前はそのまま渡す（open時の成否に任せる後方互換）
+        assert AC.resolve_device(True, "nope") == "nope"
+    finally:
+        AC._import_sounddevice = real  # type: ignore[assignment]
+
+
+def test_device_entries_indexed() -> None:
+    real = AC._import_sounddevice
+    AC._import_sounddevice = lambda: FakeSD  # type: ignore[assignment]
+    try:
+        assert AC.device_entries(True)[0] == (0, "Good Mic")
+        assert len(AC.device_entries(False)) == 2
+        assert AC.display_for(True, "0") == "0: Good Mic"
+        assert AC.display_for(True, "Dup") == "4: Dup"
+        assert AC.display_for(True, "") == ""
+        assert AC.display_for(True, "unknown") == "unknown"
+    finally:
+        AC._import_sounddevice = real  # type: ignore[assignment]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import threading
 import tkinter as tk
 import tkinter.ttk as ttk
 import wave
@@ -18,7 +19,7 @@ from typing import Any
 import WindowUtils
 import numpy as np
 from core import audio_dsp
-from core.AudioCapture import audio_available
+from core.AudioCapture import audio_available, parse_display
 from loguru import logger
 
 METER_INTERVAL_MS = 200
@@ -42,6 +43,10 @@ class AudioPanelMixin:
     audio_reload_button: Any
     audio_record_button: Any
     _audio_meter_after_id: Any
+    _probe_thread: Any
+    _probe_done: bool
+    _probe_result: Any
+    _probe_after_id: Any
     _on_setting_changed: Any
 
     def _build_audio_frame(self) -> None:
@@ -97,7 +102,11 @@ class AudioPanelMixin:
         self.audio_lf.grid(columnspan=3, padx="5", row=3, sticky="ew")
 
     def _refreshAudioDevices(self) -> None:
-        """入出力の候補を列挙して流し込む。失敗時は空のまま。"""
+        """入出力の候補を流し込む。速い列挙を即出しし、開ける物だけ裏で絞る。
+
+        試し開き（75台で数秒）で起動を止めないよう、裏スレッドで絞って
+        GUI スレッドの poll で受け取る。スレッドから widget は触らない。
+        """
         try:
             inputs = self.audio_service.list_inputs()
         except Exception as e:
@@ -110,6 +119,94 @@ class AudioPanelMixin:
             outputs = []
         self.audio_input_cb["values"] = inputs
         self.audio_output_cb["values"] = outputs
+        self._start_probe()
+
+    def _start_probe(self) -> None:
+        """開けるデバイスの絞り込みを裏で始める。多重起動しない。"""
+        thread = getattr(self, "_probe_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        self._probe_done = False
+        self._probe_result = None
+
+        def work() -> None:
+            try:
+                result = (
+                    self.audio_service.probe_inputs(),
+                    self.audio_service.probe_outputs(),
+                )
+            except Exception as e:
+                logger.warning(f"音声デバイスの絞り込みに失敗しました: {e}")
+                result = ([], [])
+            self._probe_result = result
+            self._probe_done = True
+
+        self._probe_thread = threading.Thread(
+            target=work, name="AudioProbe", daemon=True
+        )
+        self._probe_thread.start()
+        self._poll_probe()
+
+    def _poll_probe(self) -> None:
+        """絞り込みの完了を GUI スレッドで待つ。終われば候補を置き換える。"""
+        try:
+            self._probe_after_id = self.root.after(500, self._poll_probe)
+        except tk.TclError:
+            return
+        if not getattr(self, "_probe_done", False):
+            return
+        try:
+            self.root.after_cancel(self._probe_after_id)
+        except (tk.TclError, ValueError):
+            pass
+        self._probe_after_id = None
+        result: Any = getattr(self, "_probe_result", None) or ([], [])
+        try:
+            inputs, outputs = result
+            if inputs:
+                self.audio_input_cb["values"] = inputs
+                self._restore_selection(
+                    self.audio_input_cb,
+                    self.audio_input_name,
+                    self.settings.audio_input.get(),
+                    inputs,
+                )
+            if outputs:
+                self.audio_output_cb["values"] = outputs
+                self._restore_selection(
+                    self.audio_output_cb,
+                    self.audio_output_name,
+                    self.settings.audio_output.get(),
+                    outputs,
+                )
+        except tk.TclError:
+            # 終了間際に発火した分。鎖は切れているので再予約しない。
+            return
+
+    @staticmethod
+    def _restore_selection(
+        combobox: Any, var: Any, spec: str, values: list[str]
+    ) -> None:
+        """絞り込み後も選んでいた物が残っていれば表示を寄せる。"""
+        current = var.get()
+        if current in values:
+            return
+        want = str(spec).strip()
+        hit = ""
+        for display in values:
+            if display == want:
+                hit = display
+                break
+            if want.isdigit() and parse_display(display) == int(want):
+                hit = display
+                break
+        if not hit:
+            return
+        var.set(hit)
+        try:
+            combobox.set(hit)
+        except tk.TclError:
+            pass
 
     def _start_audio(self) -> None:
         """入力を開き、候補・メーターを回し始める。失敗はログだけ。"""
@@ -132,18 +229,28 @@ class AudioPanelMixin:
 
     def _apply_audio_widgets(self) -> None:
         """設定値を画面へ流し込む（起動時と設定読込後のみ）。"""
-        self.audio_input_name.set(self.settings.audio_input.get())
-        self.audio_output_name.set(self.settings.audio_output.get())
+        self.audio_input_name.set(
+            self.audio_service.display_input(self.settings.audio_input.get())
+        )
+        self.audio_output_name.set(
+            self.audio_service.display_output(self.settings.audio_output.get())
+        )
         self.audio_monitor.set(self.settings.audio_monitor_enabled.get())
         self.audio_volume.set(self.settings.audio_monitor_volume.get())
 
+    def _selected_index(self, display: str) -> str:
+        """表示名（"番号: 名前"）から保存用の番号を取り出す。"""
+        index = parse_display(display)
+        return str(index) if index is not None else display
+
     def _onAudioInputSelected(self, *event: Any) -> None:
-        name = self.audio_input_name.get()
-        if self.audio_service.reopen(name):
-            self.settings.audio_input.set(name)
+        display = self.audio_input_name.get()
+        spec = self._selected_index(display)
+        if self.audio_service.reopen(spec):
+            self.settings.audio_input.set(spec)
             self._on_setting_changed()
         else:
-            print(f"音声入力を開けませんでした: {name}")
+            print(f"音声入力を開けませんでした: {display}")
 
     def _onAudioOutputSelected(self, *event: Any) -> None:
         """再生中に出力を変えたら新デバイスで開き直す（失敗時は元に戻す）。"""
@@ -156,20 +263,22 @@ class AudioPanelMixin:
         except (TypeError, ValueError):
             vol = 0.8
         previous = self.settings.audio_output.get()
-        if self.audio_service.set_monitor(True, out, vol):
-            self.settings.audio_output.set(out)
+        spec = self._selected_index(out)
+        if self.audio_service.set_monitor(True, spec, vol):
+            self.settings.audio_output.set(spec)
             self.settings.audio_monitor_volume.set(vol)
             self._on_setting_changed()
         else:
-            self.audio_output_name.set(previous)
+            self.audio_output_name.set(self.audio_service.display_output(previous))
 
     def _onMonitorToggled(self, *event: Any) -> None:
         on = bool(self.audio_monitor.get())
         out = self.audio_output_name.get()
         vol = float(self.audio_volume.get())
-        if self.audio_service.set_monitor(on, out, vol):
+        spec = self._selected_index(out)
+        if self.audio_service.set_monitor(on, spec, vol):
             self.settings.audio_monitor_enabled.set(on)
-            self.settings.audio_output.set(out)
+            self.settings.audio_output.set(spec)
             self.settings.audio_monitor_volume.set(vol)
             self._on_setting_changed()
         else:

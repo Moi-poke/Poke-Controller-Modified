@@ -16,8 +16,10 @@ from typing import Any
 from core.AudioCapture import (
     AudioCapture,
     audio_available,
-    list_input_devices,
-    list_output_devices,
+    device_entries,
+    display_entries,
+    display_for,
+    probe_openable,
 )
 from loguru import logger
 
@@ -33,11 +35,33 @@ class AudioService:
 
     @staticmethod
     def list_inputs() -> list[str]:
-        return list_input_devices()
+        """入力の表示名（"番号: 名前"）。速い列挙で即返す。"""
+        return display_entries(device_entries(True))
 
     @staticmethod
     def list_outputs() -> list[str]:
-        return list_output_devices()
+        """出力の表示名（"番号: 名前"）。速い列挙で即返す。"""
+        return display_entries(device_entries(False))
+
+    @staticmethod
+    def probe_inputs() -> list[str]:
+        """開ける入力の表示名だけ。試し開きするため裏で回すこと。"""
+        return display_entries(probe_openable(True))
+
+    @staticmethod
+    def probe_outputs() -> list[str]:
+        """開ける出力の表示名だけ。試し開きするため裏で回すこと。"""
+        return display_entries(probe_openable(False))
+
+    @staticmethod
+    def display_input(spec: str) -> str:
+        """設定値に対応する入力の表示名。"""
+        return display_for(True, spec)
+
+    @staticmethod
+    def display_output(spec: str) -> str:
+        """設定値に対応する出力の表示名。"""
+        return display_for(False, spec)
 
     # -- 接続 -----------------------------------------------------------
 
