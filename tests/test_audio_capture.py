@@ -274,6 +274,9 @@ def test_resolve_device() -> None:
         assert AC.resolve_device(True, "5") == 5
         # 同名重複は先頭番号へ一本化（名前指定の曖昧さを潰す）
         assert AC.resolve_device(True, "Dup") == 4
+        # 表示名のまま保存された旧設定は番号へ戻す
+        assert AC.resolve_device(True, "4: Dup") == 4
+        assert AC.resolve_device(False, "2: Good Spk [est. 93ms]") == 2
         # 未知の名前はそのまま渡す（open時の成否に任せる後方互換）
         assert AC.resolve_device(True, "nope") == "nope"
     finally:

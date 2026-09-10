@@ -462,8 +462,12 @@ class PokeControllerApp(
         self.settings.baud_rate.set(self._currentBaudRate())
         self.settings.camera_id.set(self._cameraIdOrNone() or 0)
         self.settings.camera_key.set(self.camera_key.get())
-        self.settings.audio_input.set(self.audio_input_name.get())
-        self.settings.audio_output.set(self.audio_output_name.get())
+        # 音声は表示名（"番号: 名前"）ではなく番号で保存する。
+        # 表示のまま書くと次回開けない（同名重複の曖昧さ・est suffix）。
+        self.settings.audio_input.set(self._selected_index(self.audio_input_name.get()))
+        self.settings.audio_output.set(
+            self._selected_index(self.audio_output_name.get())
+        )
         self.settings.audio_monitor_enabled.set(self.audio_monitor.get())
         self.settings.audio_monitor_volume.set(self.audio_volume.get())
         self.settings.input_log_enabled.set(self.show_input_log.get())

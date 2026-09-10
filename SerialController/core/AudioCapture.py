@@ -294,8 +294,9 @@ def resolve_device(want_input: bool, spec: str | int | None) -> int | str | None
     """設定値を open に渡せる形へ直す。空は既定（None）。
 
     番号はそのまま通す（open時に検証）。名前は番号へ一本化して
-    同名重複の曖昧さを潰す。未知の名前はそのまま渡し、open時の
-    成否に任せる（旧設定の後方互換）。
+    同名重複の曖昧さを潰す。表示名（"番号: 名前 [est. XXms]"）の
+    まま保存された旧設定は番号へ戻す。未知の名前はそのまま渡し、
+    open時の成否に任せる（旧設定の後方互換）。
     """
     if spec is None:
         return None
@@ -306,6 +307,9 @@ def resolve_device(want_input: bool, spec: str | int | None) -> int | str | None
         return None
     if text.isdigit():
         return int(text)
+    parsed = parse_display(text)
+    if parsed is not None:
+        return parsed
     for index, name in device_entries(want_input):
         if name == text:
             return index

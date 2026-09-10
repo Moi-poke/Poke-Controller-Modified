@@ -7,10 +7,10 @@ Poke-Controller Modified の構成メモ。詳細な開発手順は `AGENTS.md`�
 
 ```
 ユーザースクリプト (Commands/PythonCommands/, Commands/McuCommands/)
-        │  PythonCommand / ImageProcPythonCommand / McuCommand
+        │  PythonCommand / ImageProcPythonCommand / AudioPythonCommand / McuCommand
         ▼
-実行制御・操作・画像認識 (Commands/PythonCommandBase.py ほか)
-        │  press / hold / wait / isContainTemplate
+実行制御・操作・画像認識・音声検知 (Commands/PythonCommandBase.py ほか)
+        │  press / hold / wait / isContainTemplate / waitTone / waitSound
         ▼
 core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の import 禁止）
         │  serial/: Sender 本体・Arbiter（入力調停）・encoding（行書式）
@@ -18,7 +18,9 @@ core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の imp
         │  Keys: Button/Direction/Hat/Stick（行組み立ては encoding へ一本化）
         │  WakeLink: 応答つき通信（O行・設定確認用）
         │  Camera: 最新1枚だけを配る capture
-        │  InputLog / CommandLoader / Utility / CommandVision ほか
+        │  AudioCapture: 入力1本を所有し直近N秒を配る capture（音声版）
+        │  audio_dsp / audio_latency: 検知・計測の純粋関数（FFT・相互相関・Tap時刻）
+        │  InputLog / CommandLoader / Utility / CommandVision / CommandAudio ほか
         ▼
 ファーム (Arduino Leonardo / Pico；専用品は別 repo Moi-poke/pico-wakeCon)
 ```
@@ -27,18 +29,19 @@ core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の imp
 `Window.py` 直起動（`launcher.py` が使う従来経路）の2口で、どちらも
 `Window.main()` へ集まる。利用者スクリプトの公開面（`Commands.Keys` /
 `Commands.PythonCommandBase` / `Commands.McuCommandBase` /
-`Commands.WakeLink`）と `settings*.ini` の書式は凍結。書式知識の実体は
-`config.py`（Tk なし）にあり、`Settings.GuiSettings` は Tk との鏡と
-入出力の手順だけを持つ。
+`Commands.WakeLink` / `Commands.CommandAudio`）と `settings*.ini` の
+書式は凍結。書式知識の実体は `config.py`（Tk なし）にあり、
+`Settings.GuiSettings` は Tk との鏡と入出力の手順だけを持つ。
 
 GUI 層（`Window.py`・`GuiAssets.py`・`Settings.py` ほか）は `core/` の利用者。
 `Window.py` は起動の組立・設定の出し入れ・終了処理だけを持ち、画面の
 部品ごとの手順は `ui/` の Mixin（`camera_panel` / `serial_panel` /
-`command_panel` / `log_panel`）に分かれる。Mixin は `self` 越しに触る
+`command_panel` / `log_panel` / `audio_panel`）に分かれる。Mixin は `self` 越しに触る
 属性を宣言しておく（mypy のため）。`ui/` から `Window` 本体の import は
 禁止（循環になる）。実行の手順は `services/`（`command_runner.py`: 起動・
 停止・見張り・後始末の状態機械、`serial_service.py`: Sender の所有・
-接続・切替・キーボードの寿命管理）へ委ねる。`services/` は tkinter を
+接続・切替・キーボードの寿命管理、`audio_service.py`: 取込口の所有・
+切替・モニター再生の手順）へ委ねる。`services/` は tkinter を
 import しない。逆向きの依存は `tools/check_core.py`（`task bounds`）で
 禁止している。
 
@@ -62,6 +65,18 @@ import しない。逆向きの依存は `tools/check_core.py`（`task bounds`�
 `NAME` を持つ基底クラスの派生だけを拾う。1ファイルの import 失敗は
 他を巻き込まない。`reload()` で実行中に再読込できるため、
 コマンドファイルにモジュールレベルの副作用を置かないこと。
+
+## 音声の取込の考え方
+
+映像の `Camera`（最新1枚）に対し、音声は区間が要るため
+`AudioCapture` が入力1本を所有して直近N秒のリングバッファへ書く。
+検知（`AudioMixin`）もモニター再生もこの1本から読む。
+デバイスをコマンドごとに開き直すと排他で競合するため、開閉の所有は
+ここへ寄せる。内部レートは44.1kHz monoに統一し、デバイス自レート
+（48kHz等）との差はリサンプルで吸収する。録音テンプレートは
+`Template/audio/<pack>/*.wav`、録音クリップは `AudioClips/`。
+設定は `[Audio]`（`config.py` の既定＋補正に乗せる）。利用者向けの
+操作手順は `docs/AUDIO.md` を参照。
 
 ## 設定と並列起動
 
