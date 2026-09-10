@@ -425,7 +425,7 @@ class AudioPanelMixin:
             t0 = time.perf_counter()
             time.sleep(0.1)
             try:
-                sender.releaseButtons(source="gui")
+                sender.releaseButtons(Button.A, source="gui")
             except Exception as e:
                 logger.warning(f"ボタンの解放に失敗しました: {e}")
             return t0
