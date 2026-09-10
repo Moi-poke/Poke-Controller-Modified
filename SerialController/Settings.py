@@ -125,6 +125,19 @@ class GuiSettings:
         self.season = tk.StringVar(value=home.get("Season"))
         self.is_SingleBattle = tk.StringVar(value=home.get("Single or Double"))
 
+        # 音声（キャプチャボード音声の取込・モニター再生）。
+        # デバイス名は起動時に列挙して選ぶ。ここはファイルの内容を
+        # そのまま持つ（Transport と同じく、使う側が理由つきで落とす）。
+        audio = self.setting["Audio"]
+        self.audio_input = tk.StringVar(value=audio.get("input_device", fallback=""))
+        self.audio_output = tk.StringVar(value=audio.get("output_device", fallback=""))
+        self.audio_monitor_enabled = tk.BooleanVar(
+            value=audio.getboolean("monitor_enabled", fallback=False)
+        )
+        self.audio_monitor_volume = tk.DoubleVar(
+            value=audio.getfloat("monitor_volume", fallback=0.8)
+        )
+
     # キーコンフィグが扱うセクション。KeyConfig / Keyboard の双方が参照する。
     # 実体は config が持つ。ここでは同じ名前で読めるようにしておく。
     # ここを直接 configparser で書き換えると他の設定を巻き戻すため、
@@ -312,6 +325,14 @@ class GuiSettings:
             "mode": self.arbitration_mode.get(),
             "cooldown": self.arbitration_cooldown.get(),
         }
+        self.setting["Audio"] = self._str_values(
+            {
+                "input_device": self.audio_input.get(),
+                "output_device": self.audio_output.get(),
+                "monitor_enabled": self.audio_monitor_enabled.get(),
+                "monitor_volume": self.audio_monitor_volume.get(),
+            }
+        )
 
         # pokemon home用の設定
         self.setting["Pokemon Home"] = {
