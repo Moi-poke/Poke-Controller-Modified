@@ -1,6 +1,9 @@
 """audio_dsp（DSP純粋関数）の検証。実機なしで回す。"""
 
+import wave
+
 import numpy as np
+import pytest
 
 # 計画書は `import audio_dsp` と書くが、実体は SerialController/core/audio_dsp.py
 # のため既存規約（`from core import X`）で読む。Task 7 のテストも同形。
@@ -47,3 +50,31 @@ def test_normalized_xcorr_unrelated_is_small() -> None:
 def test_dbfs_silence_is_minus_inf() -> None:
     x = np.zeros(100, dtype=np.float32)
     assert audio_dsp.dbfs(x) == float("-inf")
+
+
+def test_load_wav_mono_missing_raises(tmp_path: object) -> None:
+    import pathlib
+
+    missing = str(pathlib.Path(str(tmp_path)) / "ない.wav")
+    with pytest.raises(ValueError):
+        audio_dsp.load_wav_mono(missing)
+
+
+def test_load_wav_mono_rejects_non_16bit(tmp_path: object) -> None:
+    import pathlib
+
+    wav_path = str(pathlib.Path(str(tmp_path)) / "eight.wav")
+    with wave.open(wav_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(1)
+        wf.setframerate(44100)
+        wf.writeframes(bytes([128] * 4410))
+    with pytest.raises(ValueError):
+        audio_dsp.load_wav_mono(wav_path)
+
+
+def test_match_template_resamples_rate() -> None:
+    hay = sine(880.0, 0.5, rate=44100)
+    needle = sine(880.0, 0.5, rate=22050)
+    score = audio_dsp.match_template(hay, 44100, needle, 22050)
+    assert score > 0.9

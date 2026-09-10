@@ -84,3 +84,47 @@ def test_no_audio_raises() -> None:
     probe.Discord = None
     with pytest.raises(RuntimeError):
         probe.isTonePresent([(3000.0, 3200.0)], [1.0])
+
+
+def test_watch_sounds_fires_then_cools_down() -> None:
+    data = (sine(3100.0, 1.5) + sine(4200.0, 1.5)).astype(np.float32)
+    probe = Probe(data)
+    powers = [
+        audio_dsp.band_power(data, 44100, lo, hi)
+        for lo, hi in [(3000.0, 3200.0), (4150.0, 4400.0)]
+    ]
+    fired: list[str] = []
+    probe.onSoundDetected(
+        "tone",
+        fired.append,
+        cooldown_s=5.0,
+        bands=[(3000.0, 3200.0), (4150.0, 4400.0)],
+        thresholds=[p * 0.5 for p in powers],
+    )
+    assert probe.watchSounds(timeout=10.0) is True
+    assert fired == ["tone"]
+    # 直後は cooldown で拾わない（時間切れの False）
+    assert probe.watchSounds(timeout=1.0) is False
+    assert fired == ["tone"]
+
+
+def test_watch_sounds_timeout_returns_false() -> None:
+    probe = Probe(np.zeros(44100, dtype=np.float32))
+    fired: list[str] = []
+    probe.onSoundDetected(
+        "tone",
+        fired.append,
+        cooldown_s=0.0,
+        bands=[(3000.0, 3200.0)],
+        thresholds=[1e12],
+    )
+    assert probe.watchSounds(timeout=1.0) is False
+    assert fired == []
+
+
+def test_on_sound_detected_validates_params() -> None:
+    probe = Probe(np.zeros(100, dtype=np.float32))
+    with pytest.raises(ValueError):
+        probe.onSoundDetected("tone", lambda _kind: None)
+    with pytest.raises(ValueError):
+        probe.onSoundDetected("sound", lambda _kind: None)

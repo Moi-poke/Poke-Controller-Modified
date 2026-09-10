@@ -15,7 +15,10 @@ import tkinter.ttk as ttk
 import wave
 from typing import Any
 
+import WindowUtils
 import numpy as np
+from core import audio_dsp
+from core.AudioCapture import audio_available
 from loguru import logger
 
 METER_INTERVAL_MS = 200
@@ -63,6 +66,9 @@ class AudioPanelMixin:
             self.audio_lf, textvariable=self.audio_output_name, width=28
         )
         self.audio_output_cb.grid(padx="5", row=0, column=3, sticky="ew")
+        self.audio_output_cb.bind(
+            "<<ComboboxSelected>>", self._onAudioOutputSelected, add=""
+        )
 
         ttk.Checkbutton(
             self.audio_lf,
@@ -108,7 +114,17 @@ class AudioPanelMixin:
         self._refreshAudioDevices()
         name = self.settings.audio_input.get()
         if not self.audio_service.open(name):
-            print(f"音声入力を開けませんでした: {name or '既定の入力'}")
+            # バックエンド欠如は静かに（debug）。実デバイス失敗のprintは残す。
+            try:
+                missing = not audio_available() and (
+                    getattr(self.audio_service.capture, "_factory", None) is None
+                )
+            except Exception:
+                missing = False
+            if missing:
+                logger.debug("音声バックエンドがないため取込なしで起動します")
+            else:
+                print(f"音声入力を開けませんでした: {name or '既定の入力'}")
         self._apply_audio_widgets()
         self._schedule_meter()
 
@@ -126,6 +142,24 @@ class AudioPanelMixin:
             self._on_setting_changed()
         else:
             print(f"音声入力を開けませんでした: {name}")
+
+    def _onAudioOutputSelected(self, *event: Any) -> None:
+        """再生中に出力を変えたら新デバイスで開き直す（失敗時は元に戻す）。"""
+        capture = getattr(self.audio_service, "capture", None)
+        if capture is None or not capture.isMonitorEnabled():
+            return
+        out = self.audio_output_name.get()
+        try:
+            vol = float(self.audio_volume.get())
+        except (TypeError, ValueError):
+            vol = 0.8
+        previous = self.settings.audio_output.get()
+        if self.audio_service.set_monitor(True, out, vol):
+            self.settings.audio_output.set(out)
+            self.settings.audio_monitor_volume.set(vol)
+            self._on_setting_changed()
+        else:
+            self.audio_output_name.set(previous)
 
     def _onMonitorToggled(self, *event: Any) -> None:
         on = bool(self.audio_monitor.get())
@@ -164,7 +198,12 @@ class AudioPanelMixin:
         except Exception as e:
             logger.debug(f"レベル表示を更新できません: {e}")
         finally:
-            self._schedule_meter()
+            # 終了後に予約が残っていても再予約しない。
+            # root 破棄後の after() は TclError になるため握る。
+            try:
+                self._schedule_meter()
+            except tk.TclError:
+                pass
 
     def reloadAudio(self) -> None:
         """入力を開き直す。"""
@@ -183,17 +222,20 @@ class AudioPanelMixin:
             return
         # 保存は Mixin の手順に寄せず、ここでは生pcmをwavへ書くだけ。
         # 検知用テンプレ化は recordClip（コマンド側）を使う。
+        # 保存先は cwd 相対にしない（Window 起動時に chdir されても
+        # ずれないよう APP_DIR 起点）。
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filespec = f"./AudioClips/test_{stamp}.wav"
+        clip_dir = os.path.join(WindowUtils.APP_DIR, "AudioClips")
+        filespec = os.path.join(clip_dir, f"test_{stamp}.wav")
         try:
-            os.makedirs("./AudioClips", exist_ok=True)
+            os.makedirs(clip_dir, exist_ok=True)
             pcm = (np.clip(window.astype(np.float64), -1.0, 1.0) * 32767.0).astype(
                 np.int16
             )
             with wave.open(filespec, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
-                wf.setframerate(44100)
+                wf.setframerate(audio_dsp.SAMPLE_RATE)
                 wf.writeframes(pcm.tobytes())
         except OSError as e:
             print(f"録音の保存に失敗しました: {e}")

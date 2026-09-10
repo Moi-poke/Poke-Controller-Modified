@@ -75,3 +75,15 @@ def test_shutdown_closes() -> None:
     svc.open("mic")
     assert svc.shutdown() is True
     assert fake.closed >= 1
+
+
+def test_monitor_output_failure_notifies() -> None:
+    svc, fake, notes = make_service()
+    assert svc.open("mic") is True
+
+    def _fail(_on: bool, _device: Any = None) -> bool:
+        return False
+
+    fake.setMonitorEnabled = _fail  # type: ignore[method-assign]
+    assert svc.set_monitor(True, "sp", 0.5) is False
+    assert notes  # 利用者向けに1行出る

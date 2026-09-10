@@ -4,14 +4,14 @@ from typing import Any
 
 import numpy as np
 import pytest
-from core import AudioCapture, AudioCapture as AC
+from core import AudioCapture as AC
 
 
 def test_unavailable_without_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(AudioCapture, "_import_sounddevice", lambda: None)
-    assert AudioCapture.audio_available() is False
-    assert AudioCapture.list_input_devices() == []
-    assert AudioCapture.list_output_devices() == []
+    monkeypatch.setattr(AC, "_import_sounddevice", lambda: None)
+    assert AC.audio_available() is False
+    assert AC.list_input_devices() == []
+    assert AC.list_output_devices() == []
 
 
 class FakeStream:

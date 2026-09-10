@@ -15,6 +15,7 @@ from typing import Any
 
 from core.AudioCapture import (
     AudioCapture,
+    audio_available,
     list_input_devices,
     list_output_devices,
 )
@@ -44,6 +45,15 @@ class AudioService:
         """入力を開く。失敗は False＋利用者向け1行＋ログ。"""
         if self.capture.openInput(name or None):
             return True
+        # バックエンド欠如は静かに（debug）。実デバイス失敗のみ通知する。
+        if isinstance(self.capture, AudioCapture):
+            try:
+                factory = getattr(self.capture, "_factory", None)
+            except Exception:
+                factory = None
+            if factory is None and not audio_available():
+                logger.debug("音声バックエンドがないため取込なしで起動します")
+                return False
         message = f"音声入力を開けません: {name or '既定の入力'}"
         self._notify(message)
         logger.error(message)

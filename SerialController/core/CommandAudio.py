@@ -27,8 +27,18 @@ TEMPLATE_AUDIO_PATH = path.normpath(
     path.join(path.dirname(path.dirname(path.abspath(__file__))), "Template", "audio")
 )
 
-# 録音クリップの保存先（画像の Captures/ に対応）。
-AUDIO_CLIP_DIR = "./AudioClips/"
+
+# 録音クリップの既定保存先（画像の Captures/ に対応）。
+# cwd 相対にしない。WindowUtils.APP_DIR と同じ場所を __file__ から
+# 求める（core から WindowUtils は import 禁止のため）。
+def default_clip_dir() -> str:
+    """録音クリップの既定保存先（APP_DIR 起点）。"""
+    return path.normpath(
+        path.join(path.dirname(path.dirname(path.abspath(__file__))), "AudioClips")
+    )
+
+
+AUDIO_CLIP_DIR = default_clip_dir()
 
 
 def _get_audio_filespec(audio_path: str) -> str:
@@ -48,6 +58,18 @@ class AudioMixin:
         """検知に使う音声源を受け取る。継承側の __init__ から呼ぶ。"""
         self.audio: Any = audio
         self._sound_triggers: list[dict[str, Any]] = []
+        # 取込レートと検知レートの乖離はここで気づく。
+        # AudioCapture の既定は audio_dsp.SAMPLE_RATE 起点だが、
+        # 別レートで開かれた源を渡されると検知の前提が崩れる。
+        try:
+            rate = getattr(audio, "_rate", None)
+        except Exception:
+            rate = None
+        if rate is not None and int(rate) != audio_dsp.SAMPLE_RATE:
+            logger.warning(
+                f"音声源のレートが検知の前提と違います: {rate} "
+                f"(想定 {audio_dsp.SAMPLE_RATE})"
+            )
 
     def _readWindowOrRaise(self, seconds: float) -> np.ndarray:
         """直近の録音窓を返す。取れなければ RuntimeError にする。"""
@@ -87,6 +109,14 @@ class AudioMixin:
                 return False
             self.wait(interval)
 
+    def _scoreSound(
+        self, window: np.ndarray, template: np.ndarray, template_rate: int
+    ) -> float:
+        """録音窓と読み済みテンプレートの一致度（poll 内の再読込を避ける）。"""
+        return audio_dsp.match_template(
+            window, audio_dsp.SAMPLE_RATE, template, template_rate
+        )
+
     def isSoundPresent(
         self,
         template_wav: str,
@@ -100,7 +130,7 @@ class AudioMixin:
         except ValueError as e:
             raise RuntimeError(str(e)) from e
         window = self._readWindowOrRaise(window_s)
-        score = audio_dsp.match_template(window, audio_dsp.SAMPLE_RATE, template, rate)
+        score = self._scoreSound(window, template, rate)
         return bool(score >= float(threshold))
 
     def waitSound(
@@ -112,23 +142,32 @@ class AudioMixin:
         interval: float = 0.2,
     ) -> bool:
         """登録音が鳴るまで待つ。鳴れば True、時間切れは False。"""
+        filespec = _get_audio_filespec(template_wav)
+        try:
+            template, rate = audio_dsp.load_wav_mono(filespec)
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
         expired = self._deadline(timeout)
         while True:
-            if self.isSoundPresent(template_wav, threshold, window_s):
+            window = self._readWindowOrRaise(window_s)
+            if bool(self._scoreSound(window, template, rate) >= float(threshold)):
                 return True
             if expired():
                 logger.debug(f"waitSound timeout: {template_wav}")
                 return False
             self.wait(interval)
 
-    def recordClip(self, seconds: float, name: str = "clip") -> str:
+    def recordClip(
+        self, seconds: float, name: str = "clip", clip_dir: str | None = None
+    ) -> str:
         """直近 seconds 秒をwav保存し、保存先パスを返す（saveFrame 対応）。"""
         window = self._readWindowOrRaise(seconds)
-        os.makedirs(AUDIO_CLIP_DIR, exist_ok=True)
+        target = clip_dir or default_clip_dir()
+        os.makedirs(target, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         stamp += f"_{int((time.time() % 1) * 1000):03d}"
         safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(name))
-        filespec = path.join(AUDIO_CLIP_DIR, f"{stamp}_{safe}.wav")
+        filespec = path.join(target, f"{stamp}_{safe}.wav")
         pcm = np.clip(window.astype(np.float64), -1.0, 1.0)
         pcm = (pcm * 32767.0).astype(np.int16)
         try:
@@ -175,6 +214,12 @@ class AudioMixin:
         """
         if kind not in ("tone", "sound"):
             raise ValueError(f"kind は tone/sound です: {kind}")
+        if kind == "tone":
+            if "bands" not in params or "thresholds" not in params:
+                raise ValueError("tone には bands/thresholds が必要です")
+        else:
+            if "template_wav" not in params:
+                raise ValueError("sound には template_wav が必要です")
         self._sound_triggers.append(
             {
                 "kind": kind,

@@ -39,13 +39,13 @@ ui/audio_panel.py …… 入出力デバイス選択＋モニタートグル＋�
 - `core/AudioCapture.py`: 入力デバイス列挙（`query_devices` の薄い包み。例外時は空＋ログ）、`openInput(device) -> bool`、`close()`、リングバッファ（44100Hz mono float32、既定5秒＝約0.9MB。`threading.Lock`＋単調書込）、`readWindow(seconds) -> np.ndarray | None`（複製を返す。PortAudioスレッドの配列を外へ漏らさない。`seconds` はリング長以下であること）、`peak()/rms()`（レベルメーター用）、モニター送出（出力ストリーム。入力コールバック内で複製を出力側へ受渡し。キュー深さ1で遅延を溜めない。既定OFF）。デバイス抜去・open失敗は False＋ログで返し、例外で落とさない（AGENTS.md の graceful 方針）。
 - `core/audio_dsp.py`: tkinter・sounddevice 非依存の純粋関数。`band_power(x, rate, lo, hi)`（窓関数＋rFFT。listen_shiny の 3100Hz/4200Hz デュアルバンド判定を一般化）、`is_tone(x, rate, bands, thresholds)`、`match_template(x, rate, wav)`（正規化相互相関。`scipy` は既存依存。サンプルレート不一致は `scipy.signal.resample` で吸収）、`load_wav_mono(path)`（wav読込→mono float32化。対応形式は wave モジュール範囲＋後追いで拡張可）。全てヘッドレスでpytest可能。
 - `services/audio_service.py`: `AudioCapture` の所有・デバイス切替・終了時の `close()`。`serial_service.py` 対応（接続→切断→再接続の手順だけ。tkinterなし）。
-- `ui/audio_panel.py`: `CameraPanelMixin` 対応の `AudioPanelMixin`。入力／出力デバイスの Combobox（列挙失敗時は手入力可の Entry へ-gradeful 縮退）、モニターのトグル（既定OFF。ON時は出力デバイス必須）、レベル表示（`after()` 駆動のポーリング。ワーカースレッドからwidgetを触らない）、テスト録音ボタン（`recordClip` のGUI版。保存先は `AudioClips/`）。
+- `ui/audio_panel.py`: `CameraPanelMixin` 対応の `AudioPanelMixin`。入力／出力デバイスの Combobox（列挙失敗時は手入力可の Entry へ-gradeful 縮退）、モニターのトグル（既定OFF。ON時は出力デバイス必須）、レベル表示（`after()` 駆動のポーリング。ワーカースレッドからwidgetを触らない）、テスト録音ボタン（`recordClip` のGUI版。保存先は `APP_DIR/AudioClips/`。cwd 相対は使わない）。
 - `core/CommandAudio.py`＋`Commands/CommandAudio.py` シム（`from core.CommandAudio import AudioMixin as AudioMixin` 形式の再公開のみ）: `AudioMixin`。`_initAudio(audio)` で状態受領（VisionMixin の `_initVision` 対応）。待ち系（`wait` / `_deadline`）は継承側（`OperateMixin` 経由）が用意する前提で、型宣言のみ持つ（VisionMixin と同型）。具象クラスは `AudioPythonCommand(PythonCommand, AudioMixin)`（`ImageProcPythonCommand` 対応。画像＋音声併用は多重継承で各自合成）。API は画像認識の書き心地に寄せる:
   - `isTonePresent(bands, thresholds, window_s=1.5) -> bool`（`bands` は(lo,hi)帯域の列、`thresholds` は同順のパワー閾値。全帯域が超えたら True。単一周波数は `[(f-100, f+100)]` と書く規約）
   - `waitTone(bands, thresholds, window_s=1.5, timeout=10.0, interval=0.2) -> bool`（期限は `_deadline()` で測る。一時停止中の時計進行問題を VisionMixin と同じく避ける）
   - `isSoundPresent(template_wav, threshold=0.8, window_s=3.0) -> bool`
   - `waitSound(..., timeout=10.0, interval=0.2) -> bool`
-  - `recordClip(seconds, name) -> str`（保存先パスを返す。`saveFrame` 対応。日時＋ミリ秒で上書き防止）
+  - `recordClip(seconds, name) -> str`（保存先パスを返す。`saveFrame` 対応。日時＋ミリ秒で上書き防止。保存先は `APP_DIR/AudioClips/` 起点）
   - `onSoundDetected(spec, callback, cooldown_s=5.0)`（検知時コールバック。ポーリングループを持たないコマンド用。Discord通知は `self.Discord` 経由の `_notifySound(name)` に寄せる）
   - テンプレートwavの置き場規約: 画像の `Template/<pack>/` に倣い `Template/audio/<pack>/*.wav`。相対解決は `_get_template_filespec` と同規則。
 - 設定: `[Audio]` 新設（`input_device` / `output_device` / `monitor_enabled=False` / `monitor_volume=0.8`）。既定・補正は `config.py`（`default_sections`＋`complete_missing` に追記。`monitor_volume` は0.0〜1.0に収める）。`GuiSettings` は鏡＋IOのみ。既存iniは補正で読める（書式凍結維持）。

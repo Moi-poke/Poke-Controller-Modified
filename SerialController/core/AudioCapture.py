@@ -20,10 +20,12 @@ import time
 from typing import Any
 
 import numpy as np
+from core import audio_dsp
 from loguru import logger
 
-# 録音・検知の基準。audio_dsp.SAMPLE_RATE と同じ値を使う。
-AUDIO_RATE = 44100
+# 録音・検知の基準。audio_dsp.SAMPLE_RATE をそのまま使う。
+# 別々の数値で持つと乖離する（検知の前提が崩れる）ため参照で揃える。
+AUDIO_RATE = audio_dsp.SAMPLE_RATE
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK = 1024
 
@@ -35,7 +37,7 @@ def _import_sounddevice() -> Any | None:
 
         return sd
     except Exception as e:
-        logger.warning(f"音声機能は無効です（sounddevice: {e}）")
+        logger.debug(f"音声機能は無効です（sounddevice: {e}）")
         return None
 
 
@@ -101,6 +103,10 @@ class AudioCapture:
         self._pos = 0
         self._filled = 0
         self._lock = threading.Lock()
+        # _stream / _out_stream は別スレッドからの参照・差し替えが
+        # 重なる（benign race）。参照代入は不可分で、古い参照を
+        # 読んでも次回に直るだけのため Lock は入れない。特に
+        # PortAudio コールバック内では待たせないことが優先。
         self._stream: Any = None
         self._input_name = ""
         self._factory = input_factory
@@ -113,9 +119,15 @@ class AudioCapture:
     def openInput(self, device: str | int | None) -> bool:
         """入力を開く。既に開いていれば閉じてから開き直す。成否を返す。"""
         self.close()
-        sd = _import_sounddevice()
-        if sd is None:
-            return False
+        # factory 注入時（テスト）は実バックエンドの有無を問わない。
+        # PortAudio なしOSでも合成ストリームで検証できるよう gate を抜ける。
+        if self._factory is None:
+            sd = _import_sounddevice()
+            if sd is None:
+                logger.debug("音声入力を開けません（バックエンドなし）")
+                return False
+        else:
+            sd = None
         name = "" if device is None else str(device)
         try:
             if self._factory is not None:
@@ -127,6 +139,7 @@ class AudioCapture:
                     callback=self._on_input,
                 )
             else:
+                assert sd is not None  # factory なしは gate 通過済み
                 stream = sd.InputStream(
                     samplerate=self._rate,
                     channels=AUDIO_CHANNELS,
@@ -161,6 +174,8 @@ class AudioCapture:
                 self._ring[: end - self._ring.size] = mono[first:]
             self._pos = end % self._ring.size
             self._filled = min(self._filled + mono.size, self._ring.size)
+        # _out_stream の参照は Lock なしで読む（benign race）。
+        # コールバック内で待つと音が途切れるため、無ければ捨てるだけ。
         if self._out_stream is not None:
             try:
                 self._pipe.put_nowait(mono.copy())
@@ -205,7 +220,7 @@ class AudioCapture:
             want = min(want, self._filled)
             end = self._pos
             start = (end - want) % self._ring.size
-            if start < end or self._filled < self._ring.size and start == 0:
+            if (start < end) or (self._filled < self._ring.size and start == 0):
                 out = self._ring[end - want : end].copy()
             else:
                 out = np.concatenate((self._ring[start:], self._ring[:end])).copy()
@@ -258,9 +273,14 @@ class AudioCapture:
             print("モニターを開始できません: 音声入力が開いていません")
             logger.warning("モニター開始に失敗（入力未open）")
             return False
-        sd = _import_sounddevice()
-        if sd is None:
-            return False
+        # factory 注入時（テスト）は実バックエンドの有無を問わない。
+        if self._factory_out is None:
+            sd = _import_sounddevice()
+            if sd is None:
+                logger.debug("モニター出力を開けません（バックエンドなし）")
+                return False
+        else:
+            sd = None
         self._stop_output()
         try:
             if self._factory_out is not None:
@@ -272,6 +292,7 @@ class AudioCapture:
                     callback=self._on_output,
                 )
             else:
+                assert sd is not None  # factory なしは gate 通過済み
                 out = sd.OutputStream(
                     samplerate=self._rate,
                     channels=AUDIO_CHANNELS,
