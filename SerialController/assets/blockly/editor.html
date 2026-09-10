@@ -653,14 +653,18 @@ html, body { height: 100%; margin: 0; }
     }
     var wrote = false;
     var name = document.getElementById('capblocktpl').value;
-    if (name) { b.setFieldValue(name, 'TEMPLATE'); wrote = true; }
+    var tplf = (typeof b.getField === 'function') ? b.getField('TEMPLATE') : null;
+    if (name && tplf) { b.setFieldValue(name, 'TEMPLATE'); wrote = true; }
     var img = document.getElementById('capbigimg');
     if (capModalRect && img.naturalWidth &&
         PokeconCapture.isValidPixels(capModalRect, img.naturalWidth, img.naturalHeight)) {
-      var px = PokeconCapture.rect01ToPx(capModalRect, img.naturalWidth, img.naturalHeight);
-      b.setFieldValue(
-        PokeconCapture.formatCrop(px.x, px.y, px.x + px.width, px.y + px.height), 'CROP');
-      wrote = true;
+      var cf = (typeof b.getField === 'function') ? b.getField('CROP') : null;
+      if (cf) {
+        var px = PokeconCapture.rect01ToPx(capModalRect, img.naturalWidth, img.naturalHeight);
+        b.setFieldValue(
+          PokeconCapture.formatCrop(px.x, px.y, px.x + px.width, px.y + px.height), 'CROP');
+        wrote = true;
+      }
     }
     var th = parseFloat(document.getElementById('capth').value);
     var tf = b.getField('THRESHOLD');
