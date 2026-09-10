@@ -66,7 +66,7 @@ tasks:
       - task: test
 
   app:
-    desc: 本体を起動する（PROFILE変数でプロファイル指定、例: task app PROFILE=switch1）
+    desc: "本体を起動する（PROFILE変数でプロファイル指定、例: task app PROFILE=switch1）"
     vars:
       PROFILE: '{{.PROFILE | default ""}}'
     cmds:
