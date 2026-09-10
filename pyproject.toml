@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml>=6.0.2",
     "requests>=2.32.3",
     "scipy>=1.15.2",
+    "sounddevice>=0.5.6",
 ]
 
 [dependency-groups]

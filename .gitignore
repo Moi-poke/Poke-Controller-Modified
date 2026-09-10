@@ -15,6 +15,7 @@ desktop.ini
 LUFA/
 .idea/
 SerialController/Captures/
+SerialController/AudioClips/
 SerialController/settings.poke
 SerialController/settings.ini
 

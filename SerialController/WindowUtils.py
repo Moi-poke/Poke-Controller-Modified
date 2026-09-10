@@ -139,6 +139,30 @@ def acceptsGuiArg(cmd_class: type) -> bool:
     return len(positional) >= 2
 
 
+def acceptsAudioArg(cmd_class: type) -> bool:
+    """__init__ が audio（音声源）を受け取れるかを判定する。
+
+    acceptsGuiArg と同じくシグネチャで先に決める（except TypeError
+    での握りは、コマンド内部の例外を誤判定するため使わない）。
+    """
+    try:
+        params = inspect.signature(cmd_class).parameters
+    except (TypeError, ValueError):
+        return False
+
+    # *args を持つなら何でも渡せる
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params.values()):
+        return True
+
+    # self は signature() の対象外。1つ以上受け取れるか
+    positional = [
+        p
+        for p in params.values()
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= 1
+
+
 def openDirectory(directory: str, os_name: str) -> None:
     """OS のファイラでフォルダを開く。
 
