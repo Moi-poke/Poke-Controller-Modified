@@ -260,66 +260,6 @@ def resolve_device(want_input: bool, spec: str | int | None) -> int | str | None
     return text
 
 
-def open_raw_output(
-    device_spec: str | int | None,
-    callback: Any = None,
-) -> tuple[Any, int, float]:
-    """計測用の素通し出力ストリームを開く。(stream, 自レート, 遅延秒)。
-
-    callback 付きでは PortAudio スレッドから呼ばれる。なしでは
-    blocking write で鳴らす。開けなければ理由付き例外。
-    閉じるのは close_raw_output。
-    """
-    sd = _import_sounddevice()
-    if sd is None:
-        raise RuntimeError("音声バックエンドがありません")
-    resolved = resolve_device(False, device_spec)
-    if isinstance(resolved, int):
-        rate = native_rate(sd, False, resolved)
-    elif resolved is None:
-        rate = native_rate(sd, False, None)
-    else:
-        rate = AUDIO_RATE
-    kwargs: dict[str, Any] = {
-        "samplerate": rate,
-        "channels": AUDIO_CHANNELS,
-        "dtype": "float32",
-        "blocksize": AUDIO_CHUNK,
-        "device": resolved,
-        "latency": AUDIO_LATENCY,
-    }
-    if callback is not None:
-        kwargs["callback"] = callback
-    stream = sd.OutputStream(**kwargs)
-    try:
-        stream.start()
-    except Exception:
-        try:
-            stream.close()
-        except Exception:
-            pass
-        raise
-    try:
-        latency = float(stream.latency)
-    except Exception:
-        latency = 0.0
-    return stream, int(rate), latency
-
-
-def close_raw_output(stream: Any) -> None:
-    """計測用ストリームを片付ける。失敗は握る。"""
-    if stream is None:
-        return
-    try:
-        stream.stop()
-    except Exception:
-        pass
-    try:
-        stream.close()
-    except Exception as e:
-        logger.warning(f"計測用出力の解放で例外: {e}")
-
-
 def list_input_devices() -> list[str]:
     """録音に使えるデバイス名の一覧。"""
     return _device_names(True)

@@ -116,29 +116,23 @@ def test_display_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert svc.display_output("") == ""
 
 
-def test_measure_latency_needs_input() -> None:
-    svc, _, _ = make_service()
-    result = svc.measure_latency("3")
-    assert result["detected"] == 0
-    assert "入力" in str(result.get("error", ""))
-
-
-def test_measure_latency_refuses_monitoring() -> None:
-    svc, _, _ = make_service()
-    assert svc.open("mic") is True
-    assert svc.set_monitor(True, "sp", 0.5) is True
-    result = svc.measure_latency("3")
-    assert result["detected"] == 0
-    assert "モニター" in str(result.get("error", ""))
-
-
-def test_fastest_output_prefers_measured() -> None:
+def test_fastest_output_picks_min_est() -> None:
     svc, _, _ = make_service()
     svc._probe_cache = {
         False: [(3, "A", 90.0), (5, "B", 20.0)],
     }
     assert svc.fastest_output() == "5"
-    svc.measured = {3: 10.0}
-    assert svc.fastest_output() == "3"
     svc._probe_cache = {}
     assert svc.fastest_output() == ""
+
+
+def test_fastest_input_prefers_measured() -> None:
+    svc, _, _ = make_service()
+    svc._probe_cache = {
+        True: [(4, "MicA", 23.0), (7, "MicB", 12.0)],
+    }
+    assert svc.fastest_input() == "7"
+    svc.record_input_measurement("4", 5.0)
+    assert svc.fastest_input() == "4"
+    svc.record_input_measurement("nope", 1.0)
+    assert svc.fastest_input() == "4"

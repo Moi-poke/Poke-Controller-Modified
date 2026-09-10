@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import os
 import threading
+import time
 import tkinter as tk
 import tkinter.ttk as ttk
 import wave
@@ -20,6 +21,7 @@ import WindowUtils
 import numpy as np
 from core import audio_dsp
 from core.AudioCapture import audio_available, parse_display
+from core.Keys import Button
 from loguru import logger
 
 METER_INTERVAL_MS = 200
@@ -31,6 +33,7 @@ class AudioPanelMixin:
     frame_1: Any
     root: Any
     settings: Any
+    serial: Any
     audio_service: Any
     audio_lf: Any
     audio_input_cb: Any
@@ -389,10 +392,11 @@ class AudioPanelMixin:
         print(f"テスト録音を保存しました: {filespec}")
 
     def measureLatency(self) -> None:
-        """選択中の出力の往復遅延を実測する（数秒かかる。裏で回す）。
+        """押して鳴った音の到達を測る（数秒かかる。裏で回す）。
 
-        モニター再生中は回り込むため測らない。入力は現在開いている物を
-        使う（マイクなら音響片道、ケーブル対なら電気片道）。
+        Aボタンを押してSwitchを鳴らし、その立ち上がりを検知する。
+        操作確認画面など、押すと音が出る画面で使うこと。
+        結果は入力の実測として覚え、最速選択に使う。
         """
         thread = getattr(self, "_measure_thread", None)
         if thread is not None and thread.is_alive():
@@ -402,26 +406,42 @@ class AudioPanelMixin:
             print("計測できません: 音声入力が開いていません")
             return
         try:
-            monitoring = bool(capture.isMonitorEnabled())
+            serial_open = bool(self.serial.is_open())
         except Exception:
-            monitoring = False
-        if monitoring:
-            print("計測できません: モニター再生を止めてから測ってください")
+            serial_open = False
+        if not serial_open:
+            print("計測できません: シリアルが開いていません")
             return
-        out = self.audio_output_name.get()
-        self.audio_measure_result.set("計測中...")
+        self.audio_measure_result.set("計測中...（Aを3回押します）")
         self._measure_done = False
         self._measure_result = None
 
+        def send_press() -> float:
+            sender = self.serial.sender
+            if sender is None or not sender.isOpened():
+                raise RuntimeError("シリアルが開いていません")
+            if not sender.pressButtons(Button.A, source="gui"):
+                raise RuntimeError("送信に失敗しました")
+            t0 = time.perf_counter()
+            time.sleep(0.1)
+            try:
+                sender.releaseButtons(source="gui")
+            except Exception as e:
+                logger.warning(f"ボタンの解放に失敗しました: {e}")
+            return t0
+
         def work() -> None:
             try:
-                self._measure_result = self.audio_service.measure_latency(out)
+                from core import audio_latency as AL
+
+                self._measure_result = AL.measure_press(send_press, capture)
             except Exception as e:
                 logger.error(f"遅延計測に失敗しました: {e}")
                 self._measure_result = {
                     "detected": 0,
                     "total": 0,
                     "median_ms": -1.0,
+                    "delays_ms": [],
                     "error": str(e),
                 }
             self._measure_done = True
@@ -457,34 +477,56 @@ class AudioPanelMixin:
             median = float(result.get("median_ms", -1.0))
             if detected <= 0:
                 self.audio_measure_result.set(
-                    f"実測 --（検出 {detected}/{total}。音量・配線を確認）"
+                    f"実測 --（検出 {detected}/{total}。操作確認画面か確認）"
                 )
                 return
             self.audio_measure_result.set(
                 f"実測 {median:.0f}ms（検出 {detected}/{total}）"
             )
+            try:
+                self.audio_service.record_input_measurement(
+                    self.settings.audio_input.get(), median
+                )
+            except Exception as e:
+                logger.warning(f"実測の記録に失敗しました: {e}")
             self._update_latency_label()
         except tk.TclError:
             return
 
     def pickFastest(self) -> None:
-        """最も速い出力を選ぶ。実測優先、なければ推定。"""
-        spec = self.audio_service.fastest_output()
-        if not spec:
-            print("選べる出力がありません（絞り込みを待ってください）")
+        """最も速い入出力を選ぶ。入力は実測優先、出力は推定で選ぶ。"""
+        in_spec = self.audio_service.fastest_input()
+        out_spec = self.audio_service.fastest_output()
+        if not in_spec and not out_spec:
+            print("選べる入出力がありません（絞り込みを待ってください）")
             return
-        display = self.audio_service.display_output(spec)
-        self.audio_output_name.set(display)
-        capture = getattr(self.audio_service, "capture", None)
-        try:
-            monitoring = bool(capture is not None and capture.isMonitorEnabled())
-        except Exception:
-            monitoring = False
-        if monitoring:
-            # 再生中は開き直し経路へ任せる（失敗時の復元つき）。
-            self._onAudioOutputSelected()
-            return
-        self.settings.audio_output.set(spec)
-        self._update_latency_label()
-        self._on_setting_changed()
-        print(f"最も速い出力を選びました: {display}")
+        if in_spec:
+            self.audio_input_name.set(self.audio_service.display_input(in_spec))
+            self._applyInputSpec(in_spec)
+        if out_spec:
+            display = self.audio_service.display_output(out_spec)
+            self.audio_output_name.set(display)
+            capture = getattr(self.audio_service, "capture", None)
+            try:
+                monitoring = bool(capture is not None and capture.isMonitorEnabled())
+            except Exception:
+                monitoring = False
+            if monitoring:
+                # 再生中は開き直し経路へ任せる（失敗時の復元つき）。
+                self._onAudioOutputSelected()
+            else:
+                self.settings.audio_output.set(out_spec)
+                self._update_latency_label()
+                self._on_setting_changed()
+                print(f"最も速い出力を選びました: {display}")
+
+    def _applyInputSpec(self, spec: str) -> None:
+        """入力を選び直して保存する。失敗は本人向けに知らせる。"""
+        display = self.audio_service.display_input(spec)
+        if self.audio_service.reopen(spec):
+            self.settings.audio_input.set(spec)
+            self._update_latency_label()
+            self._on_setting_changed()
+            print(f"最も速い入力を選びました: {display}")
+        else:
+            print(f"音声入力を開けませんでした: {display}")
