@@ -86,6 +86,17 @@ html, body { height: 100%; margin: 0; }
 <span id="capmatchstatus"></span>
 <span id="capmatchcrop" style="color: #666;"></span>
 </div>
+<div id="capfiltrow" style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+<span>色フィルタ <select id="capfilt_mode"><option value="off">OFF</option><option value="gray_out">対象外グレー</option><option value="mask">白黒</option></select></span>
+<span>H下限 <input id="caph1" type="number" min="0" max="179" value="0"></span>
+<span>S下限 <input id="caps1" type="number" min="0" max="255" value="0"></span>
+<span>V下限 <input id="capv1" type="number" min="0" max="255" value="0"></span>
+<span>H上限 <input id="caph2" type="number" min="0" max="179" value="179"></span>
+<span>S上限 <input id="caps2" type="number" min="0" max="255" value="255"></span>
+<span>V上限 <input id="capv2" type="number" min="0" max="255" value="255"></span>
+<span id="capfiltratio" style="color:#666;"></span>
+</div>
+<div><img id="capfiltimg" alt="フィルタ" style="max-width:90vw;max-height:30vh;border:1px solid #999;display:none;"></div>
 <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
 <label>画像ファイル <input id="capupload" type="file" accept="image/*"></label>
 <span id="capuploadname" style="color: #666;"></span>
@@ -335,6 +346,7 @@ html, body { height: 100%; margin: 0; }
       } else {
         capModalOpen();
       }
+      capFiltSoon(true);
     }).catch(function (e) { capSetStatus('取得できません: ' + e, true); });
   }
   document.getElementById('capget').addEventListener('click', capFetch);
@@ -527,6 +539,7 @@ html, body { height: 100%; margin: 0; }
     capClearUpload();
     capMatchSeq++;
     if (capMatchTimer) { clearTimeout(capMatchTimer); capMatchTimer = null; }
+    if (capFiltTimer) { clearTimeout(capFiltTimer); capFiltTimer = null; }
     document.getElementById('capmodal').style.display = 'none';
     capModalDrag = null;
     capBlockMode = null;
@@ -562,6 +575,57 @@ html, body { height: 100%; margin: 0; }
     document.getElementById('capth').value = String(v);
     document.getElementById('caprth').value = String(v);
   }
+  // ブロックのUSE_GRAY欄からグレー欄を初期化する。欄がなければ何もしない。
+  function capBlockGrayInit() {
+    if (!capBlockMode) { return; }
+    var b = ws.getBlockById(capBlockMode);
+    if (!b || typeof b.getField !== 'function') { return; }
+    var f = b.getField('USE_GRAY');
+    if (!f) { return; }
+    var el = document.getElementById('capgray');
+    if (!el) { return; }
+    el.checked = (f.getValue() === 'TRUE');
+  }
+  // 色ブロック用：H1〜V2欄があれば数値欄へ反映する。欠損は黙って何もしない。
+  function capBlockColorInit() {
+    if (!capBlockMode) { return; }
+    var b = ws.getBlockById(capBlockMode);
+    if (!b || typeof b.getField !== 'function') { return; }
+    var pairs = [
+      ['H1', 'caph1'], ['S1', 'caps1'], ['V1', 'capv1'],
+      ['H2', 'caph2'], ['S2', 'caps2'], ['V2', 'capv2'],
+    ];
+    pairs.forEach(function (pair) {
+      var f = b.getField(pair[0]);
+      var el = document.getElementById(pair[1]);
+      if (!f || !el) { return; }
+      var v = parseFloat(f.getValue());
+      if (isNaN(v)) { return; }
+      el.value = String(v);
+    });
+  }
+  // 色ブロック用：H系fieldがある場合だけ範囲内値を書き戻す。欠損・範囲外は黙る。
+  // RATIO欄は modal 側の入力が無いため扱わない。
+  function capBlockSyncColorNum(b, field, id, lo, hi) {
+    var f = (typeof b.getField === 'function') ? b.getField(field) : null;
+    if (!f) { return false; }
+    var el = document.getElementById(id);
+    if (!el) { return false; }
+    var v = parseFloat(el.value);
+    if (isNaN(v) || v < lo || v > hi) { return false; }
+    b.setFieldValue(String(Math.round(v)), field);
+    return true;
+  }
+  function capBlockSyncColor(b) {
+    var wrote = false;
+    if (capBlockSyncColorNum(b, 'H1', 'caph1', 0, 179)) { wrote = true; }
+    if (capBlockSyncColorNum(b, 'S1', 'caps1', 0, 255)) { wrote = true; }
+    if (capBlockSyncColorNum(b, 'V1', 'capv1', 0, 255)) { wrote = true; }
+    if (capBlockSyncColorNum(b, 'H2', 'caph2', 0, 179)) { wrote = true; }
+    if (capBlockSyncColorNum(b, 'S2', 'caps2', 0, 255)) { wrote = true; }
+    if (capBlockSyncColorNum(b, 'V2', 'capv2', 0, 255)) { wrote = true; }
+    return wrote;
+  }
   // ブロックへの即時反映。変更のたびにTEMPLATE・CROP・THRESHOLDを書き戻す。
   // CROPは有効矩形があるときだけ、THRESHOLDは0〜1のときだけ書く。書けなければ黙る。
   function capBlockSync() {
@@ -588,6 +652,15 @@ html, body { height: 100%; margin: 0; }
       b.setFieldValue(String(th), 'THRESHOLD');
       wrote = true;
     }
+    var uf = (typeof b.getField === 'function') ? b.getField('USE_GRAY') : null;
+    if (uf) {
+      var gel = document.getElementById('capgray');
+      if (gel) {
+        b.setFieldValue(gel.checked ? 'TRUE' : 'FALSE', 'USE_GRAY');
+        wrote = true;
+      }
+    }
+    if (capBlockSyncColor(b)) { wrote = true; }
     if (wrote) { capModalSetStatus('ブロックへ反映しました', false); }
   }
   // スライダー連打のundo汚染を抑える追従書き込み。
@@ -604,8 +677,9 @@ html, body { height: 100%; margin: 0; }
   // ブロック用モーダルを開く。画像の有無は呼ばない側で確認済みのこと。
   function capOpenBlockModal(blockId) {
     var target = blockId ? ws.getBlockById(blockId) : null;
-    if (!target || typeof target.getField !== 'function' ||
-        !target.getField('TEMPLATE') || !target.getField('CROP')) {
+    var hasTpl = !!(target && typeof target.getField === 'function' && target.getField('TEMPLATE'));
+    var hasH1 = !!(target && typeof target.getField === 'function' && target.getField('H1'));
+    if (!hasTpl && !hasH1) {
       setStatus('テンプレ欄と範囲欄のあるブロックを選んでください', true);
       return;
     }
@@ -613,7 +687,9 @@ html, body { height: 100%; margin: 0; }
     capHiDim([]);
     capClearUpload();
     capModalRect = null;
-    document.getElementById('capblockrow').style.display = 'flex';
+    document.getElementById('capblockrow').style.display = hasTpl ? 'flex' : 'none';
+    var capFiltRow = document.getElementById('capfiltrow');
+    if (capFiltRow) { capFiltRow.style.display = (hasTpl || hasH1) ? 'flex' : 'none'; }
     document.getElementById('capok').style.display = 'none';
     fetch('./templates').then(function (r) { return r.json(); }).then(function (j) {
       var sel = document.getElementById('capblocktpl');
@@ -634,6 +710,8 @@ html, body { height: 100%; margin: 0; }
     capModalSyncSliderMax();
     capBlockPreload();
     capBlockThresholdInit();
+    capBlockGrayInit();
+    capBlockColorInit();
     capModalDraw(); capModalSyncInputs();
     capModalSetStatus('', false);
     capMatchHide();
@@ -760,6 +838,66 @@ html, body { height: 100%; margin: 0; }
       capSetModelabel('通常');
     });
   }
+  // 色フィルタのプレビュー。Task 4の受け口（./filter_preview）が無い環境では
+  // fetch失敗として割合欄に示すだけで、例外にはしない。
+  var capFiltTimer = null;
+  function capFiltParams() {
+    function num(id, fb) {
+      var el = document.getElementById(id);
+      if (!el) { return fb; }
+      var v = +el.value;
+      return isNaN(v) ? fb : v;
+    }
+    var modeEl = document.getElementById('capfilt_mode');
+    return {
+      lower: [num('caph1', 0), num('caps1', 0), num('capv1', 0)],
+      upper: [num('caph2', 179), num('caps2', 255), num('capv2', 255)],
+      mode: (modeEl && modeEl.value) ? modeEl.value : 'off',
+      source: capUploadDataUrl ? 'upload' : 'frame',
+    };
+  }
+  function capFiltSetRatio(s) {
+    var el = document.getElementById('capfiltratio');
+    if (el) { el.textContent = s; }
+  }
+  function capFilt() {
+    if (document.getElementById('capmodal').style.display === 'none') { return; }
+    var imgEl = document.getElementById('capfiltimg');
+    var p = capFiltParams();
+    if (p.mode === 'off') {
+      if (imgEl) { imgEl.style.display = 'none'; }
+      return;
+    }
+    var body = { lower: p.lower, upper: p.upper, mode: p.mode, source: p.source };
+    if (capUploadDataUrl) { body.image = capUploadDataUrl.split(',', 2)[1]; }
+    capFiltSetRatio('計算しています…');
+    fetch('./filter_preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (document.getElementById('capmodal').style.display === 'none') { return; }
+      if (!j || !j.ok) {
+        if (imgEl) { imgEl.style.display = 'none'; }
+        capFiltSetRatio((j && j.message) || '表示できません');
+        return;
+      }
+      if (imgEl && j.image) {
+        imgEl.src = 'data:image/png;base64,' + j.image;
+        imgEl.style.display = '';
+      }
+      var ratio = parseFloat(j.ratio);
+      capFiltSetRatio(isNaN(ratio) ? (j.message || '') : '割合 ' + (ratio * 100).toFixed(1) + '%');
+    }).catch(function (e) {
+      if (imgEl) { imgEl.style.display = 'none'; }
+      capFiltSetRatio('表示できません: ' + e);
+    });
+  }
+  function capFiltSoon(immediate) {
+    if (capFiltTimer) { clearTimeout(capFiltTimer); capFiltTimer = null; }
+    if (immediate) { capFilt(); return; }
+    capFiltTimer = setTimeout(function () { capFiltTimer = null; capFilt(); }, 250);
+  }
   document.getElementById('capth').addEventListener('input', function () {
     document.getElementById('caprth').value = this.value;
     capMatchSoon(false);
@@ -776,10 +914,21 @@ html, body { height: 100%; margin: 0; }
   });
   document.getElementById('capgray').addEventListener('change', function () {
     capMatchSoon(true);
+    capBlockSyncSoon();
   });
   document.getElementById('caproionly').addEventListener('change', function () {
     capMatchSoon(true);
   });
+  ['caph1', 'caps1', 'capv1', 'caph2', 'caps2', 'capv2'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) { return; }
+    el.addEventListener('input', function () { capFiltSoon(false); });
+  });
+  (function () {
+    var el = document.getElementById('capfilt_mode');
+    if (!el) { return; }
+    el.addEventListener('change', function () { capFiltSoon(false); });
+  })();
   document.getElementById('capupload').addEventListener('change', function () {
     var f = this.files && this.files[0];
     if (!f) { return; }
@@ -791,6 +940,7 @@ html, body { height: 100%; margin: 0; }
       document.getElementById('capuploadname').textContent = f.name + ' で試します';
       capModalSetStatus('手動画像を表示しました', false);
       capMatchSoon(true);
+      capFiltSoon(true);
     };
     reader.readAsDataURL(f);
   });
