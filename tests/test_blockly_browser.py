@@ -900,3 +900,82 @@ def test_preview_follows_template_field() -> None:
     )
     assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
     assert "PREVIEW-PROBE-OK" in proc.stdout
+
+
+PROBE_COLOR_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('COLOR-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_vision_color'] !== 'function') {
+  fail('pokecon_vision_color が登録されていない');
+}
+function genFor(type, fields) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks: [{ type: type, fields: fields }] } }, ws);
+  const blk = ws.getAllBlocks(false)[0];
+  const out = gen.forBlock[type](blk, gen);
+  const code = Array.isArray(out) ? out[0] : out;
+  ws.dispose();
+  return code;
+}
+function expectContains(code, sub, label) {
+  if (code.indexOf(sub) === -1) {
+    fail(label + ': ' + JSON.stringify(sub) + ' が無い: ' + code);
+  }
+}
+const base = { H1: 0, S1: 0, V1: 0, H2: 179, S2: 255, V2: 255, RATIO: 0.6 };
+const withCrop = genFor('pokecon_vision_color', Object.assign({}, base, { CROP: '10,20,110,120' }));
+expectContains(withCrop, 'self.isSimilarColor([10,20,110,120], [0,0,0], [179,255,255], ratio=0.6)', 'CROPあり');
+const empty = genFor('pokecon_vision_color', Object.assign({}, base, { CROP: '' }));
+expectContains(empty, 'self.isSimilarColor([], [0,0,0], [179,255,255], ratio=0.6)', 'CROP空');
+console.log('COLOR-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_color_crop_codegen() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_COLOR_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "COLOR-PROBE-OK" in proc.stdout
+
+
+def test_color_block_def_has_crop() -> None:
+    """color定義はCROP欄を持ち、generatorはisSimilarColorを出すこと（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    start = src.index('type: "pokecon_vision_color"')
+    color_def = src[start : src.index("]);", start)]
+    assert '"CROP"' in color_def
+    gen_start = src.index('forBlock["pokecon_vision_color"]')
+    color_gen = src[gen_start:]
+    assert "isSimilarColor" in color_gen
+    assert '"CROP"' in color_gen

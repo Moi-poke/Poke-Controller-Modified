@@ -94,6 +94,7 @@ html, body { height: 100%; margin: 0; }
 <span>H上限 <input id="caph2" type="number" min="0" max="179" value="179"></span>
 <span>S上限 <input id="caps2" type="number" min="0" max="255" value="255"></span>
 <span>V上限 <input id="capv2" type="number" min="0" max="255" value="255"></span>
+<span>割合 <input id="capratio" type="number" min="0" max="1" step="0.01" value="0.6"></span>
 <span id="capfiltratio" style="color:#666;"></span>
 </div>
 <div><img id="capfiltimg" alt="フィルタ" style="max-width:90vw;max-height:30vh;border:1px solid #999;display:none;"></div>
@@ -603,9 +604,14 @@ html, body { height: 100%; margin: 0; }
       if (isNaN(v)) { return; }
       el.value = String(v);
     });
+    var rf = b.getField('RATIO');
+    var rel = document.getElementById('capratio');
+    if (rf && rel) {
+      var rv = parseFloat(rf.getValue());
+      if (!isNaN(rv) && rv >= 0 && rv <= 1) { rel.value = String(rv); }
+    }
   }
   // 色ブロック用：H系fieldがある場合だけ範囲内値を書き戻す。欠損・範囲外は黙る。
-  // RATIO欄は modal 側の入力が無いため扱わない。
   function capBlockSyncColorNum(b, field, id, lo, hi) {
     var f = (typeof b.getField === 'function') ? b.getField(field) : null;
     if (!f) { return false; }
@@ -624,6 +630,16 @@ html, body { height: 100%; margin: 0; }
     if (capBlockSyncColorNum(b, 'H2', 'caph2', 0, 179)) { wrote = true; }
     if (capBlockSyncColorNum(b, 'S2', 'caps2', 0, 255)) { wrote = true; }
     if (capBlockSyncColorNum(b, 'V2', 'capv2', 0, 255)) { wrote = true; }
+    // RATIOは小数0〜1のまま書き戻す（整数丸めはしない）。欠損・範囲外は黙る。
+    var rf = (typeof b.getField === 'function') ? b.getField('RATIO') : null;
+    var rel = document.getElementById('capratio');
+    if (rf && rel) {
+      var rv = parseFloat(rel.value);
+      if (!isNaN(rv) && rv >= 0 && rv <= 1) {
+        b.setFieldValue(String(rv), 'RATIO');
+        wrote = true;
+      }
+    }
     return wrote;
   }
   // ブロックへの即時反映。変更のたびにTEMPLATE・CROP・THRESHOLDを書き戻す。
@@ -924,6 +940,11 @@ html, body { height: 100%; margin: 0; }
     if (!el) { return; }
     el.addEventListener('input', function () { capFiltSoon(false); });
   });
+  (function () {
+    var el = document.getElementById('capratio');
+    if (!el) { return; }
+    el.addEventListener('input', function () { capBlockSyncSoon(); });
+  })();
   (function () {
     var el = document.getElementById('capfilt_mode');
     if (!el) { return; }

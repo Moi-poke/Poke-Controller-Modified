@@ -210,7 +210,7 @@
     },
     {
       type: "pokecon_vision_color",
-      message0: "色 下限 %1 %2 %3 上限 %4 %5 %6 割合 %7",
+      message0: "色 下限 %1 %2 %3 上限 %4 %5 %6 割合 %7 範囲 %8 %9",
       args0: [
         { type: "field_number", name: "H1", value: 0, min: 0, max: 179 },
         { type: "field_number", name: "S1", value: 0, min: 0, max: 255 },
@@ -219,6 +219,8 @@
         { type: "field_number", name: "S2", value: 255, min: 0, max: 255 },
         { type: "field_number", name: "V2", value: 255, min: 0, max: 255 },
         { type: "field_number", name: "RATIO", value: 0.6, min: 0, max: 1 },
+        { type: "field_input", name: "CROP", text: "" },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
       output: "Boolean",
       colour: 210,
@@ -423,8 +425,13 @@
     block,
     generator
   ) {
+    var cropPart = (function () {
+      var c = String(block.getFieldValue("CROP") || "").trim();
+      var m = c.match(/^(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)$/);
+      return m ? "[" + m[1] + "," + m[2] + "," + m[3] + "," + m[4] + "]" : "[]";
+    })();
     var code =
-      "self.isSimilarColor([], [" +
+      "self.isSimilarColor(" + cropPart + ", [" +
       block.getFieldValue("H1") +
       "," +
       block.getFieldValue("S1") +
