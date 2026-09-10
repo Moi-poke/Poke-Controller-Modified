@@ -41,8 +41,8 @@ ui/audio_panel.py …… 入出力デバイス選択＋モニタートグル＋�
 - `services/audio_service.py`: `AudioCapture` の所有・デバイス切替・終了時の `close()`。`serial_service.py` 対応（接続→切断→再接続の手順だけ。tkinterなし）。
 - `ui/audio_panel.py`: `CameraPanelMixin` 対応の `AudioPanelMixin`。入力／出力デバイスの Combobox（列挙失敗時は手入力可の Entry へ-gradeful 縮退）、モニターのトグル（既定OFF。ON時は出力デバイス必須）、レベル表示（`after()` 駆動のポーリング。ワーカースレッドからwidgetを触らない）、テスト録音ボタン（`recordClip` のGUI版。保存先は `AudioClips/`）。
 - `core/CommandAudio.py`＋`Commands/CommandAudio.py` シム（`from core.CommandAudio import AudioMixin as AudioMixin` 形式の再公開のみ）: `AudioMixin`。`_initAudio(audio)` で状態受領（VisionMixin の `_initVision` 対応）。待ち系（`wait` / `_deadline`）は継承側（`OperateMixin` 経由）が用意する前提で、型宣言のみ持つ（VisionMixin と同型）。具象クラスは `AudioPythonCommand(PythonCommand, AudioMixin)`（`ImageProcPythonCommand` 対応。画像＋音声併用は多重継承で各自合成）。API は画像認識の書き心地に寄せる:
-  - `isTonePresent(freq, level_dbfs, band_hz=200, window_s=1.5) -> bool`（`level_dbfs` はdBFS閾値）
-  - `waitTone(..., timeout=10.0, interval=0.2) -> bool`（期限は `_deadline()` で測る。一時停止中の時計進行問題を VisionMixin と同じく避ける）
+  - `isTonePresent(bands, thresholds, window_s=1.5) -> bool`（`bands` は(lo,hi)帯域の列、`thresholds` は同順のパワー閾値。全帯域が超えたら True。単一周波数は `[(f-100, f+100)]` と書く規約）
+  - `waitTone(bands, thresholds, window_s=1.5, timeout=10.0, interval=0.2) -> bool`（期限は `_deadline()` で測る。一時停止中の時計進行問題を VisionMixin と同じく避ける）
   - `isSoundPresent(template_wav, threshold=0.8, window_s=3.0) -> bool`
   - `waitSound(..., timeout=10.0, interval=0.2) -> bool`
   - `recordClip(seconds, name) -> str`（保存先パスを返す。`saveFrame` 対応。日時＋ミリ秒で上書き防止）

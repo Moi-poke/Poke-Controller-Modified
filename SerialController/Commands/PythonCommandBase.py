@@ -15,6 +15,13 @@ from typing import Any
 # 読み込む場合と単体で実行する場合とで、読み込めなくなる側が変わるため。
 from Commands import CommandBase
 
+# 音声認識の実体は CommandAudio.py にある。
+#   VisionMixin と同じく、このファイルは組み立て場所として
+#   AudioPythonCommand を公開する。利用者の設定は
+#     from Commands.PythonCommandBase import AudioPythonCommand
+#     と書いて使う。
+from Commands.CommandAudio import AudioMixin
+
 # 対話部の実体は CommandDialog.py にある。
 #   DialogMixin は PythonCommand へ重ねる（dialogue / dialogue6widget）。
 #   PokeConDialogue も再公開する。既存の設定が
@@ -654,3 +661,11 @@ class ImageProcPythonCommand(PythonCommand, VisionMixin):
             logger.error("Failed to send Discord image notification.")
             print(traceback.format_exc())
             return False
+
+
+class AudioPythonCommand(PythonCommand, AudioMixin):
+    """音声検知つきのコマンド基底クラス（ImageProcPythonCommand の音声版）。"""
+
+    def __init__(self, audio: Any = None) -> None:
+        super().__init__()
+        self._initAudio(audio)

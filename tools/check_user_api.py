@@ -35,6 +35,7 @@ ALLOWED_COMMANDS_SUBS = {
     "McuCommandBase",
     "WakeLink",
     "CommandVision",
+    "CommandAudio",
 }
 
 # 標準ライブラリ以外で許可するトップレベル名（pyproject の依存＋実績）。
@@ -55,6 +56,7 @@ THIRD_PARTY = {
     "matplotlib",
     # 利用者スクリプトの実績（listen_shiny.py が使用）
     "pyaudio",
+    "sounddevice",
 }
 
 
