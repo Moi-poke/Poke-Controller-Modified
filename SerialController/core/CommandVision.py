@@ -35,6 +35,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+from core.Camera import imwrite
 from loguru import logger
 
 # テンプレート画像のキャッシュ件数。判定ループでは同じ画像を毎秒数十回
@@ -147,6 +148,8 @@ class VisionMixin:
           ここで無条件に生成すると、GPU を使わない全コマンドまで起動不能に
           なるため、実際に GPU 版を呼んだときだけ確保する。
         """
+        import threading as _threading
+
         self.camera: Any = cam
         self.gui: Any = gui
         self.gsrc: Any = None
@@ -156,6 +159,19 @@ class VisionMixin:
         # (path, use_gray) をキーにする
         self._cuda_matchers: dict[tuple[int, int], Any] = {}
         self._cuda_templates: dict[tuple[str, bool], Any] = {}
+        # 額縁キャッシュ用。seq が同じ間は cvt+match を繰り返さない。
+        # clear() で seq が進むため、旧世代を使い回すことはない。
+        self._tls = _threading.local()
+        # 共有 cache の錠。_src_cache/_match_cache は複数スレッドから当たる
+        # ため、dict の読み書き・seq の世代切り替えはこの錠の中で行う。
+        # 借用契約: 非 retain の命中は cache 本体の別名（読み取り専用の借用、
+        # read-only borrow）であり、書き換えると以降の判定に影響する。
+        # 保持が必要なら retain=True で copy を受けること。性能のため非
+        # retain は copy しない（現状の振る舞いを保つ）。
+        self._vision_cache_lock = _threading.Lock()
+        self._src_cache: dict[tuple[Any, ...], Any] = {}
+        self._match_cache: dict[tuple[Any, ...], Any] = {}
+        self._cached_seq: int | None = None
 
     def _ensure_cuda(self) -> bool:
         """CUDA が使えるかを判定し、使えれば GpuMat を用意する。"""
@@ -221,6 +237,15 @@ class VisionMixin:
         """
         clear_template_cache()
         self.clearCudaCache()
+        # 照合結果の cache も捨てる。template mtime を鍵に含めてはいるが、
+        # 差し替え直後の stat 競合で古 mtime が当たる余地を残さない。
+        # 判定スレッドと競合するため錠の中で捨てる。
+        with self._vision_cache_lock:
+            for name in ("_src_cache", "_match_cache"):
+                cache = getattr(self, name, None)
+                if isinstance(cache, dict):
+                    cache.clear()
+            self._cached_seq = None
 
     # -- 入力の検証（画像認識の共通前処理） ---------------------------------
 
@@ -300,17 +325,155 @@ class VisionMixin:
                 f"({template.shape[1]}x{template.shape[0]})の大きさが違います。"
             )
 
-    def _prepareSrc(self, crop: Any = None, use_gray: bool = True) -> np.ndarray:
+    @staticmethod
+    def _cropKey(crop: Any) -> tuple[Any, ...]:
+        """cache 鍵用の crop 正規化。4要素以外は空扱い。"""
+        try:
+            if crop and len(crop) == 4:
+                return (int(crop[0]), int(crop[1]), int(crop[2]), int(crop[3]))
+        except Exception:
+            pass
+        return ()
+
+    def _readFrameWithSeq(self) -> tuple[np.ndarray, int | None]:
+        """frame と seq をまとめて返す。seq 不明のカメラでは None。
+
+        新 API（readFrameWithSeq / frame_seq）があれば使い、無ければ
+        従来の readFrame だけを使う。seq が無いときは cache しない。
+        """
+        camera = getattr(self, "camera", None)
+        if camera is None:
+            raise RuntimeError("カメラが割り当てられていません。")
+        read_seq = getattr(camera, "readFrameWithSeq", None)
+        if callable(read_seq):
+            frame, seq = read_seq()
+            if frame is None or getattr(frame, "size", 0) == 0:
+                raise RuntimeError(
+                    "カメラから画像を取得できません"
+                    "（未接続 / Disable / 取得スレッド停止）。"
+                )
+            return frame, int(seq)
+        frame = camera.readFrame()
+        if frame is None or getattr(frame, "size", 0) == 0:
+            raise RuntimeError(
+                "カメラから画像を取得できません"
+                "（未接続 / Disable / 取得スレッド停止）。"
+            )
+        seq_getter = getattr(camera, "frame_seq", None)
+        seq_val: int | None = None
+        if callable(seq_getter):
+            try:
+                seq_val = int(seq_getter())
+            except Exception:
+                seq_val = None
+        return frame, seq_val
+
+    def _grayScratch(self, h: int, w: int) -> np.ndarray:
+        """thread-local な gray 作業 buffer を返す（確保を使い回す）。
+
+        GuiAssets._convert と同じ発想。毎 poll で確保すると GC が走り、
+        p95 が跳ねる。返る配列は作業用であり、保持してはならない。
+        保持が必要なら呼び出し側で copy すること（retain=True）。
+        """
+        tls = getattr(self, "_tls", None)
+        if tls is None:
+            import threading as _threading
+
+            self._tls = _threading.local()
+            tls = self._tls
+        buf = getattr(tls, "gray_buf", None)
+        if buf is None or getattr(buf, "shape", None) != (h, w):
+            buf = np.empty((h, w), dtype=np.uint8)
+            tls.gray_buf = buf
+        return buf
+
+    @staticmethod
+    def _templateMtime(template_path: Any) -> float:
+        """照合 cache 鍵用の mtime。取れなければ 0。"""
+        try:
+            filespec = _get_template_filespec(str(template_path))
+            return float(os.path.getmtime(filespec))
+        except Exception:
+            return 0.0
+
+    def _prepareSrc(
+        self, crop: Any = None, use_gray: bool = True, retain: bool = False
+    ) -> np.ndarray:
         """readFrame → crop → 色変換 をまとめて行う（検証つき）。
 
         crop を先に切ってから色変換する。逆にすると使わない領域まで
         変換することになり、crop が全体の 1/9 でも 1280x720 の全面を
         変換してしまう（判定ループでは毎回この無駄が乗る）。
+
+        同じ seq では結果を使い回す。5〜10fps の機器では wait の
+        interval より frame が変わらないことが多く、cvt+match の
+        冗長再計算が 3〜9 倍に膨らむ。鍵は (seq, crop, use_gray) とし、
+        clear() で seq が進むため旧世代を使い回すことはない。
+
+        借用契約（borrow）: retain=False の命中は cache 本体の別名
+        （読み取り専用の借用、read-only borrow）であり、copy しない。
+        書き換えると以降の判定に影響するため、保持が必要なら
+        retain=True で copy を受けること。性能のため現状の振る舞いを保つ。
+
+        cache の読み書きは _vision_cache_lock の下で行う（スレッド安全）。
+        cvt 自体は thread-local の scratch へ書くため錠の外でよい。
+
+        retain=True のときは保持用 copy を返す。scratch / cache 本体を
+        そのまま渡すと次 poll で上書きされ、waitStable の f1/f2/f3 が
+        同一配列を指して差分が 0 になり続ける。
         """
-        src = self._cropOrRaise(self._readFrameOrRaise(), crop)
-        if use_gray:
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-        return src
+        frame, seq = self._readFrameWithSeq()
+        cropped = self._cropOrRaise(frame, crop)
+        if not use_gray:
+            if seq is None:
+                return cropped.copy() if retain else cropped
+            key = (seq, self._cropKey(crop), False)
+            with self._vision_cache_lock:
+                cache = getattr(self, "_src_cache", None)
+                if cache is None:
+                    self._src_cache = {}
+                    cache = self._src_cache
+                if self._cached_seq is not None and seq != self._cached_seq:
+                    cache.clear()
+                    match_cache = getattr(self, "_match_cache", None)
+                    if isinstance(match_cache, dict):
+                        match_cache.clear()
+                self._cached_seq = seq
+                hit = cache.get(key)
+                if hit is not None:
+                    return hit.copy() if retain else hit
+                # カラーは view のままでは次 frame で上書きされる恐れがある。
+                # 保持・cache のため copy して所有する。
+                owned = cropped.copy()
+                cache[key] = owned
+                return owned.copy() if retain else owned
+        # gray 経路は scratch へ変換してから cache へ所有コピーする。
+        if seq is None:
+            # seq 不明の旧カメラでは cache せず、scratch に書いて返す。
+            # 保持が必要なら copy する。
+            dst = self._grayScratch(cropped.shape[0], cropped.shape[1])
+            cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY, dst=dst)
+            return dst.copy() if retain else dst
+        key = (seq, self._cropKey(crop), True)
+        with self._vision_cache_lock:
+            cache = getattr(self, "_src_cache", None)
+            if cache is None:
+                self._src_cache = {}
+                cache = self._src_cache
+            if self._cached_seq is not None and seq != self._cached_seq:
+                cache.clear()
+                match_cache = getattr(self, "_match_cache", None)
+                if isinstance(match_cache, dict):
+                    match_cache.clear()
+            self._cached_seq = seq
+            hit = cache.get(key)
+            if hit is not None:
+                return hit.copy() if retain else hit
+            dst = self._grayScratch(cropped.shape[0], cropped.shape[1])
+            cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY, dst=dst)
+            owned = dst.copy()
+            cache[key] = owned
+            return owned.copy() if retain else owned
 
     # Judge if current screenshot contains an image using template matching
     # It's recommended that you use gray_scale option unless the template color wouldn't be cared for performace
@@ -570,9 +733,41 @@ class VisionMixin:
         中心座標は crop の左上を足して画面全体の座標へ直して返す。
         切り出した中の座標のまま返すと、呼び出し側が毎回 crop[0] を
         足すことになり、足し忘れがいつか必ず起きる。
+
+        同じ seq では照合結果を使い回す。wait 系は interval ごとに
+        _matchOnce を呼ぶが、frame が変わらなければ何度 match しても
+        同じ答えになる。鍵は (seq, crop, use_gray, template mtime) とし、
+        clear() で seq が進むため旧世代を使い回すことはない。
         """
         crop = crop or []
         src = self._prepareSrc(crop, use_gray)
+        seq = getattr(self, "_cached_seq", None)
+
+        tmpl_mtime = self._templateMtime(template_path)
+        mask_mtime = self._templateMtime(mask_path) if mask_path else 0.0
+        match_key = None
+        if seq is not None:
+            match_key = (
+                seq,
+                self._cropKey(crop),
+                bool(use_gray),
+                str(template_path),
+                str(mask_path) if mask_path else "",
+                float(tmpl_mtime),
+                float(mask_mtime),
+            )
+            cache = getattr(self, "_match_cache", None)
+            if cache is None:
+                self._match_cache = {}
+                cache = self._match_cache
+            with self._vision_cache_lock:
+                hit_cached = cache.get(match_key)
+            if hit_cached is not None:
+                max_val, max_loc, w, h = hit_cached
+                dx = crop[0] if len(crop) == 4 else 0
+                dy = crop[1] if len(crop) == 4 else 0
+                center = (int(max_loc[0] + dx + w / 2), int(max_loc[1] + dy + h / 2))
+                return bool(max_val >= threshold), float(max_val), center
 
         template = _imread_or_raise(
             template_path,
@@ -593,6 +788,18 @@ class VisionMixin:
 
         if show_value:
             print(f"{template_path} ZNCC value: {max_val}")
+
+        if match_key is not None:
+            try:
+                with self._vision_cache_lock:
+                    cache[match_key] = (
+                        float(max_val),
+                        (int(max_loc[0]), int(max_loc[1])),
+                        int(w),
+                        int(h),
+                    )
+            except Exception:
+                pass
 
         dx = crop[0] if len(crop) == 4 else 0
         dy = crop[1] if len(crop) == 4 else 0
@@ -681,8 +888,13 @@ class VisionMixin:
         crop = crop or []
 
         def gray() -> np.ndarray:
-            """現在のフレームを crop してグレースケールで返す。"""
-            return self._prepareSrc(crop, True)
+            """現在のフレームを crop してグレースケールで返す。
+
+            保持するため retain=True で copy を受け取る。scratch 本体を
+            そのまま持つと次 poll で上書きされ、f1/f2/f3 が同一配列を
+            指して差分が 0 になり続ける。
+            """
+            return self._prepareSrc(crop, True, retain=True)
 
         expired = self._deadline(timeout)
         f1, f2 = gray(), gray()
@@ -769,9 +981,9 @@ class VisionMixin:
         safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(name))
         filespec = path.join(folder, f"{stamp}_{safe}.png")
 
-        # cv2.imwrite は非 ASCII のパスで静かに False を返す。書けたかを
-        # 戻り値で見ておかないと「保存したはずの画像が無い」になる。
-        if not cv2.imwrite(filespec, frame):
+        # 日本語を含む道でも書けるよう、Camera 側の imwrite を使い回す。
+        # cv2.imwrite は非 ASCII の道で静かに False を返す。
+        if not imwrite(filespec, frame):
             logger.warning(f"画面を保存できませんでした: {filespec}")
             return ""
         return filespec

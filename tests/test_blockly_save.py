@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from services import blockly_save
 
 
@@ -154,3 +155,26 @@ def test_dotdot_template_fails_without_files(tmp_path: Path) -> None:
     res = blockly_save.save_blockly(app, "VisionNg", good_ws(), code)
     assert res.status == "failed"
     assert list((app / "Commands" / "PythonCommands").iterdir()) == []
+
+
+def test_save_rollback_on_second_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2件目の書き込み失敗で1件目を巻き戻す（実書き＋故障注入）。"""
+    from pathlib import Path as _Path
+
+    app = make_app(tmp_path)
+    orig = blockly_save._atomic_write
+    calls = {"n": 0}
+
+    def faulty(target: _Path, text: str) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("故障注入")
+        orig(target, text)
+
+    monkeypatch.setattr(blockly_save, "_atomic_write", faulty)
+    res = blockly_save.save_blockly(app, "MyBlock", good_ws(), good_code())
+    assert res.status == "failed"
+    assert not (app / "Commands" / "PythonCommands" / "MyBlock.py").exists()
+    assert not (app / "Commands" / "PythonCommands" / "MyBlock.blockly.json").exists()

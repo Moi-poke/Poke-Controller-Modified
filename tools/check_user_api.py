@@ -3,7 +3,7 @@
 """利用者スクリプトの公開API面の検査。
 
 Commands/PythonCommands/・Commands/McuCommands/ 以下のスクリプトが
-凍結された公開面（Commands.* の4経路＋標準ライブラリ＋既知の
+凍結された公開面（Commands.* の6経路＋標準ライブラリ＋既知の
 サードパーティ）以外を import していないか確かめる。
 
 背景: 利用者スクリプトは10年近い積み上げがあり、メジャー更新でも
@@ -27,37 +27,17 @@ TARGETS = [
     ROOT / "SerialController" / "Commands" / "McuCommands",
 ]
 
-# Commands.* のうち利用者スクリプトが使ってよい経路。
-# （Keys / PythonCommandBase / McuCommandBase / WakeLink / CommandVision）
-ALLOWED_COMMANDS_SUBS = {
-    "Keys",
-    "PythonCommandBase",
-    "McuCommandBase",
-    "WakeLink",
-    "CommandVision",
-    "CommandAudio",
-}
+_CONTROLLER_DIR = str(ROOT / "SerialController")
+if _CONTROLLER_DIR not in sys.path:
+    sys.path.insert(0, _CONTROLLER_DIR)
+from core.user_api_allowlist import (  # noqa: E402
+    ALLOWED_COMMANDS_SUBS as ALLOWED_COMMANDS_SUBS,
+    THIRD_PARTY as THIRD_PARTY,  # noqa: E402
+)
 
-# 標準ライブラリ以外で許可するトップレベル名（pyproject の依存＋実績）。
-THIRD_PARTY = {
-    "cv2",
-    "numpy",
-    "PIL",
-    "pandas",
-    "scipy",
-    "requests",
-    "yaml",
-    "loguru",
-    "icecream",
-    "deprecated",
-    "pynput",
-    "serial",
-    "pygubu",
-    "matplotlib",
-    # 利用者スクリプトの実績（listen_shiny.py が使用）
-    "pyaudio",
-    "sounddevice",
-}
+# 深刻度（仕様）: 許可外は違反（非ゼロ終了）。未知の第三者は警告でなく
+# 違反にする。保存時（blockly_validate）は異常、配布時（pack_zip）は
+# 注意に留めるのと違い、ここは凍結面の gate のため厳しく落とす。
 
 
 def _top_names(tree: ast.AST) -> list[tuple[str, str]]:
@@ -82,10 +62,27 @@ def _top_names(tree: ast.AST) -> list[tuple[str, str]]:
     return found
 
 
+def _command_names(tree: ast.AST) -> list[str]:
+    """クラス直下の `NAME = "..."`（空でない文字）の一覧。重複検出用。"""
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, ast.Assign):
+                    for t in item.targets:
+                        if isinstance(t, ast.Name) and t.id == "NAME":
+                            if isinstance(item.value, ast.Constant):
+                                value = item.value.value
+                                if isinstance(value, str) and value.strip():
+                                    names.append(value)
+    return names
+
+
 def main() -> int:
-    allowed_top = set(sys.stdlib_module_names) | THIRD_PARTY | {"Commands"}
+    allowed_top = set(sys.stdlib_module_names) | set(THIRD_PARTY) | {"Commands"}
     violations: list[str] = []
     checked = 0
+    seen: dict[str, list[str]] = {}
     for base in TARGETS:
         if not base.is_dir():
             violations.append(f"{base}: ディレクトリがありません")
@@ -111,6 +108,15 @@ def main() -> int:
                     violations.append(
                         f"{rel}: 許可外の import（公開API面外）: {detail}"
                     )
+            for name in _command_names(tree):
+                seen.setdefault(name, []).append(rel)
+    # 重複NAMEは core.CommandTags.buildCommandMap と同じく落とさず注意だけ出す。
+    duplicates = {k: v for k, v in seen.items() if len(v) > 1}
+    if duplicates:
+        print("重複NAMEの注意（一覧では見分け名で両方出す）:")
+        for name in sorted(duplicates):
+            files = ", ".join(sorted(duplicates[name]))
+            print(f"  {name!r}: {files}")
     if violations:
         print("利用者API面の違反:")
         for v in violations:

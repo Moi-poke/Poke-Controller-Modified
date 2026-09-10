@@ -64,15 +64,25 @@ class AudioService:
         ]
 
     def refresh_probe_cache(self) -> None:
-        """試し開きの結果を覚える（推定遅延つき）。裏スレッドから呼ぶ。"""
+        """試し開きの結果を覚える（推定遅延つき）。裏スレッドから呼ぶ。
+
+        入出力は別々に試し、片方の失敗で良い方を捨てない。
+        失敗時は古い絞り込みを残し、速い列挙へ落とす（空にしない）。
+        """
         try:
-            self._probe_cache = {
-                True: probe_details(True),
-                False: probe_details(False),
-            }
+            inputs = probe_details(True)
         except Exception as e:
-            logger.warning(f"音声デバイスの絞り込みに失敗しました: {e}")
-            self._probe_cache = {}
+            logger.warning(f"入力の絞り込みに失敗しました: {e}")
+            inputs = None
+        try:
+            outputs = probe_details(False)
+        except Exception as e:
+            logger.warning(f"出力の絞り込みに失敗しました: {e}")
+            outputs = None
+        if inputs is not None:
+            self._probe_cache[True] = inputs
+        if outputs is not None:
+            self._probe_cache[False] = outputs
 
     def cached_inputs(self) -> list[str]:
         """絞り込み済みの入力表示名。未完了なら速い列挙で代用する。"""

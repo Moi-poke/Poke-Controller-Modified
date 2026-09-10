@@ -149,6 +149,19 @@ def displayName(name: str, tags: list[str]) -> str:
     return f"[{tags[0]}] {name}"
 
 
+def findDuplicateNames(classes: list[type]) -> dict[str, list[type]]:
+    """重複NAMEの診断。表示用の注意喚起であり、読み込み自体は変えない。
+
+    `buildCommandMap` が見分け名で両方載せるのに対し、こちらは重複の
+    有無だけを返す。loader/check 時の警告用。空なら重複なし。
+    """
+    by_name: dict[str, list[type]] = {}
+    for cmd_class in classes:
+        name = commandName(cmd_class)
+        by_name.setdefault(name, []).append(cmd_class)
+    return {k: v for k, v in by_name.items() if len(v) > 1}
+
+
 def buildCommandMap(classes: list[type]) -> dict[str, type]:
     """NAME を鍵にした対応表を作る。同名は見分けを付けて両方載せる。
 

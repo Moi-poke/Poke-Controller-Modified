@@ -8,8 +8,11 @@ zip配置 v0: ルート直下に `pokecon.json`＋`Commands/PythonCommands/<entr
 安全の考え方:
   zipは他人が作ったものとして扱う。絶対パス・`..`・ドライブ文字・
   シンボリックリンクは展開前に断り、件数と容量に上限を付ける。
-  entry の import 走査の許可集合は `tools/check_user_api.py` と同じ値
-  （あちらが正本。変えたらこちらも合わせる）。
+  entry の import 走査の許可集合は `core/user_api_allowlist.py` が正本。
+  深刻度（仕様）: 相対 import・公開API面外の Commands 経路は異常
+  （導入不可）、見知らぬトップレベルは注意（導入は通す）。保存時
+  （blockly_validate）の異常扱いとは違い、ここでは先方の環境差を
+  注意で残す。
 """
 
 from __future__ import annotations
@@ -23,37 +26,16 @@ from pathlib import Path, PurePosixPath
 
 from core import pack_manifest
 from core.pack_manifest import PackManifest
+from core.user_api_allowlist import ALLOWED_COMMANDS_SUBS, THIRD_PARTY
 
 ZIP_MANIFEST = "pokecon.json"
 MAX_ZIP_FILES = 1000
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
-# 正本は tools/check_user_api.py。利用者スクリプトの公開面が変わったら合わせる。
-_ALLOWED_COMMANDS_SUBS = {
-    "Keys",
-    "PythonCommandBase",
-    "McuCommandBase",
-    "WakeLink",
-    "CommandVision",
-}
-_THIRD_PARTY = {
-    "cv2",
-    "numpy",
-    "PIL",
-    "pandas",
-    "scipy",
-    "requests",
-    "yaml",
-    "loguru",
-    "icecream",
-    "deprecated",
-    "pynput",
-    "serial",
-    "pygubu",
-    "matplotlib",
-    "pyaudio",
-}
+# 正本は core/user_api_allowlist.py。後方互換のため旧名でも読める。
+_ALLOWED_COMMANDS_SUBS = ALLOWED_COMMANDS_SUBS
+_THIRD_PARTY = THIRD_PARTY
 
 
 class PackError(ValueError):

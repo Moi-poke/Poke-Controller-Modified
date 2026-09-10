@@ -21,6 +21,8 @@ Window に残すのは選択（一覧・絞り込み・生成）と見た目（�
 
 from __future__ import annotations
 
+import queue
+import threading
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -30,11 +32,26 @@ from loguru import logger
 
 # 停止を頼んでから、戻って来ないかを見に行く間隔(ms)。
 # 後始末が呼ばれない経路に入ったとき、操作だけは戻すために使う。
-STOP_WATCH_MS = 500
+# 500msだとStop→表示戻りが最大500ms遅れるため200msへ。CPU負荷は
+# after予約1件ぶんで増えない。
+STOP_WATCH_MS = 200
 
-# 停止しないことを知らせる間隔(ms)。500ms ごとの見張りで毎回出すと
+# 停止しないことを知らせる間隔(ms)。200ms ごとの見張りで毎回出すと
 # ログが埋まるため、知らせるのはこの間隔だけにする。
 STOP_NOTIFY_MS = 5000
+
+# 停止を待つのを打ち切る上限(ms)。30秒待っても戻らない作業は外部I/O
+# 等で抜けられないとみなし、画面だけは空きへ戻し線を塞ぐ。Pythonの
+# スレッドは外から安全に殺せないため、殺さず塞ぐ側に倒す。塞いだ後も
+# 古い作業が生きている間の新規開始は断り二重駆動にしない。
+STOP_ESCALATE_MS = 30000
+
+# 作業側からの完了届けを取り出す間隔(ms)。作業スレッドはTkを触らず
+# 行列へ積むだけにし、GUI側がafterで取り出す（LogPane/WakeSetup式）。
+COMPLETION_POLL_MS = 50
+
+# 終了時の合流を区切る幅(秒)。1秒一息に待つと固まって見えるため。
+SHUTDOWN_JOIN_SLICE_S = 0.25
 
 
 class CommandRunner:
@@ -71,7 +88,7 @@ class CommandRunner:
         # 実行の世代。Start のたびに1つ進める。後始末が「どの実行に対する
         # ものか」を見分けるために使う（同じ番号のときだけ画面へ反映する）。
         self._run_token = 0
-        # 停止を待っている秒数。0 なら待っていない。題名に出して
+        # 停止を待っている時間（ms）。0 なら待っていない。題名に出して
         # 「終了するしかない」状態が見て分かるようにする。
         self._stop_waited = 0
         # いま走らせている（または止めかけている）コマンド。
@@ -85,6 +102,17 @@ class CommandRunner:
         self._closing = False
         # 使用履歴に触ったか。書き出しは終了時に1回だけ行う。
         self.stats_dirty = False
+        # 作業側からの完了届け（世代番号）の待ち行列。作業スレッドは
+        # Tkを触らずここへ積むだけにし、GUI側がafterで取り出す。
+        # root.afterを作業側から呼ぶのは公式に非対応で、終了時に壊れる。
+        self._pending: queue.Queue[Any] = queue.Queue()
+        # GUIスレッドの目印。stop_postが作業側かGUI側かを見分ける。
+        self._gui_thread_id: int = threading.get_ident()
+        # 完了取り出しの予約。見張りとは別枠で覚えて取り消せるようにする。
+        self._poll_id: Any = None
+        # 打ち切り後に塞いだ古い作業の線。生きている間の新規開始は断り
+        # 二重駆動にしない。死んだのを見たら外す。
+        self._fenced_thread: Any = None
 
     # -- 読み取り -----------------------------------------------------------
 
@@ -95,7 +123,7 @@ class CommandRunner:
 
     @property
     def stop_waited(self) -> int:
-        """停止を待っている秒数（ms 単位の蓄積）。0 なら待っていない。"""
+        """停止を待っている時間（ms）。0 なら待っていない。"""
         return self._stop_waited
 
     @property
@@ -125,6 +153,21 @@ class CommandRunner:
         逆にすると、ごく短いコマンドが start の中で終わった場合に、
         後始末が先に走り、あとから実行中の見た目へ書き換えてしまう。
         """
+        # この入口はGUIスレッドから呼ぶ。作業側かどうかの目印を更新する。
+        self._gui_thread_id = threading.get_ident()
+        # 打ち切り後に塞いだ古い作業が生きている間は新規開始を断り、
+        # 二重駆動にしない。死んだのを見たら塞ぎを外して通す。
+        fenced = self._fenced_thread
+        if fenced is not None:
+            try:
+                alive_fenced = bool(fenced.is_alive())
+            except Exception:
+                alive_fenced = False
+            if alive_fenced:
+                self._notify("前回のコマンドが終了待ちです（線を塞いでいます）")
+                logger.warning("Start refused while fenced thread is alive")
+                return
+            self._fenced_thread = None
         # 二重起動を断る。Tk は同じボタンのコールバックを並行実行しないが、
         # F6・パレット・外部呼び出しからも入って来られる。
         if self.is_busy():
@@ -208,6 +251,16 @@ class CommandRunner:
         # 記録は辞書へ即時入るので、選択肢もその場で作り直せる。
         # Reload を待つと「さっき使ったのに最近使ったに出ない」ことになる。
         self._on_list_refresh()
+        # 実スレッドで走る作業の完了届けを取り出す輪を回す。ここはGUI
+        # スレッドなのでafter予約は安全。作業側は積むだけでTkを触らない。
+        # 偽物線（FakeThread）は実スレッドでないため回さず、既存の検査の
+        # 予約件数を変えない。
+        try:
+            thread_obj = getattr(command, "thread", None)
+        except Exception:
+            thread_obj = None
+        if isinstance(thread_obj, threading.Thread):
+            self._start_completion_poll()
 
     def request_stop(self) -> None:
         """実行中のコマンドへ停止を要求する。
@@ -258,11 +311,11 @@ class CommandRunner:
         待つ。死んでいるのに後始末が来ていないなら、後始末が呼ばれない
         経路に入ったということなので、こちらで画面を空きへ戻す。
 
-        生きている間は待ち続ける。時間で打ち切って画面だけ空きへ戻すと、
-        止まっていないスレッドと次に始めたコマンドが同じシリアルを同時に
-        操作することになる。Python のスレッドは外から安全に殺せないので、
-        「勝手に戻す」よりも「戻せないことを伝える」ほうが安全側になる。
-        代わりに、待っていることと経過を一定間隔で知らせる。
+        打ち切りはSTOP_ESCALATE_MSで行う。無限に待つと停止後も延々と
+        予約が回り、終了もできなくなる。打ち切り時は線を塞いで画面を
+        空きへ戻すが、古い作業が生きている間の新規開始は断り二重駆動に
+        しない。Pythonのスレッドは外から安全に殺せないため殺さず塞ぐ。
+        残党の書き込みはTransport._writeが例外として握る。
 
         token は Stop を始めた時点の世代番号。見張りが遅れて発火した
         ときに、すでに次の実行が始まっていれば触らない。
@@ -273,10 +326,16 @@ class CommandRunner:
 
         if self._state != "stopping":
             return
+        # 作業側からの完了届けが溜まっていれば先に片づける。届けはGUI側で
+        # 二重照合する（積んだ時点＋走る時点）。ここはGUIスレッドなので安全。
+        if self._drain_pending_once():
+            return
         command = self._running
         thread = getattr(command, "thread", None) if command is not None else None
         if thread is not None and thread.is_alive():
             waited += STOP_WATCH_MS
+            # 表示は毎回進める。通知周期だけで進めると最初の4.5秒は0のままになる。
+            self._stop_waited = waited
             if waited % STOP_NOTIFY_MS == 0:
                 message = (
                     f"コマンドが停止しません（経過 {waited // 1000}秒）。"
@@ -284,8 +343,19 @@ class CommandRunner:
                 )
                 self._notify(message)
                 logger.warning(message)
-                self._stop_waited = waited
                 self._on_state_changed()
+            if waited >= STOP_ESCALATE_MS:
+                # 打ち切り。線を塞いで画面を戻す。新規開始は塞ぎが解けるまで断る。
+                self._fence_live(self._ser)
+                self._fenced_thread = thread
+                message = (
+                    f"コマンドが停止しません（経過 {waited // 1000}秒）。"
+                    "画面を戻しますが線は塞いでいます"
+                )
+                self._notify(message)
+                logger.warning("Stop escalated. fenced serial and restoring UI")
+                self.post_on_gui(token)
+                return
             self._watch_id = self._schedule(
                 STOP_WATCH_MS, lambda: self._watch_stopped(waited, token)
             )
@@ -300,9 +370,20 @@ class CommandRunner:
         """コマンド終了後の後始末。
 
         呼び出し元は PythonCommandBase の _cleanup で、コマンドを走らせて
-        いるワーカースレッドから直接呼ばれる。描画は GUI スレッドへ
-        渡すため schedule(0) で積む（呼び出し側は root.after を渡す）。
+        いるワーカースレッドから直接呼ばれる。作業側はTkを触らず行列へ
+        積むだけにし、GUI側がafterで取り出してpost_on_guiする
+        （LogPane/WakeSetup式）。root.afterを作業側から呼ぶのは公式に
+        非対応で、終了時に壊れる。二重照合（積んだ時点＋走る時点）は
+        GUI側で保つ。
         """
+        if threading.get_ident() != self._gui_thread_id:
+            # 作業スレッド。Tk予約はしない。積むだけはスレッド安全。
+            # 照合はGUI側の取り出しで行う（古い世代・終了中はそこで捨てる）。
+            try:
+                self._pending.put(token)
+            except Exception:
+                logger.debug("完了届けを積めませんでした")
+            return
         if token is not None and token != self._run_token:
             # 止まりきらなかった前回のスレッドが、いまごろ後始末を呼んで
             # きた場合。すでに別のコマンドが走っているので画面は触らない。
@@ -322,15 +403,126 @@ class CommandRunner:
             # 予約の失敗に限られ、後始末の本体は別経路で守られる。
             logger.debug("予約に失敗したため後始末を省きました")
 
+    def _start_completion_poll(self) -> None:
+        """完了届けの取り出し輪を回す。必ずGUIスレッドから呼ぶこと。"""
+        if self._poll_id is not None:
+            return
+        try:
+            self._poll_id = self._schedule(COMPLETION_POLL_MS, self._poll_completions)
+        except Exception:
+            self._poll_id = None
+            logger.debug("完了取り出しの予約に失敗しました")
+
+    def _poll_completions(self) -> None:
+        """作業側の完了届けをGUI側で取り出す。必ずGUIスレッドで動かすこと。"""
+        self._poll_id = None
+        self.drain_completions()
+        # まだ走っている間だけ輪を続ける。空きなら予約を残さない。
+        if self._state != "idle" and not self._closing:
+            self._start_completion_poll()
+
+    def drain_completions(self) -> None:
+        """溜まった完了届けをGUI側で片づける。必ずGUIスレッドから呼ぶこと。
+
+        積んだ時点と走る時点の二重照合をGUI側で保つ。古い世代は捨て、
+        終了中は受け付けない。片づいた分はpost_on_guiへ渡す。
+        """
+        while True:
+            try:
+                token = self._pending.get_nowait()
+            except queue.Empty:
+                break
+            if token is not None and token != self._run_token:
+                logger.debug("古い実行の後始末を無視しました")
+                continue
+            if self._closing:
+                logger.debug("終了処理中のため後始末を省きました")
+                continue
+            try:
+                self.post_on_gui(token)
+            except Exception:
+                logger.debug("GUI後処理で例外を握りました")
+            if self._state == "idle":
+                # 空きに戻ったら残りは古い世代のはず。捨てて抜ける。
+                continue
+
+    def _drain_pending_once(self) -> bool:
+        """見張りの中から完了届けを1回だけ片づける。片づけたらTrue。
+
+        見張り（GUI）と完了取り出し（GUI）の二重予約を避けるため、
+        見張りが回っている間は見張り側で届けも見る。古い世代の連打は
+        繰り返しで捨てる（再帰だと深くなり RecursionError になる）。
+        """
+        while True:
+            try:
+                token = self._pending.get_nowait()
+            except queue.Empty:
+                return False
+            if token is not None and token != self._run_token:
+                logger.debug("古い実行の後始末を無視しました")
+                # 古い届けを捨ててもまだ溜まっているかもしれない。続けて見る。
+                continue
+            if self._closing:
+                logger.debug("終了処理中のため後始末を省きました")
+                return False
+            self.post_on_gui(token)
+            return True
+
+    def _reap_fenced_thread(self) -> None:
+        """塞ぎの線が死んでいたら外す。生きている間は残す。
+
+        塞ぎを次の開始時に初めて外す作りだと、死んだ線でも開始を1回
+        断ってしまう。後始末と終了時にも見直し、死んでいれば外す。
+        生きている間は外さず二重駆動にしない。
+        """
+        fenced = self._fenced_thread
+        if fenced is None:
+            return
+        try:
+            alive = bool(fenced.is_alive())
+        except Exception:
+            alive = False
+        if not alive:
+            self._fenced_thread = None
+
+    def _fence_live(self, ser: Any) -> None:
+        """生き残りが線へ書き続けないよう送出だけ止める。失敗は握る。"""
+        try:
+            if ser is not None:
+                discard = getattr(ser, "discardLive", None)
+                if callable(discard):
+                    try:
+                        discard()
+                    except Exception as e:
+                        logger.warning(f"liveの破棄で例外: {e}")
+                stopper = getattr(ser, "stopLiveWorker", None)
+                if callable(stopper):
+                    try:
+                        stopper(0.5)
+                    except Exception as e:
+                        logger.warning(f"live worker の停止で例外: {e}")
+        except Exception as e:
+            logger.warning(f"線の封鎖で例外: {e}")
+
+    def _cancel_poll(self) -> None:
+        """完了取り出しの予約を取り消す。"""
+        poll_id, self._poll_id = self._poll_id, None
+        if poll_id is None:
+            return
+        try:
+            self._cancel(poll_id)
+        except Exception:
+            pass
+
     def cancel_watch(self) -> None:
         """停止の見張りの予約を取り消す（終了時に呼ぶ）。"""
         watch_id, self._watch_id = self._watch_id, None
-        if watch_id is None:
-            return
-        try:
-            self._cancel(watch_id)
-        except Exception:
-            pass
+        if watch_id is not None:
+            try:
+                self._cancel(watch_id)
+            except Exception:
+                pass
+        self._cancel_poll()
 
     def notify_closing(self) -> None:
         """終了処理が始まったことを知らせる。以後の後始末は受け付けない。"""
@@ -356,13 +548,24 @@ class CommandRunner:
         書き込みを例外として握り、live worker も送出失敗を数えるだけ）。
         """
         self.cancel_watch()
+        # 溜まった完了届けは捨てる。閉じた後に走らせると破棄途中の部品を触る。
+        try:
+            while True:
+                self._pending.get_nowait()
+        except queue.Empty:
+            pass
         command = self._running
         if command is None:
+            self._reap_fenced_thread()
             return True
 
         thread: Any = getattr(command, "thread", None)
-        running = thread is not None and thread.is_alive()
+        try:
+            running = bool(thread is not None and thread.is_alive())
+        except Exception:
+            running = False
         if not running and not getattr(command, "alive", False):
+            self._reap_fenced_thread()
             return True
 
         if getattr(command, "alive", False):
@@ -371,23 +574,33 @@ class CommandRunner:
             except Exception as e:
                 logger.warning(f"停止要求で例外: {e}")
 
-        # 後始末（キーを離す・postProcess）が走る余地を与える。待ちは
-        # 短く区切る。ここで長く待つと終了操作そのものが固まって見える。
+        # 先に線を塞ぐ。閉じた線へ書きに行くのを減らす。失敗は握る。
+        # 書き込み自体は無害（Transport._writeが閉じた線への書き込みを
+        # 例外として握り、live workerも送出失敗を数えるだけ）。
+        self._fence_live(ser if ser is not None else self._ser)
+        # 後始末（キーを離す・postProcess）が走る余地を与える。合流は
+        # 250msずつ区切り生存を見直す。長く一息に待つと終了が固まる。
         if running:
-            thread.join(timeout=1.0)
-            if thread.is_alive():
+            try:
+                for _ in range(4):
+                    thread.join(timeout=SHUTDOWN_JOIN_SLICE_S)
+                    try:
+                        if not thread.is_alive():
+                            break
+                    except Exception:
+                        break
+            except Exception as e:
+                logger.warning(f"合流で例外: {e}")
+            try:
+                still = bool(thread.is_alive())
+            except Exception:
+                still = False
+            if still:
                 self._notify("コマンドが停止しないまま終了します")
                 logger.warning("Command did not stop in time. exiting anyway")
-                # 生き残りが閉じたシリアルへ書き続けないよう、live の
-                # 送出だけはここで止める。スレッド自体は daemon なので
-                # プロセス終了と共に終わる。
-                try:
-                    if ser is not None:
-                        ser.discardLive()
-                        ser.stopLiveWorker(0.5)
-                except Exception as e:
-                    logger.warning(f"live worker の停止で例外: {e}")
+                # スレッド自体は daemon なのでプロセス終了と共に終わる。
                 return False
+        self._reap_fenced_thread()
         return True
 
     # -- 内部 ---------------------------------------------------------------
@@ -411,6 +624,10 @@ class CommandRunner:
             logger.debug("古い実行の GUI 後処理を無視しました")
             return
 
+        # 見張りの予約はここで消す。残すと古い予約が後に発火し、
+        # 別実行の画面を触る。入口で消し、出口でも残さない。
+        self.cancel_watch()
+
         # 同じ実行について複数回呼ばれても、一覧の作り直しまでは
         # 繰り返さない。stop_post 経由と見張り経由の両方から来ることが
         # あるため。状態の復元は冪等なので通す。
@@ -420,6 +637,9 @@ class CommandRunner:
         self._stop_waited = 0
         self._running = None
         self._on_state_changed()
+        # 塞ぎの線が死んでいたら外す。生きている間は残し二重駆動にしない。
+        # 次の開始時に初めて外す作りだと、死んだ線でも開始を1回断ってしまう。
+        self._reap_fenced_thread()
 
         # ここから先は無くても操作できる処理。失敗しても状態は戻す。
         if already_idle:

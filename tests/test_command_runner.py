@@ -180,3 +180,43 @@ def test_cancel_watch() -> None:
     assert len(clock.queued) == 1
     runner.cancel_watch()
     assert clock.cancelled == [1]
+
+
+def test_post_on_gui_reaps_dead_fenced_thread() -> None:
+    """後始末が通ったら死んだ塞ぎは外す。次の開始を塞いだままにしない。"""
+    runner, _, _, _, _ = make_runner()
+    runner.request_start(FakeCommand(thread=FakeThread(alive=False)), FakeSer())
+    runner._fenced_thread = FakeThread(alive=False)
+    runner.post_on_gui(runner._run_token)
+    assert runner.state == "idle"
+    assert runner._fenced_thread is None
+
+
+def test_post_on_gui_keeps_live_fenced_thread() -> None:
+    """生きている塞ぎは後始末でも外さない（二重駆動にしない）。"""
+    runner, _, _, _, _ = make_runner()
+    runner.request_start(FakeCommand(thread=FakeThread(alive=False)), FakeSer())
+    fenced = FakeThread(alive=True)
+    runner._fenced_thread = fenced
+    runner.post_on_gui(runner._run_token)
+    assert runner._fenced_thread is fenced
+
+
+def test_shutdown_reaps_dead_fenced_thread() -> None:
+    """終了時に死んだ塞ぎは外す。次回起動まで引きずらない。"""
+    runner, _, _, _, _ = make_runner()
+    runner._fenced_thread = FakeThread(alive=False)
+    assert runner.shutdown(FakeSer()) is True
+    assert runner._fenced_thread is None
+
+
+def test_drain_pending_stale_burst_no_recursion() -> None:
+    """古い届けの連打は繰り返しで捨てる（再帰だと RecursionError）。"""
+    runner, _, _, _, _ = make_runner()
+    runner.request_start(FakeCommand(thread=FakeThread(alive=False)), FakeSer())
+    for _ in range(3000):
+        runner._pending.put(999)  # 古い世代の届けの連打
+    runner._pending.put(runner._run_token)
+    assert runner._drain_pending_once() is True
+    assert runner.state == "idle"
+    assert runner._pending.empty()

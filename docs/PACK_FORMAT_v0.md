@@ -1,4 +1,4 @@
-# 配布書式 v0（pokecon.json）
+# 配布書式 v0（pokecon.json。`format`欄は将来の判別用に予約、現行は無くてもv0扱い）
 
 zip内の配置：
 
@@ -8,7 +8,9 @@ zip内の配置：
 
 `pokecon.json` の項目は `core/pack_manifest.py` の検査が正とする。
 `entry`・`templates` は相対パスのみ（絶対・`..`・`:` 禁止）。
+`entry` のフォルダ名・ファイル名（拡張子除く）は英字・数字・`_`のみ（例: `my_pack/MyPack.py`、`my-pack/`は不可）。
 画像拡張子は `.png`/`.jpg`/`.jpeg`/`.bmp`。
+entryのimport走査は相対・公開面外を異常、未知トップレベルを注意に留める（正本は`core/user_api_allowlist.py`）。
 
 検証： `uv run --frozen pytest tests/test_pack_manifest.py -q`
 

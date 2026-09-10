@@ -86,6 +86,7 @@ class SerialMonitor:
         self._hidden = 0
         self._dropped = 0
         self._noted_missing = False
+        self._last_status_text: str | None = None
 
         self.window = tk.Toplevel(master)
         self.window.title("シリアルモニタ")
@@ -166,11 +167,16 @@ class SerialMonitor:
             pass
 
     def _update_status(self) -> None:
-        self._status.set(
+        # 同文ならTcl往復を省く（待機時の毎回更新を畳む）。見た目は不変。
+        text = (
             f"表示 {self._shown}行 / フィルタ省略 {self._hidden}行"
             f" / キュー破棄 {self._dropped}行"
             + (" (一時停止中)" if self._paused else "")
         )
+        if text == getattr(self, "_last_status_text", None):
+            return
+        self._last_status_text = text
+        self._status.set(text)
 
     def _poll(self) -> None:
         """購読からの届けを画面へ出す (GUI スレッド)。"""
@@ -182,9 +188,8 @@ class SerialMonitor:
             self._queue.put(
                 (_now(), "RX", "(注記: シリアルが開いていません。先に接続してください)")
             )
-        mode = self._filter.get()
-        if mode not in FILTERS:
-            mode = FILTER_NORMAL
+        # 先に捌く（Tclなし）。qsizeは目安であり、疑わしければ下でdrainする。
+        # 空ならfilter取得（Tcl）やstatus更新（Tcl）を省く高速路に入る。
         taken: list[tuple[str, str, str]] = []
         while len(taken) < FLUSH_MAX:
             try:
@@ -193,10 +198,19 @@ class SerialMonitor:
                 break
         if isinstance(self._queue, DropOldestQueue):
             self._dropped += self._queue.take_dropped()
+        if not taken:
+            # 空でも破棄数が増えていれば省略行の旨を出す必要があるため、
+            # 状態更新だけは（同文ならTclなしで）通す。
+            self._update_status()
+            self.window.after(120, self._poll)
+            return
         if self._paused:
             # 止めている間も捨てる。記録はファイル側に残っている。
             self._dropped += len(taken)
-        elif taken:
+        else:
+            mode = self._filter.get()
+            if mode not in FILTERS:
+                mode = FILTER_NORMAL
             lines: list[str] = []
             for stamp, kind, text in taken:
                 if _visible(kind, text, mode):

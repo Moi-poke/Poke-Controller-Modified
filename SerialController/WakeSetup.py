@@ -108,6 +108,16 @@ class WakeSetup:
             return
         self._closed = True
         self._stop = True
+        # 溜まった届けは捨てる。_pollは止まるため残すと1件漏れる。
+        # 使用中も戻す。残したまま閉じると次に開いた窓が塞がったままになる。
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+        self._busy = False
         try:
             if self.window.winfo_exists():
                 self.window.destroy()
@@ -141,7 +151,15 @@ class WakeSetup:
 
     def _poll(self) -> None:
         """作業スレッドからの届けを画面へ出す。"""
-        if self._stop:
+        if getattr(self, "_stop", False) or getattr(self, "_closed", False):
+            # 閉じた後の届けは捨てる。残すと待ち行列に1件漏れる。
+            try:
+                while True:
+                    self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            except Exception:
+                pass
             return
         try:
             while True:
@@ -154,7 +172,10 @@ class WakeSetup:
                         self._append(text)
         except queue.Empty:
             pass
-        self.window.after(120, self._poll)
+        try:
+            self.window.after(120, self._poll)
+        except Exception:
+            pass
 
     def _run(self, func) -> None:
         """作業を別スレッドで走らせる。二重起動しない。"""
@@ -168,9 +189,19 @@ class WakeSetup:
         try:
             func()
         except Exception as e:  # noqa: BLE001 - 画面へ出して終わる
-            self._queue.put(("log", f"error: {e!r}"))
+            # 閉じた後の届けは捨てる。溜めても誰も取り出さない。
+            if not getattr(self, "_closed", False):
+                try:
+                    self._queue.put(("log", f"error: {e!r}"))
+                except Exception:
+                    pass
         finally:
-            self._queue.put(("done", ""))
+            # 閉じた後の完了は積まない。積むと1件漏れて使用中が戻らない。
+            if not getattr(self, "_closed", False):
+                try:
+                    self._queue.put(("done", ""))
+                except Exception:
+                    pass
 
     def _transport(self) -> Any | None:
         sender = self._sender

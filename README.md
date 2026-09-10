@@ -13,7 +13,7 @@
 - 単体テスト基盤の追加（`task test`、`task ci` に組込）
 - Python 3.12以降が必要に（3.11のEOLが近いため、安定版の3.12を採用）
 - 自作スクリプト（`Commands.*`）と `settings.ini` の形式はそのまま使えます
-- シリアルモニタの追加（メニュー→「シリアルモニタ」。Tx＋Rxの時系列表示、フィルタ切替、全量ログ保存。監視しても応答横取りなし。詳細は `docs/SERIAL_MONITOR.md`）
+- シリアルモニタの追加（メニュー→「シリアルモニタ」。通信ログの時系列表示、フィルタ切替、全量ログ保存。監視しても応答横取りなし。表示内容は通信方式によります。詳細は `docs/SERIAL_MONITOR.md`）
 - 自作スクリプトのzip配布（`pokecon.json`＋本体＋画像を梱包。メニューから導入・削除、CLIあり。詳細は `docs/PACK_FORMAT_v0.md`）
 - Blocklyエディタの追加（メニュー→コマンド→「Blocklyエディタ...」。ブラウザで操作を組んで保存・再編集・削除。画像認識ブロック（テンプレ選択・プレビュー付き）＋キャプチャ切出し＋一致度シミュレーションでカメラ連携スクリプトも作れる。詳細は `docs/BLOCKLY_EDITOR.md`）
 - 音声対応の追加（キャプチャボード音声の取込・特定音の検知トリガー・ゲーム音のモニター再生・押下→検知の遅延計測。Audio欄。詳細は `docs/AUDIO.md`）
@@ -40,22 +40,8 @@
 - logエリアへのテキスト出力をqueueを用いた方式に変更。若干高速化
 - スクリプト実行中の例外発生時の出力を変更
 
-Python 3.12以降が必要です（3.12.10で動作確認。`uv sync` が用意します）。
-環境構築手順
-
-Clone後、以下の流れで起動します
-```cmd
-> pip install uv
-> uv sync
-> .\.venv\Scripts\activate
-> python .\SerialController\Window.py
-```
-
-複数台を並列で動かすときは、ランチャーを使うかプロファイルを指定します
-```cmd
-> python .\SerialController\launcher.py
-> python .\SerialController\Window.py --profile switch1
-```
+Python 3.12以降が必要です（3.12.10固定。`.python-version` 参照）。
+環境構築・起動の手順は下の [Installation](#installation) を見てください。
 
 ### ~ver3.0の追加・変更点
 
@@ -122,7 +108,7 @@ Clone後、以下の流れで起動します
     主要なキーのコンフィグ機能を追加しています。\
     注意点として、複数キーを同時に割り当てても、同時に入力されることはありません。少々不親切ですがお許しください\
     また、これにともなって設定ファイルの書式が変わっています。手動で書き換え可能になっています。\
-    デフォルトに戻す機能はつけていないので、戻したいときは設定ファイルを消すか、Setting.pyを読んでください。
+     デフォルトに戻す機能はつけていないので、戻したいときは設定ファイルを消すか、Settings.pyを読んでください。
 - ~~ボタン入力関数表示機能追加プログラム(作 KCT様)を組み込み~~ ver3.0以降独自の入力表示機能実装に変更
 - その他GUIのブラッシュアップ
 - Codeのリファクタリング
@@ -133,7 +119,8 @@ Clone後、以下の流れで起動します
 
 ## Installation
 
-uvで管理しています。`pyproject.toml` + `uv.lock` が正本です。
+uvで管理しています。`pyproject.toml` + `uv.lock` が正本です（`requirements.txt` はありません）。
+Python は 3.12.10 固定（`.python-version`）で、`uv sync` が用意します。
 
 ```cmd
 pip install uv
@@ -142,13 +129,35 @@ uv sync
 python .\SerialController\Window.py
 ```
 
+複数台を並列で動かすときは、ランチャーを使うかプロファイルを指定します。
+プロファイルごとに `SerialController/settings.<名前>.ini` が自動で作られます。
+
+```cmd
+python .\SerialController\launcher.py
+python .\SerialController\Window.py --profile switch1
+python .\SerialController\Window.py --profile switch1 --transport pico_uart
+```
+
+通信方式は `legacy_text`（本家 Leonardo 用）と `pico_uart`（pico-wakeCon 用）の2種です。
+`--transport` を省略したときは設定ファイルの `[Transport] name` を使います。
+
+開発用コマンドはタスクランナー `task` にまとめています。
+`task` 本体は別途導入（`winget install Task.Task`）して、`task setup_dev` でフックを有効化してください。
+
+```cmd
+task app       起動する（task app PROFILE=switch1 でプロファイル指定）
+task test      単体検査
+task ci        一通りの検査（ruff＋整形確認＋mypy＋境界検査＋公開API検査＋単体検査）
+```
+
+`task` が無い環境では `taskfile.yml` の `uv run ...` を直接実行してください。
+
 ## おまけ
 
-- 好みの表示サイズがある場合は、Window.pyのそれっぽいところに自分好みのサイズを追記してください。fpsも同様です。
+- 好みの表示サイズ・FPSがある場合は、Camera欄のドロップダウンで変えてください（`settings*.ini` に保存されます）。
 
-- OpenCVで行う処理をNVIDIA GPU(CUDA)で動かすためのサンプルコードを同梱しています(TemplateMatchingTimeMeasure.py)。\
-  ただし、pip install でインストール可能なライブラリでは使用できません\
-  使用してみたい方は、各自で自分のGPUに対応したオプションでpython用のOpenCVをソースコードからビルドして貰う必要があります。\
+- OpenCVで行う画像認識をNVIDIA GPU(CUDA)で動かす場合は、CUDA対応のOpenCVがあれば自動で使います（`isContainTemplateGPU` 系。見つからなければCPUに切り替わります）。\
+  ただし、pip install で入る通常版のOpenCVにはCUDAが含まれていないため、使うには自分のGPUに対応したオプションでpython用のOpenCVをソースからビルドする必要があります。\
   それなりに難易度が高くかなり手間な処理になりますが、余裕がある方は試してみてください。\
   `OpenCV + CUDA (+ Windows)`
   などと検索すればビルドの解説ページが出てきます。
@@ -248,6 +257,8 @@ Poke-Controllerを動作しながらファイルの変更を再読込して反�
 | CAPTURE | 'c'キー |
 | 左スティック | 矢印キー |
 
+割り当てはメニューの「キーコンフィグ」で変えられます。
+
 ## リリース
 
 - 過去リリース
@@ -284,7 +295,7 @@ Poke-Controllerを動作しながらファイルの変更を再読込して反�
 ## ライセンス
 
 本プロジェクトはMITライセンスです  
-詳細は [LISENCE](https://github.com/KawaSwitch/Poke-Controller/blob/master/LICENSE) を参照ください
+詳細は [LICENSE](https://github.com/KawaSwitch/Poke-Controller/blob/master/LICENSE) を参照ください
 
 また, 本プロジェクトではLGPLライセンスのDirectShowLib-2005.dllを同梱し使用しています  
 [About DirectShowLib](http://directshownet.sourceforge.net/)  

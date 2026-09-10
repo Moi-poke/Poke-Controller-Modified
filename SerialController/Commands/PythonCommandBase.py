@@ -224,6 +224,23 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         self._resume_event.set()
         self._paused_total = 0.0
         self.postProcess = postProcess
+        # 対話の委譲輪を回す。ここはGUIスレッドなのでafter予約は安全。
+        # 作業側は積むだけでTkを触らない。CUI・テスト（root無し）では何もしない。
+        try:
+            from Commands.CommandDialog import _ensure_gui_poll
+
+            for _root in (
+                getattr(self, "gui_root", None),
+                getattr(self, "gui", None),
+                getattr(getattr(self, "gui", None), "master", None),
+            ):
+                if _root is not None and hasattr(_root, "after"):
+                    try:
+                        _ensure_gui_poll(_root)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         # daemon=True にしないと、GUI を閉じてもコマンドのスレッドが
         # 生きているあいだプロセスが終わらない。画面だけ消えて残り続け、
         # 利用者からは「終了できない」ように見える。停止要求は出すが、

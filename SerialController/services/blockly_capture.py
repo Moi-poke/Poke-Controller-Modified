@@ -12,6 +12,8 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -22,6 +24,12 @@ import numpy as np
 from loguru import logger
 
 BLOCKLY_TEMPLATE_DIR_REL = "Template/blockly"
+
+#: /frame連打時のPNGキャッシュ秒数。1080pのimencodeは50〜100msかかるため、
+#: 200msだけ使い回してエンコードを畳む。世代seqを出すカメラでは (seq, 時刻)
+#: の両方を鍵にし、clear() 直後の即時要求でも前世代の絵を返さない。
+#: 陳腐化は最大200msに有界（表示用の目安であり、/matchの遅延には響かない程度）。
+FRAME_CACHE_SEC = 0.2
 
 #: 実画像換算でこの未満の辺を持つ矩形は無効。
 MIN_SIDE_PX = 8
@@ -140,6 +148,15 @@ def save_template(
     reason = validate_template_name(stem)
     if reason is not None:
         return CaptureResult(status="failed", message=f"保存できません: {reason}")
+    # 配置は `Template/blockly/<名>.png` に固定する。`/`・`\` を許すと
+    # 配下に小部屋ができる。照合側（match）は配布規約のため相対を許すが、
+    # 切出しの保存は素名だけにする。
+    if "/" in stem or "\\" in stem:
+        return CaptureResult(
+            status="failed",
+            message="保存できません: 名に `/`・`\\` は使えません"
+            "（`Template/blockly/<名>.png` の固定配置のため）",
+        )
     base = stem if stem.lower().endswith(".png") else stem + ".png"
     try:
         dest = _next_free(
@@ -162,6 +179,13 @@ def save_template(
     try:
         from core.CommandVision import clear_template_cache
 
+        # CPU側だけ捨てれば足りる。GPU側は VisionMixin の実体ごとの
+        # 持ち物で、走り終えたら実体ごと捨てる。編集器は実行中を開けず、
+        # 保存は空き時間だけに行い、次に走る実体は新しい物を持つ。
+        # 加えて重複は `_next_free` で別名に逃がすため、ある道を上書きして
+        # 古い画像を使い続ける形にもならない。通常の1台運用では、ここで
+        # CPU側を捨てれば古い絵は残らない。実行時に差し替える別経路では
+        # `clearTemplateCaches()`（CPU＋GPU）を使うこと。
         clear_template_cache()
     except Exception as e:
         logger.warning(f"テンプレ cache 無効化に失敗: {e}")
@@ -175,20 +199,68 @@ def save_template(
 def build_get_frame(
     camera_getter: Callable[[], Any],
 ) -> Callable[[], bytes | None]:
-    """最新フレーム1枚をPNG化する関数を作る。撮れなければ None を返す。"""
+    """最新フレーム1枚をPNG化する関数を作る。撮れなければ None を返す。
+
+    /frameの連打で毎回imencodeすると重いため、直近のPNGを約200msだけ
+    使い回す。世代seqを出すカメラでは (seq, 時刻) の両方を鍵にする。
+    clear() で seq が進むため、clear 直後の即時要求でも前世代のPNGを
+    返さない。seq を出さない旧カメラでは従来どおり時刻基準だけにする。
+    陳腐化は最大FRAME_CACHE_SECに有界。失敗時はNoneを返し、
+    古い絵で誤魔化さない（別closureの死活とは無関係）。
+    """
+
+    _lock = threading.Lock()
+    _cached_png: bytes | None = None
+    _cached_at: float = 0.0
+    _cached_seq: int | None = None
 
     def get_frame() -> bytes | None:
+        nonlocal _cached_png, _cached_at, _cached_seq
+        now = time.monotonic()
         try:
             camera = camera_getter()
         except Exception:
             return None
         read = getattr(camera, "readFrame", None)
-        if not callable(read):
+        read_seq = getattr(camera, "readFrameWithSeq", None)
+        if not callable(read) and not callable(read_seq):
             return None
-        try:
-            frame = read(copy=True)
-        except Exception:
-            return None
+        seq: int | None = None
+        has_seq = False
+        frame: Any = None
+        seq_getter = getattr(camera, "frame_seq", None)
+        if callable(seq_getter):
+            # frame 本体の複写なしに世代だけ見る。clear() で進む。
+            try:
+                seq = int(seq_getter())
+                has_seq = True
+            except Exception:
+                has_seq = False
+        elif callable(read_seq):
+            # frame_seq は無いが世代つき読みがあるカメラ。frame と
+            # まとめて取る（読むこと自体は安く、重いのは符号化のため）。
+            # 読めない一瞬は時刻基準に落とし、新鮮な絵があればそちらで凌ぐ。
+            try:
+                frame, seq_val = read_seq()
+                try:
+                    seq = int(seq_val)
+                    has_seq = True
+                except Exception:
+                    has_seq = False
+            except Exception:
+                frame = None
+                has_seq = False
+        with _lock:
+            if _cached_png is not None and (now - _cached_at) < FRAME_CACHE_SEC:
+                if not has_seq or seq == _cached_seq:
+                    return _cached_png
+        if frame is None:
+            if not callable(read):
+                return None
+            try:
+                frame = read(copy=True)
+            except Exception:
+                return None
         if frame is None or getattr(frame, "size", 0) == 0:
             return None
         try:
@@ -197,6 +269,11 @@ def build_get_frame(
             return None
         if not ok:
             return None
-        return bytes(buf)
+        png = bytes(buf)
+        with _lock:
+            _cached_png = png
+            _cached_at = time.monotonic()
+            _cached_seq = seq if has_seq else None
+        return png
 
     return get_frame

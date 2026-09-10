@@ -218,7 +218,8 @@ def test_match_frame_hit(server: str, monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["ok"] is True
     assert data["matched"] is True
     assert data["rect"] == {"x": 60, "y": 30, "width": 80, "height": 40}
-    assert blockly_match.parse_threshold(data["score"]) >= 0.0
+    assert blockly_match.parse_threshold(data["score"]) >= 0.99
+    assert data["score"] >= 0.99
 
 
 def test_match_upload_hit(server: str) -> None:
@@ -355,10 +356,114 @@ def test_template_image_returns_bytes(server: str) -> None:
 
 
 def test_template_image_missing_fails(server: str) -> None:
-    data = get_json(server, "/template_image?name=pack/none.png")
-    assert data["ok"] is False
+    status, ctype, body = get_bytes(server, "/template_image?name=pack/none.png")
+    assert status == 200
+    assert "application/json" in ctype
+    assert json.loads(body.decode("utf-8"))["ok"] is False
 
 
 def test_template_image_traversal_fails(server: str) -> None:
-    data = get_json(server, "/template_image?name=../evil.png")
+    status, ctype, body = get_bytes(server, "/template_image?name=../evil.png")
+    assert status == 200
+    assert "application/json" in ctype
+    assert json.loads(body.decode("utf-8"))["ok"] is False
+
+
+def _post_raw(host: str, raw: bytes) -> bytes:
+    import socket
+
+    h, port = host.split(":")
+    sock = socket.create_connection((h, int(port)), timeout=10)
+    try:
+        sock.sendall(raw)
+        sock.settimeout(10)
+        data = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        sock.close()
+
+
+def _body_json(raw: bytes) -> dict:
+    _, _, body = raw.partition(b"\r\n\r\n")
+    return json.loads(body.decode("utf-8"))
+
+
+def test_save_garbage_content_length_fails(server: str) -> None:
+    raw = (
+        b"POST /save HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Length: garbage\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Connection: close\r\n\r\n{}"
+    )
+    resp = _post_raw(server, raw)
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    assert _body_json(resp)["ok"] is False
+
+
+def test_save_oversized_body_fails(server: str) -> None:
+    try:
+        cap = int(blockly_editor.MAX_BODY_BYTES)
+    except AttributeError:
+        cap = 5 * 1024 * 1024
+    ws = json.dumps({"blocks": {"languageVersion": 0, "blocks": []}})
+    data = post_json(
+        server,
+        "/save",
+        {
+            "stem": "VisionOk",
+            "workspaceJson": ws,
+            "pythonCode": vision_code("a.png"),
+            "pad": "x" * (cap + 1024),
+        },
+    )
     assert data["ok"] is False
+
+
+def test_save_spoofed_huge_length_fails_fast(server: str) -> None:
+    """偽の巨大Content-Lengthは溜め込まず速く断る（閉じ込め）。"""
+    import socket
+    import time
+
+    try:
+        cap = int(blockly_editor.MAX_BODY_BYTES)
+    except AttributeError:
+        cap = 5 * 1024 * 1024
+    claimed = cap * 20
+    # 上限＋64KBだけ送れば新しい実装は読み捨てて応答できる。
+    # 旧実装は申告全体を読もうとして待ち続けるため遅い。
+    send_size = cap + 128 * 1024
+    header = (
+        "POST /save HTTP/1.1\r\nHost: x\r\n"
+        f"Content-Length: {claimed}\r\n"
+        "Content-Type: application/json\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii")
+    body = b"x" * send_size
+    host, port = server.split(":")
+    sock = socket.create_connection((host, int(port)), timeout=10)
+    try:
+        sock.settimeout(10)
+        start = time.monotonic()
+        sock.sendall(header + body)
+        # 送り切ったら半閉じせず応答を待つ（旧実装は残りを待って詰まる）。
+        data = b""
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > 65536:
+                # ヘッダ＋JSON応答ぶんを読めば十分（本文は捨てる）。
+                if b"\r\n\r\n" in data:
+                    break
+        elapsed = time.monotonic() - start
+    finally:
+        sock.close()
+    assert elapsed < 8.0, f"応答が遅すぎます: {elapsed:.1f}s"
+    assert b"200" in data.split(b"\r\n", 1)[0]
+    assert _body_json(data)["ok"] is False

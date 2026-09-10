@@ -51,12 +51,18 @@ class AudioPanelMixin:
     audio_measure_button: Any
     _audio_meter_after_id: Any
     _probe_thread: Any
-    _probe_done: bool
+    _probe_done: Any
     _probe_after_id: Any
     _measure_thread: Any
-    _measure_done: bool
+    _measure_done: Any
     _measure_result: Any
     _measure_after_id: Any
+    _measure_lock: Any
+    _record_thread: Any
+    _record_done: Any
+    _record_result: Any
+    _record_after_id: Any
+    _record_lock: Any
     _on_setting_changed: Any
 
     def _build_audio_frame(self) -> None:
@@ -71,7 +77,10 @@ class AudioPanelMixin:
 
         ttk.Label(self.audio_lf, text="Input:").grid(padx="5", row=0, column=0)
         self.audio_input_cb = ttk.Combobox(
-            self.audio_lf, textvariable=self.audio_input_name, width=28
+            self.audio_lf,
+            textvariable=self.audio_input_name,
+            width=28,
+            state="readonly",
         )
         self.audio_input_cb.grid(padx="5", row=0, column=1, sticky="ew")
         self.audio_input_cb.bind(
@@ -80,7 +89,10 @@ class AudioPanelMixin:
 
         ttk.Label(self.audio_lf, text="Output:").grid(padx="5", row=0, column=2)
         self.audio_output_cb = ttk.Combobox(
-            self.audio_lf, textvariable=self.audio_output_name, width=28
+            self.audio_lf,
+            textvariable=self.audio_output_name,
+            width=28,
+            state="readonly",
         )
         self.audio_output_cb.grid(padx="5", row=0, column=3, sticky="ew")
         self.audio_output_cb.bind(
@@ -124,6 +136,10 @@ class AudioPanelMixin:
         # 空いている行へ置かれるため、後に明示配置されるSerial/Command枠の
         # 下敷きになる（row=1へ入り込んで隠れる）。兄弟枠と同じ流儀にする。
         self.audio_lf.grid(columnspan=3, padx="5", row=3, sticky="ew")
+        # 入出力コンボのある列にだけ重みを付け、枠が広がった分を吸わせる。
+        # 無いと width=28 文字で頭打ちになり、長い機器名が省略表示になる。
+        self.audio_lf.columnconfigure(1, weight=1)
+        self.audio_lf.columnconfigure(3, weight=1)
 
     def _refreshAudioDevices(self) -> None:
         """入出力の候補を流し込む。速い列挙を即出しし、開ける物だけ裏で絞る。
@@ -150,11 +166,18 @@ class AudioPanelMixin:
         thread = getattr(self, "_probe_thread", None)
         if thread is not None and thread.is_alive():
             return
-        self._probe_done = False
+        # 完了旗は Event で渡す（bool直書きの競合を避ける）
+        self._probe_done = threading.Event()
 
         def work() -> None:
-            self.audio_service.refresh_probe_cache()
-            self._probe_done = True
+            try:
+                self.audio_service.refresh_probe_cache()
+            finally:
+                done = getattr(self, "_probe_done", None)
+                if isinstance(done, threading.Event):
+                    done.set()
+                else:
+                    self._probe_done = True
 
         self._probe_thread = threading.Thread(
             target=work, name="AudioProbe", daemon=True
@@ -164,16 +187,27 @@ class AudioPanelMixin:
 
     def _poll_probe(self) -> None:
         """絞り込みの完了を GUI スレッドで待つ。終われば候補を置き換える。"""
+        flag = getattr(self, "_probe_done", None)
+        done = flag.is_set() if isinstance(flag, threading.Event) else bool(flag)
+        if done:
+            self._finish_probe()
+            return
+        # 予約前の取り消しで鎖を1本に保つ（予約後取り消しはやめる）。
+        try:
+            old = getattr(self, "_probe_after_id", None)
+            if old is not None:
+                self.root.after_cancel(old)
+        except (tk.TclError, ValueError):
+            pass
+        self._probe_after_id = None
         try:
             self._probe_after_id = self.root.after(500, self._poll_probe)
         except tk.TclError:
+            self._probe_after_id = None
             return
-        if not getattr(self, "_probe_done", False):
-            return
-        try:
-            self.root.after_cancel(self._probe_after_id)
-        except (tk.TclError, ValueError):
-            pass
+
+    def _finish_probe(self) -> None:
+        """絞り込み完了時の候補置き換え（GUIスレッド専用）。"""
         self._probe_after_id = None
         try:
             inputs = self.audio_service.cached_inputs()
@@ -240,7 +274,8 @@ class AudioPanelMixin:
                 logger.debug(f"取込口の自動選択に失敗しました: {e}")
             if auto:
                 spec = auto
-        if not self.audio_service.open(spec):
+        opened = self.audio_service.open(spec)
+        if not opened:
             # バックエンド欠如は静かに（debug）。実デバイス失敗のprintは残す。
             try:
                 missing = not audio_available() and (
@@ -253,6 +288,9 @@ class AudioPanelMixin:
             else:
                 print(f"音声入力を開けませんでした: {spec or '既定の入力'}")
         self._apply_audio_widgets()
+        if opened:
+            # 設定ONなのに無音、を防ぐ（入力の開き直しは出力を止める）。
+            self._ensure_monitor_running()
         if auto:
             self.audio_input_name.set(self.audio_service.display_input(auto))
             self._update_latency_label()
@@ -295,21 +333,46 @@ class AudioPanelMixin:
             self.settings.audio_input.set(spec)
             self._update_latency_label()
             self._on_setting_changed()
+            self._ensure_monitor_running()
         else:
             print(f"音声入力を開けませんでした: {display}")
+            # 表示は意図（ON）のまま残す。エラーは出ているため、
+            # 後で入力が開けたら _ensure_monitor_running で自己回復する。
+
+    def _ensure_monitor_running(self) -> None:
+        """ON表示のモニタが実際に鳴っているようにする。
+
+        入力の開き直し（openInput）は先頭で close() → 出力停止するため、
+        放っておくと無音なのに Monitor が ON 表示のままになる。
+        起動時も同じ理由で呼ぶ（設定ONなのに無音の防止）。
+        """
+        if not bool(self.audio_monitor.get()):
+            return
+        out = self.audio_output_name.get()
+        spec = self._selected_index(out)
+        try:
+            vol = float(self.audio_volume.get())
+        except (TypeError, ValueError):
+            vol = 0.8
+        if not self.audio_service.set_monitor(True, spec, vol):
+            self.audio_monitor.set(False)
 
     def _onAudioOutputSelected(self, *event: Any) -> None:
         """再生中に出力を変えたら新デバイスで開き直す（失敗時は元に戻す）。"""
+        out = self.audio_output_name.get()
+        spec = self._selected_index(out)
         capture = getattr(self.audio_service, "capture", None)
         if capture is None or not capture.isMonitorEnabled():
+            # 停止中も選択は覚え、次回の有効化で使う。
+            self.settings.audio_output.set(spec)
+            self._update_latency_label()
+            self._on_setting_changed()
             return
-        out = self.audio_output_name.get()
         try:
             vol = float(self.audio_volume.get())
         except (TypeError, ValueError):
             vol = 0.8
         previous = self.settings.audio_output.get()
-        spec = self._selected_index(out)
         if self.audio_service.set_monitor(True, spec, vol):
             self.settings.audio_output.set(spec)
             self.settings.audio_monitor_volume.set(vol)
@@ -370,36 +433,121 @@ class AudioPanelMixin:
         self._onAudioInputSelected()
 
     def recordAudioTest(self) -> None:
-        """3秒録って保存先を知らせる（検知の疎通確認用）。"""
+        """3秒録って保存先を知らせる（検知の疎通確認用。裏で回す）。"""
+        thread = getattr(self, "_record_thread", None)
+        if thread is not None and thread.is_alive():
+            return
         capture = self.audio_service.capture
         if capture is None or not capture.isOpened():
             print("録音できません: 音声入力が開いていません")
             return
-        window = capture.record(3.0)
-        if window.size == 0:
-            print("録音できませんでした（詳細はターミナルのログ）")
-            return
-        # 保存は Mixin の手順に寄せず、ここでは生pcmをwavへ書くだけ。
-        # 検知用テンプレ化は recordClip（コマンド側）を使う。
-        # 保存先は cwd 相対にしない（Window 起動時に chdir されても
-        # ずれないよう APP_DIR 起点）。
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        clip_dir = os.path.join(WindowUtils.APP_DIR, "AudioClips")
-        filespec = os.path.join(clip_dir, f"test_{stamp}.wav")
+        # 完了旗は Event で渡す（bool直書きの競合を避ける）
+        self._record_done = threading.Event()
+        self._record_lock = threading.Lock()
+        self._record_result = None
         try:
-            os.makedirs(clip_dir, exist_ok=True)
-            pcm = (np.clip(window.astype(np.float64), -1.0, 1.0) * 32767.0).astype(
-                np.int16
-            )
-            with wave.open(filespec, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(audio_dsp.SAMPLE_RATE)
-                wf.writeframes(pcm.tobytes())
-        except OSError as e:
-            print(f"録音の保存に失敗しました: {e}")
+            self.audio_record_button.state(["disabled"])
+        except (AttributeError, tk.TclError):
+            pass
+        print("テスト録音中...（3秒）")
+
+        def work() -> None:
+            filespec = ""
+            error = ""
+            try:
+                window = capture.record(3.0)
+                if window.size == 0:
+                    error = "empty"
+                else:
+                    # 保存は生pcmをwavへ書くだけ（検知用テンプレ化は
+                    # recordClip（コマンド側）を使う）。保存先は cwd 相対に
+                    # しない（Window 起動時に chdir されてもずれないよう
+                    # APP_DIR 起点）。
+                    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    clip_dir = os.path.join(WindowUtils.APP_DIR, "AudioClips")
+                    filespec = os.path.join(clip_dir, f"test_{stamp}.wav")
+                    try:
+                        os.makedirs(clip_dir, exist_ok=True)
+                        pcm = (
+                            np.clip(window.astype(np.float64), -1.0, 1.0) * 32767.0
+                        ).astype(np.int16)
+                        with wave.open(filespec, "wb") as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(audio_dsp.SAMPLE_RATE)
+                            wf.writeframes(pcm.tobytes())
+                    except OSError as e:
+                        error = str(e)
+                        filespec = ""
+            except Exception as e:
+                logger.error(f"テスト録音に失敗しました: {e}")
+                error = str(e)
+                filespec = ""
+            lock = getattr(self, "_record_lock", None)
+            if lock is not None:
+                with lock:
+                    self._record_result = {"filespec": filespec, "error": error}
+            else:
+                self._record_result = {"filespec": filespec, "error": error}
+            done = getattr(self, "_record_done", None)
+            if isinstance(done, threading.Event):
+                done.set()
+            else:
+                self._record_done = True
+
+        self._record_thread = threading.Thread(
+            target=work, name="AudioRecord", daemon=True
+        )
+        self._record_thread.start()
+        self._poll_record()
+
+    def _poll_record(self) -> None:
+        """録音の完了を GUI スレッドで待つ。終われば結果を出す。"""
+        flag = getattr(self, "_record_done", None)
+        done = flag.is_set() if isinstance(flag, threading.Event) else bool(flag)
+        if done:
+            self._record_after_id = None
+            self._finish_record()
             return
-        print(f"テスト録音を保存しました: {filespec}")
+        try:
+            old = getattr(self, "_record_after_id", None)
+            if old is not None:
+                self.root.after_cancel(old)
+        except (tk.TclError, ValueError):
+            pass
+        self._record_after_id = None
+        try:
+            self._record_after_id = self.root.after(500, self._poll_record)
+        except tk.TclError:
+            self._record_after_id = None
+            return
+        return
+
+    def _finish_record(self) -> None:
+        """録音完了時の結果表示（GUIスレッド専用）。"""
+        self._record_after_id = None
+        try:
+            self.audio_record_button.state(["!disabled"])
+        except (AttributeError, tk.TclError):
+            pass
+        try:
+            lock = getattr(self, "_record_lock", None)
+            if lock is not None:
+                with lock:
+                    result = getattr(self, "_record_result", None) or {}
+            else:
+                result = getattr(self, "_record_result", None) or {}
+            error = str(result.get("error", ""))
+            filespec = str(result.get("filespec", ""))
+            if error == "empty" or (not error and not filespec):
+                print("録音できませんでした（詳細はターミナルのログ）")
+                return
+            if error:
+                print(f"録音の保存に失敗しました: {error}")
+                return
+            print(f"テスト録音を保存しました: {filespec}")
+        except tk.TclError:
+            return
 
     def measureLatency(self) -> None:
         """押して鳴った音の到達を測る（数秒かかる。裏で回す）。
@@ -423,7 +571,9 @@ class AudioPanelMixin:
             print("計測できません: シリアルが開いていません")
             return
         self.audio_measure_result.set("計測中...（Aを3回押します）")
-        self._measure_done = False
+        # 完了旗は Event で渡す（bool直書きの競合を避ける）
+        self._measure_done = threading.Event()
+        self._measure_lock = threading.Lock()
         self._measure_result = None
 
         def send_press() -> float:
@@ -441,20 +591,31 @@ class AudioPanelMixin:
             return t0
 
         def work() -> None:
+            result: Any = None
             try:
                 from core import audio_latency as AL
 
-                self._measure_result = AL.measure_press(send_press, capture)
+                result = AL.measure_press(send_press, capture)
             except Exception as e:
                 logger.error(f"遅延計測に失敗しました: {e}")
-                self._measure_result = {
+                result = {
                     "detected": 0,
                     "total": 0,
                     "median_ms": -1.0,
                     "delays_ms": [],
                     "error": str(e),
                 }
-            self._measure_done = True
+            lock = getattr(self, "_measure_lock", None)
+            if lock is not None:
+                with lock:
+                    self._measure_result = result
+            else:
+                self._measure_result = result
+            done = getattr(self, "_measure_done", None)
+            if isinstance(done, threading.Event):
+                done.set()
+            else:
+                self._measure_done = True
 
         self._measure_thread = threading.Thread(
             target=work, name="AudioMeasure", daemon=True
@@ -464,19 +625,37 @@ class AudioPanelMixin:
 
     def _poll_measure(self) -> None:
         """計測の完了を GUI スレッドで待つ。終われば結果を出す。"""
-        try:
-            self._measure_after_id = self.root.after(500, self._poll_measure)
-        except tk.TclError:
+        flag = getattr(self, "_measure_done", None)
+        done = flag.is_set() if isinstance(flag, threading.Event) else bool(flag)
+        if done:
+            self._measure_after_id = None
+            self._finish_measure()
             return
-        if not getattr(self, "_measure_done", False):
-            return
+        # 予約前の取り消しで鎖を1本に保つ（予約後取り消しはやめる）。
         try:
-            self.root.after_cancel(self._measure_after_id)
+            old = getattr(self, "_measure_after_id", None)
+            if old is not None:
+                self.root.after_cancel(old)
         except (tk.TclError, ValueError):
             pass
         self._measure_after_id = None
         try:
-            result = getattr(self, "_measure_result", None) or {}
+            self._measure_after_id = self.root.after(500, self._poll_measure)
+        except tk.TclError:
+            self._measure_after_id = None
+            return
+        return
+
+    def _finish_measure(self) -> None:
+        """計測完了時の結果表示（GUIスレッド専用）。"""
+        self._measure_after_id = None
+        try:
+            lock = getattr(self, "_measure_lock", None)
+            if lock is not None:
+                with lock:
+                    result = getattr(self, "_measure_result", None) or {}
+            else:
+                result = getattr(self, "_measure_result", None) or {}
             error = result.get("error", "")
             if error:
                 self.audio_measure_result.set(f"計測失敗: {error}")

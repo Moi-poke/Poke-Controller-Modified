@@ -29,13 +29,23 @@ from loguru import logger
 # 定数
 # ---------------------------------------------------------------------------
 
-CAPTURE_DIR = "./Captures/"
+# アプリの場所。このファイルの位置から決める（起動場所に依存しない）。
+# WindowUtils.APP_DIR と同じ場所を __file__ から求める（core からは import 禁止のため）。
+# cwd 相対にしない。別場所から起動しても同じ Captures を指す。
+BASE_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+)
+CAPTURE_DIR = os.path.normpath(os.path.join(BASE_DIR, "Captures"))
 CAPTURE_SIZE = (1280, 720)
 SHARED_MEMORY_NAME = "camera_image"
 
 THREAD_JOIN_TIMEOUT = 0.5  # GUI を止めずに待てる上限(秒)
 THREAD_RELEASE_TIMEOUT = 5.0  # 裏で取得スレッドの終了を待つ上限(秒)
 PROCESS_JOIN_TIMEOUT = 3.0
+
+# 取得失敗が続くときの待ちの下限(秒)。fps=0 では interval が 0 になり、
+# ret==False 経路の wait(0.0) が空転して CPU を食い潰すため floor を置く。
+READ_FAILURE_FLOOR_S = 0.005
 
 # 共有メモリの面数。ワーカーは未使用面へ書いてから face を差し替える。
 # N 面あれば読み手は N-1 フレームぶん安全に参照できる（3 で十分）。
@@ -182,11 +192,23 @@ class LatestFrame:
     queue.Queue(maxsize=1) を継承して get/put の意味を変える実装だったが、
     標準の契約（block / timeout）を無視することになり誤用を招くのでやめた。
     用途が「最新1枚の上書き」だけなら Lock + 変数1つで十分かつ速い。
+
+    seq は単調増加の世代番号。put でも clear でも進む。消費者
+    （_prepareSrc / _drawFrame / wait 系）は (seq, 条件) を鍵に
+    結果を使い回し、同じ seq では再計算しない。clear をまたいで
+    当ててはならないため、clear でも seq を進めて無効化する。
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._frame: np.ndarray | None = None
+        self._seq = 0
+
+    @property
+    def seq(self) -> int:
+        """現在の世代番号。put / clear で単調に増える。"""
+        with self._lock:
+            return self._seq
 
     def put(self, frame: np.ndarray | None) -> None:
         """最新フレームを差し替える。None では上書きしない。"""
@@ -194,15 +216,23 @@ class LatestFrame:
             return
         with self._lock:
             self._frame = frame
+            self._seq += 1
 
     def get(self) -> np.ndarray | None:
         """最新フレームを返す。まだ1枚も来ていなければ None。"""
         with self._lock:
             return self._frame
 
+    def get_with_seq(self) -> tuple[np.ndarray | None, int]:
+        """最新フレームと世代番号を原子的に返す。cache の鍵用。"""
+        with self._lock:
+            return self._frame, self._seq
+
     def clear(self) -> None:
+        """中身を捨て、seq を進めて既存 cache を無効化する。"""
         with self._lock:
             self._frame = None
+            self._seq += 1
 
 
 # 旧名との互換（外部から CustomQueue を import している箇所があるため）
@@ -226,7 +256,11 @@ class Camera:
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # 世代番号。open/destroy ごとに進み、旧スレッドの蘇生を防ぐ。
+        # 共有 Event の clear 使い回しをやめ、世代ごとに Event を作り直す。
+        self._generation = 0
         self._lock = threading.Lock()
+        self._stat_lock = threading.Lock()
         self._error: str | None = None
         # 供給実測（getStats で読むたびに区切り直す）。
         self._stat_puts = 0
@@ -242,7 +276,9 @@ class Camera:
             self.destroy()
 
         self.frame_queue.clear()
-        self._stop_event.clear()
+        # 旧スレッドの Event を clear で蘇らせない。新世代の Event を作る。
+        self._generation += 1
+        self._stop_event = threading.Event()
         self._error = None
 
         if os.name == "nt":
@@ -287,11 +323,20 @@ class Camera:
         戻り値は {"fps": 実際にputした枚数/秒, "avg_ms": read所要の
         移動平均(ms)}。まだ1枚も来ていない・区間が短すぎる場合は 0。
         表示側の実測と並べると「機器が遅いか描画が遅いか」が分かる。
+
+        telemetry 用の参考値であり、厳密な同期はしない。取得スレッドの
+        書き込みと GUI スレッドの読み・リセットの競合に備え、lock で
+        保護する（欠けても表示が揺れるだけだが、0 除算や負値は避ける）。
         """
         now = time.perf_counter()
-        puts, began_at, avg_ms = self._stat_puts, self._stat_began_at, self._stat_avg_ms
-        self._stat_puts = 0
-        self._stat_began_at = None
+        with self._stat_lock:
+            puts, began_at, avg_ms = (
+                self._stat_puts,
+                self._stat_began_at,
+                self._stat_avg_ms,
+            )
+            self._stat_puts = 0
+            self._stat_began_at = None
         if began_at is None or puts <= 0:
             return {"fps": 0.0, "avg_ms": round(avg_ms, 1)}
         elapsed = now - began_at
@@ -309,6 +354,8 @@ class Camera:
         戻り値は「その場で解放しきれたか」。
         """
         self._stop_event.set()
+        # 世代を進めて旧スレッドの蘇生を防ぐ（次 open が新 Event を作る）。
+        self._generation += 1
 
         thread, self._thread = self._thread, None
         if thread is not None and thread.is_alive():
@@ -330,11 +377,12 @@ class Camera:
         read() の最中に release() すると cv2 が落ちうるので、待たずに
         解放してはいけない。かといって GUI スレッドで待つと固まるので、
         「待つ役」だけを別スレッドへ切り出す。
+
+        camera が None でも thread の join は行う。join せずに返すと
+        渡されたスレッドが放置され、次 open の世代と混ざる。
         """
         with self._lock:
             camera, self.camera = self.camera, None
-        if camera is None:
-            return
 
         def waiter() -> None:
             thread.join(timeout=THREAD_RELEASE_TIMEOUT)
@@ -343,6 +391,8 @@ class Camera:
                     "Camera thread is still alive. "
                     "Skip releasing the device to avoid a crash."
                 )
+                return
+            if camera is None:
                 return
             camera.release()
             logger.debug("Camera destroyed (deferred)")
@@ -366,6 +416,17 @@ class Camera:
             return None
         return frame.copy() if copy else frame
 
+    def readFrameWithSeq(self, copy: bool = False) -> tuple[np.ndarray | None, int]:
+        """最新フレームと世代番号を原子的に返す。cache の鍵用。"""
+        frame, seq = self.frame_queue.get_with_seq()
+        if frame is None:
+            return None, seq
+        return (frame.copy() if copy else frame, seq)
+
+    def frame_seq(self) -> int:
+        """現在の世代番号。LatestFrame.seq の読み替え。"""
+        return int(self.frame_queue.seq)
+
     def saveCapture(
         self,
         filename: str | None = None,
@@ -384,13 +445,26 @@ class Camera:
     # -- 取得スレッド -------------------------------------------------------
 
     def _start_thread(self) -> None:
+        # 起動時の Event・世代・カメラを捕まえて渡す。self 経由で毎回
+        # 読み直すと、次 open の新デバイスを旧スレッドが読んでしまう。
+        stop_event = self._stop_event
+        generation = self._generation
+        camera = self.camera
         self._thread = threading.Thread(
-            target=self._update, name="CameraThread", daemon=True
+            target=self._update,
+            args=(stop_event, generation, camera),
+            name="CameraThread",
+            daemon=True,
         )
         self._thread.start()
         logger.debug("Camera thread started")
 
-    def _update(self) -> None:
+    def _update(
+        self,
+        stop_event: threading.Event | None = None,
+        generation: int | None = None,
+        camera: Any | None = None,
+    ) -> None:
         """最新フレームを取り続ける。失敗フレームは捨てる。
 
         read() 自体がカメラの周期までブロックするため、経過時間を
@@ -398,22 +472,34 @@ class Camera:
         read の所要時間の移動平均を持ち、平均が interval より短いとき
         （＝カメラのほうが速いとき）だけ待つ。取りこぼしは件数を数えて
         logger.debug に出し、見えるようにする。
+
+        世代が違う（旧スレッド）なら即座に抜ける。共有 Event の clear
+        使い回しでは旧ループが蘇るため、起動時の Event・世代・カメラ
+        だけを見て、self の現在値には触らない。
         """
+        if stop_event is None:
+            stop_event = self._stop_event
+        if generation is None:
+            generation = self._generation
+        if camera is None:
+            camera = self.camera
         read_avg = 0.0  # read() 所要時間の指数移動平均(秒)
         slow = 0  # 想定(interval)の2倍以上かかった回数
         frames = 0
 
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
+            # 旧世代は即座に抜ける（次 open の新デバイスを読まない）。
+            if generation != self._generation:
+                break
             started = time.perf_counter()
             # setFps() で変更された値を毎周期反映する
             interval = 1.0 / self.fps if self.fps > 0 else 0.0
 
-            camera = self.camera
             if camera is None:
                 break
 
             # release() との競合を狭めるため、read の直前にもう一度見る
-            if self._stop_event.is_set():
+            if stop_event.is_set():
                 break
 
             try:
@@ -423,7 +509,7 @@ class Camera:
                 self._error = "Camera Read Error"
                 logger.error(self._error)
                 logger.error(traceback.format_exc())
-                self._stop_event.set()
+                stop_event.set()
                 break
 
             read_time = time.perf_counter() - started
@@ -445,22 +531,30 @@ class Camera:
                 frames, slow = 0, 0
 
             if not ret or frame is None:
-                # 取得失敗。最新フレームを None で上書きはしない
-                if self._stop_event.wait(interval):
+                # 取得失敗。最新フレームを None で上書きはしない。
+                # fps=0 では interval が 0 になり wait(0.0) で空転する
+                # ため floor を置く（連続失敗時の CPU 100% 化防止）。
+                floor = (
+                    interval
+                    if interval > READ_FAILURE_FLOOR_S
+                    else READ_FAILURE_FLOOR_S
+                )
+                if stop_event.wait(floor):
                     break
                 continue
 
             self.frame_queue.put(frame)
-            if self._stat_began_at is None:
-                self._stat_began_at = started
-            self._stat_puts += 1
-            self._stat_avg_ms = read_avg * 1000.0
+            with self._stat_lock:
+                if self._stat_began_at is None:
+                    self._stat_began_at = started
+                self._stat_puts += 1
+                self._stat_avg_ms = read_avg * 1000.0
 
             # read がカメラ周期ぶん待っている場合、その上さらに待つと
             # 取りこぼす。カメラのほうが速いときだけ差分を待つ。
             if read_avg < interval:
                 rest = interval - (time.perf_counter() - started)
-                if rest > 0 and self._stop_event.wait(rest):
+                if rest > 0 and stop_event.wait(rest):
                     break
 
         logger.debug("Camera thread stopped")
@@ -473,7 +567,9 @@ class Camera:
             return
         if self.isRunning():
             return
-        self._stop_event.clear()
+        # 共有 Event の clear 使い回しをやめ、新世代で開始する。
+        self._generation += 1
+        self._stop_event = threading.Event()
         self._error = None
         self._start_thread()
 
@@ -507,6 +603,7 @@ class CameraController:
         shape: tuple,
         cameraId: int = 0,
         capture_size: tuple = CAPTURE_SIZE,
+        seq: Synchronized | None = None,
     ) -> None:
         self.camera: cv2.VideoCapture | None = None
         self.cameraId = cameraId
@@ -515,6 +612,9 @@ class CameraController:
         self.stop_event = stop_event
         self.camera_process_status = camera_process_status
         self.face = face
+        # 単調増加の世代番号。face は 0..2 を回るため cache の鍵に使えない。
+        # 公開のたびに進め、消費者は (seq, 条件) で使い回す。
+        self.seq = seq
         self.shape = shape
 
         self.shared_memory = shared_memory.SharedMemory(name=shm_name)
@@ -569,6 +669,7 @@ class CameraController:
         """
         while not self.stop_event.is_set():
             started = time.perf_counter()
+            succeeded = False
 
             try:
                 if self.camera is None or not self.camera.isOpened():
@@ -580,6 +681,9 @@ class CameraController:
                     nxt = (int(self.face.value) + 1) % FACE_COUNT
                     self.images[nxt] = self._fit(frame)
                     self.face.value = nxt
+                    if self.seq is not None:
+                        self.seq.value += 1
+                    succeeded = True
             except Exception:
                 logger.error("Camera Process Error")
                 logger.error(traceback.format_exc())
@@ -588,6 +692,9 @@ class CameraController:
             fps = self.fps.value
             interval = 1.0 / fps if fps > 0 else 0.0
             rest = interval - (time.perf_counter() - started)
+            # 取得失敗が続くと rest が 0 以下で空転するため floor を置く。
+            if not succeeded and rest < READ_FAILURE_FLOOR_S:
+                rest = READ_FAILURE_FLOOR_S
             if rest > 0 and self.stop_event.wait(rest):
                 break
 
@@ -616,6 +723,7 @@ def _camera_worker(
     shape: tuple,
     cameraId: int,
     capture_size: tuple,
+    seq: Synchronized | None = None,
 ) -> None:
     """子プロセスの入口。Process(target=クラス) だと生成＝実行で分かりにくい。"""
     CameraController(
@@ -627,6 +735,7 @@ def _camera_worker(
         shape,
         cameraId,
         capture_size,
+        seq,
     ).run()
 
 
@@ -678,6 +787,8 @@ class CameraQueue:
         self.fps: Synchronized = Value("i", self._fps)
         # いま読んでよい面の番号。ワーカーが書き終えてから差し替える
         self.face: Synchronized = Value("i", 0)
+        # 単調増加の世代番号。face は環状のため cache の鍵は seq を使う。
+        self.seq: Synchronized = Value("Q", 0)
         self.stop_event = multiprocessing.Event()
         self.camera_process_status: Synchronized = Value("b", False)
 
@@ -687,10 +798,20 @@ class CameraQueue:
         return self.stop_event.is_set()
 
     def openCamera(self, camera_id: int) -> None:
-        """ワーカープロセスを作り直して起動する（旧APIに合わせた名前）。"""
+        """ワーカープロセスを作り直して起動する（旧APIに合わせた名前）。
+
+        旧プロセスの Event を clear で使い回さない。新世代の Event を
+        作り直す。作り直さないと、終了待ちの旧プロセスが蘇って新旧
+        2 プロセスが1つの共有メモリへ書く。
+        """
         self.cameraId = camera_id
         self._stop_process()
-        self.stop_event.clear()
+        self.stop_event = multiprocessing.Event()
+        # 旧版から引き継いだ個体には seq が無いことがある。無ければ作る。
+        seq = getattr(self, "seq", None)
+        if seq is None:
+            seq = Value("Q", 0)
+            self.seq = seq
 
         self.camera_process = multiprocessing.Process(
             target=_camera_worker,
@@ -703,6 +824,7 @@ class CameraQueue:
                 self.shape,
                 self.cameraId,
                 self.capture_size,
+                self.seq,
             ),
             name="CameraController",
             daemon=True,
@@ -731,11 +853,31 @@ class CameraQueue:
         返したビューが書き換えられることはない（FACE_COUNT 面あるので
         FACE_COUNT-1 フレームぶんの猶予がある）。Lock もコピーも不要。
         フレームを長く持ち回る・書き換えるなら copy=True を指定する。
+
+        初フレーム前の契約（権威ある定義）:
+          Camera（スレッド版）はまだ1枚も来ていなければ None を返す。
+          CameraQueue（プロセス版）は共有メモリの初期値である黒画像
+          （zeros, black）を返す。shm 未作成時のみ None を返す。
+        呼び出し側は両方を扱うこと。意味を変えず文書だけに留める。
         """
         if self.shm is None or self.images is None:
             return None
         frame = self.images[int(self.face.value)]
         return frame.copy() if copy else frame
+
+    def readFrameWithSeq(self, copy: bool = False) -> tuple[np.ndarray | None, int]:
+        """公開中の面と世代番号を返す。cache の鍵用。"""
+        seq_obj = getattr(self, "seq", None)
+        seq_val = int(seq_obj.value) if seq_obj is not None else 0
+        if self.shm is None or self.images is None:
+            return None, seq_val
+        frame = self.images[int(self.face.value)]
+        return (frame.copy() if copy else frame, seq_val)
+
+    def frame_seq(self) -> int:
+        """現在の世代番号。face（環状）ではなく seq（単調増加）を返す。"""
+        seq_obj = getattr(self, "seq", None)
+        return int(seq_obj.value) if seq_obj is not None else 0
 
     def saveCapture(
         self,

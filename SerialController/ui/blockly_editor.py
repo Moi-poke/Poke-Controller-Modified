@@ -26,6 +26,12 @@ from services import blockly_capture, blockly_match, blockly_save, blockly_templ
 
 _BLOCKLY_DIR = Path(WindowUtils.APP_DIR) / "assets" / "blockly"
 
+#: POST本文の上限（/save・/delete・/template用）。localhost用の安全弁。
+MAX_BODY_BYTES = 5 * 1024 * 1024
+#: アップロード付き照合（/match source=upload）用の上限。
+#: 10MBの生画像がbase64で約13.4MBになるため余裕を見る。
+MAX_UPLOAD_BODY_BYTES = 16 * 1024 * 1024
+
 _server: http.server.ThreadingHTTPServer | None = None
 _thread: threading.Thread | None = None
 
@@ -118,9 +124,28 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
-    def _read_json(self) -> dict[str, Any] | None:
+    def _read_json(self, max_bytes: int = MAX_BODY_BYTES) -> dict[str, Any] | None:
         """POST本文を読む。壊れていたら応答済みで None を返す。"""
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(str(self.headers.get("Content-Length", "0")).strip())
+        except (TypeError, ValueError) as e:
+            self._reply(False, f"保存できません: {e}")
+            return None
+        if length < 0 or length > max_bytes:
+            # 未読のまま閉じるとRSTで応答が届かないため読み捨てる。
+            # 申告どおりに全部読むと巨大申告で固まるため、上限＋64KBで打ち切る。
+            try:
+                remaining = min(length, max_bytes + 65536)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except Exception:
+                pass
+            self.close_connection = True
+            self._reply(False, "保存できません: 本文が大きすぎます")
+            return None
         try:
             payload: dict[str, Any] = json.loads(
                 self.rfile.read(length).decode("utf-8")
@@ -167,13 +192,16 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             self._reply(res.status == "saved", res.message, extra)
             return
         if urllib.parse.urlsplit(self.path).path == "/match":
-            payload = self._read_json()
+            payload = self._read_json(MAX_UPLOAD_BODY_BYTES)
             if payload is None:
                 return
             source = str(payload.get("source", "frame"))
+            frame: Any = None
             if source == "upload":
                 try:
-                    png = blockly_match.decode_upload_image(
+                    # 復号は1回だけ（decode→ndarray→matchへ受渡し）。
+                    # 文言は従来のbytes APIと同一に保つ。
+                    frame = blockly_match.decode_upload_array(
                         str(payload.get("image", ""))
                     )
                 except ValueError as e:
@@ -185,15 +213,15 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                     self._reply(False, blockly_capture.NO_CAMERA_MESSAGE)
                     return
                 try:
-                    png = getter()
+                    frame = getter()
                 except Exception:
-                    png = None
-                if png is None:
+                    frame = None
+                if frame is None:
                     self._reply(False, blockly_capture.FRAME_FAIL_MESSAGE)
                     return
             res = blockly_match.match_template(
                 WindowUtils.APP_DIR,
-                png,
+                frame,
                 str(payload.get("template", "")),
                 payload.get("threshold", 0.7),
                 bool(payload.get("use_gray", True)),
@@ -253,7 +281,12 @@ def _py_dir_mtime() -> float:
 
 
 def _stop_server() -> None:
-    """待ち受けを止める。何度呼んでもよい。"""
+    """待ち受けを止める。何度呼んでもよい。
+
+    GUIスレッドを固めないよう shutdown/close だけここで行い、
+    join は短命のdaemon番兵に任せる（serve側もdaemonのため
+    万一残っても放置でよい）。
+    """
     global _server, _thread
     server, _server = _server, None
     if server is not None:
@@ -261,7 +294,11 @@ def _stop_server() -> None:
         server.server_close()
     thread, _thread = _thread, None
     if thread is not None:
-        thread.join(timeout=5.0)
+
+        def _join() -> None:
+            thread.join(timeout=5.0)
+
+        threading.Thread(target=_join, name="BlocklyJoin", daemon=True).start()
 
 
 def stop_blockly_editor() -> None:

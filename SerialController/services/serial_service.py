@@ -203,6 +203,14 @@ class SerialService:
             return (False, True)
         new_transport = transport.create_transport(name, logger=transport_logger)
         linked = self.sender.setTransport(new_transport)
+        # setTransportのFalseは2通りある。入力ログの無い方式への切替
+        # （運び物は替わる）と、worker停止失敗での不変である。見分けは
+        # 実体の同一性で行い、替わっていなければ失敗として扱う。
+        if not linked and self.sender.transport is not new_transport:
+            message = f"通信方式を {name} に切り替えられませんでした。"
+            self._notify(message)
+            logger.warning(message)
+            return (False, False)
         message = f"通信方式を {name} に切り替えました。"
         self._notify(message)
         logger.info(message)

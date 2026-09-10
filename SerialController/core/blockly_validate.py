@@ -3,8 +3,9 @@
 """Blockly生成物の検証（GUI非依存）。
 
 編集画面（JS）が作ったPythonコードとワークスペースJSONを、保存前に
-検査する。許可するimportの集合は `tools/check_user_api.py` と同じ値
-（あちらが正本。公開面が変わったらこちらも合わせる）。
+検査する。許可するimportの集合は `core/user_api_allowlist.py` が正本。
+深刻度（仕様）: 許可外・未知の第三者は異常（保存不可）。配布時
+（pack_zip）の注意扱いとは違い、ここでは厳しく落とす。
 """
 
 from __future__ import annotations
@@ -14,33 +15,13 @@ import json
 import re
 import sys
 
+from core.user_api_allowlist import ALLOWED_COMMANDS_SUBS, THIRD_PARTY
+
 _STEM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-# 正本は tools/check_user_api.py。利用者スクリプトの公開面が変わったら合わせる。
-_ALLOWED_COMMANDS_SUBS = {
-    "Keys",
-    "PythonCommandBase",
-    "McuCommandBase",
-    "WakeLink",
-    "CommandVision",
-}
-_THIRD_PARTY = {
-    "cv2",
-    "numpy",
-    "PIL",
-    "pandas",
-    "scipy",
-    "requests",
-    "yaml",
-    "loguru",
-    "icecream",
-    "deprecated",
-    "pynput",
-    "serial",
-    "pygubu",
-    "matplotlib",
-    "pyaudio",
-}
+# 正本は core/user_api_allowlist.py。後方互換のため旧名でも読める。
+_ALLOWED_COMMANDS_SUBS = ALLOWED_COMMANDS_SUBS
+_THIRD_PARTY = THIRD_PARTY
 
 
 def validate_stem(stem: str) -> list[str]:

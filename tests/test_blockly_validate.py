@@ -57,3 +57,16 @@ def test_missing_do_rejected() -> None:
 def test_broken_json_rejected() -> None:
     assert blockly_validate.validate_workspace_json("{broken") != []
     assert blockly_validate.validate_workspace_json(json.dumps({"a": 1})) != []
+
+
+def test_command_audio_and_sounddevice_accepted() -> None:
+    code = (
+        "from Commands.CommandAudio import AudioPythonCommand\n"
+        "import sounddevice\n" + good_code()
+    )
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_unknown_third_party_rejected() -> None:
+    code = "import somelib_xyz\n" + good_code()
+    assert blockly_validate.validate_generated_code(code) != []

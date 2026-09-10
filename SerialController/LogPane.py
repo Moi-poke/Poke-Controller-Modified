@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import tkinter as tk
 from typing import Any
 
@@ -33,6 +34,16 @@ FLUSH_INTERVAL_MS = 200
 FLUSH_MAX_LINES = 512  # 1回の描画で取り出す上限（周期を伸ばした分増やす）
 MAX_LINES = 5000  # ログ欄に残す行数。Text は行数に比例して重くなる
 QUEUE_MAX = 20000  # 未描画の行を溜める上限。超えた分は古い方から捨てる
+
+#: 部分行の救済条件。print(end="") の進捗表示など、改行を出さずに溜め
+#: 続ける書き手がある。flush() まで画面に出ないと進んでいるか分からない。
+#: 改行が無いまま次のどちらかを超えたら1putで救済放出する。
+#: ・量: PARTIAL_FLUSH_CHARS 文字（巨大な1行を溜め込まない）
+#: ・古さ: PARTIAL_FLUSH_AGE_S 秒（少しずつの trickle を置き去りにしない。
+#:   判定は次の write 時に行うため、書き手が止まった分は flush() が出す）
+#: 通常の行（改行あり）は従来どおり1行1putで、合流の性能は変わらない。
+PARTIAL_FLUSH_CHARS = 4096
+PARTIAL_FLUSH_AGE_S = 1.0
 
 
 class DropOldestQueue(queue.Queue):
@@ -87,23 +98,95 @@ input_log_queue: queue.Queue = DropOldestQueue()
 sub_log_queue: queue.Queue = DropOldestQueue()
 
 
+def queues_idle_hint() -> bool:
+    """全キュー空の目安。空ならTrue（Tcl往復を省ける）。
+
+    qsizeは目安であり、競合で0でも行が残る場合は次周期（200ms）で拾う
+    だけで欠落はしない（疑わしければFalse＝drainする）。捨て件数も安い
+    錠確認だけ行い、あればFalseにする（省略行を出す必要があるため）。
+    Tclは触らない。
+    """
+    try:
+        if text_queue.qsize() != 0:
+            return False
+        if sub_log_queue.qsize() != 0:
+            return False
+        if input_log_queue.qsize() != 0:
+            return False
+    except Exception:
+        return False
+    for q in (text_queue, sub_log_queue, input_log_queue):
+        if isinstance(q, DropOldestQueue):
+            try:
+                with q._drop_lock:
+                    if q._dropped != 0:
+                        return False
+            except Exception:
+                return False
+    return True
+
+
 class QueueStdoutRedirector:
     """print() をキューに積むだけの標準出力リダイレクタ.
 
     ウィジェットへの書き込みは GUI スレッド側がまとめて行う。
     write のたびに描画すると print が多いコマンドで極端に重くなる。
+    さらに write ごとの put（キューの mutex 往復）を減らすため、
+    改行まで溜めて1行1putにまとめる。部分行は flush() で出す。
+    ただし改行なしで量・古さの cap を超えた部分行は、次の write 時に
+    救済放出する（PARTIAL_FLUSH_CHARS / PARTIAL_FLUSH_AGE_S）。
     """
 
     def __init__(self, text_widget: Any = None) -> None:
         # text_widget は使わないが、旧コードとの互換のため引数だけ残す
         self.text_widget = text_widget
         self.buffer: queue.Queue = text_queue
+        # 断片化した書き込みの溜め。別スレッドから来るため錠で守る。
+        self._lock = threading.Lock()
+        self._partial: str = ""
+        # 最初に溜めた時刻（monotonic）。部分行の古さの起点。
+        # 空に戻したら None に戻す。
+        self._partial_since: float | None = None
 
     def write(self, string: str) -> None:
-        self.buffer.put(string)
+        if not string:
+            return
+        # 改行で区切り、そろった行だけ出す。put は錠の外で行う。
+        lines: list[str] = []
+        with self._lock:
+            if not self._partial:
+                self._partial_since = time.monotonic()
+            self._partial += string
+            while True:
+                idx = self._partial.find("\n")
+                if idx < 0:
+                    break
+                lines.append(self._partial[: idx + 1])
+                self._partial = self._partial[idx + 1 :]
+            if self._partial:
+                # 改行なしで cap を超えた部分行は救済放出する。
+                # flush() まで待つと巨大な進捗行が画面に出ない。
+                since = self._partial_since
+                aged = (
+                    since is not None
+                    and (time.monotonic() - since) >= PARTIAL_FLUSH_AGE_S
+                )
+                if len(self._partial) >= PARTIAL_FLUSH_CHARS or aged:
+                    lines.append(self._partial)
+                    self._partial = ""
+            if not self._partial:
+                self._partial_since = None
+        for line in lines:
+            self.buffer.put(line)
 
     def flush(self) -> None:
-        pass
+        # 改行なしで残った部分行を出す。無ければ何もしない。
+        pending = ""
+        with self._lock:
+            pending, self._partial = self._partial, ""
+            self._partial_since = None
+        if pending:
+            self.buffer.put(pending)
 
 
 def emitInputLog(text: str) -> None:

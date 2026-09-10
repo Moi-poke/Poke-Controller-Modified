@@ -1,8 +1,10 @@
 import importlib
 import sys
+import traceback
 from types import ModuleType
 
 from core import Utility as util
+from loguru import logger
 
 
 class CommandLoader:
@@ -32,8 +34,16 @@ class CommandLoader:
             )
 
         # Reload commands except deleted ones
+        # 1つが壊れても残りは読み直す。壊れた1件で全体を止めない。
         for mod_name in list(set(cur_module_names) & set(loaded_module_dic.keys())):
-            importlib.reload(loaded_module_dic[mod_name])
+            try:
+                importlib.reload(loaded_module_dic[mod_name])
+            except Exception:
+                # ファイル名と経緯を残して次へ進む（単体分離を保つ）。
+                logger.error(
+                    f"再読み込みに失敗しました: {mod_name}\n{traceback.format_exc()}"
+                )
+                continue
 
         # Unload deleted commands
         for mod_name in list(set(loaded_module_dic.keys()) - set(cur_module_names)):

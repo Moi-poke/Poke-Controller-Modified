@@ -679,13 +679,14 @@ class InputLogger:
         self.log_stick_change = log_stick_change
         self.deadzone = deadzone
         self.actions: tuple[str, ...] | None = None
-        self.set_format(template, actions)
-        self.started = time.perf_counter()
         # 状態を守るロック。再入不可(Lock)なので、
         # 「ロックを持ったまま _emit_limited / _write を呼ばない」
         # ことを全経路で守る（呼ぶと同じスレッドで二重取得になり固まる）。
         # 出す行はロック内で作ってリストへ溜め、抜けてから書き出す。
+        # set_format より先に作る。初期化の書式設定でも錠を使うため。
         self._lock = threading.Lock()
+        self.set_format(template, actions)
+        self.started = time.perf_counter()
 
         # 連打の集約用。直前に出そうとした行と、その繰り返し回数
         self.repeat_window = REPEAT_WINDOW
@@ -709,16 +710,22 @@ class InputLogger:
 
         actions に ("PRESS",) のように渡すと、その種別だけを出力する。
         省略時はプリセット既定（command は RELEASE のみ、他は全種別）に従う。
+        書式と対象は feed と競合するため錠の中で替える。
         """
-        self.formatter.set_template(template)
-        if actions is None:
-            actions = PRESET_ACTIONS.get(template)
-        if isinstance(actions, str):
-            actions = tuple(a.strip().upper() for a in actions.split(",") if a.strip())
-        self.actions = tuple(actions) if actions else None
+        with self._lock:
+            self.formatter.set_template(template)
+            if actions is None:
+                actions = PRESET_ACTIONS.get(template)
+            if isinstance(actions, str):
+                actions = tuple(
+                    a.strip().upper() for a in actions.split(",") if a.strip()
+                )
+            self.actions = tuple(actions) if actions else None
 
     def set_enabled(self, enabled: bool) -> None:
-        self.enabled = bool(enabled)
+        """出力を止める・再開する。feed と競合するため錠の中で替える。"""
+        with self._lock:
+            self.enabled = bool(enabled)
 
     # -- 状態 ---------------------------------------------------------------
 

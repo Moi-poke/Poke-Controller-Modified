@@ -63,7 +63,9 @@ class OperateMixin:
     # 名前だけ残す（削除すると AttributeError になりうる）。
     _SPIN_MARGIN = 0.001
 
-    _TICK = 0.05
+    # 停止要求の拾い幅。50msだとStop→抜けが最大50ms遅れるため20msへ。
+    # Event.waitで寝るのでCPU負荷は増えない（毎秒50回起きるだけ）。
+    _TICK = 0.02
 
     # press button at duration times(s)
     def press(self, buttons: Any, duration: float = 0.1, wait: float = 0.1) -> None:
@@ -169,7 +171,7 @@ class OperateMixin:
 
     def _waitResume(self) -> None:
         """一時停止が解除されるまで待つ。停止要求が来たらすぐ戻る。"""
-        while not self._resume_event.wait(0.05):
+        while not self._resume_event.wait(self._TICK):
             if self._stop_event.is_set():
                 return
 

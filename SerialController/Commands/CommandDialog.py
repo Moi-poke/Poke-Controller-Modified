@@ -26,6 +26,7 @@ PythonCommandBase.py から対話部を切り出したもの。
 
 from __future__ import annotations
 
+import queue
 import threading
 import tkinter as tk
 import tkinter.ttk as ttk
@@ -34,6 +35,129 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from loguru import logger
+
+# 作業側→GUI側の委譲待ち行列。作業スレッドはTkを触らず積むだけにし、
+# GUI側がafterで取り出して走らせる（LogPane/WakeSetup式）。root.afterを
+# 作業側から呼ぶのは公式に非対応で、終了時に壊れる。
+#: 待ち行列の上限。主循環が死ぬと取り出しが止まり溜まる一方になるため、
+#: 有界にして溢れた分は古い方から捨てる（書き手のワーカーを待たせない）。
+_GUI_TASKS_MAX = 64
+_GUI_TASKS: queue.Queue[tuple[Any, Callable[[], None]]] = queue.Queue(
+    maxsize=_GUI_TASKS_MAX
+)
+_GUI_POLL_STARTED: set[int] = set()
+_GUI_POLL_LOCK = threading.Lock()
+_GUI_POLL_MS = 120
+_GUI_DROPPED = 0
+_GUI_DROPPED_LOCK = threading.Lock()
+
+
+def _ensure_gui_poll(root: Any) -> None:
+    """対話委譲の取り出し輪を回す。必ずGUIスレッドから呼ぶこと。
+
+    初回だけafter予約し、以後は取り出し側が繋いで回す。作業側は積む
+    だけで予約しない。窓が壊れたら予約は失敗するので印を外す。
+    """
+    if root is None or not hasattr(root, "after"):
+        return
+    key = id(root)
+    with _GUI_POLL_LOCK:
+        if key in _GUI_POLL_STARTED:
+            return
+        _GUI_POLL_STARTED.add(key)
+
+    def _drain() -> None:
+        try:
+            while True:
+                try:
+                    _, fn = _GUI_TASKS.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn()
+                except Exception:
+                    logger.debug("対話委譲の実行で例外を握りました")
+        finally:
+            try:
+                root.after(_GUI_POLL_MS, _drain)
+            except Exception:
+                with _GUI_POLL_LOCK:
+                    _GUI_POLL_STARTED.discard(key)
+                # 主循環が死んだ root の委譲は二度と走らない。溜めたままに
+                # せず捨てる（蘇った頃にゾンビの対話窓が出るのも防ぐ）。
+                _purge_gui_tasks(root)
+
+    try:
+        root.after(_GUI_POLL_MS, _drain)
+    except Exception:
+        with _GUI_POLL_LOCK:
+            _GUI_POLL_STARTED.discard(key)
+
+
+def _post_gui_task(root: Any, fn: Callable[[], None]) -> bool:
+    """GUI側で走らせる callable を積む。作業側から呼ぶ想定でTkを触らない。
+
+    満杯なら古い方を1件捨ててから入れる。書き手（ワーカー）を待たせない
+    ため put_nowait だけを使う。捨てた件数は数えておく。
+    """
+    global _GUI_DROPPED
+    try:
+        try:
+            _GUI_TASKS.put_nowait((root, fn))
+        except queue.Full:
+            try:
+                _GUI_TASKS.get_nowait()
+            except queue.Empty:
+                pass
+            with _GUI_DROPPED_LOCK:
+                _GUI_DROPPED += 1
+            _GUI_TASKS.put_nowait((root, fn))
+        return True
+    except Exception:
+        logger.debug("対話委譲を積めませんでした")
+        return False
+
+
+def _take_gui_dropped() -> int:
+    """前回の呼び出し以降に捨てた委譲の件数を返して 0 に戻す。"""
+    global _GUI_DROPPED
+    with _GUI_DROPPED_LOCK:
+        dropped, _GUI_DROPPED = _GUI_DROPPED, 0
+    return dropped
+
+
+def _purge_gui_tasks(root: Any) -> int:
+    """待ち行列から指定 root の委譲を取り除く。root=None なら全部捨てる。
+
+    主循環が死んだ root の build は二度と走らないため、溜まったままに
+    せず捨てる。戻り値は捨てた件数。
+    """
+    global _GUI_DROPPED
+    removed = 0
+    kept: list[tuple[Any, Callable[[], None]]] = []
+    try:
+        while True:
+            try:
+                item = _GUI_TASKS.get_nowait()
+            except queue.Empty:
+                break
+            if root is None or item[0] is root:
+                removed += 1
+            else:
+                kept.append(item)
+    except Exception:
+        logger.debug("対話委譲の掃除で例外を握りました")
+    for item in kept:
+        try:
+            # 取り出した分だけ空きがあるため詰まらないはず。念のため
+            # put_nowait で、入らなければ捨てて数える。
+            _GUI_TASKS.put_nowait(item)
+        except queue.Full:
+            with _GUI_DROPPED_LOCK:
+                _GUI_DROPPED += 1
+        except Exception:
+            logger.debug("対話委譲を戻せませんでした")
+    return removed
 
 
 class DialogMixin:
@@ -50,8 +174,13 @@ class DialogMixin:
 
     # 停止要求のあと、ダイアログが閉じ切るのを待つ上限(秒)。
     _DIALOGUE_CLOSE_WAIT = 1.0
-    # ダイアログが開かないまま待ち続けたときに警告を出す間隔(秒)。
+    # ダイアログが開かないままの上限(秒)。主循環が死ぬとafterが走らず
+    # 永久に置き去りになるため、有界でCancel扱いにして掃除する。
+    # 従来は警告を繰り返すだけで戻らず、停止も終了もできなかった。
+    # 通常の応答ある対話には影響しない（開けば即座に戻る）。
     _DIALOGUE_OPEN_TIMEOUT = 30.0
+    # 待ちを刻む幅(秒)。停止遅延を50ms→20ms相当へ近づける。
+    _DIALOGUE_WAIT_SLICE = 0.05
 
     def dialogue(
         self, title: str, message: int | str | list, need: type = list
@@ -70,8 +199,10 @@ class DialogMixin:
 
         tkinter はスレッドセーフではなく、GUI スレッド以外から widget を
         生成するとフリーズやクラッシュの原因になる。コマンドはワーカー
-        スレッドで動くので、生成そのものを after(0) でメインスレッドへ
-        渡し、こちらは Event で結果を待つ。
+        スレッドで動くので、生成そのものを行列へ積みGUI側のafter輪で
+        取り出して作る（LogPane/WakeSetup式）。作業側はTkを触らず積む
+        だけにし、こちらは Event で結果を待つ。root.afterを作業側から
+        呼ぶのは公式に非対応で、終了時に壊れる。
 
         待ちには _stop_event を併用する。ダイアログを開いたまま Stop を
         押したときに、コマンド側が永久に待ち続けないようにするため。
@@ -80,6 +211,7 @@ class DialogMixin:
         done = threading.Event()
         box: dict[str, Any] = {}
         holder: dict[str, Any] = {}
+        slice_s = float(getattr(self, "_DIALOGUE_WAIT_SLICE", 0.05))
 
         def build() -> None:
             # ここは GUI スレッド。widget の生成と mainloop 的な待ちは
@@ -108,32 +240,55 @@ class DialogMixin:
             if top is None:
                 return
             try:
-                if top.winfo_exists():
+                exists = bool(top.winfo_exists())
+            except Exception:
+                holder.pop("top", None)
+                return
+            try:
+                if exists:
                     top.destroy()
             except tk.TclError:
                 logger.debug("dialogue was already destroyed")
+            except Exception:
+                logger.debug("対話の破棄で例外を握りました")
+
+        def _request_close_and_wait() -> None:
+            """閉じ依頼をGUI側へ積み閉じ切るのを待つ。作業側はTkを触らない。"""
+            _post_gui_task(root, closeOnGui)
+            # GUI側の取り出し輪（120ms）が回れば閉じる。直接afterしない。
+            done.wait(self._DIALOGUE_CLOSE_WAIT)
 
         root = self._guiRoot()
+        # 停止済みなら作らず抜ける。作ってから止めるより早い。
+        try:
+            if self._stop_event.is_set():
+                self.checkIfAlive()
+        except Exception:
+            raise
         if root is None:
-            # GUI が無い（CUI 実行・テスト）ときは従来どおり直に作る
-            build()
+            # GUI が無い（CUI 実行・テスト）ときは別線で作り停止を見ながら待つ。
+            # 直に作ると様式の待ちで停止を見られず止まらなくなるため。
+            builder = threading.Thread(target=build, daemon=True)
+            builder.start()
         else:
-            # after() を呼ぶこと自体がワーカースレッドからの Tcl 呼び出しに
-            # なる。CPython + 標準の Tcl では受け付けられるが、非スレッド
-            # ビルドの Tcl や、GUI が既に破棄されている場合は例外になる。
-            # ここで落ちると done が永久にセットされず、コマンドが止まらない
-            # ばかりか Stop も効かなくなる。渡せなかったときは GUI を諦めて
-            # その場で作る（従来の CUI 経路と同じ）ほうが、まだ止められる。
+            # GUI側の取り出し輪が回っていなければここで回す（GUI側のみ安全）。
+            # 作業側からは積むだけでafterしない。
             try:
-                root.after(0, build)
-            except (RuntimeError, tk.TclError) as e:
-                logger.warning(f"GUI スレッドへ渡せませんでした: {e}")
-                root = None
-                build()
+                is_gui = threading.current_thread() is threading.main_thread()
+            except Exception:
+                is_gui = False
+            if is_gui:
+                try:
+                    _ensure_gui_poll(root)
+                except Exception:
+                    pass
+            # 作業側・GUI側とも積むだけ。取り出しはafter輪が行う。
+            # 輪が死んでいる（主循環死・窓破棄）場合は timeout 側で拾う。
+            _post_gui_task(root, build)
 
         waited = 0.0
-        while not done.wait(0.1):
-            waited += 0.1
+        while not done.wait(slice_s):
+            waited += slice_s
             if self._stop_event.is_set():
                 # 停止要求。以前はここで抜けるだけだったため、ダイアログが
                 # 画面に残ったままになっていた。_stop_event はワーカー側の
@@ -143,31 +298,49 @@ class DialogMixin:
                 # 残り、Window を閉じたあとで OK を押すと TclError になる。
                 logger.warning("Stop requested while a dialogue is open")
                 if root is not None:
-                    # destroy は GUI スレッドへ依頼する。破棄されると
+                    # destroy は行列へ積みGUI側で壊す。破棄されると
                     # wait_window が解け、build() が finally まで進んで
-                    # done がセットされる。渡せなければ自分で閉じる。
-                    # 停止の最中なので、ここで例外を上げても得が無い。
-                    try:
-                        root.after(0, closeOnGui)
-                        done.wait(self._DIALOGUE_CLOSE_WAIT)
-                    except (RuntimeError, tk.TclError) as e:
-                        logger.warning(f"ダイアログの後始末を渡せませんでした: {e}")
-                        closeOnGui()
+                    # done がセットされる。輪が死んでいれば timeout 側で拾う。
+                    _request_close_and_wait()
                 else:
-                    closeOnGui()
+                    try:
+                        closeOnGui()
+                    except Exception:
+                        pass
                 self.checkIfAlive()
                 # checkIfAlive は StopThread を送出するため通常ここへは
                 # 来ない。alive を落とさずに停止要求だけ来た場合の保険。
                 return [] if need is list else {}
-            if root is not None and waited >= self._DIALOGUE_OPEN_TIMEOUT:
-                # mainloop が回っていないと after(0, build) は実行されず、
-                # done が永久にセットされない。黙って待ち続けると停止も
-                # 終了もできなくなるので、気づけるよう定期的に知らせる。
+            if root is not None and waited >= float(self._DIALOGUE_OPEN_TIMEOUT):
+                # 主循環が死ぬと委譲が走らず永久に置き去りになる。従来は
+                # 警告を繰り返すだけで戻らず、停止も終了もできなかった。
+                # 有界でCancel扱いにして掃除する。通常の応答ある対話には
+                # 影響しない（開けば即座に戻る）。停止中なら止め側を優先する。
+                # この分岐だけが従来と見える挙動を変えるが、変える前は
+                # 無限に待つだけで使い物にならなかった経路に限る。
                 logger.warning(
-                    f"dialogue is not responding for {self._DIALOGUE_OPEN_TIMEOUT}s"
-                    f" (title={title})"
+                    f"dialogue timed out after {self._DIALOGUE_OPEN_TIMEOUT}s"
+                    f" (title={title}); treating as Cancel"
                 )
-                waited = 0.0
+                try:
+                    _request_close_and_wait()
+                except Exception:
+                    pass
+                # 主循環が死んでいるため build は二度と走らない。溜まった
+                # 委譲を捨て、蘇った頃のゾンビ対話も防ぐ。
+                _purge_gui_tasks(root)
+                holder.pop("top", None)
+                self.message_dialogue = None
+                # 掃除してCancelとして戻す。停止要求があれば止めを優先する。
+                # Cancel の形状は停止経路と同じ（need が list なら []、
+                # それ以外は {}）に揃える。経路で形が割れると、呼び出し側の
+                # 分岐（None / [] / {} の見分け）が崩れる。
+                try:
+                    if self._stop_event.is_set():
+                        self.checkIfAlive()
+                except Exception:
+                    raise
+                return [] if need is list else {}
 
         if "error" in box:
             raise RuntimeError(f"dialogue failed:\n{box['error']}")

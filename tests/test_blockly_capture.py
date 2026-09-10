@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -87,6 +88,77 @@ def test_save_failure_leaves_no_file(tmp_path: Path) -> None:
     assert res.status == "failed"
     target = Path(tmp_path) / "Template" / "blockly"
     assert not target.is_dir() or list(target.iterdir()) == []
+
+
+def test_get_frame_refreshes_after_clear_with_seq() -> None:
+    """clear() 直後の即時要求は古い PNG を返さない（seq を鍵に含める）。
+
+    時刻基準だけだと clear→put しても 200ms 以内は前世代の PNG が
+    当たる。frame_seq を出すカメラでは seq を鍵にし、新世代を符号化する。
+    """
+    red = np.zeros((10, 10, 3), dtype=np.uint8)
+    red[:] = (0, 0, 255)
+    blue = np.zeros((10, 10, 3), dtype=np.uint8)
+    blue[:] = (255, 0, 0)
+    state: dict[str, Any] = {"img": red, "seq": 0}
+
+    class SeqCam:
+        def readFrame(self, copy: bool = False) -> object:
+            return state["img"]
+
+        def frame_seq(self) -> int:
+            return state["seq"]
+
+    get = blockly_capture.build_get_frame(lambda: SeqCam())
+    p1 = get()
+    assert p1 is not None
+    # clear 相当：seq を進めて絵を差し替える（200ms 以内の即時再要求）。
+    state["seq"] += 1
+    state["img"] = blue
+    p2 = get()
+    assert p2 is not None
+    assert p2 != p1, "clear 後の即時要求が前世代の PNG を返しています"
+    arr = np.frombuffer(p2, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    assert img is not None
+    assert tuple(int(v) for v in img[0, 0]) == (255, 0, 0)
+
+
+def test_get_frame_seq_key_expiry_bounded(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """seq 鍵でも陳腐化は FRAME_CACHE_SEC に有界（期限切れは符号化し直す）。"""
+    import services.blockly_capture as bc
+
+    red = np.zeros((10, 10, 3), dtype=np.uint8)
+    red[:] = (0, 0, 255)
+    state: dict[str, Any] = {"img": red, "seq": 7}
+
+    class SeqCam:
+        def readFrame(self, copy: bool = False) -> object:
+            return state["img"]
+
+        def frame_seq(self) -> int:
+            return state["seq"]
+
+    encodes = {"n": 0}
+    orig_encode = cv2.imencode
+
+    def _count_encode(*a, **k):  # type: ignore[no-untyped-def]
+        encodes["n"] += 1
+        return orig_encode(*a, **k)
+
+    monkeypatch.setattr(cv2, "imencode", _count_encode)
+    now = {"t": 1000.0}
+    monkeypatch.setattr(bc.time, "monotonic", lambda: now["t"])
+    get = bc.build_get_frame(lambda: SeqCam())
+    assert get() is not None
+    assert encodes["n"] == 1
+    # 同じ seq の即時再要求は使い回す（符号化しない）。
+    assert get() is not None
+    assert encodes["n"] == 1
+    # 期限を過ぎたら同じ seq でも符号化し直す（有界）。
+    now["t"] += bc.FRAME_CACHE_SEC
+    assert get() is not None
+    assert encodes["n"] == 2
 
 
 def test_build_get_frame() -> None:

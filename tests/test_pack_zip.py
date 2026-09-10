@@ -100,8 +100,25 @@ def test_scan_entry_imports(tmp_path: Path) -> None:
     assert errors != []
     third = tmp_path / "third.py"
     third.write_text("import somelib_xyz\n", encoding="utf-8")
-    _, warnings = pack_zip.scan_entry_imports(third)
+    errors, warnings = pack_zip.scan_entry_imports(third)
+    assert errors == []
     assert warnings != []
+
+
+def test_scan_allows_command_audio_and_sounddevice(tmp_path: Path) -> None:
+    audio = tmp_path / "audio.py"
+    audio.write_text(
+        "from Commands.CommandAudio import AudioPythonCommand\n",
+        encoding="utf-8",
+    )
+    errors, warnings = pack_zip.scan_entry_imports(audio)
+    assert errors == []
+    assert warnings == []
+    snd = tmp_path / "snd.py"
+    snd.write_text("import sounddevice\n", encoding="utf-8")
+    errors, warnings = pack_zip.scan_entry_imports(snd)
+    assert errors == []
+    assert warnings == []
 
 
 def test_staged_with_hyphen_dir_fails(tmp_path: Path) -> None:

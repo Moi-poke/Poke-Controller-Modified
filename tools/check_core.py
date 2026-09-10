@@ -81,7 +81,6 @@ BANNED_UI = {
     "PokeConLogger",
     "Utility",
     "launcher",
-    "video_capture_wrapper",
     "DiscordNotify",
 }
 

@@ -289,6 +289,8 @@ class CaptureArea(tk.Canvas):
         # 画像認識の枠は1組だけ作って使い回す
         self._rect_created = False
         self._rect_after_id: str | None = None
+        # 直近に描いた世代。同じ seq の再変換・再貼付を省く。
+        self._last_frame_seq: int | None = None
 
         # 描画の作業バッファ（毎フレームの確保を避ける）
         self._allocBuffers()
@@ -357,7 +359,8 @@ class CaptureArea(tk.Canvas):
         try:
             showing = bool(self.is_show_var.get())
             if showing:
-                self._drawFrame(self.camera.readFrame())
+                frame, seq = self._readLatest()
+                self._drawFrame(frame, seq)
                 if self._stat_began_at is None:
                     self._stat_began_at = started
                 self._stat_shown += 1
@@ -404,16 +407,50 @@ class CaptureArea(tk.Canvas):
         self._resize_buf = np.empty((h, w, 3), np.uint8)
         self._rgb_buf = np.empty((h, w, 3), np.uint8)
 
-    def _drawFrame(self, frame: Any) -> None:
+    def _readLatest(self) -> tuple[Any, int | None]:
+        """最新フレームと世代番号を返す。seq 不明のカメラでは None。
+
+        描画 tick 用。seq が同じ間は _drawFrame が再変換を省く。
+        """
+        cam = self.camera
+        read_seq = getattr(cam, "readFrameWithSeq", None)
+        if callable(read_seq):
+            try:
+                frame, seq = read_seq()
+                return frame, int(seq)
+            except Exception:
+                pass
+        try:
+            frame = cam.readFrame()
+        except Exception:
+            return None, None
+        seq_getter = getattr(cam, "frame_seq", None)
+        if callable(seq_getter):
+            try:
+                return frame, int(seq_getter())
+            except Exception:
+                pass
+        return frame, None
+
+    def _drawFrame(self, frame: Any, seq: int | None = None) -> None:
         """BGR フレームを Canvas へ反映する。
 
         resize / cvtColor は dst を指定して確保済みバッファへ書く。
         毎フレーム新しい配列を作ると 640x360 で約1.4MB/フレーム
         （30fps なら 42MB/s）になり、GC が周期的に走ってカクつく。
         PhotoImage を1枚使い回している対策と理由は同じ。
+
+        同じ seq では再変換・再貼付を省く。5〜10fps の機器では描画
+        tick より frame が変わらないことが多く、無駄な convert が
+        数倍に膨らむ。clear() で seq が進むため旧絵を使い回さない。
         """
+        last_seq = getattr(self, "_last_frame_seq", None)
+        if seq is not None and seq == last_seq:
+            return
         if frame is None:
             self._showDisabled()
+            if seq is not None:
+                self._last_frame_seq = seq
             return
         self._convert(frame)
         # frombuffer は fromarray と違い配列を複製しない
@@ -423,6 +460,8 @@ class CaptureArea(tk.Canvas):
         if self.im is not self._photo:
             self.im = self._photo
             self.itemconfig(self.im_, image=self._photo)
+        if seq is not None:
+            self._last_frame_seq = seq
 
     def _convert(self, frame: Any) -> None:
         """BGR フレームを表示用 RGB バッファへ変換する（Tk を触らない）。

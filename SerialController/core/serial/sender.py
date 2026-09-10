@@ -2,10 +2,7 @@
 # -*- coding: utf-8 -*-
 # Sender.py - 姿勢（押下状態）を1つに持ち、Transport へ渡す層。
 # コメント方針: なぜこうするかの理由を書く。外部文書への参照は付けない。
-# 下記の互換 import は Sender からは使わないが、モジュール直下の名前が
-#   消えると外部コードの参照が壊れるため残す（未使用でよい）。
-import os  # noqa: F401
-import platform  # noqa: F401
+# 線の実体（serial/os/platform）は Transport が持つ。姿勢側では束ねない。
 import threading
 import time
 import traceback
@@ -13,8 +10,6 @@ from collections import deque
 from collections.abc import Callable
 from logging import DEBUG, NullHandler, getLogger
 from typing import Any
-
-import serial  # noqa: F401
 
 # 送信の下回り（線を開く・閉じる・1行書き出す）は Transport が持つ。
 #   Sender は「姿勢」と「入力ログ」を持ち、何で運ぶかは知らない。
@@ -128,6 +123,9 @@ class Sender:
         # 別のスレッドから来る（GUI / コマンド / キーボード）。RLock なのは
         # holdHat が applyHat を呼ぶなど、同じスレッドで錠を取り直すため。
         self._lock = threading.RLock()
+        # 通信方式の切替世代。二重切替の競合で古い方が新しい worker を
+        # 止めないよう、番号で見分ける（closeSerial と同じく錠の外で待つ）。
+        self._transport_gen = 0
         # Pico live-state 能力がある線だけ worker を立てる。
         if self._liveCapable():
             self.startLiveWorker()
@@ -204,35 +202,87 @@ class Sender:
         live worker を停止してから切り替え、新しい通信方式が live 対応で
         あれば 1 本だけ起動する。戻り値は入力ログを接続できたかどうかで
         あり、worker の停止に失敗した場合も False を返す。
+
+        錠は参照の差し替えだけに使う。worker の join（最大 1 秒）と
+        線の close を錠の中で待つと、その間すべての申告が詰まる。
+        closeSerial と同じく、止める・閉じるのは外で行い、世代番号で
+        二重切替の競合を見分ける。
         """
         with self._lock:
-            if not self.stopLiveWorker():
-                self._logger.error("PicoLiveWorker did not stop; transport unchanged")
-                return False
+            gen = int(getattr(self, "_transport_gen", 0)) + 1
+            self._transport_gen = gen
+            old = self.transport
+        # 止める相手はこの時点で残っている worker に限る。二重切替で勝者の
+        # 世代が起こした worker へ差し替わっていたら触らない（勝者に任せる）。
+        # 錠の下で同一性だけ見て、止める・閉じるのは外で行う。
+        self._ensureLiveState()
+        with self._live_lock:
+            mine = self._live_thread
+        # 錠の外で止める・閉じる（最大で 2 秒弱かかることがある）。
+        if not self._stopLiveWorkerIf(mine):
+            self._logger.error("PicoLiveWorker did not stop; transport unchanged")
+            with self._lock:
+                # 古い世代なら他の切替が進めているので黙って抜ける。
+                if gen != int(getattr(self, "_transport_gen", 0)):
+                    return False
+            return False
+        try:
             try:
-                self.transport.remove_listener(self.input_logger.feed)
-                self.transport.close()
+                old.remove_listener(self.input_logger.feed)
+            except Exception:
+                self._logger.debug("旧線の listener 解除に失敗", exc_info=True)
+            try:
+                old.close()
             except Exception:
                 self._logger.error(
                     f"Failed to close previous transport: {traceback.format_exc()}"
                 )
+        except Exception:
+            self._logger.error(
+                f"Failed to close previous transport: {traceback.format_exc()}"
+            )
+        with self._lock:
+            # 二重切替で先を越されていたら、新しい方は捨てて抜ける。
+            # 置き去りの worker を起こさない（漏れ防止）。
+            if gen != int(getattr(self, "_transport_gen", 0)):
+                return False
             self.transport = transport
             self.transport._logger = self._logger
             self.transport.set_hooks(self._onWriteBegin, self._onWriteEnd)
             self._input_log_linked = bool(
                 self.transport.add_listener(self.input_logger.feed)
             )
-            if not self._input_log_linked:
-                msg = (
-                    "入力ログは、この通信方式（"
-                    + str(getattr(self.transport, "name", "?"))
-                    + "）では出せません（送信行を作らないため）。"
-                )
-                print(msg)
-                self._logger.warning(msg)
-            if self._liveCapable():
-                self.startLiveWorker(self.transport)
-            return self._input_log_linked
+            linked = bool(self._input_log_linked)
+            need_live = self._liveCapable()
+        if not linked:
+            msg = (
+                "入力ログは、この通信方式（"
+                + str(getattr(transport, "name", "?"))
+                + "）では出せません（送信行を作らないため）。"
+            )
+            print(msg)
+            self._logger.warning(msg)
+        if need_live:
+            # 起こす前に世代を見る。既に先を越されていたら起こさない。
+            # 起こしてから止め直すと、その間に勝者が起こした worker と
+            # 取り違えて殺す余地が残る。
+            with self._lock:
+                lost_early = gen != int(getattr(self, "_transport_gen", 0))
+            # 起こすのは外で。錠の中で起こすと、worker が錠を待つ間に詰む。
+            started = None if lost_early else self._startLiveWorker(transport)
+            with self._lock:
+                # 起こしている間に先を越されていたら止め直す（漏れ防止）。
+                # 止めるのは自分が起こした worker が残っているときだけ。
+                # 勝者の worker へ差し替わっていたら触らない。
+                if gen != int(getattr(self, "_transport_gen", 0)):
+                    need_stop = True
+                else:
+                    need_stop = False
+            if need_stop:
+                if started is not None:
+                    self._stopLiveWorkerIf(started)
+                return False
+        return linked
 
     def getTransportName(self) -> str:
         """いま使っている運び方の名前（設定画面・検算用）。"""
@@ -288,10 +338,14 @@ class Sender:
           抜けていた。
         time_bef は従来どおり残す。外部が読んでいる可能性を否定
           できないため。
+        帳簿は Sender の錠の中で付ける。Transport の錠の外から呼ばれる
+        ため、入れ子で詰まることはない。
         """
-        self.time_bef = time.perf_counter()
-        if self._perf_recording:
-            self._perf_write_start = self.time_bef
+        _ = (row, show)
+        with self._lock:
+            self.time_bef = time.perf_counter()
+            if self._perf_recording:
+                self._perf_write_start = self.time_bef
 
     def _onWriteEnd(self, row: str, show: bool = True) -> None:
         """Transport が書き出した直後に呼ばれる。計測の終点。
@@ -299,10 +353,12 @@ class Sender:
         表示（show）と計測を分けている。計測は常に行い、
           print だけを show で制御する。従来 measure_perf=False の
           行は print もされなかったので、表示の挙動は変わらない。
+        帳簿は Sender の錠の中で付ける（_onWriteBegin と同じ理由）。
         """
-        self.time_aft = time.perf_counter()
-        if self._perf_recording:
-            self._recordPerf(row)
+        with self._lock:
+            self.time_aft = time.perf_counter()
+            if self._perf_recording:
+                self._recordPerf(row)
         # Show sending serial datas
         if show and self._should_show_serial():
             print(row)
@@ -525,11 +581,9 @@ class Sender:
         互換のために戻した名前であり、リポジトリ外の利用者コードが
           触っている可能性は否定できない。
           消す判断は、消してよい根拠が取れてからにする。
+        錠を通る send_row 経由で送る。_write 直呼びでは Transport の
+        錠を迂回し、聞き手の付け外しと競合するため。
         """
-        writer = getattr(self.transport, "_write", None)
-        if callable(writer):
-            writer(row, measure_perf=measure_perf)
-            return
         self.transport.send_row(row, measure_perf=measure_perf)
 
     def writeRow_wo_perf_counter(self, row: str, is_show: bool = False) -> None:
@@ -1645,11 +1699,15 @@ class Sender:
             self._endPreciseTimer()
 
     def _recordLiveOrder(self, snap: dict[str, Any]) -> None:
-        """revision が逆転していないかを数える。"""
+        """revision が逆転していないかを数える。
+
+        帳簿は _live_lock の中で付ける。worker と取得側で競合するため。
+        """
         rev = int(snap.get("revision", 0))
-        if rev < self._live_stats["last_revision"]:
-            self._live_stats["inversions"] += 1
-        self._live_stats["last_revision"] = rev
+        with self._live_lock:
+            if rev < self._live_stats["last_revision"]:
+                self._live_stats["inversions"] += 1
+            self._live_stats["last_revision"] = rev
 
     def _logLiveError(self) -> None:
         """送信の失敗を記録する。黙って捨てない。"""
@@ -1658,27 +1716,56 @@ class Sender:
             logger.error("live worker send failed:\n" + traceback.format_exc())
 
     def startLiveWorker(self, transport: Any = None) -> bool:
-        """workerを1本だけ起動し、現在姿勢を最初に送る。"""
+        """workerを1本だけ起動し、現在姿勢を最初に送る。
+
+        確認と起動を _live_lock の中で行う。二重起動で worker が
+        漏れると、古い方が止められず線が2本になる。
+        準備（mailbox への投入）は外で行う。錠の中で putLive すると
+        同じ錠を取り直して詰まる（Lock は再入不可）。
+        動いているときは帳簿に触らず False で抜ける。
+        """
+        return self._startLiveWorker(transport) is not None
+
+    def _startLiveWorker(self, transport: Any = None) -> threading.Thread | None:
+        """workerを1本だけ起動し、起こしたスレッドを返す。起こさなければ None。
+
+        startLiveWorker と仕組みは同じ。戻りだけが違う。二重切替の後始末が
+        「自分が起こした worker」を止め直すために、起こした相手を覚える。
+        """
         self._ensureLiveState()
-        if self._live_thread is not None and self._live_thread.is_alive():
-            return False
         if transport is None:
             transport = getattr(self, "transport", None)
         if transport is None:
-            return False
+            return None
+        with self._live_lock:
+            thread = self._live_thread
+            if thread is not None and thread.is_alive():
+                return None
         self._live_stop.clear()
         self._live_wake.clear()
-        self._live_last_snap = None
-        self._live_last_sent_at = None
-        self._live_last_shown_at = None
-        self._live_last_shown_snap = None
+        with self._live_lock:
+            self._live_last_snap = None
+            self._live_last_sent_at = None
+            self._live_last_shown_at = None
+            self._live_last_shown_snap = None
         self.putLive(self.snapshot())
-        thread = threading.Thread(
-            target=self._liveLoop, args=(transport,), name="PicoLiveWorker", daemon=True
-        )
-        self._live_thread = thread
-        thread.start()
-        return True
+        with self._live_lock:
+            thread = self._live_thread
+            if thread is not None and thread.is_alive():
+                return None
+            # 生成・登録・起動まで錠の中で行う。登録と起動の間に錠を離すと、
+            # 別の起動が「登録済みだが未起動（is_alive False）」を見て
+            # もう1本起こし、線が2本になる。start() は錠を取らないため、
+            # ここで起こしても詰まらない。
+            started = threading.Thread(
+                target=self._liveLoop,
+                args=(transport,),
+                name="PicoLiveWorker",
+                daemon=True,
+            )
+            self._live_thread = started
+            started.start()
+            return started
 
     def discardLive(self) -> bool:
         """mailbox の未送信の状態を破棄する。
@@ -1717,23 +1804,48 @@ class Sender:
 
         止め方の順序が大事: 先に停止印を立て、次に起こす。
           逆にすると、起こした直後に眠り直す窓ができる。
+        待ちのあいだは _live_lock を持たない。持ったまま join すると、
+        起動側が止まるまで待たされる。
         """
         self._ensureLiveState()
         self._live_stop.set()
         self._live_wake.set()
-        thread = self._live_thread
+        with self._live_lock:
+            thread = self._live_thread
         if thread is None:
             return True
         thread.join(timeout)
         alive = thread.is_alive()
         if not alive:
-            self._live_thread = None
+            with self._live_lock:
+                if self._live_thread is thread:
+                    self._live_thread = None
         return not alive
+
+    def _stopLiveWorkerIf(
+        self, thread: threading.Thread | None, timeout: float = 1.0
+    ) -> bool:
+        """指定の worker がまだ残っているときだけ止める。
+
+        setTransport の二重切替では、古い世代の後始末が共有の
+        stopLiveWorker() を呼ぶと、勝者の世代が起こしたばかりの worker
+        まで止めてしまう。_live_lock の下で _live_thread の同一性を見て、
+        指定と同一（または指定なし）のときだけ止める。差し替わっていたら
+        勝者に任せて触らず True で抜ける（勝者のものは殺さない）。
+        止める段は stopLiveWorker() に任せ、差し替え時の振る舞いを保つ。
+        """
+        self._ensureLiveState()
+        if thread is not None:
+            with self._live_lock:
+                if self._live_thread is not thread:
+                    return True
+        return self.stopLiveWorker(timeout)
 
     def isLiveWorkerRunning(self) -> bool:
         """ワーカーが動いているか（読むだけ）。"""
         self._ensureLiveState()
-        thread = self._live_thread
+        with self._live_lock:
+            thread = self._live_thread
         return thread is not None and thread.is_alive()
 
     def getLiveStats(self) -> dict[str, Any]:

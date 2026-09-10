@@ -240,6 +240,19 @@ class LogPanelMixin:
                 self._pump_gap_max_ms = gap_ms
         try:
             flush_began = time.perf_counter()
+            # 待機時高速路：全キュー空ならVar取得（Tcl往復）やyviewを省く。
+            # qsizeは目安であり、競合で残っていても次周期で拾うだけ（欠落なし）。
+            # 統計（_log_flush_ms/_pump_gap）は保ち、速くなった証跡にする。
+            if LogPane.queues_idle_hint():
+                flush_ms = (time.perf_counter() - flush_began) * 1000.0
+                prev = getattr(self, "_log_flush_ms", 0.0)
+                self._log_flush_ms = (
+                    flush_ms if prev <= 0.0 else prev * 0.9 + flush_ms * 0.1
+                )
+                if flush_ms > getattr(self, "_log_flush_max_ms", 0.0):
+                    self._log_flush_max_ms = flush_ms
+                self._log_video_stats()
+                return
             follow = self.log_autoscroll.get()
             LogPane.flushQueue(LogPane.text_queue, self.logArea, follow)
             LogPane.flushQueue(LogPane.sub_log_queue, self.subLogArea, follow)

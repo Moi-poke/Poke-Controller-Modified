@@ -5,6 +5,7 @@ legacy の同期送信は test_transport.py で見る。ここでは worker が
 基板なしで回せるよう、pyserial の代わりに書き溜めるだけの偽物を差す。
 """
 
+import threading
 import time
 
 from core import Sender, Transport
@@ -78,6 +79,42 @@ def test_snapshot_purity() -> None:
     sender, fake = make_live_sender()
     try:
         assert sender.verifySnapshotPurity() is True
+    finally:
+        sender.stopLiveWorker(1.0)
+    _ = fake
+
+
+def test_stale_generation_does_not_kill_winner_worker() -> None:
+    """負けた世代の後始末は勝者の worker を殺さない（同一性で見分ける）。
+
+    setTransport の二重切替では、古い世代の後始末が共有の
+    stopLiveWorker() を呼ぶと、勝者が起こしたばかりの worker まで
+    止めてしまう。止めるのは自分が起こしたスレッドが残っている
+    ときだけにし、差し替わっていたら勝者に任せて触らない。
+    """
+    sender, fake = make_live_sender()
+    try:
+        winner = sender._live_thread
+        assert winner is not None and winner.is_alive()
+        # 古い世代が掴んでいたスレッド（既に止まった旧 worker 相当）。
+        stale = threading.Thread(target=lambda: None, daemon=True)
+        assert sender._stopLiveWorkerIf(stale) is True
+        assert sender._live_thread is winner
+        assert winner.is_alive(), "勝者の worker が殺されています"
+    finally:
+        assert sender.stopLiveWorker(1.0) is True
+    _ = fake
+
+
+def test_stop_live_worker_if_stops_own_thread() -> None:
+    """自分が起こしたスレッドが残っていれば従来どおり止める。"""
+    sender, fake = make_live_sender()
+    try:
+        mine = sender._live_thread
+        assert mine is not None and mine.is_alive()
+        assert sender._stopLiveWorkerIf(mine) is True
+        assert not mine.is_alive()
+        assert sender._live_thread is None
     finally:
         sender.stopLiveWorker(1.0)
     _ = fake

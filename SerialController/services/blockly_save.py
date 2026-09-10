@@ -11,14 +11,55 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from core import blockly_validate
 from loguru import logger
 from services import blockly_templates
 
 PY_DIR_REL = "Commands/PythonCommands"
+
+#: stemごとの保存錠（save/delete対の直列化用）。二重クリック保存で
+#: `.py`と`.blockly.json`がちぐはぐ（torn）にならないよう、対の書換えは
+#: 同一stemの錠の下で行う。表自体は _locks_guard で守る。
+#: 値は [Lock, 参照数]。待ちも含め参照がある間は捨てない（別物錠の並走を防ぐ）。
+#: delete後は参照ゼロなら捨てて有界に保つ。満杯時も未使用の古い錠から片付ける。
+_save_locks: dict[str, list[Any]] = {}
+_locks_guard = threading.Lock()
+_MAX_SAVE_LOCKS = 512
+
+
+def _lock_for(stem: str) -> threading.Lock:
+    """stemの錠を返す（参照数を増やす）。表の操作は錠で守る。"""
+    with _locks_guard:
+        entry = _save_locks.get(stem)
+        if entry is not None:
+            entry[1] += 1
+            return entry[0]
+        if len(_save_locks) >= _MAX_SAVE_LOCKS:
+            for old, (old_lock, refs) in list(_save_locks.items()):
+                if refs == 0 and not old_lock.locked():
+                    del _save_locks[old]
+                    break
+        lock = threading.Lock()
+        _save_locks[stem] = [lock, 1]
+        return lock
+
+
+def _release_lock(stem: str, *, drop: bool = False) -> None:
+    """参照を1つ返す。drop時は誰も掴んでいなければ表から捨てる。"""
+    with _locks_guard:
+        entry = _save_locks.get(stem)
+        if entry is None:
+            return
+        entry[1] -= 1
+        if entry[1] < 0:
+            entry[1] = 0
+        if drop and entry[1] == 0:
+            _save_locks.pop(stem, None)
 
 
 @dataclass
@@ -78,21 +119,29 @@ def save_blockly(
     code = python_code if python_code.endswith("\n") else python_code + "\n"
     py_path = app / PurePosixPath(py_rel).as_posix()
     json_path = app / PurePosixPath(json_rel).as_posix()
+    # 同一stemの対書きは錠の下で直列化する（二重クリック保存のtorn防止）。
+    lock = _lock_for(stem)
     try:
-        _atomic_write(py_path, code)
-        try:
-            _atomic_write(json_path, workspace_json)
-        except OSError:
+        with lock:
             try:
-                py_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
-    except OSError as e:
-        logger.warning(f"Blockly保存に失敗: {e}")
-        return SaveResult(
-            status="failed", message=f"保存できません: {e}", errors=[str(e)]
-        )
+                _atomic_write(py_path, code)
+                try:
+                    _atomic_write(json_path, workspace_json)
+                except Exception:
+                    # json側の想定外の例外でも.pyだけ残さない。HTTP受け口は
+                    # 例外を握れず無応答になるため、ここで必ず結果に変える。
+                    try:
+                        py_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise
+            except Exception as e:
+                logger.warning(f"Blockly保存に失敗: {e}")
+                return SaveResult(
+                    status="failed", message=f"保存できません: {e}", errors=[str(e)]
+                )
+    finally:
+        _release_lock(stem, drop=False)
     warnings = blockly_templates.warn_template_refs(python_code)
     message = f"保存しました: {py_rel}"
     if warnings:
@@ -163,24 +212,33 @@ def delete_blockly(app_dir: str | Path, stem: str) -> DeleteResult:
         return DeleteResult(
             status="failed", message="削除できません:\n- " + "\n- ".join(errors)
         )
-    app = Path(app_dir)
-    rels = [
-        (PurePosixPath(PY_DIR_REL) / f"{stem}.py").as_posix(),
-        (PurePosixPath(PY_DIR_REL) / f"{stem}.blockly.json").as_posix(),
-    ]
-    removed: list[str] = []
-    for rel in rels:
-        path = app / PurePosixPath(rel).as_posix()
-        try:
-            if path.is_file():
-                path.unlink()
-                removed.append(rel)
-        except OSError as e:
-            logger.warning(f"Blockly削除に失敗: {e}")
-            return DeleteResult(status="failed", message=f"削除できません: {e}")
-    if not removed:
-        return DeleteResult(status="failed", message=f"消すものがありません: {stem}")
-    logger.info(f"Blockly削除: {stem}（{len(removed)}件）")
-    return DeleteResult(
-        status="deleted", message=f"削除しました: {stem}", removed=removed
-    )
+    # 保存と同じ錠で直列化する（保存と削除の競合で片方だけ残さない）。
+    lock = _lock_for(stem)
+    try:
+        with lock:
+            app = Path(app_dir)
+            rels = [
+                (PurePosixPath(PY_DIR_REL) / f"{stem}.py").as_posix(),
+                (PurePosixPath(PY_DIR_REL) / f"{stem}.blockly.json").as_posix(),
+            ]
+            removed: list[str] = []
+            for rel in rels:
+                path = app / PurePosixPath(rel).as_posix()
+                try:
+                    if path.is_file():
+                        path.unlink()
+                        removed.append(rel)
+                except OSError as e:
+                    logger.warning(f"Blockly削除に失敗: {e}")
+                    return DeleteResult(status="failed", message=f"削除できません: {e}")
+            if not removed:
+                return DeleteResult(
+                    status="failed", message=f"消すものがありません: {stem}"
+                )
+            logger.info(f"Blockly削除: {stem}（{len(removed)}件）")
+            return DeleteResult(
+                status="deleted", message=f"削除しました: {stem}", removed=removed
+            )
+    finally:
+        # 参照ゼロなら表から捨てて有界に保つ（待ち無しのときのみ安全）。
+        _release_lock(stem, drop=True)

@@ -430,7 +430,23 @@ class PokeKeycon:
             # Tab / Esc / Enter は画面操作に使うので割り当てさせない
             logger.debug(f"割り当てできないキーです: {text}")
             return
-        self.kc.after(0, lambda: self._assign(item, text))
+        try:
+            self.kc.after(0, lambda: self._assign_guarded(item, text))
+        except tk.TclError:
+            # 閉じかけの対話框へ積めないときは捨てる（GuiAssets._marshalと同方向）。
+            # pynputスレッドからTkを触ると落ちるため、ここで握る。
+            logger.debug("キー割当の反映を破棄しました（画面が閉じられています）")
+
+    def _assign_guarded(self, item: KeyItem, text: str) -> None:
+        """after(0)で遅延した割当を安全に反映する（GUIスレッド）。
+
+        予約後に画面が閉じられるとWidgetが無くなりTclErrorになる。
+        そのときは捨てる（枠表示と同様、無くても操作に影響しない）。
+        """
+        try:
+            self._assign(item, text)
+        except tk.TclError:
+            logger.debug("キー割当の反映を破棄しました（画面が閉じられています）")
 
     def _assign(self, item: KeyItem, text: str) -> None:
         """割り当てを反映する（GUI スレッドで実行される）。"""

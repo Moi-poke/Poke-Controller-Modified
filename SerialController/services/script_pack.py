@@ -24,6 +24,81 @@ from loguru import logger
 RECORD_DIRNAME = "InstalledPacks"
 BACKUP_DIRNAME = ".backup"
 
+#: 導入可否の基準にする自アプリの版（pyprojectの数値部に合わせる）。
+APP_VERSION = "4.0.0"
+
+
+def _parse_version(value: str) -> tuple[int, int, int] | None:
+    """`X.Y.Z` の先頭を数値3つで返す。読めなければ None。"""
+    text = value.strip().lstrip("vV")
+    head = text.split()[0] if text.split() else ""
+    head = head.split("-")[0].split("+")[0]
+    parts = head.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        nums = (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+    if any(n < 0 or n > 999 for n in nums):
+        return None
+    return nums
+
+
+def _is_app_compatible(min_app: str, app_version: str) -> bool:
+    """配布の要求版を今の版が満たすか。読めなければ通す（止めない）。"""
+    need = _parse_version(min_app)
+    have = _parse_version(app_version)
+    if need is None or have is None:
+        logger.warning(f"版を読めません（要求={min_app!r} 現在={app_version!r}）")
+        return True
+    return have >= need
+
+
+def _is_safe_rel(rel: str) -> bool:
+    """導入記録の相対として置けるか（絶対・`..`・`:`・空を断る）。"""
+    if not rel or not rel.strip():
+        return False
+    probe = rel.replace("\\", "/")
+    if probe.startswith("/") or PurePosixPath(probe).is_absolute():
+        return False
+    if len(probe) > 1 and probe[1] == ":":
+        return False
+    if ".." in PurePosixPath(probe).parts:
+        return False
+    if ":" in rel:
+        return False
+    return True
+
+
+def _confined_path(app: Path, rel: str) -> Path | None:
+    """app配下に収まる実パスを返す。外へ出るものは None。"""
+    if not _is_safe_rel(rel):
+        return None
+    try:
+        base = app.resolve()
+        target = (app / PurePosixPath(rel).as_posix()).resolve()
+        target.relative_to(base)
+    except (OSError, ValueError):
+        return None
+    return target
+
+
+def _atomic_copy(src: Path, dst: Path) -> None:
+    """一時ファイル経由で写す。書けたらのみ置き換える。"""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(dst.parent), prefix=".tmp_pack_")
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp_name)
+        os.replace(tmp_name, dst)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
 
 @dataclass
 class InstallResult:
@@ -112,7 +187,11 @@ def list_installed(app_dir: str | Path) -> list[InstalledRecord]:
 
 
 def install_zip(
-    app_dir: str | Path, zip_path: str | Path, *, allow_overwrite: bool = False
+    app_dir: str | Path,
+    zip_path: str | Path,
+    *,
+    allow_overwrite: bool = False,
+    app_version: str = APP_VERSION,
 ) -> InstallResult:
     """配布zipを導入する。上書きが必要なら confirm-overwrite で返す。"""
     app = Path(app_dir)
@@ -130,6 +209,15 @@ def install_zip(
                 message="配布物が不正です:\n- " + "\n- ".join(report.errors),
             )
         manifest = report.manifest
+        if not _is_app_compatible(manifest.minAppVersion, app_version):
+            return InstallResult(
+                status="failed",
+                manifest=manifest,
+                message=(
+                    f"この配布はアプリ版 {manifest.minAppVersion} 以上が必要です"
+                    f"（現在 {app_version}）。アプリを更新してください。"
+                ),
+            )
         old = read_record(app, manifest.name)
         if old is not None and not allow_overwrite:
             if old.version == manifest.version:
@@ -162,18 +250,54 @@ def install_zip(
         )
         backup_root = app / RECORD_DIRNAME / BACKUP_DIRNAME / f"{manifest.name}_{stamp}"
         backed = False
-        for rel in rels:
-            existed = app / PurePosixPath(rel).as_posix()
-            if existed.is_file():
-                target = backup_root / PurePosixPath(rel).as_posix()
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(existed, target)
-                backed = True
-        for rel in rels:
-            src = staged / PurePosixPath(rel).as_posix()
-            dst = app / PurePosixPath(rel).as_posix()
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+        backed_rels: set[str] = set()
+        try:
+            for rel in rels:
+                confined = _confined_path(app, rel)
+                if confined is None:
+                    logger.warning(f"不正な配置のため導入を止めます: {rel!r}")
+                    return InstallResult(
+                        status="failed", message=f"配布物が不正です: {rel!r}"
+                    )
+                existed = confined
+                if existed.is_file():
+                    target = backup_root / PurePosixPath(rel).as_posix()
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(existed, target)
+                    backed = True
+                    backed_rels.add(rel)
+        except OSError as e:
+            logger.warning(f"導入前の退避に失敗: {e}")
+            return InstallResult(status="failed", message=f"導入できません: {e}")
+        copied: list[str] = []
+        try:
+            for rel in rels:
+                dst_confined = _confined_path(app, rel)
+                if dst_confined is None:
+                    raise OSError(f"不正な配置です: {rel!r}")
+                src = staged / PurePosixPath(rel).as_posix()
+                _atomic_copy(src, dst_confined)
+                copied.append(rel)
+        except OSError as e:
+            for rel in copied:
+                try:
+                    backup_file = backup_root / PurePosixPath(rel).as_posix()
+                    dst = _confined_path(app, rel)
+                    if dst is None:
+                        continue
+                    if rel in backed_rels and backup_file.is_file():
+                        _atomic_copy(backup_file, dst)
+                    else:
+                        try:
+                            dst.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
+            logger.warning(f"導入に失敗し書き戻しました: {e}")
+            return InstallResult(
+                status="failed", message=f"導入に失敗しました（書き戻しました）: {e}"
+            )
         record = InstalledRecord(
             name=manifest.name,
             version=manifest.version,
@@ -216,17 +340,33 @@ def uninstall_package(app_dir: str | Path, name: str) -> UninstallResult:
         return UninstallResult(status="failed", message=f"導入記録がありません: {name}")
     removed: list[str] = []
     missing: list[str] = []
+    skipped: list[str] = []
     for rel in rec.files:
-        path = app / PurePosixPath(rel).as_posix()
+        path = _confined_path(app, rel)
+        if path is None:
+            logger.warning(f"不正な記録パスを無視します: {rel!r}")
+            skipped.append(rel)
+            continue
         if path.is_file():
             path.unlink()
             removed.append(rel)
         else:
             missing.append(rel)
-    roots = {app / "Commands" / "PythonCommands", app / "Template"}
+    try:
+        base = app.resolve()
+        roots = {
+            (app / "Commands" / "PythonCommands").resolve(),
+            (app / "Template").resolve(),
+        }
+    except OSError:
+        base = app
+        roots = {app / "Commands" / "PythonCommands", app / "Template"}
     for rel in rec.files:
-        folder = (app / PurePosixPath(rel).as_posix()).parent
-        while folder != app and folder not in roots and folder.is_dir():
+        confined = _confined_path(app, rel)
+        if confined is None:
+            continue
+        folder = confined.parent
+        while folder != base and folder not in roots and folder.is_dir():
             try:
                 next(folder.iterdir())
                 break
@@ -238,4 +378,6 @@ def uninstall_package(app_dir: str | Path, name: str) -> UninstallResult:
     message = f"削除しました: {name}（{len(removed)}件）"
     if missing:
         message += f"。見つからなかったもの: {', '.join(missing)}"
+    if skipped:
+        message += f"。無視したもの: {', '.join(skipped)}"
     return UninstallResult(status="removed", message=message, removed=removed)

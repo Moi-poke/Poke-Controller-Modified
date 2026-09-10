@@ -91,27 +91,48 @@ def decode_frame_png(png: bytes) -> np.ndarray:
     return img
 
 
-def decode_upload_image(b64: str) -> bytes:
-    """base64の画像送付をPNGバイト列に戻す。おかしければ ValueError。"""
+def _decode_upload_raw(b64: str) -> bytes:
+    """base64送付をバイト列に戻す。文言は従来どおり（HTTP応答をずらさない）。"""
     try:
         raw = base64.b64decode(b64, validate=True)
     except (binascii.Error, ValueError):
         raise ValueError("画像を読み込めませんでした（取り直してください）") from None
     if len(raw) > MAX_UPLOAD_BYTES:
         raise ValueError("画像が大きすぎます（10MBまで）")
+    return raw
+
+
+def decode_upload_image(b64: str) -> bytes:
+    """base64の画像送付をPNGバイト列に戻す。おかしければ ValueError。"""
+    raw = _decode_upload_raw(b64)
     decode_frame_png(raw)
     return raw
 
 
+def decode_upload_array(b64: str) -> np.ndarray:
+    """base64送付をBGR画像（ndarray）で返す。復号は1回だけ。
+
+    検証文言は decode_upload_image と同一にする。編集器の /match
+    （source=upload）はこちらを使い、match_template へ ndarray で
+    渡すことで二重の imdecode を避ける。
+    """
+    raw = _decode_upload_raw(b64)
+    return decode_frame_png(raw)
+
+
 def match_template(
     app_dir: str | Path,
-    frame_png: bytes,
+    frame_png: bytes | np.ndarray,
     template: str,
     threshold: object,
     use_gray: bool = True,
     crop: object = None,
 ) -> MatchResult:
-    """1枚の画像内でテンプレの最大一致度を求める。検証に落ちたらfailedで返す。"""
+    """1枚の画像内でテンプレの最大一致度を求める。検証に落ちたらfailedで返す。
+
+    frame_png はPNGバイト列か、復号済みのBGR画像（ndarray）のどちらも
+    受け付ける。ndarray のときは frame 側の imdecode を省く（二重復号の排除）。
+    """
     name = str(template).strip()
     reason = blockly_capture.validate_template_name(name)
     if reason is not None:
@@ -121,7 +142,13 @@ def match_template(
     except ValueError as e:
         return MatchResult(status="failed", message=f"照合できません: {e}")
     try:
-        src_img = decode_frame_png(frame_png)
+        if isinstance(frame_png, np.ndarray):
+            # 復号済みの受け口。空・次元不足は従来どおり読込失敗扱いにする。
+            if frame_png.size == 0 or frame_png.ndim < 2:
+                raise ValueError("画像を読み込めませんでした（取り直してください）")
+            src_img = frame_png
+        else:
+            src_img = decode_frame_png(frame_png)
     except ValueError as e:
         return MatchResult(status="failed", message=f"照合できません: {e}")
     height0, width0 = int(src_img.shape[0]), int(src_img.shape[1])
@@ -141,13 +168,22 @@ def match_template(
     try:
         src = cv2.cvtColor(src_img, cv2.COLOR_BGR2GRAY) if use_gray else src_img
         # 資源は APP_DIR 起点で読む（services では os.chdir しない）。
-        # 絶対化して渡すと `_imread_or_raise` はそのまま読む
-        # （TEMPLATE_PATH へは繋がない）。存在・破損の文言は実行時と同じ。
-        filespec = str(
-            Path(app_dir)
-            / "Template"
-            / PurePosixPath(name.replace("\\", "/")).as_posix()
-        )
+        # 編集器の `/template_image` と同じ閉じ込めにする。文字列検査だけでは
+        # 配下の外へのリンクを辿るため、実体化して配下かを確かめてから読む。
+        # upload側は `decode_upload_array` で1回だけ復号し、ndarrayで渡す。
+        # 文言は `_decode_upload_raw` に集約して従来どおりに保つ。
+        base = Path(app_dir) / "Template"
+        target = base / PurePosixPath(name.replace("\\", "/")).as_posix()
+        try:
+            resolved = target.resolve()
+            resolved.relative_to(base.resolve())
+        except (OSError, ValueError):
+            # 文字列の `..` だけでなく外へのリンクもここで断るため文言は一般化する。
+            return MatchResult(
+                status="failed",
+                message="照合できません: Template配下の外を指しています",
+            )
+        filespec = str(resolved)
         template_img = _imread_or_raise(filespec, flags)
         VisionMixin._checkTemplate(src, template_img, None)
     except (ValueError, FileNotFoundError, cv2.error) as e:

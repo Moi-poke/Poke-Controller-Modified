@@ -59,14 +59,20 @@ def to_internal(mono: np.ndarray, src_rate: int) -> np.ndarray:
     )
 
 
-def to_device(chunk44: np.ndarray, dst_rate: int, frames: int) -> np.ndarray:
-    """内部レート波形をデバイスレートへ直し、ちょうど frames 件にする。"""
-    up, down = _resample_factors(AUDIO_RATE, dst_rate)
+def to_device(
+    chunk_src: np.ndarray, dst_rate: int, frames: int, src_rate: int = AUDIO_RATE
+) -> np.ndarray:
+    """指定レート波形をデバイスレートへ直し、ちょうど frames 件にする。
+
+    既定の送り元は内部レート（後方互換）。管が原生域を持つ場合は
+    src_rate に入力自レートを渡し、原生→出力へ直接直す。
+    """
+    up, down = _resample_factors(src_rate, dst_rate)
     if up == down:
-        out = np.asarray(chunk44, dtype=np.float32).ravel()
+        out = np.asarray(chunk_src, dtype=np.float32).ravel()
     else:
         out = resample_poly(
-            np.asarray(chunk44, dtype=np.float64).ravel(), up, down
+            np.asarray(chunk_src, dtype=np.float64).ravel(), up, down
         ).astype(np.float32)
     if out.size > frames:
         return out[:frames]
@@ -96,10 +102,9 @@ def native_rate(sd: Any, want_input: bool, index: int | None) -> int:
 
 # モニターのジッタ吸収段数。入出力は別クロックで回るため、深さ1では
 # 位相ずれのたびに無音が入る（実測で出力の約50%が欠落）。12段で
-# 約280msの遅延と引き換えに欠落を吸収する。モニター用途の遅延として許容。
+# 約139ms（512×12/44100）の遅延と引き換えに欠落を吸収する。
+# 6段なら約70msだが余裕が半分になる。既定12のまま置く。
 JITTER_CHUNKS = 12
-# 出力コールバックの待ち上限（秒）。1チャンクの周期より短くする。
-MONITOR_GET_TIMEOUT = 0.02
 
 
 def _import_sounddevice() -> Any | None:
@@ -344,6 +349,7 @@ class AudioCapture:
         jitter_chunks: int = JITTER_CHUNKS,
     ) -> None:
         self._rate = int(rate)
+        self._ring_seconds = float(ring_seconds)
         capacity = max(AUDIO_CHUNK, int(self._rate * float(ring_seconds)))
         self._ring = np.zeros(capacity, dtype=np.float32)
         self._pos = 0
@@ -351,8 +357,12 @@ class AudioCapture:
         self._total = 0
         # 取り込み時刻の Tap（遅延実測用）。(コールバック時刻, 通算件数)。
         # 参照代入は不可分だが、total との組は Lock 内で読む。
+        # 通算は原生域で数え、内部域へは呼び側で換算する（壁時刻を保つ）。
         self._tap: deque[tuple[float, int]] = deque(maxlen=1024)
         self._lock = threading.Lock()
+        # 計数は実時間スレッドと表示の両方から触る。短い錠で守る。
+        # 参照差し替え自体は不可分だが、+= の取りこぼしを防ぐため錠を入れる。
+        self._stats_lock = threading.Lock()
         # _stream / _out_stream は別スレッドからの参照・差し替えが
         # 重なる（benign race）。参照代入は不可分で、古い参照を
         # 読んでも次回に直るだけのため Lock は入れない。特に
@@ -360,7 +370,8 @@ class AudioCapture:
         self._stream: Any = None
         self._input_name = ""
         # デバイス自レート（48kHz等）と内部レート（44.1k）の差は
-        # リサンプルで吸収する。検知・録音・pipe は内部レートで統一する。
+        # 呼び側で吸収する。環・管は原生域で持ち、検知・録音の窓は
+        # 内部レートへ直して渡す（検知の前提を崩さない）。
         self._in_rate = self._rate
         self._factory = input_factory
         self._factory_out = output_factory
@@ -378,11 +389,83 @@ class AudioCapture:
             "out_underflow": 0,
         }
 
+    def _prepare_ring(self, native_rate: int) -> None:
+        """新しい自レートに合わせて環を作り直す（旧機の残りは捨てる）。
+
+        開始前に呼ぶ（実時間コールバックと競合させない）。管の古い
+        溜まりも捨てる。計数は通算の診断のため残す。
+        """
+        rate = max(1, int(native_rate))
+        capacity = max(AUDIO_CHUNK, int(rate * self._ring_seconds))
+        with self._lock:
+            if capacity != self._ring.size:
+                self._ring = np.zeros(capacity, dtype=np.float32)
+            else:
+                self._ring[:] = 0.0
+            self._pos = 0
+            self._filled = 0
+            self._total = 0
+            self._tap.clear()
+        self._drain_pipe()
+
+    def _drain_pipe(self) -> None:
+        """管の古い溜まりを捨てる（開始前の準備、実時間外で呼ぶ）。"""
+        try:
+            while True:
+                self._pipe.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _snapshot_native(self, count: int) -> np.ndarray | None:
+        """直近 count 件（原生域）の複製。無ければ None。錠内は複写だけ。"""
+        if count <= 0:
+            return None
+        with self._lock:
+            if self._filled == 0 or self._stream is None:
+                return None
+            want = min(int(count), self._filled)
+            end = self._pos
+            start = (end - want) % self._ring.size
+            if (start < end) or (self._filled < self._ring.size and start == 0):
+                single = self._ring[end - want : end].copy()
+                first = None
+                second = None
+            else:
+                first = self._ring[start:].copy()
+                second = (
+                    self._ring[:end].copy()
+                    if end > 0
+                    else np.zeros(0, dtype=np.float32)
+                )
+                single = None
+        if single is not None:
+            return single
+        assert first is not None and second is not None
+        return first if second.size == 0 else np.concatenate((first, second))
+
+    def _prefill_pipe(self, chunks: int) -> None:
+        """有効化直後の無音緩和に直近を少量だけ前置する。無ければ何もしない。"""
+        try:
+            count = max(1, int(chunks)) * int(AUDIO_CHUNK)
+        except (TypeError, ValueError):
+            return
+        native = self._snapshot_native(count)
+        if native is None or native.size == 0:
+            return
+        for pos in range(0, native.size, AUDIO_CHUNK):
+            piece = np.asarray(native[pos : pos + AUDIO_CHUNK], dtype=np.float32)
+            if piece.size == 0:
+                break
+            try:
+                self._pipe.put_nowait(piece)
+            except queue.Full:
+                break
+
     def openInput(self, device: str | int | None) -> bool:
         """入力を開く。既に開いていれば閉じてから開き直す。成否を返す。
 
-        デバイス自レートで開き、内部レートへ直して扱う。48kHz専用機も
-        開けるようになる（検知の前提レートは変えない）。
+        デバイス自レートで開き、窓は呼び側で内部レートへ直す。
+        48kHz専用機も開ける（検知の前提レートは変えない）。
         """
         self.close()
         # factory 注入時（テスト）は実バックエンドの有無を問わない。
@@ -402,6 +485,8 @@ class AudioCapture:
             rate = native_rate(sd, True, resolved)
         elif self._factory is None and resolved is None and sd is not None:
             rate = native_rate(sd, True, None)
+        # 新しい自レートに合わせて環を作り直す（開始前に済ませる）
+        self._prepare_ring(rate)
         try:
             if self._factory is not None:
                 stream = self._factory(
@@ -436,42 +521,49 @@ class AudioCapture:
         return True
 
     def _on_input(self, indata: Any, frames: int, _time: Any, status: Any) -> None:
-        """PortAudioスレッドから呼ばれる。重い処理は置かない。"""
+        """PortAudioスレッドから呼ばれる。重い処理は置かない。
+
+        実時間スレッドでは環への複写と管への受け渡しだけ行う。
+        変換（原生→内部）・記録・結合は呼び側で行う。
+        監視OFFでは管へ送らず、幻の欠落を数えない。
+        有効化直後は前置が空のため短い無音が出る（古い溜まりより正しい）。
+        """
         if status and getattr(status, "input_overflow", False):
-            self._mon_stats["in_overflow"] += 1
-        elif status:
-            logger.debug(f"音声入力の状態: {status}")
+            with self._stats_lock:
+                self._mon_stats["in_overflow"] += 1
+        # overflow以外の状態は記録しない（実時間スレッドを待たせない）
         mono = np.asarray(indata, dtype=np.float32).ravel()
         if mono.size == 0:
             return
-        # 自レートと内部レートが違えば直してから格納する。
-        # ring・pipe は内部レートで統一し、検知側の前提を崩さない。
-        frame = to_internal(mono, self._in_rate)
+        # 借用領域のため1回だけ複製する（環は複写、管は同じ物を渡す）
+        buf = mono.copy()
         with self._lock:
-            end = self._pos + frame.size
+            end = self._pos + buf.size
             if end <= self._ring.size:
-                self._ring[self._pos : end] = frame
+                self._ring[self._pos : end] = buf
             else:
                 first = self._ring.size - self._pos
-                self._ring[self._pos :] = frame[:first]
-                self._ring[: end - self._ring.size] = frame[first:]
+                self._ring[self._pos :] = buf[:first]
+                self._ring[: end - self._ring.size] = buf[first:]
             self._pos = end % self._ring.size
-            self._filled = min(self._filled + frame.size, self._ring.size)
-            self._total += frame.size
+            self._filled = min(self._filled + buf.size, self._ring.size)
+            self._total += buf.size
             self._tap.append((time.perf_counter(), self._total))
-        # モニターへの受け渡しは常時行う。ONの瞬間に溜まっている分から
-        # 鳴り始められる（深さぶんの遅延）。溢れたら古い方を捨てる。
+        # 監視が有効な間だけ送る。溢れたら古い方を捨てる。
         # put_nowait / get_nowait のみで、コールバック内で待たない。
+        if self._out_stream is None:
+            return
         try:
-            self._pipe.put_nowait(frame.copy())
+            self._pipe.put_nowait(buf)
         except queue.Full:
-            self._mon_stats["drops"] += 1
+            with self._stats_lock:
+                self._mon_stats["drops"] += 1
             try:
                 self._pipe.get_nowait()
             except queue.Empty:
                 pass
             try:
-                self._pipe.put_nowait(frame.copy())
+                self._pipe.put_nowait(buf)
             except queue.Full:
                 pass
 
@@ -496,21 +588,48 @@ class AudioCapture:
             logger.warning(f"音声入力の解放で例外: {e}")
 
     def readWindow(self, seconds: float) -> np.ndarray | None:
-        """直近 seconds 秒の複製を返す。未取得・未openは None。"""
-        want = int(self._rate * float(seconds))
-        if want <= 0 or self._stream is None:
+        """直近 seconds 秒の複製を返す。未取得・未openは None。
+
+        原生域で切り出し、内部レートへは錠の外で直す（実時間側を待たせない）。
+        結合も錠の外で行い、錠内は2断片の複写だけにする。
+        """
+        want_internal = int(self._rate * float(seconds))
+        if want_internal <= 0 or self._stream is None:
             return None
         with self._lock:
             if self._filled == 0:
                 return None
-            want = min(want, self._filled)
+            in_rate = int(self._in_rate)
+            want_native = min(int(in_rate * float(seconds)), self._filled)
+            if want_native <= 0:
+                return None
             end = self._pos
-            start = (end - want) % self._ring.size
+            start = (end - want_native) % self._ring.size
             if (start < end) or (self._filled < self._ring.size and start == 0):
-                out = self._ring[end - want : end].copy()
+                single = self._ring[end - want_native : end].copy()
+                first = None
+                second = None
             else:
-                out = np.concatenate((self._ring[start:], self._ring[:end])).copy()
-        return out[-want:] if out.size > want else out
+                first = self._ring[start:].copy()
+                second = (
+                    self._ring[:end].copy()
+                    if end > 0
+                    else np.zeros(0, dtype=np.float32)
+                )
+                single = None
+        if single is not None:
+            native = single
+        else:
+            assert first is not None and second is not None
+            native = first if second.size == 0 else np.concatenate((first, second))
+        if in_rate == self._rate:
+            out = native
+        else:
+            # 消費者側で重い変換を行う（実時間スレッドではしない）
+            out = to_internal(native, in_rate)
+            if out.size > want_internal:
+                out = out[-want_internal:]
+        return out[-want_internal:] if out.size > want_internal else out
 
     def input_latency(self) -> float:
         """入力遅延の秒数。取れなければ 0。"""
@@ -528,15 +647,25 @@ class AudioCapture:
         """(窓の複製, 通算件数, Tap複製, 入力遅延, 内部レート)。
 
         遅延実測が収録サンプルへ時刻を付けるための口。取れなければ None。
+        通算・Tapは内部域へ換算して返す（窓と整合させ、壁時刻を保つ）。
         """
         window = self.readWindow(seconds)
         if window is None:
             return None
         with self._lock:
-            total = self._total
-            tap = list(self._tap)
-        if not tap:
+            total_native = int(self._total)
+            tap_native = list(self._tap)
+            in_rate_native = int(self._in_rate)
+        if not tap_native:
             return None
+        if in_rate_native == self._rate:
+            total = total_native
+            tap = tap_native
+        else:
+            # 原生→内部へ比例で直す（時刻換算が保たれる）
+            ratio = float(self._rate) / float(max(1, in_rate_native))
+            total = int(round(total_native * ratio))
+            tap = [(t, int(round(tot * ratio))) for t, tot in tap_native]
         return (window, total, tap, self.input_latency(), self._rate)
 
     def _level(self) -> np.ndarray | None:
@@ -578,7 +707,11 @@ class AudioCapture:
         return self._out_stream is not None
 
     def setMonitorEnabled(self, on: bool, device: str | int | None = None) -> bool:
-        """モニター再生のON/OFF。ON時は出力ストリームを開く。成否を返す。"""
+        """モニター再生のON/OFF。ON時は出力ストリームを開く。成否を返す。
+
+        有効化直後は前置が空のため短い無音が出る（古い溜まりより正しい）。
+        送りの残り・割合は開始前に整え、開始後の差し替え競合を避ける。
+        """
         if not on:
             self._stop_output()
             return True
@@ -602,6 +735,15 @@ class AudioCapture:
             rate = native_rate(sd, False, resolved)
         elif self._factory_out is None and resolved is None and sd is not None:
             rate = native_rate(sd, False, None)
+        # 開始前に整える（実時間スレッドが走る前に済ませる）
+        self._drain_pipe()
+        self._out_rate = int(rate)
+        self._out_carry = np.zeros(0, dtype=np.float32)
+        # 直近を少量だけ前置する（無ければ無音で始める）
+        try:
+            self._prefill_pipe(2)
+        except Exception as e:
+            logger.debug(f"前置に失敗しました: {e}")
         try:
             if self._factory_out is not None:
                 out = self._factory_out(
@@ -623,13 +765,24 @@ class AudioCapture:
                     latency=AUDIO_LATENCY,
                     callback=self._on_output,
                 )
-            out.start()
+            # 入力側の受け渡しが溜め始めるよう、先に立ててから開始する
+            self._out_stream = out
+            try:
+                out.start()
+            except Exception:
+                self._out_stream = None
+                try:
+                    out.stop()
+                except Exception:
+                    pass
+                try:
+                    out.close()
+                except Exception:
+                    pass
+                raise
         except Exception as e:
             logger.error(f"モニター出力を開けません: {e}")
             return False
-        self._out_stream = out
-        self._out_rate = int(rate)
-        self._out_carry = np.zeros(0, dtype=np.float32)
         if rate != self._rate:
             logger.info(
                 f"モニター出力は {rate}Hz で開き、内部は {self._rate}Hz で扱います"
@@ -650,35 +803,42 @@ class AudioCapture:
             logger.warning(f"モニター出力の解放で例外: {e}")
 
     def getMonitorStats(self) -> dict[str, int]:
-        """モニターの欠落計数の複製（診断用）。"""
-        return dict(self._mon_stats)
+        """モニターの欠落計数の複製（診断用）。錠で snapshot する。"""
+        with self._stats_lock:
+            return dict(self._mon_stats)
 
     def _on_output(self, outdata: Any, frames: int, _time: Any, status: Any) -> None:
-        """出力コールバック。pipe から順に書く。尽きたら短く待って無音。
+        """出力コールバック。pipe から順に書く。尽きたら無音（待たない）。
 
-        pipe は内部レート（44.1k）の塊、frames は自レートの件数。
-        持ち越し（carry）と合わせて必要ぶん集め、自レートへ直して書く。
+        pipe・carry は入力自レート域、frames は出力自レート件数。
+        持ち越しと合わせて必要ぶん集め、自レートへ直接直して書く。
+        実時間スレッドでは待たない（get_nowait のみ）。
         """
         if status and getattr(status, "output_underflow", False):
-            self._mon_stats["out_underflow"] += 1
-        # 自レート frames 件を作るのに要る内部レートの件数（+余裕1）。
-        need = int(frames * self._rate / max(1, self._out_rate)) + 1
+            with self._stats_lock:
+                self._mon_stats["out_underflow"] += 1
+        # 割合の参照は開始前に整えてある（benign race。古くても次回に直る）。
+        in_rate = int(self._in_rate)
+        out_rate = int(self._out_rate)
+        # 自レート frames 件を作るのに要る入力自レート件数（+余裕1）。
+        need = int(frames * in_rate / max(1, out_rate)) + 1
         pieces = [self._out_carry]
         self._out_carry = np.zeros(0, dtype=np.float32)
-        have = pieces[0].size
+        have = int(pieces[0].size)
         try:
-            pieces.append(self._pipe.get(timeout=MONITOR_GET_TIMEOUT))
-            have += pieces[-1].size
+            pieces.append(self._pipe.get_nowait())
+            have += int(pieces[-1].size)
         except queue.Empty:
             pass
         while have < need:
             try:
                 pieces.append(self._pipe.get_nowait())
-                have += pieces[-1].size
+                have += int(pieces[-1].size)
             except queue.Empty:
                 break
         if have < need:
-            self._mon_stats["silence"] += 1
+            with self._stats_lock:
+                self._mon_stats["silence"] += 1
         window = (
             np.concatenate(pieces)
             if len(pieces) > 1
@@ -689,7 +849,7 @@ class AudioCapture:
             padded[: window.size] = window
             window = padded
         self._out_carry = np.asarray(window[need:], dtype=np.float32).copy()
-        native = to_device(window[:need], self._out_rate, frames)
+        native = to_device(window[:need], out_rate, int(frames), in_rate)
         shaped = np.tile(native.reshape(-1, 1), (1, AUDIO_CHANNELS))
         buf = np.asarray(outdata)
         buf[:] = apply_volume(shaped, self._monitor_volume)

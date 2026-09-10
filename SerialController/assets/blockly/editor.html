@@ -212,7 +212,6 @@ html, body { height: 100%; margin: 0; }
     }
     target.setFieldValue(name, 'TEMPLATE');
     setStatus('反映しました: ' + name, false);
-    setStatus('反映しました: ' + name, false);
   });
   document.getElementById('save').addEventListener('click', function () {
     if (!pythonGenerator) {
@@ -502,8 +501,15 @@ html, body { height: 100%; margin: 0; }
     document.getElementById('capry').max = img.naturalHeight;
     document.getElementById('caprh').max = img.naturalHeight;
   }
+  function capClearUpload() {
+    capUploadDataUrl = null;
+    document.getElementById('capuploadname').textContent = '';
+    var up = document.getElementById('capupload');
+    if (up) { up.value = ''; }
+  }
   function capModalOpen() {
     capHiDim([]);
+    capClearUpload();
     capModalRect = capRect01
       ? { x: capRect01.x, y: capRect01.y, width: capRect01.width, height: capRect01.height }
       : null;
@@ -518,6 +524,7 @@ html, body { height: 100%; margin: 0; }
   }
   function capModalClose() {
     capHiDim([]);
+    capClearUpload();
     capMatchSeq++;
     if (capMatchTimer) { clearTimeout(capMatchTimer); capMatchTimer = null; }
     document.getElementById('capmodal').style.display = 'none';
@@ -604,6 +611,7 @@ html, body { height: 100%; margin: 0; }
     }
     capBlockMode = target.id;
     capHiDim([]);
+    capClearUpload();
     capModalRect = null;
     document.getElementById('capblockrow').style.display = 'flex';
     document.getElementById('capok').style.display = 'none';

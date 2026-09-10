@@ -17,7 +17,15 @@
   }
 
   function pyStr(s) {
-    return '"' + String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    return (
+      '"' +
+      String(s)
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n") +
+      '"'
+    );
   }
 
   Blockly.defineBlocksWithJsonArray([

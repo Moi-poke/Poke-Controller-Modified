@@ -128,7 +128,8 @@ def sanitize_profile(name: Any) -> str:
     別名だと判断して読み込めなくなる。可能なら本体の実装を借りる。
     """
     try:
-        sys.path.insert(0, APP_DIR)
+        if APP_DIR not in sys.path:
+            sys.path.insert(0, APP_DIR)
         from Settings import GuiSettings
 
         return GuiSettings.sanitize_profile(name)
@@ -204,8 +205,16 @@ def running_pid(profile: str) -> int:
 
 def write_lock(profile: str, pid: int) -> None:
     try:
-        with open(lock_path(profile), "w", encoding="utf-8") as file:
-            json.dump({"pid": pid, "started": time.time()}, file)
+        payload = json.dumps({"pid": pid, "started": time.time()})
+        target = lock_path(profile)
+        folder = os.path.dirname(target) or "."
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".pokecon_lock_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                file.write(payload)
+            os.replace(tmp, target)
+        except OSError:
+            _remove_quietly(tmp)
     except OSError:
         pass  # 目印が書けなくても起動自体は妨げない
 
@@ -259,6 +268,22 @@ def _drop_own_lock(profile: str, pid: int) -> None:
 def _remove_quietly(path: str) -> None:
     try:
         os.remove(path)
+    except OSError:
+        pass
+
+
+def _restore_lock_bytes(profile: str, raw: bytes) -> None:
+    """奪う前の目印へ戻す。書けなくても起動処理は妨げない。"""
+    try:
+        target = lock_path(profile)
+        folder = os.path.dirname(target) or "."
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".pokecon_lock_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as file:
+                file.write(raw)
+            os.replace(tmp, target)
+        except OSError:
+            _remove_quietly(tmp)
     except OSError:
         pass
 
@@ -331,7 +356,7 @@ def _save_boot_log(profile: str, output: str, returncode: int) -> str:
         return ""  # 保存できなくても起動処理は続ける
 
 
-def launch(profile: str) -> int:
+def launch(profile: str, force: bool = False) -> int:
     """Window.py を別プロセスで起動し、その PID を返す。
 
     起動直後だけ見張り、すぐ落ちたらその出力を LaunchError にして返す。
@@ -339,6 +364,7 @@ def launch(profile: str) -> int:
     import 失敗などで即死すると「何も起きない」ように見えてしまう。
     出力を一時ファイルへ逃がしておくと、その内容を原因として示せる。
     起動に成功したぶんのログは GUI のログ欄へ出るので捨ててよい。
+    forceが真のときは既存の目印を奪って起動する（CLIが警告済み）。
     """
     if not os.path.isfile(WINDOW_SCRIPT):
         raise LaunchError(f"Window.py が見つかりません: {WINDOW_SCRIPT}")
@@ -346,8 +372,23 @@ def launch(profile: str) -> int:
     # 先に目印を確保する。同時起動では先勝ちし、負けた側はここで止まる。
     # 目印の中身は親の PID で仮置きし、子の PID が分かったら書き換える。
     mine = os.getpid()
-    if not claim_lock(profile, mine):
+    prior_raw: bytes | None = None
+    if force:
+        try:
+            with open(lock_path(profile), "rb") as file:
+                prior_raw = file.read()
+        except OSError:
+            prior_raw = None
+        write_lock(profile, mine)
+    elif not claim_lock(profile, mine):
         raise LaunchError(f"既に起動しています: {profile or '(既定)'}")
+
+    def _cleanup_after_steal() -> None:
+        """奪った後の失敗時に被害者の目印へ戻す（無ければ自分の分だけ消す）。"""
+        if force and prior_raw is not None:
+            _restore_lock_bytes(profile, prior_raw)
+        else:
+            _drop_own_lock(profile, mine)
 
     command = [python_executable(), WINDOW_SCRIPT]
     if profile:
@@ -378,7 +419,7 @@ def launch(profile: str) -> int:
         process = subprocess.Popen(command, **kwargs)
     except OSError as error:
         _close_and_remove(log_file)
-        _drop_own_lock(profile, mine)
+        _cleanup_after_steal()
         raise LaunchError(f"起動できませんでした: {error}") from error
 
     # 生きているか少しだけ見張る。ここを過ぎれば GUI が出ているとみなす
@@ -399,7 +440,7 @@ def launch(profile: str) -> int:
     log_file.seek(0)
     output = log_file.read().strip()
     log_file.close()
-    _drop_own_lock(profile, mine)
+    _cleanup_after_steal()
 
     # 失敗したログは消さずに残す。ダイアログは末尾数行しか出せないため、
     # 全文を見たいときに参照できる場所が要る。一時フォルダは分かりにくい
@@ -714,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"起動します: {profile or '既定'}")
         try:
-            launch(profile)
+            launch(profile, force=args.force)
         except LaunchError as error:
             print(f"起動に失敗しました:\n{error}", file=sys.stderr)
             return 1

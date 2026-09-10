@@ -29,8 +29,12 @@ core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の imp
 `Window.py` 直起動（`launcher.py` が使う従来経路）の2口で、どちらも
 `Window.main()` へ集まる。利用者スクリプトの公開面（`Commands.Keys` /
 `Commands.PythonCommandBase` / `Commands.McuCommandBase` /
-`Commands.WakeLink` / `Commands.CommandAudio`）と `settings*.ini` の
-書式は凍結。書式知識の実体は `config.py`（Tk なし）にあり、
+`Commands.WakeLink` / `Commands.CommandVision` /
+`Commands.CommandAudio`）と `settings*.ini` の
+書式は凍結。公開面の正本は `core/user_api_allowlist.py`。深刻度は表面で
+違い、検査（`tools/check_user_api.py`）は違反、保存時
+（`core/blockly_validate.py`）は異常、配布時（`core/pack_zip.py`）は
+未知を注意に留める（意図的な使い分け）。書式知識の実体は `config.py`（Tk なし）にあり、
 `Settings.GuiSettings` は Tk との鏡と入出力の手順だけを持つ。
 
 GUI 層（`Window.py`・`GuiAssets.py`・`Settings.py` ほか）は `core/` の利用者。
