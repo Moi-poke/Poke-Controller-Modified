@@ -8,3 +8,4 @@ from core.CommandAudio import (
     TEMPLATE_AUDIO_PATH as TEMPLATE_AUDIO_PATH,
     AudioMixin as AudioMixin,
 )
+from core.audio_dsp import band_power as band_power, is_tone as is_tone
