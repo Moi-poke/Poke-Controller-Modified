@@ -20,6 +20,7 @@ from core.AudioCapture import (
     display_entries,
     display_for,
     format_display,
+    guess_capture_input,
     probe_details,
 )
 from loguru import logger
@@ -34,8 +35,6 @@ class AudioService:
         # 試し開きの結果（(番号, 名前, 推定ms)）。裏スレッドが埋める。
         # 空の間は display_* が速い列挙（推定なし）で代用する。
         self._probe_cache: dict[bool, list[tuple[int, str, float]]] = {}
-        # 押下→検知の実測（入力番号 -> 中央値ms）。計測のたびに上書きする。
-        self.measured_in: dict[int, float] = {}
 
     # -- 選択 -----------------------------------------------------------
 
@@ -122,37 +121,14 @@ class AudioService:
                 best = str(index)
         return best
 
-    def record_input_measurement(self, in_spec: str, median_ms: float) -> None:
-        """押下→検知の実測を覚える。最速入力の選択に使う。"""
-        index = self._spec_index(True, in_spec)
-        if index is not None and median_ms >= 0:
-            self.measured_in[index] = float(median_ms)
-
-    def fastest_input(self) -> str:
-        """最も速い入力の番号（文字列）。実測優先、なければ推定。"""
-        cached = self._probe_cache.get(True, [])
-        best = ""
-        best_score = float("inf")
-        for index, _name, est in cached:
-            score = self.measured_in.get(index, est if est >= 0 else float("inf"))
-            if score < best_score:
-                best_score = score
-                best = str(index)
-        return best
-
-    def _spec_index(self, want_input: bool, spec: str) -> int | None:
-        """設定値を番号へ直す。分からなければ None。"""
-        from core.AudioCapture import parse_display
-
-        text = str(spec or "").strip()
-        if not text:
-            return None
-        if text.isdigit():
-            return int(text)
-        for index, name, _est in self._probe_cache.get(want_input, []):
-            if text == name or text == f"{index}: {name}":
-                return index
-        return parse_display(text)
+    def auto_input(self, camera_name: str) -> str:
+        """取込口の番号（文字列）。ゲーム音はキャプチャボードからしか
+        取れないため、カメラ名から推定する。分からなければ空（既定）。"""
+        try:
+            found = guess_capture_input(camera_name, device_entries(True))
+        except Exception:
+            return ""
+        return "" if found is None else str(found)
 
     def _est_for(self, want_input: bool, spec: str) -> float:
         text = str(spec or "").strip()

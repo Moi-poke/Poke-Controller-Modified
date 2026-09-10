@@ -192,6 +192,58 @@ def display_for(want_input: bool, spec: str | int | None) -> str:
     return text
 
 
+# カメラ名との照合で落とす汎用語（これだけでは機種を特定できない）。
+_GUESS_STOPWORDS = frozenset(
+    {
+        "usb",
+        "video",
+        "camera",
+        "audio",
+        "device",
+        "devices",
+        "microphone",
+        "speaker",
+        "input",
+        "output",
+        "hd",
+        "the",
+        "and",
+        "or",
+    }
+)
+
+
+def _guess_tokens(text: str) -> set[str]:
+    """照合用の語集合。小文字化・3文字以上・汎用語除外。"""
+    import re
+
+    return {
+        token
+        for token in re.split(r"[^0-9a-z]+", str(text).lower())
+        if len(token) >= 3 and token not in _GUESS_STOPWORDS
+    }
+
+
+def guess_capture_input(camera_name: str, entries: list[tuple[int, str]]) -> int | None:
+    """カメラ名から取込口（キャプチャボード音声）の番号を推定する。
+
+    ゲーム音はキャプチャボードからしか取れないため、入力は実質固定。
+    映像デバイス名と音声デバイス名の語の重なりで探す。2語以上一致の
+    最良を返し、なければ None（既定の入力へ落とす）。
+    """
+    wanted = _guess_tokens(camera_name)
+    if not wanted:
+        return None
+    best: int | None = None
+    best_score = 1
+    for index, name in entries:
+        score = len(wanted & _guess_tokens(name))
+        if score > best_score:
+            best_score = score
+            best = index
+    return best
+
+
 def probe_details(want_input: bool) -> list[tuple[int, str, float]]:
     """開ける (番号, 名前, 推定遅延ms) だけを返す。重いので裏で回すこと。
 

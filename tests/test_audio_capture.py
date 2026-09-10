@@ -294,6 +294,21 @@ def test_device_entries_indexed() -> None:
         AC._import_sounddevice = real  # type: ignore[assignment]
 
 
+def test_guess_capture_input() -> None:
+    entries = [
+        (2, "Line (Yamaha AG03MK2)"),
+        (4, "HDMI/Line In (2- Live Gamer EXTREME 3)"),
+        (26, "CABLE Output (VB-Audio Virtual Cable)"),
+    ]
+    assert AC.guess_capture_input("Live Gamer EXTREME 3", entries) == 4
+    assert AC.guess_capture_input("4: OBS Virtual Camera [b43397]", entries) is None
+    assert AC.guess_capture_input("", entries) is None
+    assert AC.guess_capture_input("USB Camera", entries) is None
+    # 同点は番号の若い方
+    dup = [(10, "Foo Bar Baz"), (11, "Foo Bar Qux")]
+    assert AC.guess_capture_input("Foo Bar", dup) == 10
+
+
 def _sine(freq: float, seconds: float, rate: int) -> np.ndarray:
     t = np.arange(int(seconds * rate), dtype=np.float64) / rate
     return (0.5 * np.sin(2.0 * np.pi * freq * t)).astype(np.float32)

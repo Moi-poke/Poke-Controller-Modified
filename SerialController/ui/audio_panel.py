@@ -34,6 +34,7 @@ class AudioPanelMixin:
     root: Any
     settings: Any
     serial: Any
+    camera_name_fromDLL: Any
     audio_service: Any
     audio_lf: Any
     audio_input_cb: Any
@@ -230,10 +231,22 @@ class AudioPanelMixin:
             pass
 
     def _start_audio(self) -> None:
-        """入力を開き、候補・メーターを回し始める。失敗はログだけ。"""
+        """入力を開き、候補・メーターを回し始める。失敗はログだけ。
+
+        設定が空なら取込口を自動選択する（ゲーム音はキャプチャボード
+        からしか取れないため）。自動分は保存せず、毎回推定し直す。
+        """
         self._refreshAudioDevices()
-        name = self.settings.audio_input.get()
-        if not self.audio_service.open(name):
+        spec = self.settings.audio_input.get()
+        auto = ""
+        if not spec.strip():
+            try:
+                auto = self.audio_service.auto_input(self.camera_name_fromDLL.get())
+            except Exception as e:
+                logger.debug(f"取込口の自動選択に失敗しました: {e}")
+            if auto:
+                spec = auto
+        if not self.audio_service.open(spec):
             # バックエンド欠如は静かに（debug）。実デバイス失敗のprintは残す。
             try:
                 missing = not audio_available() and (
@@ -244,8 +257,11 @@ class AudioPanelMixin:
             if missing:
                 logger.debug("音声バックエンドがないため取込なしで起動します")
             else:
-                print(f"音声入力を開けませんでした: {name or '既定の入力'}")
+                print(f"音声入力を開けませんでした: {spec or '既定の入力'}")
         self._apply_audio_widgets()
+        if auto:
+            self.audio_input_name.set(self.audio_service.display_input(auto))
+            self._update_latency_label()
         self._schedule_meter()
 
     def _apply_audio_widgets(self) -> None:
@@ -483,50 +499,32 @@ class AudioPanelMixin:
             self.audio_measure_result.set(
                 f"実測 {median:.0f}ms（検出 {detected}/{total}）"
             )
-            try:
-                self.audio_service.record_input_measurement(
-                    self.settings.audio_input.get(), median
-                )
-            except Exception as e:
-                logger.warning(f"実測の記録に失敗しました: {e}")
             self._update_latency_label()
         except tk.TclError:
             return
 
     def pickFastest(self) -> None:
-        """最も速い入出力を選ぶ。入力は実測優先、出力は推定で選ぶ。"""
-        in_spec = self.audio_service.fastest_input()
-        out_spec = self.audio_service.fastest_output()
-        if not in_spec and not out_spec:
-            print("選べる入出力がありません（絞り込みを待ってください）")
-            return
-        if in_spec:
-            self.audio_input_name.set(self.audio_service.display_input(in_spec))
-            self._applyInputSpec(in_spec)
-        if out_spec:
-            display = self.audio_service.display_output(out_spec)
-            self.audio_output_name.set(display)
-            capture = getattr(self.audio_service, "capture", None)
-            try:
-                monitoring = bool(capture is not None and capture.isMonitorEnabled())
-            except Exception:
-                monitoring = False
-            if monitoring:
-                # 再生中は開き直し経路へ任せる（失敗時の復元つき）。
-                self._onAudioOutputSelected()
-            else:
-                self.settings.audio_output.set(out_spec)
-                self._update_latency_label()
-                self._on_setting_changed()
-                print(f"最も速い出力を選びました: {display}")
+        """最も速い出力を選ぶ。推定の最小。入力は触らない。
 
-    def _applyInputSpec(self, spec: str) -> None:
-        """入力を選び直して保存する。失敗は本人向けに知らせる。"""
-        display = self.audio_service.display_input(spec)
-        if self.audio_service.reopen(spec):
-            self.settings.audio_input.set(spec)
-            self._update_latency_label()
-            self._on_setting_changed()
-            print(f"最も速い入力を選びました: {display}")
-        else:
-            print(f"音声入力を開けませんでした: {display}")
+        入力は実質固定（キャプチャボード）のため、自動では変えない。
+        変えたい場合は入力欄から手で選ぶ。
+        """
+        out_spec = self.audio_service.fastest_output()
+        if not out_spec:
+            print("選べる出力がありません（絞り込みを待ってください）")
+            return
+        display = self.audio_service.display_output(out_spec)
+        self.audio_output_name.set(display)
+        capture = getattr(self.audio_service, "capture", None)
+        try:
+            monitoring = bool(capture is not None and capture.isMonitorEnabled())
+        except Exception:
+            monitoring = False
+        if monitoring:
+            # 再生中は開き直し経路へ任せる（失敗時の復元つき）。
+            self._onAudioOutputSelected()
+            return
+        self.settings.audio_output.set(out_spec)
+        self._update_latency_label()
+        self._on_setting_changed()
+        print(f"最も速い出力を選びました: {display}")

@@ -126,13 +126,12 @@ def test_fastest_output_picks_min_est() -> None:
     assert svc.fastest_output() == ""
 
 
-def test_fastest_input_prefers_measured() -> None:
+def test_auto_input_guesses_board(monkeypatch: pytest.MonkeyPatch) -> None:
     svc, _, _ = make_service()
-    svc._probe_cache = {
-        True: [(4, "MicA", 23.0), (7, "MicB", 12.0)],
-    }
-    assert svc.fastest_input() == "7"
-    svc.record_input_measurement("4", 5.0)
-    assert svc.fastest_input() == "4"
-    svc.record_input_measurement("nope", 1.0)
-    assert svc.fastest_input() == "4"
+    monkeypatch.setattr(
+        audio_service,
+        "device_entries",
+        lambda want: [(4, "HDMI/Line In (Live Gamer)")],
+    )
+    assert svc.auto_input("Live Gamer EXTREME 3") == "4"
+    assert svc.auto_input("OBS Virtual Camera") == ""
