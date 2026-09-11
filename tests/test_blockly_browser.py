@@ -1029,7 +1029,9 @@ def test_stick_block_registered() -> None:
     assert "stopPropagation" in src
     # 8方向スナップとグリップカーソルがあること。
     assert "snapAngle" in src
-    assert "grab" in src
+    # グリップはブロック移動（grab/grabbing）と被らない移動カーソルにすること。
+    assert "cursor:move" in src
+    assert "grab" not in src
 
 
 def test_toolbox_lists_stick_and_single_program() -> None:

@@ -146,7 +146,7 @@
       var dot = document.createElementNS(NS, "circle");
       dot.setAttribute("r", "5");
       dot.setAttribute("fill", "#06c");
-      dot.setAttribute("style", "cursor:grab");
+      dot.setAttribute("style", "cursor:move");
       this.fieldGroup_.appendChild(dot);
       this.padDot_ = dot;
       // 要素捕捉でpad内完結にする（window共有の既存modalと干渉させない）。
@@ -163,7 +163,6 @@
       };
       circle.addEventListener("pointerdown", function (ev) {
         dragging = true;
-        dot.style.cursor = "grabbing";
         // ブロック自体のドラッグ開始に伝搬させない（パッド操作に専念する）。
         if (ev.stopPropagation) {
           ev.stopPropagation();
@@ -192,7 +191,6 @@
       });
       var stop = function () {
         dragging = false;
-        dot.style.cursor = "grab";
       };
       circle.addEventListener("pointerup", stop);
       circle.addEventListener("pointercancel", stop);
