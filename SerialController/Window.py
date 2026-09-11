@@ -250,6 +250,8 @@ class PokeControllerApp(
 
         # 入力ログの表示。settings.ini の [Input Log] enabled と対にする
         self.show_input_log.set(self.settings.input_log_enabled.get())
+        # 表示フィルタのパラメータ（ON/OFFは持たず起動時は常にOFF）。
+        self._applyFilterSettings()
 
         # 通信方式の候補と現在値。利用者定義のプラグインは
         #   候補を組む前に読み込む（読み込み後でないと一覧に出ない）。
@@ -470,6 +472,20 @@ class PokeControllerApp(
         )
         self.settings.audio_monitor_enabled.set(self.audio_monitor.get())
         self.settings.audio_monitor_volume.set(self.audio_volume.get())
+        # 表示フィルタはパネル側の辞書が正本。設定変数へ写して保存する。
+        filt = self._filt_params
+        self.settings.filt_gamma.set(float(filt["gamma"]))
+        self.settings.filt_contrast.set(float(filt["contrast"]))
+        self.settings.filt_brightness.set(int(filt["brightness"]))
+        self.settings.filt_saturation.set(float(filt["saturation"]))
+        self.settings.filt_hue_shift.set(int(filt["hue_shift"]))
+        self.settings.filt_lower_h.set(int(filt["lower"][0]))
+        self.settings.filt_lower_s.set(int(filt["lower"][1]))
+        self.settings.filt_lower_v.set(int(filt["lower"][2]))
+        self.settings.filt_upper_h.set(int(filt["upper"][0]))
+        self.settings.filt_upper_s.set(int(filt["upper"][1]))
+        self.settings.filt_upper_v.set(int(filt["upper"][2]))
+        self.settings.filt_mode.set(str(filt["mode"]))
         self.settings.input_log_enabled.set(self.show_input_log.get())
         # 通信方式。起動引数で一時的に替えている場合も、
         #   画面に出ている値＝実際に使っている値なのでそのまま保存する。

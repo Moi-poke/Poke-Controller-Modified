@@ -138,6 +138,26 @@ class GuiSettings:
             value=audio.getfloat("monitor_volume", fallback=0.8)
         )
 
+        # メイン画面の表示専用フィルタ（色補正＋色抽出）。
+        # パラメータだけを保存し、ON/OFFは持たない（起動時は常にOFF）。
+        # 不正値は complete_missing 側で既定へ戻っている前提だが、
+        # 読む側でも fallback を付けて二重に守る。
+        filt = self.setting["PreviewFilter"]
+        self.filt_gamma = tk.DoubleVar(value=filt.getfloat("gamma", fallback=1.0))
+        self.filt_contrast = tk.DoubleVar(value=filt.getfloat("contrast", fallback=0.0))
+        self.filt_brightness = tk.IntVar(value=filt.getint("brightness", fallback=0))
+        self.filt_saturation = tk.DoubleVar(
+            value=filt.getfloat("saturation", fallback=1.0)
+        )
+        self.filt_hue_shift = tk.IntVar(value=filt.getint("hue_shift", fallback=0))
+        self.filt_lower_h = tk.IntVar(value=filt.getint("lower_h", fallback=0))
+        self.filt_lower_s = tk.IntVar(value=filt.getint("lower_s", fallback=0))
+        self.filt_lower_v = tk.IntVar(value=filt.getint("lower_v", fallback=0))
+        self.filt_upper_h = tk.IntVar(value=filt.getint("upper_h", fallback=179))
+        self.filt_upper_s = tk.IntVar(value=filt.getint("upper_s", fallback=255))
+        self.filt_upper_v = tk.IntVar(value=filt.getint("upper_v", fallback=255))
+        self.filt_mode = tk.StringVar(value=filt.get("mode", fallback="gray_out"))
+
     # キーコンフィグが扱うセクション。KeyConfig / Keyboard の双方が参照する。
     # 実体は config が持つ。ここでは同じ名前で読めるようにしておく。
     # ここを直接 configparser で書き換えると他の設定を巻き戻すため、
@@ -331,6 +351,22 @@ class GuiSettings:
                 "output_device": self.audio_output.get(),
                 "monitor_enabled": self.audio_monitor_enabled.get(),
                 "monitor_volume": self.audio_monitor_volume.get(),
+            }
+        )
+        self.setting["PreviewFilter"] = self._str_values(
+            {
+                "gamma": self.filt_gamma.get(),
+                "contrast": self.filt_contrast.get(),
+                "brightness": self.filt_brightness.get(),
+                "saturation": self.filt_saturation.get(),
+                "hue_shift": self.filt_hue_shift.get(),
+                "lower_h": self.filt_lower_h.get(),
+                "lower_s": self.filt_lower_s.get(),
+                "lower_v": self.filt_lower_v.get(),
+                "upper_h": self.filt_upper_h.get(),
+                "upper_s": self.filt_upper_s.get(),
+                "upper_v": self.filt_upper_v.get(),
+                "mode": self.filt_mode.get(),
             }
         )
 

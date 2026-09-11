@@ -11,12 +11,26 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import cv2
 import numpy as np
 
 # OpenCV の HSV は H だけ 0〜179（S・V は 0〜255）。
 _H_MAX = 179
 _SV_MAX = 255
+
+#: 色補正の既定値（全項目ニュートラル＝恒等変換）。
+#: ガンマ 0.1〜3.0、コントラスト 0起点±2.0（倍率=1.0+値）、
+#: 輝度 -100〜100、彩度 0.0〜3.0、色相シフト -90〜90。
+#: config.py の [PreviewFilter] 既定値と揃えること（同期テストあり）。
+DEFAULT_CORRECTION: dict[str, float | int] = {
+    "gamma": 1.0,
+    "contrast": 0.0,
+    "brightness": 0,
+    "saturation": 1.0,
+    "hue_shift": 0,
+}
 
 
 def _check_side(value: object, name: str) -> list[int]:
@@ -109,3 +123,114 @@ def apply_filter(
         gray_bgr: np.ndarray = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         return np.where(mask[:, :, None] > 0, bgr, gray_bgr)
     raise ValueError(f"mode は gray_out/mask で指定してください: {mode!r}")
+
+
+def validate_correction(corr: object) -> dict[str, float | int]:
+    """色補正5項目を検証し、正規化した辞書で返す。
+
+    gamma 0.1〜3.0、contrast -2.0〜+2.0（0起点。倍率=1.0+値）、
+    brightness -100〜100（整数）、saturation 0.0〜3.0、
+    hue_shift -90〜90（整数）。5キー過不足なく数値でなければ ValueError。
+    """
+    if not isinstance(corr, dict) or set(corr.keys()) != set(DEFAULT_CORRECTION.keys()):
+        raise ValueError(
+            "色補正は gamma/contrast/brightness/saturation/hue_shift"
+            f" の5キーで指定してください: {corr!r}"
+        )
+    gamma = corr["gamma"]
+    contrast = corr["contrast"]
+    brightness = corr["brightness"]
+    saturation = corr["saturation"]
+    hue_shift = corr["hue_shift"]
+    if (
+        isinstance(gamma, bool)
+        or not isinstance(gamma, (int, float))
+        or not 0.1 <= float(gamma) <= 3.0
+    ):
+        raise ValueError(f"ガンマは0.1〜3.0で指定してください: {gamma!r}")
+    if (
+        isinstance(contrast, bool)
+        or not isinstance(contrast, (int, float))
+        or not -2.0 <= float(contrast) <= 2.0
+    ):
+        raise ValueError(f"コントラストは-2.0〜+2.0で指定してください: {contrast!r}")
+    if (
+        isinstance(brightness, bool)
+        or not isinstance(brightness, int)
+        or not -100 <= brightness <= 100
+    ):
+        raise ValueError(f"輝度は-100〜100の整数で指定してください: {brightness!r}")
+    if (
+        isinstance(saturation, bool)
+        or not isinstance(saturation, (int, float))
+        or not 0.0 <= float(saturation) <= 3.0
+    ):
+        raise ValueError(f"彩度は0.0〜3.0で指定してください: {saturation!r}")
+    if (
+        isinstance(hue_shift, bool)
+        or not isinstance(hue_shift, int)
+        or not -90 <= hue_shift <= 90
+    ):
+        raise ValueError(f"色相シフトは-90〜90の整数で指定してください: {hue_shift!r}")
+    return {
+        "gamma": float(gamma),
+        "contrast": float(contrast),
+        "brightness": brightness,
+        "saturation": float(saturation),
+        "hue_shift": hue_shift,
+    }
+
+
+def is_correction_neutral(corr: object) -> bool:
+    """補正が全項目既定（恒等変換）なら True。形が違えば False。"""
+    if not isinstance(corr, dict):
+        return False
+    try:
+        checked = validate_correction(corr)
+    except ValueError:
+        return False
+    return all(checked[k] == DEFAULT_CORRECTION[k] for k in DEFAULT_CORRECTION)
+
+
+@lru_cache(maxsize=32)
+def _gamma_lut(gamma: float) -> np.ndarray:
+    """ガンマ補正のLUT（256要素）を作る。同じ値は使い回す。"""
+    lut = np.arange(256, dtype=np.float32) / 255.0
+    lut = np.power(lut, gamma) * 255.0
+    return np.clip(lut, 0, 255).astype(np.uint8)
+
+
+def apply_correction(
+    bgr: np.ndarray, corr: dict[str, float | int] | object
+) -> np.ndarray:
+    """色補正をかけたBGR画像を新配列で返す（入力は変えない）。
+
+    適用順はガンマ→輝度/コントラスト→彩度/色相シフト（OBSの
+    色補正フィルタと同列）。全項目既定なら複写を返す。
+    """
+    checked = validate_correction(corr)
+    gamma = float(checked["gamma"])
+    contrast = float(checked["contrast"])
+    brightness = int(checked["brightness"])
+    saturation = float(checked["saturation"])
+    hue_shift = int(checked["hue_shift"])
+    if is_correction_neutral(checked):
+        return bgr.copy()
+    work: np.ndarray = bgr.copy()
+    if gamma != 1.0:
+        # LUTは1chずつ当てる（3ch一括だと色が混ざる）。
+        # ch面は非連続のためdstに直接書けず、一時面経由で戻す。
+        lut = _gamma_lut(gamma)
+        for ch in range(3):
+            work[:, :, ch] = cv2.LUT(work[:, :, ch], lut)
+    alpha = max(0.0, 1.0 + contrast)
+    if alpha != 1.0 or brightness != 0:
+        work = cv2.convertScaleAbs(work, alpha=alpha, beta=float(brightness))
+    if saturation != 1.0 or hue_shift != 0:
+        hsv = cv2.cvtColor(work, cv2.COLOR_BGR2HSV).astype(np.int16)
+        if saturation != 1.0:
+            hsv[:, :, 1] = np.clip(hsv[:, :, 1] * saturation, 0, _SV_MAX)
+        if hue_shift != 0:
+            hsv[:, :, 0] = (hsv[:, :, 0] + hue_shift) % (_H_MAX + 1)
+        work = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    return work

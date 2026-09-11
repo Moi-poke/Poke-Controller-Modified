@@ -78,3 +78,62 @@ def test_alloc_buffers_filter_buf_follows_size() -> None:
     area.show_size = (320, 180)
     area._allocBuffers()
     assert area._filter_buf.shape == (180, 320, 3)
+
+
+def test_correction_only_applies_before_rgb() -> None:
+    """抽出OFF・補正ONでも補正がかかる（輝度+50で全画素+50）。"""
+    from core import preview_filter
+
+    area = make_area(64, 48)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    frame[:] = (100, 100, 100)
+    corr = dict(preview_filter.DEFAULT_CORRECTION)
+    corr["brightness"] = 50
+    area.setPreviewFilter(False, [0, 0, 0], [179, 255, 255], "gray_out", corr)
+    area._convert(frame)
+    assert np.array_equal(area._rgb_buf, np.full((48, 64, 3), 150, dtype=np.uint8))
+    # 入力は変えない。
+    assert np.array_equal(frame, np.full((48, 64, 3), 100, dtype=np.uint8))
+
+
+def test_correction_neutral_keeps_bit_identical() -> None:
+    """中立補正は無効時とbit一致（余計な経路を通らない）。"""
+    from core import preview_filter
+
+    area = make_area(64, 48)
+    frame = np.random.randint(0, 256, (48, 64, 3), dtype=np.uint8)
+    area.setPreviewFilter(
+        False,
+        [0, 0, 0],
+        [179, 255, 255],
+        "gray_out",
+        dict(preview_filter.DEFAULT_CORRECTION),
+    )
+    area._convert(frame)
+    expected = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    assert np.array_equal(area._rgb_buf, expected)
+
+
+def test_correction_runs_before_hsv_mask() -> None:
+    """補正→抽出の順にかかる（暗い赤を輝度で持ち上げると拾える）。"""
+    from core import preview_filter
+
+    area = make_area(64, 48)
+    frame = np.zeros((48, 64, 3), dtype=np.uint8)
+    frame[:] = (0, 0, 80)  # 暗い赤。V=80 で下限V=100に届かない
+    corr = dict(preview_filter.DEFAULT_CORRECTION)
+    corr["brightness"] = 100  # (100,100,180) になり H=0・S≈113・V=180 で拾える
+    area.setPreviewFilter(True, [0, 100, 100], [10, 255, 255], "mask", corr)
+    area._convert(frame)
+    # 拾えていれば mask は白一色になる。
+    assert np.array_equal(area._rgb_buf, np.full((48, 64, 3), 255, dtype=np.uint8))
+    # 補正なし（中立）では拾えない＝マスクが補正後の絵を見ている。
+    area.setPreviewFilter(
+        True,
+        [0, 100, 100],
+        [10, 255, 255],
+        "mask",
+        dict(preview_filter.DEFAULT_CORRECTION),
+    )
+    area._convert(frame)
+    assert np.array_equal(area._rgb_buf, np.zeros((48, 64, 3), dtype=np.uint8))

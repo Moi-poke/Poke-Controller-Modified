@@ -170,8 +170,18 @@ class CameraPanelMixin:
         self.separator_4.config(orient="vertical")
         self.separator_4.grid(column=5, row=0, sticky="ns")
 
-        # 表示専用フィルタ（セッションのみ。ini には保存しない）
+        # 表示専用フィルタ（パラメータはiniへ保存、ON/OFFはセッションのみ）。
+        # 起動時は常にOFF（不意の加工表示を避ける）。
+        # 組立時点では settings がまだ無い（Window が _build_ui の後で
+        # loadSettings する）ため、ここでは中立値で置く。設定ファイルの
+        # 値は _apply_settings_to_widgets 経由の _applyFilterSettings で
+        # 流し込む（他の tk 変数と同じ手順）。
         self._filt_params = {
+            "gamma": 1.0,
+            "contrast": 0.0,
+            "brightness": 0,
+            "saturation": 1.0,
+            "hue_shift": 0,
             "lower": [0, 0, 0],
             "upper": [179, 255, 255],
             "mode": "gray_out",
@@ -179,14 +189,14 @@ class CameraPanelMixin:
         self.filt_enabled = tk.BooleanVar(value=False)
         self.filt_check = ttk.Checkbutton(self.camera_f2)
         self.filt_check.config(
-            text="色フィルタ",
+            text="表示フィルタ",
             variable=self.filt_enabled,
             command=self.applyPreviewFilter,
         )
         self.filt_check.grid(column=6, row=0)
 
         self.filt_setting_button = ttk.Button(self.camera_f2)
-        self.filt_setting_button.config(text="設定...", command=self.openFilterDialog)
+        self.filt_setting_button.config(text="調整...", command=self.openFilterDialog)
         self.filt_setting_button.grid(column=7, row=0)
         self.camera_f2.grid(column=0, columnspan=8, row=3, sticky="nsew")
 
@@ -328,11 +338,15 @@ class CameraPanelMixin:
         except (tk.TclError, ValueError):
             return False
         if self.camera_dic is not None and self.camera_dic.get(cam_id) == "Disable":
-            self.camera.destroy()
+            with self._camera_open_lock:
+                self.camera.destroy()
             print("カメラを無効にしました")
             logger.info("Camera is disabled")
             return True
-        if self.camera.openCamera(cam_id):
+        self._camera_open_seq = int(getattr(self, "_camera_open_seq", 0)) + 1
+        with self._camera_open_lock:
+            opened = self.camera.openCamera(cam_id)
+        if opened:
             return True
         message = f"Camera ID {cam_id} cannot open."
         print(message)
@@ -553,8 +567,34 @@ class CameraPanelMixin:
             width_bef, height_bef = map(int, self.show_size.get().split("x"))
             self.preview.setShowsize(height_bef, width_bef)
 
+    def _applyFilterSettings(self) -> None:
+        """設定ファイルの表示フィルタ値をパネル側の辞書へ流し込む。
+
+        Window._apply_settings_to_widgets から呼ぶ（他の tk 変数と
+        同じ手順）。不正値は GuiSettings 生成時の complete_missing で
+        既定へ戻っている前提だが、読む側でも型だけ整える。
+        """
+        self._filt_params = {
+            "gamma": float(self.settings.filt_gamma.get()),
+            "contrast": float(self.settings.filt_contrast.get()),
+            "brightness": int(self.settings.filt_brightness.get()),
+            "saturation": float(self.settings.filt_saturation.get()),
+            "hue_shift": int(self.settings.filt_hue_shift.get()),
+            "lower": [
+                int(self.settings.filt_lower_h.get()),
+                int(self.settings.filt_lower_s.get()),
+                int(self.settings.filt_lower_v.get()),
+            ],
+            "upper": [
+                int(self.settings.filt_upper_h.get()),
+                int(self.settings.filt_upper_s.get()),
+                int(self.settings.filt_upper_v.get()),
+            ],
+            "mode": str(self.settings.filt_mode.get()),
+        }
+
     def applyPreviewFilter(self) -> None:
-        """表示専用フィルタのON/OFFをプレビューへ反映する（セッションのみ）。"""
+        """表示専用フィルタのON/OFFをプレビューへ反映する。"""
         if self.preview is None:
             return
         if bool(self.filt_enabled.get()):
@@ -564,34 +604,91 @@ class CameraPanelMixin:
                 list(params["lower"]),
                 list(params["upper"]),
                 str(params["mode"]),
+                {
+                    "gamma": float(params["gamma"]),
+                    "contrast": float(params["contrast"]),
+                    "brightness": int(params["brightness"]),
+                    "saturation": float(params["saturation"]),
+                    "hue_shift": int(params["hue_shift"]),
+                },
             )
         else:
             self.preview.clearPreviewFilter()
 
     def openFilterDialog(self) -> None:
-        """色フィルタ設定ダイアログを開く。閉じても設定は保持される。"""
+        """表示フィルタ設定ダイアログを開く。閉じても設定は保持される。
+
+        調整中はプレビューへ即時反映するが、iniへの保存はしない。
+        保存はこの窓を閉じたときとアプリ終了時だけにする（操作のたびに
+        書くと高頻度すぎるため）。終了時は Window.exit 経由の
+        _save_settings がパネル側の辞書を書き出す。
+        """
         dlg = tk.Toplevel(self.root)
-        dlg.title("色フィルタ設定")
+        dlg.title("表示フィルタ設定")
         params = self._filt_params
-        scales: dict[str, tk.Scale] = {}
-        specs = (
-            ("lower_H", "下限 H", 0, 179, params["lower"][0]),
-            ("lower_S", "下限 S", 0, 255, params["lower"][1]),
-            ("lower_V", "下限 V", 0, 255, params["lower"][2]),
-            ("upper_H", "上限 H", 0, 179, params["upper"][0]),
-            ("upper_S", "上限 S", 0, 255, params["upper"][1]),
-            ("upper_V", "上限 V", 0, 255, params["upper"][2]),
+        # スライダーの初期値はパネル側の辞書（＝設定ファイルの内容）。
+        # 刻みは項目で決める（値の型では決めない。丸めでfloat化するため）。
+        corr_specs = (
+            ("gamma", "ガンマ", 0.1, 3.0, 0.01),
+            ("contrast", "コントラスト", -2.0, 2.0, 0.01),
+            ("brightness", "輝度", -100, 100, 1),
+            ("saturation", "彩度", 0.0, 3.0, 0.01),
+            ("hue_shift", "色相シフト", -90, 90, 1),
         )
-        for row, (key, label, lo, hi, init) in enumerate(specs):
+        hsv_specs = (
+            ("lower_H", "下限 H", 0, 179, 1, params["lower"][0]),
+            ("lower_S", "下限 S", 0, 255, 1, params["lower"][1]),
+            ("lower_V", "下限 V", 0, 255, 1, params["lower"][2]),
+            ("upper_H", "上限 H", 0, 179, 1, params["upper"][0]),
+            ("upper_S", "上限 S", 0, 255, 1, params["upper"][1]),
+            ("upper_V", "上限 V", 0, 255, 1, params["upper"][2]),
+        )
+        scales: dict[str, tk.Scale] = {}
+
+        def _add_section(title: str, row: int) -> int:
+            ttk.Label(dlg, text=title, font=("", 10, "bold")).grid(
+                column=0, row=row, columnspan=2, padx=5, pady=(8, 0), sticky="w"
+            )
+            return row + 1
+
+        def _add_scale(
+            key: str,
+            label: str,
+            lo: float,
+            hi: float,
+            step: float,
+            init: float,
+            row: int,
+        ) -> int:
             ttk.Label(dlg, text=label).grid(column=0, row=row, padx=5, sticky="ew")
-            sc = tk.Scale(dlg, from_=lo, to=hi, orient=tk.HORIZONTAL, length=200)
+            sc = tk.Scale(
+                dlg,
+                from_=lo,
+                to=hi,
+                resolution=step,
+                orient=tk.HORIZONTAL,
+                length=200,
+            )
             sc.set(init)
             sc.grid(column=1, row=row, padx=5, sticky="ew")
             scales[key] = sc
+            return row + 1
+
+        row = _add_section("色補正（抽出より先にかかる）", 0)
+        for key, label, lo, hi, step in corr_specs:
+            row = _add_scale(key, label, lo, hi, step, float(params[key]), row)
+        row = _add_section("色抽出", row)
+        for key, label, lo, hi, step, init in hsv_specs:
+            row = _add_scale(key, label, lo, hi, step, init, row)
 
         mode_var = tk.StringVar(value=str(params["mode"]))
 
         def _on_change(*_args: Any) -> None:
+            params["gamma"] = round(float(scales["gamma"].get()), 2)
+            params["contrast"] = round(float(scales["contrast"].get()), 2)
+            params["brightness"] = int(scales["brightness"].get())
+            params["saturation"] = round(float(scales["saturation"].get()), 2)
+            params["hue_shift"] = int(scales["hue_shift"].get())
             params["lower"] = [
                 int(scales["lower_H"].get()),
                 int(scales["lower_S"].get()),
@@ -615,14 +712,45 @@ class CameraPanelMixin:
             variable=mode_var,
             value="gray_out",
             command=_on_change,
-        ).grid(column=0, columnspan=2, row=6, sticky="w")
+        ).grid(column=0, columnspan=2, row=row, sticky="w")
+        row += 1
         ttk.Radiobutton(
             dlg,
             text="マスク表示",
             variable=mode_var,
             value="mask",
             command=_on_change,
-        ).grid(column=0, columnspan=2, row=7, sticky="w")
+        ).grid(column=0, columnspan=2, row=row, sticky="w")
+        row += 1
+
+        def _reset_defaults() -> None:
+            """全11項目＋モードを既定に戻す（ON/OFFは変えない）。"""
+            from core import preview_filter as _pf
+
+            for key, value in _pf.DEFAULT_CORRECTION.items():
+                scales[key].set(value)
+            scales["lower_H"].set(0)
+            scales["lower_S"].set(0)
+            scales["lower_V"].set(0)
+            scales["upper_H"].set(179)
+            scales["upper_S"].set(255)
+            scales["upper_V"].set(255)
+            mode_var.set("gray_out")
+            _on_change()
+
+        ttk.Button(dlg, text="既定に戻す", command=_reset_defaults).grid(
+            column=0, columnspan=2, row=row, pady=8
+        )
+
+        def _on_close() -> None:
+            """窓を閉じるときだけ保存する。保存の失敗で閉じるのを止めない。"""
+            try:
+                # _save_settings がパネル側の辞書を書き出す入口。
+                self._on_setting_changed()
+            finally:
+                dlg.destroy()
+
+        dlg.protocol("WM_DELETE_WINDOW", _on_close)
 
     def OpenCaptureDir(self) -> None:
         WindowUtils.openDirectory(

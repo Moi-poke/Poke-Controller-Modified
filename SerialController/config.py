@@ -113,6 +113,31 @@ def default_sections() -> dict[str, dict[str, Any]]:
             # モニター音量。0.0〜1.0。範囲外は補正で既定へ戻す。
             "monitor_volume": 0.8,
         },
+        "PreviewFilter": {
+            # メイン画面の表示専用フィルタ（OBSの色補正に相当）。
+            # 認識・保存には影響しない。ON/OFF自体は持たず、起動時は
+            # 常にOFF（不意の加工表示を避ける）。補正5項目の既定は
+            # core.preview_filter.DEFAULT_CORRECTION と揃えること。
+            # ガンマ 0.1〜3.0。
+            "gamma": 1.0,
+            # コントラスト 0起点±2.0（倍率=1.0+値）。
+            "contrast": 0.0,
+            # 輝度 -100〜100。
+            "brightness": 0,
+            # 彩度 0.0〜3.0。
+            "saturation": 1.0,
+            # 色相シフト -90〜90。
+            "hue_shift": 0,
+            # 色抽出のHSV範囲（H 0〜179、S・V 0〜255）。
+            "lower_h": 0,
+            "lower_s": 0,
+            "lower_v": 0,
+            "upper_h": 179,
+            "upper_s": 255,
+            "upper_v": 255,
+            # 抽出の見せ方。gray_out … 対象外グレー / mask … 白黒。
+            "mode": "gray_out",
+        },
         "Pokemon Home": {
             "Season": 1,
             "Single or Double": "シングル",
@@ -231,6 +256,43 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if volume is None or not 0.0 <= volume <= 1.0:
             audio["monitor_volume"] = "0.8"
             changed.append("Audio.monitor_volume")
+    if parser.has_section("PreviewFilter"):
+        filt = parser["PreviewFilter"]
+        float_rules = {
+            "gamma": ("1.0", lambda value: 0.1 <= value <= 3.0),
+            "contrast": ("0.0", lambda value: -2.0 <= value <= 2.0),
+            "saturation": ("1.0", lambda value: 0.0 <= value <= 3.0),
+        }
+        for key, (dflt, ok) in float_rules.items():
+            try:
+                value = float(filt.get(key, ""))
+            except (TypeError, ValueError):
+                value = None
+            if value is None or not ok(value):
+                filt[key] = dflt
+                changed.append(f"PreviewFilter.{key}")
+        int_rules = {
+            "brightness": ("0", lambda value: -100 <= value <= 100),
+            "hue_shift": ("0", lambda value: -90 <= value <= 90),
+            "lower_h": ("0", lambda value: 0 <= value <= 179),
+            "lower_s": ("0", lambda value: 0 <= value <= 255),
+            "lower_v": ("0", lambda value: 0 <= value <= 255),
+            "upper_h": ("179", lambda value: 0 <= value <= 179),
+            "upper_s": ("255", lambda value: 0 <= value <= 255),
+            "upper_v": ("255", lambda value: 0 <= value <= 255),
+        }
+        for key, (dflt, ok) in int_rules.items():
+            try:
+                raw = filt.get(key, "").strip()
+                num = int(raw) if raw != "" else None
+            except (TypeError, ValueError, AttributeError):
+                num = None
+            if num is None or not ok(num):
+                filt[key] = dflt
+                changed.append(f"PreviewFilter.{key}")
+        if filt.get("mode", "").strip() not in ("gray_out", "mask"):
+            filt["mode"] = "gray_out"
+            changed.append("PreviewFilter.mode")
     return changed
 
 

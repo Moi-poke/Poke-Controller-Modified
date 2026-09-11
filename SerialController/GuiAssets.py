@@ -298,6 +298,9 @@ class CaptureArea(tk.Canvas):
         self._filter_lower = [0, 0, 0]
         self._filter_upper = [179, 255, 255]
         self._filter_mode = "gray_out"
+        # 色補正（ガンマ等）の辞書と有効旗。None は中立（恒等変換）。
+        self._correction: dict | None = None
+        self._correction_active = False
 
         # 映像用の PhotoImage は1枚だけ作って使い回す
         self._photo = ImageTk.PhotoImage(Image.new("RGB", self.show_size))
@@ -411,11 +414,21 @@ class CaptureArea(tk.Canvas):
         self._resize_buf = np.empty((h, w, 3), np.uint8)
         self._rgb_buf = np.empty((h, w, 3), np.uint8)
         self._filter_buf = np.empty((h, w, 3), np.uint8)
+        self._correct_buf = np.empty((h, w, 3), np.uint8)
 
     def setPreviewFilter(
-        self, enabled: bool, lower: list[int], upper: list[int], mode: str
+        self,
+        enabled: bool,
+        lower: list[int],
+        upper: list[int],
+        mode: str,
+        correction: dict | None = None,
     ) -> None:
-        """表示専用フィルタ。認識・保存には影響しない。変更時はseq dedupを無効化する。"""
+        """表示専用フィルタ。認識・保存には影響しない。変更時はseq dedupを無効化する。
+
+        correction は色補正5項目の辞書（None は中立）。補正は
+        HSV抽出より先にかかる（OBSのフィルタチェーンと同列）。
+        """
         from core import preview_filter as _pf
 
         lo, hi = _pf.validate_hsv(lower, upper)
@@ -423,6 +436,12 @@ class CaptureArea(tk.Canvas):
             raise ValueError("modeは gray_out / mask で指定してください")
         self._filter_enabled = bool(enabled)
         self._filter_lower, self._filter_upper, self._filter_mode = lo, hi, str(mode)
+        if correction is None:
+            self._correction = None
+            self._correction_active = False
+        else:
+            self._correction = _pf.validate_correction(correction)
+            self._correction_active = not _pf.is_correction_neutral(self._correction)
         self._last_frame_seq = None
 
     def clearPreviewFilter(self) -> None:
@@ -503,16 +522,30 @@ class CaptureArea(tk.Canvas):
                 interpolation=cv2.INTER_AREA,
             )
             src = self._resize_buf
-        if getattr(self, "_filter_enabled", False):
+        use_filter = getattr(self, "_filter_enabled", False)
+        use_correct = getattr(self, "_correction_active", False)
+        if use_filter or use_correct:
             from core import preview_filter as _pf
 
-            np.copyto(
-                self._filter_buf,
-                _pf.apply_filter(
-                    src, self._filter_lower, self._filter_upper, self._filter_mode
-                ),
-            )
-            cv2.cvtColor(self._filter_buf, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+            work = src
+            if use_correct:
+                np.copyto(
+                    self._correct_buf,
+                    _pf.apply_correction(src, self._correction),
+                )
+                work = self._correct_buf
+            if use_filter:
+                np.copyto(
+                    self._filter_buf,
+                    _pf.apply_filter(
+                        work,
+                        self._filter_lower,
+                        self._filter_upper,
+                        self._filter_mode,
+                    ),
+                )
+                work = self._filter_buf
+            cv2.cvtColor(work, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
             return
         if src is frame:
             cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)

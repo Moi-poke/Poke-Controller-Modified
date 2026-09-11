@@ -72,6 +72,112 @@ def test_validate_rejects_bad_values() -> None:
         preview_filter.validate_hsv([0, 100], [10, 255, 255])
 
 
+def neutral_correction() -> dict:
+    """全項目が既定（恒等変換）の補正辞書を作る。"""
+    return dict(preview_filter.DEFAULT_CORRECTION)
+
+
+def test_correction_neutral_is_identity() -> None:
+    """既定補正は見た目を変えない（新配列で返す）。"""
+    img = red_image()
+    before = img.copy()
+    out = preview_filter.apply_correction(img, neutral_correction())
+    assert out is not img
+    assert np.array_equal(out, img)
+    assert np.array_equal(img, before)
+
+
+def test_correction_gamma_darkens() -> None:
+    """ガンマ>1は中間調を暗くする（白は白のまま）。"""
+    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    img[:, :] = (128, 128, 128)
+    out = preview_filter.apply_correction(img, {**neutral_correction(), "gamma": 2.0})
+    assert out.shape == img.shape
+    # 128^(2.0) スケールで約64になる（LUT丸めで±1許す）。
+    assert abs(int(out[0, 0, 0]) - 64) <= 1
+    white = np.zeros((2, 2, 3), dtype=np.uint8)
+    white[:, :] = (255, 255, 255)
+    assert np.array_equal(
+        preview_filter.apply_correction(white, {**neutral_correction(), "gamma": 2.0}),
+        white,
+    )
+
+
+def test_correction_brightness_shifts() -> None:
+    """輝度+100は全画素を100上げ（255で頭打ち）。"""
+    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    img[:, :] = (100, 100, 100)
+    out = preview_filter.apply_correction(
+        img, {**neutral_correction(), "brightness": 100}
+    )
+    assert int(out[0, 0, 0]) == 200
+
+
+def test_correction_contrast_zero_origin() -> None:
+    """コントラストは0起点±2。+1.0で倍率2.0、-1.0で0.0（平坦）。"""
+    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    img[:, :] = (100, 100, 100)
+    doubled = preview_filter.apply_correction(
+        img, {**neutral_correction(), "contrast": 1.0}
+    )
+    assert int(doubled[0, 0, 0]) == 200
+    flat = preview_filter.apply_correction(
+        img, {**neutral_correction(), "contrast": -1.0}
+    )
+    assert int(flat[0, 0, 0]) == 0
+
+
+def test_correction_saturation_zero_grays() -> None:
+    """彩度0はグレー化（3ch等値）。"""
+    img = red_image()
+    out = preview_filter.apply_correction(
+        img, {**neutral_correction(), "saturation": 0.0}
+    )
+    px = out[0, 0]
+    assert int(px[0]) == int(px[1]) == int(px[2])
+
+
+def test_correction_hue_shift_wraps() -> None:
+    """色相シフトはH環上で回る（赤+90で緑系になる）。"""
+    img = red_image()
+    out = preview_filter.apply_correction(
+        img, {**neutral_correction(), "hue_shift": 60}
+    )
+    import cv2
+
+    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV)
+    # 赤H≈0に+60で緑付近（OpenCVのH=60。±丸め）。
+    assert abs(int(hsv[0, 0, 0]) - 60) <= 2
+
+
+def test_validate_correction_rejects_bad_values() -> None:
+    """範囲外・型違いの補正はValueError。"""
+    base = neutral_correction()
+    with pytest.raises(ValueError):
+        preview_filter.validate_correction({**base, "gamma": 0.05})
+    with pytest.raises(ValueError):
+        preview_filter.validate_correction({**base, "contrast": 2.5})
+    with pytest.raises(ValueError):
+        preview_filter.validate_correction({**base, "brightness": 101})
+    with pytest.raises(ValueError):
+        preview_filter.validate_correction({**base, "saturation": -0.1})
+    with pytest.raises(ValueError):
+        preview_filter.validate_correction({**base, "hue_shift": 91})
+    with pytest.raises(ValueError):
+        preview_filter.validate_correction({"gamma": 1.0})
+    with pytest.raises(ValueError):
+        preview_filter.validate_correction({**base, "gamma": True})
+
+
+def test_is_correction_neutral() -> None:
+    """既定だけが中立と判定される。"""
+    assert preview_filter.is_correction_neutral(neutral_correction()) is True
+    assert (
+        preview_filter.is_correction_neutral({**neutral_correction(), "brightness": 1})
+        is False
+    )
+
+
 def test_crop_and_whole() -> None:
     """crop指定とNone全体の割合が一致する条件で比べる。"""
     img = red_image()
