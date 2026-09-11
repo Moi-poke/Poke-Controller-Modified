@@ -295,6 +295,158 @@
       colour: 160,
     },
     {
+      type: "pokecon_hold",
+      message0: "%1 を押し続ける 待ち %2",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "TARGET",
+          options: [
+            ["Y", "Button.Y"],
+            ["B", "Button.B"],
+            ["A", "Button.A"],
+            ["X", "Button.X"],
+            ["L", "Button.L"],
+            ["R", "Button.R"],
+            ["ZL", "Button.ZL"],
+            ["ZR", "Button.ZR"],
+            ["MINUS", "Button.MINUS"],
+            ["PLUS", "Button.PLUS"],
+            ["LCLICK", "Button.LCLICK"],
+            ["RCLICK", "Button.RCLICK"],
+            ["HOME", "Button.HOME"],
+            ["CAPTURE", "Button.CAPTURE"],
+            ["↑", "Direction.UP"],
+            ["→", "Direction.RIGHT"],
+            ["↓", "Direction.DOWN"],
+            ["←", "Direction.LEFT"],
+            ["↗", "Direction.UP_RIGHT"],
+            ["↘", "Direction.DOWN_RIGHT"],
+            ["↙", "Direction.DOWN_LEFT"],
+            ["↖", "Direction.UP_LEFT"],
+            ["R↑", "Direction.R_UP"],
+            ["R→", "Direction.R_RIGHT"],
+            ["R↓", "Direction.R_DOWN"],
+            ["R←", "Direction.R_LEFT"],
+            ["R↗", "Direction.R_UP_RIGHT"],
+            ["R↘", "Direction.R_DOWN_RIGHT"],
+            ["R↙", "Direction.R_DOWN_LEFT"],
+            ["R↖", "Direction.R_UP_LEFT"],
+          ],
+        },
+        { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "押しっぱなしにする（holdEndで離す）。",
+    },
+    {
+      type: "pokecon_hold_end",
+      message0: "%1 を離す",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "TARGET",
+          options: [
+            ["Y", "Button.Y"],
+            ["B", "Button.B"],
+            ["A", "Button.A"],
+            ["X", "Button.X"],
+            ["L", "Button.L"],
+            ["R", "Button.R"],
+            ["ZL", "Button.ZL"],
+            ["ZR", "Button.ZR"],
+            ["MINUS", "Button.MINUS"],
+            ["PLUS", "Button.PLUS"],
+            ["LCLICK", "Button.LCLICK"],
+            ["RCLICK", "Button.RCLICK"],
+            ["HOME", "Button.HOME"],
+            ["CAPTURE", "Button.CAPTURE"],
+            ["↑", "Direction.UP"],
+            ["→", "Direction.RIGHT"],
+            ["↓", "Direction.DOWN"],
+            ["←", "Direction.LEFT"],
+            ["↗", "Direction.UP_RIGHT"],
+            ["↘", "Direction.DOWN_RIGHT"],
+            ["↙", "Direction.DOWN_LEFT"],
+            ["↖", "Direction.UP_LEFT"],
+            ["R↑", "Direction.R_UP"],
+            ["R→", "Direction.R_RIGHT"],
+            ["R↓", "Direction.R_DOWN"],
+            ["R←", "Direction.R_LEFT"],
+            ["R↗", "Direction.R_UP_RIGHT"],
+            ["R↘", "Direction.R_DOWN_RIGHT"],
+            ["R↙", "Direction.R_DOWN_LEFT"],
+            ["R↖", "Direction.R_UP_LEFT"],
+          ],
+        },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "押しっぱなしを離す。",
+    },
+    {
+      type: "pokecon_finish",
+      message0: "正常終了する",
+      args0: [],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "コマンドを正常終了する（色違い検出時など）。",
+    },
+    {
+      type: "pokecon_press_rep",
+      message0: "%1 を %2 回押す 長さ %3 間隔 %4 待ち %5",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "TARGET",
+          options: [
+            ["Y", "Button.Y"],
+            ["B", "Button.B"],
+            ["A", "Button.A"],
+            ["X", "Button.X"],
+            ["L", "Button.L"],
+            ["R", "Button.R"],
+            ["ZL", "Button.ZL"],
+            ["ZR", "Button.ZR"],
+            ["MINUS", "Button.MINUS"],
+            ["PLUS", "Button.PLUS"],
+            ["LCLICK", "Button.LCLICK"],
+            ["RCLICK", "Button.RCLICK"],
+            ["HOME", "Button.HOME"],
+            ["CAPTURE", "Button.CAPTURE"],
+            ["↑", "Direction.UP"],
+            ["→", "Direction.RIGHT"],
+            ["↓", "Direction.DOWN"],
+            ["←", "Direction.LEFT"],
+            ["↗", "Direction.UP_RIGHT"],
+            ["↘", "Direction.DOWN_RIGHT"],
+            ["↙", "Direction.DOWN_LEFT"],
+            ["↖", "Direction.UP_LEFT"],
+            ["R↑", "Direction.R_UP"],
+            ["R→", "Direction.R_RIGHT"],
+            ["R↓", "Direction.R_DOWN"],
+            ["R←", "Direction.R_LEFT"],
+            ["R↗", "Direction.R_UP_RIGHT"],
+            ["R↘", "Direction.R_DOWN_RIGHT"],
+            ["R↙", "Direction.R_DOWN_LEFT"],
+            ["R↖", "Direction.R_UP_LEFT"],
+          ],
+        },
+        { type: "field_number", name: "COUNT", value: 3, min: 1, max: 1000 },
+        { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
+        { type: "field_number", name: "INTERVAL", value: 0.1, min: 0, max: 60 },
+        { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "指定回数だけ繰り返し押す。",
+    },
+    {
       type: "pokecon_print",
       message0: "表示 %1 %2",
       args0: [
@@ -889,6 +1041,40 @@
 
   pythonGenerator.forBlock["pokecon_wait"] = function (block) {
     return "self.wait(" + block.getFieldValue("SEC") + ")\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_hold"] = function (block) {
+    return (
+      "self.hold(" +
+      block.getFieldValue("TARGET") +
+      ", wait=" +
+      block.getFieldValue("WAIT") +
+      ")\n"
+    );
+  };
+
+  pythonGenerator.forBlock["pokecon_hold_end"] = function (block) {
+    return "self.holdEnd(" + block.getFieldValue("TARGET") + ")\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_finish"] = function () {
+    return "self.finish()\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_press_rep"] = function (block) {
+    return (
+      "self.pressRep(" +
+      block.getFieldValue("TARGET") +
+      ", " +
+      block.getFieldValue("COUNT") +
+      ", duration=" +
+      block.getFieldValue("DURATION") +
+      ", interval=" +
+      block.getFieldValue("INTERVAL") +
+      ", wait=" +
+      block.getFieldValue("WAIT") +
+      ")\n"
+    );
   };
 
   function valueOrEmpty(block, generator, inputName) {

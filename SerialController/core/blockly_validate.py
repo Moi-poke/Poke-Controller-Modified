@@ -74,6 +74,7 @@ _KNOWN_SELF_METHODS = frozenset(
         "hold",
         "holdEnd",
         "wait",
+        "finish",
         "print2",
         "discord_text",
         "discord_image",
