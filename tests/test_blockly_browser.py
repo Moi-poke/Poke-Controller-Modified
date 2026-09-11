@@ -2375,3 +2375,110 @@ def test_browser_dualband_codegen() -> None:
     )
     assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
     assert "DUALBAND-PROBE-OK" in proc.stdout
+
+
+def test_elapsed_block_registered() -> None:
+    """経過時間ブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert 'type: "pokecon_elapsed"' in src
+    assert 'forBlock["pokecon_elapsed"]' in src
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "pokecon_elapsed" in html
+
+
+PROBE_ELAPSED_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('ELAPSED-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_elapsed'] !== 'function') {
+  fail('pokecon_elapsed が登録されていない');
+}
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: { NAME: 'ElapsedTest' },
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+// 使うときだけ import time＋起点が出ること。
+const used = genCode(programWith({
+  type: 'controls_if',
+  inputs: {
+    IF0: {
+      block: {
+        type: 'logic_compare',
+        fields: { OP: 'GTE' },
+        inputs: {
+          A: { block: { type: 'pokecon_elapsed' } },
+          B: { block: { type: 'math_number', fields: { NUM: 3600 } } },
+        },
+      },
+    },
+    DO0: { block: { type: 'pokecon_finish' } },
+  },
+}));
+if (used.indexOf('import time') === -1) { fail('import timeが無い: ' + used); }
+if (used.indexOf('self._blockly_t0 = time.time()') === -1) { fail('起点が無い: ' + used); }
+if (used.indexOf('(time.time() - self._blockly_t0)') === -1) { fail('elapsed生成: ' + used); }
+// 使わないときは出ないこと（未使用importを作らない）。
+const unused = genCode(programWith({
+  type: 'pokecon_press',
+  fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+}));
+if (unused.indexOf('import time') !== -1) { fail('未使用でimport timeが出た: ' + unused); }
+if (unused.indexOf('_blockly_t0') !== -1) { fail('未使用で起点が出た: ' + unused); }
+console.log('=== GENERATED START ===');
+console.log(used);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_elapsed_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_ELAPSED_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert blockly_validate.validate_generated_code(code) == []

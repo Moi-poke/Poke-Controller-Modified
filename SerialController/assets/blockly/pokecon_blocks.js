@@ -295,6 +295,14 @@
       colour: 160,
     },
     {
+      type: "pokecon_elapsed",
+      message0: "開始からの秒数",
+      args0: [],
+      output: "Number",
+      colour: 160,
+      tooltip: "開始からの経過秒。ifとfinishで時間制限に使う。",
+    },
+    {
       type: "pokecon_hold",
       message0: "%1 を押し続ける 待ち %2",
       args0: [
@@ -1086,9 +1094,16 @@
       );
     // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
     var useStick = /Direction\s*\(/.test(combined);
-    var keysImport = useStick
-      ? "from Commands.Keys import Button, Direction, Stick\n"
-      : "from Commands.Keys import Button\n";
+    // 経過時間を使うときだけ time を足し、do() 先頭で起点を取る。
+    var useTime = /_blockly_t0/.test(combined);
+    var keysImport =
+      (useTime ? "import time\n" : "") +
+      (useStick
+        ? "from Commands.Keys import Button, Direction, Stick\n"
+        : "from Commands.Keys import Button\n");
+    if (useTime) {
+      inner = "        self._blockly_t0 = time.time()\n" + inner;
+    }
     var head;
     if (needImageProc && useAudio) {
       // 画像＋音声の併用。実行側の ImageProc 分岐に載り、音声源は属性で渡る。
@@ -1281,6 +1296,10 @@
 
   pythonGenerator.forBlock["pokecon_wait"] = function (block) {
     return "self.wait(" + block.getFieldValue("SEC") + ")\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_elapsed"] = function (block, generator) {
+    return ["(time.time() - self._blockly_t0)", generator.ORDER_ATOMIC];
   };
 
   pythonGenerator.forBlock["pokecon_hold"] = function (block) {
