@@ -201,3 +201,35 @@ def test_stick_import_and_press_passes() -> None:
         "        self.press(Direction(Stick.LEFT, 90, magnification=1.0))\n"
     )
     assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_subroutine_output_calls_pass() -> None:
+    code = sub_code(
+        "        self.log_sub()\n",
+        "    def log_sub(self) -> None:\n"
+        '        self.discord_text(content="hi")\n'
+        "        self.pressRep(Button.A, 2)\n"
+        "        self.hold(Button.B)\n"
+        "        self.holdEnd(Button.B)\n"
+        "\n",
+    )
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_screenshot_and_discord_image_pass() -> None:
+    code = (
+        "from Commands.Keys import Button\n"
+        "from Commands.PythonCommandBase import ImageProcPythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(ImageProcPythonCommand):\n"
+        '    NAME = "ブロック作成"\n'
+        "\n"
+        "    def __init__(self, cam, gui=None):\n"
+        "        super().__init__(cam, gui)\n"
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.camera.saveCapture()\n"
+        '        self.discord_image(content="done")\n'
+        '        print("done")\n'
+    )
+    assert blockly_validate.validate_generated_code(code) == []

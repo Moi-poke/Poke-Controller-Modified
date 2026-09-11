@@ -71,7 +71,12 @@ _KNOWN_SELF_METHODS = frozenset(
     {
         "press",
         "pressRep",
+        "hold",
+        "holdEnd",
         "wait",
+        "print2",
+        "discord_text",
+        "discord_image",
         "isContainTemplate",
         "isContainTemplate_max",
         "isContainTemplateGPU",

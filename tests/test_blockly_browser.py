@@ -1034,6 +1034,128 @@ def test_stick_block_registered() -> None:
     assert "grab" not in src
 
 
+def test_output_blocks_registered() -> None:
+    """出力系ブロック（表示・スクショ・Discord）と生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_print",
+        "pokecon_screenshot",
+        "pokecon_discord",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_print",
+        "pokecon_screenshot",
+        "pokecon_discord",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_OUTPUT_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('OUTPUT-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_print', 'pokecon_screenshot', 'pokecon_discord']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'OutputTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_print',
+              fields: { KIND: 'print' },
+              inputs: {
+                TEXT: { block: { type: 'text', fields: { TEXT: 'hi' } } },
+              },
+              next: {
+                block: {
+                  type: 'pokecon_screenshot',
+                  next: {
+                    block: {
+                      type: 'pokecon_discord',
+                      fields: { KIND: 'image' },
+                      inputs: {
+                        CONTENT: { block: { type: 'text', fields: { TEXT: 'done' } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_output_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_OUTPUT_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "print('hi')" in code
+    assert "self.camera.saveCapture()" in code
+    assert "self.discord_image(content='done')" in code
+    # カメラ系が混ざるためImageProc基底になること。
+    assert "ImageProcPythonCommand" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
 def test_toolbox_lists_stick_and_single_program() -> None:
     """toolboxにスティックがあり、保存時にプログラム1個制限があること."""
     html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")

@@ -295,6 +295,53 @@
       colour: 160,
     },
     {
+      type: "pokecon_print",
+      message0: "表示 %1 %2",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "KIND",
+          options: [
+            ["表示", "print"],
+            ["結果", "print2"],
+          ],
+        },
+        { type: "input_value", name: "TEXT" },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 60,
+      tooltip: "ログへ出す（表示＝進捗・結果＝後で見返す用）。",
+    },
+    {
+      type: "pokecon_screenshot",
+      message0: "スクショを撮る",
+      args0: [],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 210,
+      tooltip: "カメラ画像を保存する。使うと画像認識ありになる。",
+    },
+    {
+      type: "pokecon_discord",
+      message0: "Discord %1 %2",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "KIND",
+          options: [
+            ["テキスト", "text"],
+            ["画像付き", "image"],
+          ],
+        },
+        { type: "input_value", name: "CONTENT" },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 210,
+      tooltip: "Discordへ通知する。画像付きは画像認識ありになる。",
+    },
+    {
       type: "pokecon_sub_def",
       message0: "サブルーチン %1 引数 %2 %3",
       args0: [
@@ -679,13 +726,18 @@
       /self\.(isContainTemplate|waitTemplate|waitTemplateGone|getTemplatePosition|waitStable|getColorRatio|isSimilarColor|isContainTemplateDump|findAllTemplates|countTemplate)\s*\(/.test(
         combined,
       );
+    // カメラ・画像付きDiscordも ImageProc（cam あり）が必要なため同扱いにする。
+    var needImageProc =
+      vision ||
+      /self\.camera\s*\./.test(combined) ||
+      /self\.discord_image\s*\(/.test(combined);
     // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
     var useStick = /Direction\s*\(/.test(combined);
     var keysImport = useStick
       ? "from Commands.Keys import Button, Direction, Stick\n"
       : "from Commands.Keys import Button\n";
     var head;
-    if (vision) {
+    if (needImageProc) {
       // press系と混ぜても `Button` が未定義にならないよう、vision側にも付ける。
       head =
         keysImport +
@@ -837,6 +889,45 @@
 
   pythonGenerator.forBlock["pokecon_wait"] = function (block) {
     return "self.wait(" + block.getFieldValue("SEC") + ")\n";
+  };
+
+  function valueOrEmpty(block, generator, inputName) {
+    var code = "";
+    try {
+      code = generator.valueToCode(block, inputName, generator.ORDER_NONE);
+    } catch (e) {
+      code = "";
+    }
+    if (code == null || String(code).trim() === "") {
+      return '""';
+    }
+    return String(code).trim();
+  }
+
+  pythonGenerator.forBlock["pokecon_print"] = function (block, generator) {
+    var expr = valueOrEmpty(block, generator, "TEXT");
+    if (block.getFieldValue("KIND") === "print2") {
+      return "self.print2(" + expr + ")\n";
+    }
+    return "print(" + expr + ")\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_screenshot"] = function () {
+    return "self.camera.saveCapture()\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_discord"] = function (block, generator) {
+    var method =
+      block.getFieldValue("KIND") === "image"
+        ? "discord_image"
+        : "discord_text";
+    return (
+      "self." +
+      method +
+      "(content=" +
+      valueOrEmpty(block, generator, "CONTENT") +
+      ")\n"
+    );
   };
 
   function visionCrop(block) {
