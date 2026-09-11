@@ -4,7 +4,6 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 import cv2
-import requests
 import yaml
 from PIL import Image
 from core.Camera import Camera
@@ -174,6 +173,9 @@ class Discord_Notify:
             else:
                 files = {}
             data = {"content": content}
+            # 起動を速くするため requests は送信時まで読まない。
+            import requests
+
             response = requests.post(url, data=data, files=files)
             status_code = response.status_code
             if 200 <= status_code < 300:

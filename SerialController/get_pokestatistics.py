@@ -4,12 +4,12 @@ import os
 import tkinter as tk
 from tkinter import ttk
 
-import pandas as pd
-import requests
-
 
 # ポケモンホームからデータを引っ張ってくるGUI
 def get_rank_match_result():
+    # 起動を速くするため requests は通信時まで読まない。
+    import requests
+
     path = "db/rank_match.json"
     headers_rank_match_list = {
         "accept": "application/json, text/javascript, */*; q=0.01",
@@ -410,6 +410,9 @@ class GetFromHomeGUI:
         self.poke_data = poke_w
 
     def setPokemons(self):
+        # 起動を速くするため pandas はこの画面を開くまで読まない。
+        import pandas as pd
+
         f = open("db/pokedex.json", "r", encoding="utf-8")
         json_data = json.load(f)
         df = pd.read_csv("db/poke_form_name.csv", dtype=str)
@@ -531,6 +534,8 @@ class GetFromHomeGUI:
                     ),
                     end="",
                 )
+                # 起動を速くするため requests は通信時まで読まない。
+                import requests
 
                 for i in range(1, 6):
                     response = requests.get(

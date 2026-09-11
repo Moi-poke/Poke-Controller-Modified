@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
@@ -74,6 +75,8 @@ class CameraPanelMixin:
     filt_check: Any
     filt_setting_button: Any
     _filt_params: dict[str, Any]
+    _camera_open_lock: Any
+    _camera_open_seq: int
     camera_name_l: Any
     camera_name_fromDLL: Any
     Camera_Name: Any
@@ -303,8 +306,81 @@ class CameraPanelMixin:
             return None
 
     def _start_camera(self) -> None:
+        """カメラ枠を作り、デバイス開きは裏で始める（起動を止めない）。
+
+        開く前の readFrame は None を返し、プレビューは無効絵のまま
+        待つ。開けたら描画ループが自動で拾う。失敗は GUI スレッドへ
+        戻して知らせる（ワーカーから widget は触らない）。
+        """
         self.camera = Camera(self._current_fps())
-        self.openCamera()
+        try:
+            cam_id = self.camera_id.get()
+        except (tk.TclError, ValueError):
+            return
+        if self.camera_dic is not None and self.camera_dic.get(cam_id) == "Disable":
+            self.camera.destroy()
+            print("カメラを無効にしました")
+            logger.info("Camera is disabled")
+            return
+        self._camera_open_seq = int(getattr(self, "_camera_open_seq", 0)) + 1
+        thread = threading.Thread(
+            target=self._open_camera_bg,
+            args=(cam_id, self._camera_open_seq),
+            name="CameraOpener",
+            daemon=True,
+        )
+        thread.start()
+
+    def _open_camera_bg(self, cam_id: int, seq: int) -> None:
+        """裏で開く。結果は GUI スレッドへ戻す。"""
+        camera = self.camera
+        if camera is None:
+            return
+        try:
+            with self._camera_open_lock:
+                ok = camera.openCamera(cam_id)
+        except Exception as e:
+            logger.warning(f"カメラを開く裏処理で例外: {e}")
+            ok = False
+        try:
+            self.root.after(0, self._on_camera_opened, cam_id, seq, camera, ok)
+        except tk.TclError:
+            # 終了済み。開いてしまった物は閉じる（保持リーク防止）。
+            try:
+                camera.destroy()
+            except Exception:
+                pass
+
+    def _on_camera_opened(self, cam_id: int, seq: int, camera: Any, ok: bool) -> None:
+        """裏開きの結果受け（GUI スレッド）。古ければ捨てる。"""
+        if getattr(self, "_closing", False):
+            try:
+                camera.destroy()
+            except Exception:
+                pass
+            return
+        if (
+            seq != int(getattr(self, "_camera_open_seq", 0))
+            or camera is not self.camera
+        ):
+            # 取り直し済み。別物のまま開いていたら閉じる。
+            # 同一物は取り直し側が所有しているため触らない。
+            if camera is not self.camera and ok:
+                try:
+                    camera.destroy()
+                except Exception:
+                    pass
+            return
+        try:
+            current = self.camera_id.get()
+        except (tk.TclError, ValueError):
+            return
+        if current != cam_id:
+            return
+        if not ok:
+            message = f"Camera ID {cam_id} cannot open."
+            print(message)
+            logger.error(message)
 
     def _build_preview(self) -> None:
         width, height = map(int, self.show_size.get().split("x"))
@@ -330,7 +406,11 @@ class CameraPanelMixin:
         self.preview.ApplyRStickMouse()
 
     def openCamera(self) -> bool:
-        """選択中のカメラへ切り替え、成功時だけ True を返す。"""
+        """選択中のカメラへ切り替え、成功時だけ True を返す。
+
+        表（Reload 等）からの同期実行。裏の初回開きと錠で直列化し、
+        番号を進めて裏の古い結果を捨てる。
+        """
         if self.camera is None:
             return False
         try:

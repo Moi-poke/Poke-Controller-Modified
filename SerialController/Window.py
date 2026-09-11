@@ -183,6 +183,11 @@ class PokeControllerApp(
             on_list_refresh=self._refresh_after_run,
         )
         self._closing = False
+        # カメラ開きの直列化錠と発行番号。起動時は裏スレッドで開き、
+        # Reload は表で開く。両方が同時に走ると DirectShow の open が
+        # 食い違うため錠で直列化し、番号で古い結果を捨てる。
+        self._camera_open_lock = threading.Lock()
+        self._camera_open_seq = 0
         self.camera_dic: dict[int, str] | None = None
         # cam_id -> 表示名 / cam_id -> 識別子。同型ボードの区別に使う
         self.camera_keys: dict[int, str] = {}
