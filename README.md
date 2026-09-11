@@ -2,8 +2,6 @@
 
 本質的な部分はそのままに、機能を一部追加します
 
-![](https://github.com/Moi-Poke/Poke-Controller/blob/photo/photos/poke-con-modded.png)
-
 ![メインGUI](https://github.com/Moi-Poke/Poke-Controller/blob/photo/photos/gui.png)
 
 ## 変更点
