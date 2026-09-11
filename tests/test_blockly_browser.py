@@ -1018,10 +1018,97 @@ def test_stick_block_registered() -> None:
     assert "field_stickpad" in src
     assert "PokeconStick" in src
     assert "parsePadValue" in src
+    # パッド欄・数値欄・同期拡張がスティック定義にあること。
+    stick_sec = src[src.index('type: "pokecon_stick"') :]
+    stick_sec = stick_sec[: stick_sec.index('type: "pokecon_wait"')]
+    assert '"PAD"' in stick_sec
+    assert '"ANGLE"' in stick_sec
+    assert '"MAG"' in stick_sec
+    assert "pokecon_stick_pad_sync" in stick_sec or "pokecon_stick_pad_sync" in src
+    # パッドのドラッグがブロック移動に伝搬しないこと。
+    assert "stopPropagation" in src
+    assert "PokeconStick" in src
+    assert "parsePadValue" in src
 
 
 def test_toolbox_lists_stick_and_single_program() -> None:
     """toolboxにスティックがあり、保存時にプログラム1個制限があること."""
+
+
+def test_top_stick_ui_hidden() -> None:
+    """画面上部の仮想スティック区画は非表示であること（ブロック内蔵のため）。"""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    m = html.index('id="bar4"')
+    tag = html[m : html.index(">", m)]
+    assert "display" in tag and "none" in tag
+
+
+PROBE_STICKSYNC_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STICKSYNC-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const B = sandbox.Blockly;
+const ws = new B.Workspace();
+B.serialization.workspaces.load({ blocks: { languageVersion: 0, blocks: [
+  { type: 'pokecon_stick',
+    fields: { STICK: 'L', PAD: '90,100', ANGLE: 90, MAG: 100, DURATION: 0.1, WAIT: 0.2 } },
+] } }, ws);
+const blk = ws.getAllBlocks(false)[0];
+function eq(a, b, label) {
+  if (String(a) !== String(b)) { fail(label + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
+}
+// PAD → 数値へ反映されること。
+blk.setFieldValue('180,50', 'PAD');
+eq(blk.getFieldValue('ANGLE'), 180, 'pad->angle');
+eq(blk.getFieldValue('MAG'), 50, 'pad->mag');
+// 数値 → PADへ反映されること。
+blk.setFieldValue(270, 'ANGLE');
+eq(blk.getFieldValue('PAD'), '270,50', 'angle->pad');
+blk.setFieldValue(25, 'MAG');
+eq(blk.getFieldValue('PAD'), '270,25', 'mag->pad');
+// 生成コードはPADを正とすること。
+const code = B.Python.forBlock['pokecon_stick'](blk, B.Python);
+if (code.indexOf('Direction(Stick.LEFT, 270, magnification=0.25)') === -1) {
+  fail('生成がPAD追従しない: ' + code);
+}
+ws.dispose();
+console.log('STICKSYNC-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_sticksync_pad_and_numbers() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STICKSYNC_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "STICKSYNC-PROBE-OK" in proc.stdout
     html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
     assert "pokecon_stick" in html
     assert "stickpad" in html.lower() or "stick-pad" in html or "stickPad" in html

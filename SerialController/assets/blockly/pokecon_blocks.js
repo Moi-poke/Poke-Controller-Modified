@@ -161,6 +161,10 @@
       };
       circle.addEventListener("pointerdown", function (ev) {
         dragging = true;
+        // ブロック自体のドラッグ開始に伝搬させない（パッド操作に専念する）。
+        if (ev.stopPropagation) {
+          ev.stopPropagation();
+        }
         try {
           if (circle.setPointerCapture && ev.pointerId !== undefined) {
             circle.setPointerCapture(ev.pointerId);
@@ -257,7 +261,7 @@
     },
     {
       type: "pokecon_stick",
-      message0: "スティック %1 %2 長さ %3 待ち %4",
+      message0: "スティック %1 %2 角度 %3 強さ %4 長さ %5 待ち %6",
       args0: [
         {
           type: "field_dropdown",
@@ -268,13 +272,16 @@
           ],
         },
         { type: "field_stickpad", name: "PAD", value: "90,100" },
+        { type: "field_number", name: "ANGLE", value: 90, min: 0, max: 360 },
+        { type: "field_number", name: "MAG", value: 100, min: 0, max: 100 },
         { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
         { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
       ],
+      extensions: ["pokecon_stick_pad_sync"],
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "L/Rスティックをパッドで倒す（円内ドラッグで角度＋強さ）。",
+      tooltip: "L/Rスティックをパッドか数値で倒す（角度＋強さは連動）。",
     },
     {
       type: "pokecon_wait",
@@ -539,6 +546,69 @@
         }
       }
       return v;
+    });
+  });
+  // スティック欄の相互反映。PAD（パッド）とANGLE/MAG（数値）を同期する。
+  // 生成コードはPADを正とする（下のstickPadValueと対）。
+  // 再入防止のguardつき。保存物の読込時（validator発火）もそのまま寄る。
+  Blockly.Extensions.register("pokecon_stick_pad_sync", function () {
+    var pad = this.getField("PAD");
+    var ang = this.getField("ANGLE");
+    var mag = this.getField("MAG");
+    if (!pad || !ang || !mag) {
+      return;
+    }
+    var syncing = false;
+    function padToNums(v) {
+      var b = pad.getSourceBlock();
+      if (!b || syncing) {
+        return v;
+      }
+      var parsed = null;
+      try {
+        parsed = PokeconStick.parsePadValue(v);
+      } catch (e) {
+        parsed = null;
+      }
+      if (!parsed) {
+        return v;
+      }
+      syncing = true;
+      try {
+        b.setFieldValue(String(parsed.angle), "ANGLE");
+        b.setFieldValue(String(parsed.mag), "MAG");
+      } finally {
+        syncing = false;
+      }
+      return v;
+    }
+    function numsToPad(changed, v) {
+      var b = changed.getSourceBlock();
+      if (!b || syncing) {
+        return v;
+      }
+      var other = changed.name === "ANGLE" ? "MAG" : "ANGLE";
+      var a = changed.name === "ANGLE" ? v : b.getFieldValue("ANGLE");
+      var m = changed.name === "MAG" ? v : b.getFieldValue(other);
+      var na = Number(a);
+      var nm = Number(m);
+      if (!isFinite(na) || !isFinite(nm)) {
+        return v;
+      }
+      syncing = true;
+      try {
+        b.setFieldValue(PokeconStick.formatPadValue(na, nm), "PAD");
+      } finally {
+        syncing = false;
+      }
+      return v;
+    }
+    pad.setValidator(padToNums);
+    ang.setValidator(function (v) {
+      return numsToPad(this, v);
+    });
+    mag.setValidator(function (v) {
+      return numsToPad(this, v);
     });
   });
   // リポジトリは4スペース字下げ（ruff format）。既定の2スペースのままでは通らない。

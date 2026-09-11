@@ -44,7 +44,8 @@ html, body { height: 100%; margin: 0; }
 <button id="capsave" disabled>切出し保存</button>
 <span id="capstatus"></span>
 </div>
-<div id="bar4" style="padding: 0 8px 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+<!-- 上部の仮想スティック区画は非表示（ブロック内蔵パッドへ移行）。DOMは残す。 -->
+<div id="bar4" style="padding: 0 8px 8px; display: none; gap: 8px; align-items: center; flex-wrap: wrap;">
 <span>スティック</span>
 <span id="stickpad" style="position: relative; display: inline-block; width: 120px; height: 120px; border: 1px solid #999; border-radius: 50%; background: #f4f4f4; cursor: crosshair; touch-action: none;">
 <span id="stickdot" style="position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #06c; left: 54px; top: 54px; pointer-events: none;"></span>
