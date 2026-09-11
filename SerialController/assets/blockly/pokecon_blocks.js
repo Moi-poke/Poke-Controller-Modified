@@ -45,6 +45,175 @@
       });
   }
 
+  // スティックパッド欄の値論理（描画なしの純粋部。node vmで検証する）。
+  // 値の形は "角度,強さ"（例: "90,100"）。角度は度・0〜359へ正規化、
+  // 強さは%・0〜100へ丸める。Direction の流儀（0=右・90=上）に合わせる。
+  var PokeconStick = {
+    normAngle: function (a) {
+      a = a % 360;
+      if (a < 0) {
+        a += 360;
+      }
+      return Math.round(a) % 360;
+    },
+    clampMag: function (m) {
+      return Math.min(100, Math.max(0, Math.round(m)));
+    },
+    parsePadValue: function (v) {
+      if (v == null) {
+        return null;
+      }
+      var parts = String(v).split(",");
+      if (parts.length !== 2) {
+        return null;
+      }
+      var a = Number(String(parts[0]).trim());
+      var m = Number(String(parts[1]).trim());
+      if (!isFinite(a) || !isFinite(m)) {
+        return null;
+      }
+      return {
+        angle: PokeconStick.normAngle(a),
+        mag: PokeconStick.clampMag(m),
+      };
+    },
+    formatPadValue: function (angle, mag) {
+      return (
+        PokeconStick.normAngle(Number(angle)) +
+        "," +
+        PokeconStick.clampMag(Number(mag))
+      );
+    },
+    angleMagToXY: function (angle, magPct, r) {
+      var rad = (angle * Math.PI) / 180;
+      return {
+        x: (Math.cos(rad) * magPct * r) / 100,
+        y: (-Math.sin(rad) * magPct * r) / 100,
+      };
+    },
+    xyToAngleMag: function (dx, dy, r) {
+      var range = r > 0 ? r : 0;
+      var len = Math.sqrt(dx * dx + dy * dy);
+      var mag = range > 0 ? Math.round(Math.min(1, len / range) * 100) : 0;
+      var angle = PokeconStick.normAngle((Math.atan2(-dy, dx) * 180) / Math.PI);
+      return { angle: angle, mag: mag };
+    },
+  };
+  Blockly.PokeconStick = PokeconStick;
+
+  // ブロック内蔵のミニスティック欄。48pxの円パッドを直接ドラッグする。
+  // 値は "角度,強さ" 文字列で持ち運び（SERIALIZABLE のため保存物に残る）。
+  // 描画（initView/updateSize_）は実ブラウザでのみ走り、検証・生成の
+  // 経路（値論理＋generator）は PokeconStick に寄せてnodeで確かめる。
+  class StickPadField extends Blockly.Field {
+    constructor(value) {
+      super(value == null ? "90,100" : value);
+      this.SERIALIZABLE = true;
+    }
+    static fromJson(options) {
+      return new StickPadField(options ? options.value : undefined);
+    }
+    // 不正値は受け付けず（null＝拒否）、常に正規形で保つ。
+    doClassValidation_(newValue) {
+      var parsed = PokeconStick.parsePadValue(newValue);
+      if (!parsed) {
+        return null;
+      }
+      return parsed.angle + "," + parsed.mag;
+    }
+    getText_() {
+      return "";
+    }
+    // クリックで開く文字編集は使わない（パッドを直接触る）。
+    showEditor_() {
+      return;
+    }
+    initView() {
+      this.padSize_ = 48;
+      this.padR_ = 20;
+      var NS = "http://www.w3.org/2000/svg";
+      var field = this;
+      var circle = document.createElementNS(NS, "circle");
+      circle.setAttribute("cx", this.padSize_ / 2);
+      circle.setAttribute("cy", this.padSize_ / 2);
+      circle.setAttribute("r", this.padR_);
+      circle.setAttribute("fill", "#f4f4f4");
+      circle.setAttribute("stroke", "#999");
+      circle.setAttribute("stroke-width", "1");
+      this.fieldGroup_.appendChild(circle);
+      var dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("r", "5");
+      dot.setAttribute("fill", "#06c");
+      dot.setAttribute("style", "cursor:crosshair");
+      this.fieldGroup_.appendChild(dot);
+      this.padDot_ = dot;
+      // 要素捕捉でpad内完結にする（window共有の既存modalと干渉させない）。
+      var dragging = false;
+      var posOf = function (ev) {
+        var rect = field.fieldGroup_.getBoundingClientRect();
+        return {
+          dx: ev.clientX - (rect.left + rect.width / 2),
+          dy: ev.clientY - (rect.top + rect.height / 2),
+          range:
+            (Math.min(rect.width, rect.height) / 2 / field.padSize_) *
+            field.padR_,
+        };
+      };
+      circle.addEventListener("pointerdown", function (ev) {
+        dragging = true;
+        try {
+          if (circle.setPointerCapture && ev.pointerId !== undefined) {
+            circle.setPointerCapture(ev.pointerId);
+          }
+        } catch (e) {
+          /* 掴めなくてもドラッグは続ける */
+        }
+        var p = posOf(ev);
+        var v = PokeconStick.xyToAngleMag(p.dx, p.dy, p.range);
+        field.setValue(v.angle + "," + v.mag);
+        if (ev.preventDefault) {
+          ev.preventDefault();
+        }
+      });
+      circle.addEventListener("pointermove", function (ev) {
+        if (!dragging) {
+          return;
+        }
+        var p = posOf(ev);
+        var v = PokeconStick.xyToAngleMag(p.dx, p.dy, p.range);
+        field.setValue(v.angle + "," + v.mag);
+      });
+      var stop = function () {
+        dragging = false;
+      };
+      circle.addEventListener("pointerup", stop);
+      circle.addEventListener("pointercancel", stop);
+      this.updateSize_();
+      this.doValueUpdate_(this.getValue());
+    }
+    updateSize_() {
+      var s = this.padSize_ || 48;
+      this.size_ = new Blockly.utils.Size(s, s);
+    }
+    doValueUpdate_(newValue) {
+      Blockly.Field.prototype.doValueUpdate_.call(this, newValue);
+      if (!this.padDot_) {
+        return;
+      }
+      var parsed = PokeconStick.parsePadValue(newValue);
+      if (!parsed) {
+        return;
+      }
+      var s = this.padSize_ || 48;
+      var r = this.padR_ || 20;
+      var p = PokeconStick.angleMagToXY(parsed.angle, parsed.mag, r);
+      this.padDot_.setAttribute("cx", s / 2 + p.x);
+      this.padDot_.setAttribute("cy", s / 2 + p.y);
+    }
+  }
+  Blockly.fieldRegistry.register("field_stickpad", StickPadField);
+  Blockly.StickPadField = StickPadField;
+
   Blockly.defineBlocksWithJsonArray([
     {
       type: "pokecon_program",
@@ -88,7 +257,7 @@
     },
     {
       type: "pokecon_stick",
-      message0: "スティック %1 角度 %2 強さ %3 長さ %4 待ち %5",
+      message0: "スティック %1 %2 長さ %3 待ち %4",
       args0: [
         {
           type: "field_dropdown",
@@ -98,15 +267,14 @@
             ["R", "RIGHT"],
           ],
         },
-        { type: "field_number", name: "ANGLE", value: 90, min: 0, max: 360 },
-        { type: "field_number", name: "MAG", value: 100, min: 0, max: 100 },
+        { type: "field_stickpad", name: "PAD", value: "90,100" },
         { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
         { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
       ],
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "L/Rスティックを角度（度）＋強さ（%）で倒す。",
+      tooltip: "L/Rスティックをパッドで倒す（円内ドラッグで角度＋強さ）。",
     },
     {
       type: "pokecon_wait",
@@ -548,7 +716,36 @@
     );
   };
 
+  // PAD欄（"角度,強さ"）を読む。無い旧保存物はANGLE/MAG欄に fallback する。
+  function stickPadValue(block) {
+    var parsed = null;
+    try {
+      parsed = PokeconStick.parsePadValue(block.getFieldValue("PAD"));
+    } catch (e) {
+      parsed = null;
+    }
+    if (parsed) {
+      return parsed;
+    }
+    var angle = 90;
+    var magPct = 100;
+    try {
+      var a = Number(block.getFieldValue("ANGLE"));
+      if (isFinite(a)) {
+        angle = a;
+      }
+      var m = Number(block.getFieldValue("MAG"));
+      if (isFinite(m)) {
+        magPct = Math.min(100, Math.max(0, m));
+      }
+    } catch (e) {
+      /* 欄が無ければ既定のまま */
+    }
+    return { angle: angle, mag: magPct };
+  }
+
   pythonGenerator.forBlock["pokecon_stick"] = function (block) {
+    var v = stickPadValue(block);
     var rawStick = "";
     try {
       rawStick = block.getFieldValue("STICK");
@@ -556,25 +753,15 @@
       rawStick = "";
     }
     var stick = rawStick === "RIGHT" ? "RIGHT" : "LEFT";
-    var angle = Number(block.getFieldValue("ANGLE"));
-    if (!isFinite(angle)) {
-      angle = 90;
-    }
-    var magPct = Number(block.getFieldValue("MAG"));
-    if (!isFinite(magPct)) {
-      magPct = 100;
-    }
-    magPct = Math.min(100, Math.max(0, magPct));
-    var mag = magPct / 100;
     var dur = block.getFieldValue("DURATION");
     var wait = block.getFieldValue("WAIT");
     return (
       "self.press(Direction(Stick." +
       stick +
       ", " +
-      angle +
+      v.angle +
       ", magnification=" +
-      mag +
+      v.mag / 100 +
       ")" +
       ", duration=" +
       dur +

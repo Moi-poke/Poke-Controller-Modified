@@ -1015,6 +1015,9 @@ def test_stick_block_registered() -> None:
     assert 'type: "pokecon_stick"' in src
     assert 'forBlock["pokecon_stick"]' in src
     assert "Direction(" in src
+    assert "field_stickpad" in src
+    assert "PokeconStick" in src
+    assert "parsePadValue" in src
 
 
 def test_toolbox_lists_stick_and_single_program() -> None:
@@ -1023,6 +1026,7 @@ def test_toolbox_lists_stick_and_single_program() -> None:
     assert "pokecon_stick" in html
     assert "stickpad" in html.lower() or "stick-pad" in html or "stickPad" in html
     assert "1個まで" in html
+    assert "'PAD'" in html or '"PAD"' in html
 
 
 PROBE_STICK_JS = """\
@@ -1066,7 +1070,7 @@ const state = {
           DO: {
             block: {
               type: 'pokecon_stick',
-              fields: { STICK: 'LEFT', ANGLE: 90, MAG: 100, DURATION: 0.5, WAIT: 0.2 },
+              fields: { STICK: 'LEFT', PAD: '90,100', DURATION: 0.5, WAIT: 0.2 },
             },
           },
         },
@@ -1106,6 +1110,95 @@ def test_browser_stick_codegen() -> None:
     assert "wait=0.2" in code
     assert "from Commands.Keys import Button, Direction, Stick" in code
     assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_STICKPAD_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STICKPAD-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const B = sandbox.Blockly;
+if (!B.PokeconStick) { fail('Blockly.PokeconStick が無い'); }
+const S = B.PokeconStick;
+function eq(a, b, label) {
+  if (a !== b) { fail(label + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
+}
+let p = S.parsePadValue('90,100');
+if (!p) { fail('基本形を読めない'); }
+eq(p.angle, 90, 'angle');
+eq(p.mag, 100, 'mag');
+p = S.parsePadValue(' 0,0 ');
+if (!p) { fail('0,0 を読めない'); }
+eq(p.angle, 0, 'angle0');
+eq(p.mag, 0, 'mag0');
+if (S.parsePadValue('') !== null) { fail('空文字はnull'); }
+if (S.parsePadValue(null) !== null) { fail('nullはnull'); }
+if (S.parsePadValue('a,b') !== null) { fail('非数値はnull'); }
+if (S.parsePadValue('90') !== null) { fail('要素不足はnull'); }
+p = S.parsePadValue('370,150');
+if (!p) { fail('範囲外を読めない'); }
+eq(p.angle, 10, 'angle正規化');
+eq(p.mag, 100, 'mag丸め');
+eq(S.formatPadValue(90, 100), '90,100', 'format');
+const xy = S.angleMagToXY(90, 100, 54);
+if (Math.abs(xy.x) > 1e-9 || xy.y !== -54) { fail('XY換算: ' + JSON.stringify(xy)); }
+const back = S.xyToAngleMag(0, -54, 54);
+eq(back.angle, 90, '逆換算angle');
+eq(back.mag, 100, '逆換算mag');
+const center = S.xyToAngleMag(0, 0, 54);
+eq(center.mag, 0, '中心mag');
+if (typeof B.StickPadField !== 'function') { fail('StickPadField が無い'); }
+if (typeof B.StickPadField.fromJson !== 'function') { fail('fromJson が無い'); }
+// 旧保存物相当：PAD無し・ANGLE/MAGありの偽ブロックは従来値で出すこと。
+const legacy = B.Python.forBlock['pokecon_stick']({
+  getFieldValue: function (n) {
+    if (n === 'STICK') { return 'RIGHT'; }
+    if (n === 'ANGLE') { return 180; }
+    if (n === 'MAG') { return 50; }
+    if (n === 'DURATION') { return 0.5; }
+    if (n === 'WAIT') { return 0.2; }
+    return null;
+  },
+}, B.Python);
+if (legacy.indexOf('Direction(Stick.RIGHT, 180, magnification=0.5)') === -1) {
+  fail('旧欄フォールバック: ' + legacy);
+}
+console.log('STICKPAD-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_stickpad_logic_and_legacy() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STICKPAD_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "STICKPAD-PROBE-OK" in proc.stdout
 
 
 PROBE_SUB_JS = """\

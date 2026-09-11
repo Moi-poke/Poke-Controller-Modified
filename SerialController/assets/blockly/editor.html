@@ -1245,10 +1245,29 @@ html, body { height: 100%; margin: 0; }
       try {
         var s = b.getFieldValue('STICK');
         if (s) { sideEl.value = s; }
-        var a = parseFloat(b.getFieldValue('ANGLE'));
-        if (!isNaN(a)) { angleEl.value = String(Math.min(360, Math.max(0, a))); }
-        var m = parseFloat(b.getFieldValue('MAG'));
-        if (!isNaN(m)) { magEl.value = String(Math.min(100, Math.max(0, m))); }
+        var pad = null;
+        try {
+          pad = b.getFieldValue('PAD');
+        } catch (e) {
+          pad = null;
+        }
+        var parsed = null;
+        try {
+          if (Blockly.PokeconStick) {
+            parsed = Blockly.PokeconStick.parsePadValue(pad);
+          }
+        } catch (e) {
+          parsed = null;
+        }
+        if (parsed) {
+          angleEl.value = String(parsed.angle);
+          magEl.value = String(parsed.mag);
+        } else {
+          var a = parseFloat(b.getFieldValue('ANGLE'));
+          if (!isNaN(a)) { angleEl.value = String(Math.min(360, Math.max(0, a))); }
+          var m = parseFloat(b.getFieldValue('MAG'));
+          if (!isNaN(m)) { magEl.value = String(Math.min(100, Math.max(0, m))); }
+        }
       } catch (e) { /* 読めなければ今の値を保つ */ }
       draw();
     }
@@ -1273,8 +1292,25 @@ html, body { height: 100%; margin: 0; }
         return;
       }
       target.setFieldValue(sideEl.value, 'STICK');
-      target.setFieldValue(String(a), 'ANGLE');
-      target.setFieldValue(String(m), 'MAG');
+      // PAD欄があればそこへ書く（値の正規化は欄のvalidatorに任せる）。
+      var hasPad = false;
+      try {
+        hasPad = (typeof target.getField === 'function') && !!target.getField('PAD');
+      } catch (e) {
+        hasPad = false;
+      }
+      if (hasPad) {
+        target.setFieldValue(String(a) + ',' + String(m), 'PAD');
+      }
+      // 旧ANGLE/MAG欄つき（PAD以前の保存物）にも残す。無ければ何もしない。
+      try {
+        if ((typeof target.getField === 'function') && target.getField('ANGLE')) {
+          target.setFieldValue(String(a), 'ANGLE');
+        }
+        if ((typeof target.getField === 'function') && target.getField('MAG')) {
+          target.setFieldValue(String(m), 'MAG');
+        }
+      } catch (e) { /* 旧欄が無ければ何もしない */ }
       setStatus('反映しました', false);
     });
     draw();
