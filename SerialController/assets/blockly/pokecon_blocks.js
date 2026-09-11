@@ -495,11 +495,12 @@
     },
     {
       type: "pokecon_sub_def",
-      message0: "サブルーチン %1 引数 %2 %3",
+      message0: "サブルーチン %1 引数 %2 %3 戻り値 %4",
       args0: [
         { type: "field_input", name: "NAME", text: "my_sub" },
         { type: "field_input", name: "ARGS", text: "" },
         { type: "input_statement", name: "DO" },
+        { type: "input_value", name: "RETURN" },
       ],
       colour: 290,
       tooltip: "トップレベルに置く。呼ぶ側から self.名前() で呼べる。",
@@ -517,6 +518,19 @@
       nextStatement: null,
       colour: 290,
       tooltip: "サブルーチン定義を呼び出す。引数は左から順に渡る。",
+    },
+    {
+      type: "pokecon_sub_call_value",
+      message0: "呼んだ値 %1 引数 %2 %3 %4",
+      args0: [
+        { type: "field_input", name: "NAME", text: "my_sub" },
+        { type: "input_value", name: "ARG0" },
+        { type: "input_value", name: "ARG1" },
+        { type: "input_value", name: "ARG2" },
+      ],
+      output: null,
+      colour: 290,
+      tooltip: "戻り値つきサブルーチンを呼び出す（値として使う）。",
     },
     {
       type: "pokecon_comment",
@@ -856,8 +870,23 @@
     } catch (e) {
       body = "";
     }
-    var inner = body ? generator.prefixLines(body, "    ") : "        pass\n";
+    var ret = "";
+    try {
+      ret = generator.valueToCode(defBlock, "RETURN", generator.ORDER_NONE);
+    } catch (e) {
+      ret = "";
+    }
+    var inner = body ? generator.prefixLines(body, "    ") : "";
     var sig = args.length ? "self, " + args.join(", ") : "self";
+    if (ret != null && String(ret).trim() !== "") {
+      // 戻り値つき。注釈なしにする（-> None のまま return 値を書くと
+      // 型検査で落ちるため）。
+      inner += "    return " + String(ret).trim() + "\n";
+      return "    def " + name + "(" + sig + "):\n" + inner + "\n";
+    }
+    if (!inner) {
+      inner = "        pass\n";
+    }
     return "    def " + name + "(" + sig + ") -> None:\n" + inner + "\n";
   }
 
@@ -926,7 +955,7 @@
     return "";
   };
 
-  pythonGenerator.forBlock["pokecon_sub_call"] = function (block, generator) {
+  function subCallCode(block, generator) {
     var rawName = "";
     try {
       rawName = block.getFieldValue("NAME");
@@ -946,7 +975,18 @@
         args.push(String(code).trim());
       }
     });
-    return "self." + name + "(" + args.join(", ") + ")\n";
+    return "self." + name + "(" + args.join(", ") + ")";
+  }
+
+  pythonGenerator.forBlock["pokecon_sub_call"] = function (block, generator) {
+    return subCallCode(block, generator) + "\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_sub_call_value"] = function (
+    block,
+    generator,
+  ) {
+    return [subCallCode(block, generator), generator.ORDER_ATOMIC];
   };
 
   pythonGenerator.forBlock["pokecon_comment"] = function (block) {

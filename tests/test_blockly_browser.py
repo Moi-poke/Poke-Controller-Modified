@@ -1742,3 +1742,116 @@ def test_browser_subroutine_vision_switches_base() -> None:
     assert "def check(self)" in code
     assert "self.check()" in code
     assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_subroutine_return_blocks_registered() -> None:
+    """戻り値つき呼出ブロックと定義のRETURN入力があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert 'type: "pokecon_sub_call_value"' in src
+    assert 'forBlock["pokecon_sub_call_value"]' in src
+    assert '"RETURN"' in src
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "pokecon_sub_call_value" in html
+
+
+PROBE_SUBRET_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('SUBRET-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_sub_call_value'] !== 'function') {
+  fail('pokecon_sub_call_value が登録されていない');
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'SubRet' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_print',
+              fields: { KIND: 'print' },
+              inputs: {
+                TEXT: {
+                  block: {
+                    type: 'pokecon_sub_call_value',
+                    fields: { NAME: 'get_num' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'pokecon_sub_def',
+        fields: { NAME: 'get_num', ARGS: '' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_press',
+              fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+            },
+          },
+          RETURN: { block: { type: 'math_number', fields: { NUM: 42 } } },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_subroutine_return_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_SUBRET_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "def get_num(self):" in code
+    assert "return 42" in code
+    assert "self.get_num()" in code
+    assert blockly_validate.validate_generated_code(code) == []
