@@ -113,8 +113,10 @@ Python 3.12以降が必要です（3.12.10固定。`.python-version` 参照）�
 
 ## Installation
 
+### 一般ユーザー
+
 uvで管理しています。[`pyproject.toml`](pyproject.toml) + [`uv.lock`](uv.lock) が正本です（`requirements.txt` はありません）。
-Python は 3.12.10 固定（`.python-version`）で、`uv sync` が用意します。
+Python は 3.12.10 固定（`.python-version`）としており、`uv sync` が用意します。
 
 ```cmd
 pip install uv
@@ -135,8 +137,11 @@ python .\SerialController\Window.py --profile switch1 --transport pico_uart
 通信方式は `legacy_text`（本家 Leonardo 用）と `pico_uart`（pico-wakeCon 用）の2種です。
 `--transport` を省略したときは設定ファイルの `[Transport] name` を使います。
 
+### 開発する方
+
 開発用コマンドはタスクランナー `task` にまとめています。
 `task` 本体は別途導入（`winget install Task.Task`）して、`task setup_dev` でフックを有効化してください。
+開発の約束事は [AGENTS.md](AGENTS.md) を見てください。
 
 ```cmd
 task app       起動する（task app PROFILE=switch1 でプロファイル指定）
