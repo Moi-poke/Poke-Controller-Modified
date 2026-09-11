@@ -494,6 +494,32 @@
       tooltip: "Discordへ通知する。画像付きは画像認識ありになる。",
     },
     {
+      type: "pokecon_audio_tone_contains",
+      message0: "音 %1〜%2Hz が閾値 %3 を超えた",
+      args0: [
+        { type: "field_number", name: "LO", value: 3000, min: 0, max: 22050 },
+        { type: "field_number", name: "HI", value: 3200, min: 0, max: 22050 },
+        { type: "field_number", name: "THRESH", value: 1000000 },
+      ],
+      output: "Boolean",
+      colour: 250,
+      tooltip: "指定帯域の音量が閾値を超えたら真（要調整）。",
+    },
+    {
+      type: "pokecon_audio_wait_tone",
+      message0: "音 %1〜%2Hz を待つ 閾値 %3 上限 %4",
+      args0: [
+        { type: "field_number", name: "LO", value: 3000, min: 0, max: 22050 },
+        { type: "field_number", name: "HI", value: 3200, min: 0, max: 22050 },
+        { type: "field_number", name: "THRESH", value: 1000000 },
+        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 250,
+      tooltip: "指定帯域の音が鳴るまで待つ（要調整）。",
+    },
+    {
       type: "pokecon_sub_def",
       message0: "サブルーチン %1 引数 %2 %3 戻り値 %4",
       args0: [
@@ -912,13 +938,46 @@
       vision ||
       /self\.camera\s*\./.test(combined) ||
       /self\.discord_image\s*\(/.test(combined);
+    // 音声ブロックは AudioMixin が要る。画像系と混ざれば併用基底にする。
+    var useAudio =
+      /self\.(waitTone|isTonePresent|waitSound|isSoundPresent|recordClip)\s*\(/.test(
+        combined,
+      );
     // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
     var useStick = /Direction\s*\(/.test(combined);
     var keysImport = useStick
       ? "from Commands.Keys import Button, Direction, Stick\n"
       : "from Commands.Keys import Button\n";
     var head;
-    if (needImageProc) {
+    if (needImageProc && useAudio) {
+      // 画像＋音声の併用。実行側の ImageProc 分岐に載り、音声源は属性で渡る。
+      head =
+        keysImport +
+        "from Commands.PythonCommandBase import ImageProcAudioPythonCommand\n" +
+        "\n\n" +
+        "class BlocklyCmd(ImageProcAudioPythonCommand):\n" +
+        "    NAME = " +
+        pyStr(name) +
+        "\n\n" +
+        "    def __init__(self, cam, gui=None, audio=None):\n" +
+        "        super().__init__(cam, gui, audio)\n" +
+        "\n" +
+        "    def do(self) -> None:\n";
+    } else if (useAudio) {
+      // 音声のみ。実行側の Audio 分岐が音声源を位置引数で渡す。
+      head =
+        keysImport +
+        "from Commands.PythonCommandBase import AudioPythonCommand\n" +
+        "\n\n" +
+        "class BlocklyCmd(AudioPythonCommand):\n" +
+        "    NAME = " +
+        pyStr(name) +
+        "\n\n" +
+        "    def __init__(self, audio=None):\n" +
+        "        super().__init__(audio)\n" +
+        "\n" +
+        "    def do(self) -> None:\n";
+    } else if (needImageProc) {
       // press系と混ぜても `Button` が未定義にならないよう、vision側にも付ける。
       head =
         keysImport +
@@ -1152,6 +1211,36 @@
       method +
       "(content=" +
       valueOrEmpty(block, generator, "CONTENT") +
+      ")\n"
+    );
+  };
+
+  function audioToneArgs(block) {
+    return (
+      "[(" +
+      block.getFieldValue("LO") +
+      ", " +
+      block.getFieldValue("HI") +
+      ")], [" +
+      block.getFieldValue("THRESH") +
+      "]"
+    );
+  }
+
+  pythonGenerator.forBlock["pokecon_audio_tone_contains"] = function (
+    block,
+    generator,
+  ) {
+    var code = "self.isTonePresent(" + audioToneArgs(block) + ")";
+    return [code, generator.ORDER_ATOMIC];
+  };
+
+  pythonGenerator.forBlock["pokecon_audio_wait_tone"] = function (block) {
+    return (
+      "self.waitTone(" +
+      audioToneArgs(block) +
+      ", timeout=" +
+      block.getFieldValue("TIMEOUT") +
       ")\n"
     );
   };

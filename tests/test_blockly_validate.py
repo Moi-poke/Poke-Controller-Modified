@@ -233,3 +233,14 @@ def test_screenshot_and_discord_image_pass() -> None:
         '        print("done")\n'
     )
     assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_audio_tone_calls_pass() -> None:
+    code = sub_code(
+        "        self.wait_tone_sub()\n",
+        "    def wait_tone_sub(self) -> None:\n"
+        "        self.waitTone([(3000.0, 3200.0)], [1000000.0], timeout=10.0)\n"
+        "        x = self.isTonePresent([(3000.0, 3200.0)], [1000000.0])\n"
+        "\n",
+    )
+    assert blockly_validate.validate_generated_code(code) == []

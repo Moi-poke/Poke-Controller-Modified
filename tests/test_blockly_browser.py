@@ -1053,6 +1053,158 @@ def test_output_blocks_registered() -> None:
         assert block_type in html, f"toolboxに {block_type} が無い"
 
 
+def test_audio_blocks_registered() -> None:
+    """音声ブロック（トーン検知・待ち）と生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_audio_tone_contains",
+        "pokecon_audio_wait_tone",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "音声" in html
+    for block_type in [
+        "pokecon_audio_tone_contains",
+        "pokecon_audio_wait_tone",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_AUDIO_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('AUDIO-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_audio_tone_contains', 'pokecon_audio_wait_tone']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+// 音声のみ → Audio基底。
+const audioOnly = genCode([
+  {
+    type: 'pokecon_program',
+    fields: { NAME: 'AudioOnly' },
+    inputs: {
+      DO: {
+        block: {
+          type: 'pokecon_audio_wait_tone',
+          fields: { LO: 3000, HI: 3200, THRESH: 1000000, TIMEOUT: 10 },
+        },
+      },
+    },
+  },
+]);
+if (audioOnly.indexOf('AudioPythonCommand') === -1) {
+  fail('音声のみでAudio基底にならない: ' + audioOnly);
+}
+if (audioOnly.indexOf('self.waitTone([(3000, 3200)], [1000000], timeout=10)') === -1) {
+  fail('waitTone生成: ' + audioOnly);
+}
+// 画像＋音声 → 併用基底。
+const mixed = genCode([
+  {
+    type: 'pokecon_program',
+    fields: { NAME: 'Mixed' },
+    inputs: {
+      DO: {
+        block: {
+          type: 'pokecon_vision_wait_appear',
+          fields: { TEMPLATE: 'my-pack/a.png', TIMEOUT: 10, THRESHOLD: 0.7, CROP: '' },
+        },
+      },
+    },
+  },
+  {
+    type: 'pokecon_sub_def',
+    fields: { NAME: 'check', ARGS: '' },
+    inputs: {
+      DO: {
+        block: {
+          type: 'controls_if',
+          inputs: {
+            IF0: {
+              block: {
+                type: 'pokecon_audio_tone_contains',
+                fields: { LO: 3000, HI: 3200, THRESH: 1000000 },
+              },
+            },
+            DO0: {
+              block: {
+                type: 'pokecon_press',
+                fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+]);
+if (mixed.indexOf('ImageProcAudioPythonCommand') === -1) {
+  fail('混在で併用基底にならない: ' + mixed);
+}
+if (mixed.indexOf('self.isTonePresent([(3000, 3200)], [1000000])') === -1) {
+  fail('isTonePresent生成: ' + mixed);
+}
+console.log('=== GENERATED START ===');
+console.log(mixed);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_audio_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_AUDIO_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "ImageProcAudioPythonCommand" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
 def test_hold_finish_repetition_blocks_registered() -> None:
     """保持・終了・連打ブロックと生成器、標準の結合・乱数がtoolboxにあること."""
     src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")

@@ -20,6 +20,8 @@
 
 出力： 「表示」ブロック（表示／結果＋値）で `print(...)`／`self.print2(...)` を出す。「スクショ」ブロックで `self.camera.saveCapture()`（自動保存名）を出す。「Discord」ブロック（テキスト／画像付き＋内容）で `self.discord_text(...)`／`self.discord_image(...)` を出す。スクショ・画像付きDiscordを使うと生成コードは自動で `ImageProcPythonCommand`（カメラあり）になる。
 
+音声： 「音声」分類に2種。トーン検知（値・標準ifの条件に直結）とトーン待ち（文）。帯域（Hz）・閾値・上限（待ちのみ）を指定し、`self.isTonePresent(...)`／`self.waitTone(...)` を出す。閾値は環境依存のため要調整（`listen_shiny2.py` の平常値×倍率の方式が目安）。音声のみなら `AudioPythonCommand`、画像系と混ざると自動で `ImageProcAudioPythonCommand`（カメラ＋音声）になる。Audio欄の入力が必要。
+
 欄の形式： TEMPLATE欄は候補からのコンボボックス選択（未登録名は先頭に残る。`(空欄)`で消せる）。CROP欄は空＝全体または`x1,y1,x2,y2`（実画素）。THRESHOLD欄は0〜1（既定0.7）。PREVIEW欄は指定中画像の縮小表示（幅120pxまで、出ない名は壊れ表示になることがある。表示のみで保存物・生成コードは変わらない）。
 
 テンプレ画像： [`Template/`](../SerialController/Template)以下の画像が候補に出る（`画像`欄→`選択中へ反映`で選択中ブロックへ入る。選択が外れているときは最後に触ったブロック）。素名（例: `a.png`）は保存できるが共有画像扱いで配布zipに含まれない。配布する場合は`Template/<名>/...`に置く。

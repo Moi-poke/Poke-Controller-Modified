@@ -92,6 +92,7 @@ _KNOWN_SELF_METHODS = frozenset(
         "isSimilarColor",
         "waitTone",
         "waitSound",
+        "isTonePresent",
     }
 )
 
