@@ -1,6 +1,6 @@
 # ARCHITECTURE
 
-Poke-Controller Modified の構成メモ。詳細な開発手順は `AGENTS.md`、
+Poke-Controller Modified の構成メモ。詳細な開発手順は [`AGENTS.md`](../AGENTS.md)、
 自動化コマンドの作り方は本家 wiki を参照。
 
 ## 層構造
@@ -25,36 +25,36 @@ core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の imp
 ファーム (Arduino Leonardo / Pico；専用品は別 repo Moi-poke/pico-wakeCon)
 ```
 
-エントリは `SerialController/__main__.py`（`python -m SerialController`）と
-`Window.py` 直起動（`launcher.py` が使う従来経路）の2口で、どちらも
+エントリは [`SerialController/__main__.py`](../SerialController/__main__.py)（`python -m SerialController`）と
+[`Window.py`](../SerialController/Window.py) 直起動（[`launcher.py`](../SerialController/launcher.py) が使う従来経路）の2口で、どちらも
 `Window.main()` へ集まる。利用者スクリプトの公開面（`Commands.Keys` /
 `Commands.PythonCommandBase` / `Commands.McuCommandBase` /
 `Commands.WakeLink` / `Commands.CommandVision` /
 `Commands.CommandAudio`）と `settings*.ini` の
-書式は凍結。公開面の正本は `core/user_api_allowlist.py`。深刻度は表面で
-違い、検査（`tools/check_user_api.py`）は違反、保存時
-（`core/blockly_validate.py`）は異常、配布時（`core/pack_zip.py`）は
-未知を注意に留める（意図的な使い分け）。書式知識の実体は `config.py`（Tk なし）にあり、
+書式は凍結。公開面の正本は [`core/user_api_allowlist.py`](../SerialController/core/user_api_allowlist.py)。深刻度は表面で
+違い、検査（[`tools/check_user_api.py`](../tools/check_user_api.py)）は違反、保存時
+（[`core/blockly_validate.py`](../SerialController/core/blockly_validate.py)）は異常、配布時（[`core/pack_zip.py`](../SerialController/core/pack_zip.py)）は
+未知を注意に留める（意図的な使い分け）。書式知識の実体は [`config.py`](../SerialController/config.py)（Tk なし）にあり、
 `Settings.GuiSettings` は Tk との鏡と入出力の手順だけを持つ。
 
-GUI 層（`Window.py`・`GuiAssets.py`・`Settings.py` ほか）は `core/` の利用者。
-`Window.py` は起動の組立・設定の出し入れ・終了処理だけを持ち、画面の
-部品ごとの手順は `ui/` の Mixin（`camera_panel` / `serial_panel` /
+GUI 層（[`Window.py`](../SerialController/Window.py)・[`GuiAssets.py`](../SerialController/GuiAssets.py)・[`Settings.py`](../SerialController/Settings.py) ほか）は [`core/`](../SerialController/core) の利用者。
+[`Window.py`](../SerialController/Window.py) は起動の組立・設定の出し入れ・終了処理だけを持ち、画面の
+部品ごとの手順は [`ui/`](../SerialController/ui) の Mixin（`camera_panel` / `serial_panel` /
 `command_panel` / `log_panel` / `audio_panel`）に分かれる。Mixin は `self` 越しに触る
-属性を宣言しておく（mypy のため）。`ui/` から `Window` 本体の import は
-禁止（循環になる）。実行の手順は `services/`（`command_runner.py`: 起動・
+属性を宣言しておく（mypy のため）。[`ui/`](../SerialController/ui) から `Window` 本体の import は
+禁止（循環になる）。実行の手順は [`services/`](../SerialController/services)（`command_runner.py`: 起動・
 停止・見張り・後始末の状態機械、`serial_service.py`: Sender の所有・
 接続・切替・キーボードの寿命管理、`audio_service.py`: 取込口の所有・
-切替・モニター再生の手順）へ委ねる。`services/` は tkinter を
-import しない。逆向きの依存は `tools/check_core.py`（`task bounds`）で
+切替・モニター再生の手順）へ委ねる。[`services/`](../SerialController/services) は tkinter を
+import しない。逆向きの依存は [`tools/check_core.py`](../tools/check_core.py)（`task bounds`）で
 禁止している。
 
 ## core/ への移し方
 
-- 同名ファイルで `core/` へ移動し、旧位置には再公開シムだけ残す
+- 同名ファイルで [`core/`](../SerialController/core) へ移動し、旧位置には再公開シムだけ残す
   （`from core.X import Y as Y` 形式）。`from Commands.X import ...` は
   そのまま動く。新規コードは `core` から読む
-- `core/` 内の相互参照は `core.*` の絶対 import にする（相対 import 禁止）
+- [`core/`](../SerialController/core) 内の相互参照は `core.*` の絶対 import にする（相対 import 禁止）
 
 ## 送信の経路（2系統）
 
@@ -79,13 +79,13 @@ import しない。逆向きの依存は `tools/check_core.py`（`task bounds`�
 ここへ寄せる。内部レートは44.1kHz monoに統一し、デバイス自レート
 （48kHz等）との差はリサンプルで吸収する。録音テンプレートは
 `Template/audio/<pack>/*.wav`、録音クリップは `AudioClips/`。
-設定は `[Audio]`（`config.py` の既定＋補正に乗せる）。利用者向けの
-操作手順は `docs/AUDIO.md` を参照。
+設定は `[Audio]`（[`config.py`](../SerialController/config.py) の既定＋補正に乗せる）。利用者向けの
+操作手順は [`docs/AUDIO.md`](AUDIO.md) を参照。
 
 ## 設定と並列起動
 
 `Settings.GuiSettings` が `settings[.profile].ini` を読み書きする。
-`launcher.py` がプロファイルを選んで別プロセスで `Window.py` を起こし、
+[`launcher.py`](../SerialController/launcher.py) がプロファイルを選んで別プロセスで [`Window.py`](../SerialController/Window.py) を起こし、
 `pokecon[.profile].lock` で二重起動を防ぐ。
 
 ## ログ
@@ -96,7 +96,7 @@ import しない。逆向きの依存は `tools/check_core.py`（`task bounds`�
 ## 検証の考え方
 
 `task ci`（ruff check / format --check / mypy / bounds / userapi / test）が
-緑であること。実機なしで回せる純粋ロジックは `tests/` の pytest で
+緑であること。実機なしで回せる純粋ロジックは [`tests/`](../tests) の pytest で
 確認する（例: Transport の間引き、`CommandRunner` の状態遷移、
 未知 capability の legacy 等価動作）。
 COM ポート・キャプチャボードが要る動作は実機でのみ確認できる。

@@ -9,7 +9,7 @@
   音は取れない（配線上の制約）。
 - 開けないデバイスがある。WDM-KS系は PortAudio の制約で開けない。
   48kHz専用機は本体が自レートで開いて内部44.1kHzへ直す。
-- 旧スクリプト `Commands/PythonCommands/listen_shiny.py`（PyAudio直掴み・
+- 旧スクリプト [`Commands/PythonCommands/listen_shiny.py`](../SerialController/Commands/PythonCommands/listen_shiny.py)（PyAudio直掴み・
   AUXケーブル前提）もそのまま動く。新規は下記の本体機能を使うこと。
 
 ## 画面の使い方（Audio欄）
@@ -33,7 +33,7 @@
 
 - `waitTone(bands, thresholds, window_s, timeout)` —
   指定帯域がすべて閾値を超えるまで待つ。例は
-  `Commands/PythonCommands/listen_shiny2.py`（平常時を測って
+  [`Commands/PythonCommands/listen_shiny2.py`](../SerialController/Commands/PythonCommands/listen_shiny2.py)（平常時を測って
   自動較正する書き方）。
 - `waitSound(template_wav, threshold, ...)` —
   登録音（`Template/audio/<pack>/*.wav`）との一致待ち。

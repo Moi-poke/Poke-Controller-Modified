@@ -7,8 +7,8 @@
 ## 変更点
 
 ### ver4.0.0
-主な変更点（詳細は `docs/V4_CHANGES.md`）
-- 内部構造の大整理（`services/`・`ui/`・`core/serial/`・`core/transport/` に分割、`Window.py` は組立専用に）
+主な変更点（詳細は [`docs/V4_CHANGES.md`](docs/V4_CHANGES.md)）
+- 内部構造の大整理（[`services/`](SerialController/services)・[`ui/`](SerialController/ui)・[`core/serial/`](SerialController/core/serial)・[`core/transport/`](SerialController/core/transport) に分割、[`Window.py`](SerialController/Window.py) は組立専用に）
 - Blocklyエディタ・音声対応・シリアルモニタ・スクリプトzip配布・表示フィルタの追加
 - シリアル通信の堅牢化とPico連携（有線／無線）、並列起動、起動高速化
 - Python 3.12以降が必要に（3.12.10固定）
@@ -17,7 +17,7 @@
 ### ver3.6.0
 主な変更点
 - 開発基盤の整備（`task` + ruff + mypy、型付け、コード整理）
-- GUI非依存部を `SerialController/core/` へ分離（既存の自作スクリプトはそのまま動きます）
+- GUI非依存部を [`SerialController/core/`](SerialController/core) へ分離（既存の自作スクリプトはそのまま動きます）
 - LINE通知の削除（LINE Notify サービス終了のため。通知はDiscord連携へ）
 - Picoファーム（別repo pico-wakeCon）との通信対応
 - 複数台の並列起動に対応（ランチャー / `--profile`）
@@ -96,7 +96,7 @@ Python 3.12以降が必要です（3.12.10固定。`.python-version` 参照）�
 
     そのうち大幅に変わるかもしれません\
     フォルム別の名前があるポケモン(ロトムなど)については現在第7世代までしか対応していません\
-    `SerialController/db/poke_form_name.csv`に追記することで対応可能になります
+    [`SerialController/db/poke_form_name.csv`](SerialController/db/poke_form_name.csv)に追記することで対応可能になります
   - キーコンフィグ追加
 
     主要なキーのコンフィグ機能を追加しています。\
@@ -113,7 +113,7 @@ Python 3.12以降が必要です（3.12.10固定。`.python-version` 参照）�
 
 ## Installation
 
-uvで管理しています。`pyproject.toml` + `uv.lock` が正本です（`requirements.txt` はありません）。
+uvで管理しています。[`pyproject.toml`](pyproject.toml) + [`uv.lock`](uv.lock) が正本です（`requirements.txt` はありません）。
 Python は 3.12.10 固定（`.python-version`）で、`uv sync` が用意します。
 
 ```cmd
@@ -144,7 +144,7 @@ task test      単体検査
 task ci        一通りの検査（ruff＋整形確認＋mypy＋境界検査＋公開API検査＋単体検査）
 ```
 
-`task` が無い環境では `taskfile.yml` の `uv run ...` を直接実行してください。
+`task` が無い環境では [`taskfile.yml`](taskfile.yml) の `uv run ...` を直接実行してください。
 
 ## おまけ
 

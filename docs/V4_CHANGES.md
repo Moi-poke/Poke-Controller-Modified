@@ -61,14 +61,14 @@
 - Blocklyの旧保存物を開き直すと、テンプレ照合がカラー（`use_gray=False`）で
   生成される（保存済み `.py` は再保存まで不変）
 - LINE通知は削除（LINE Notifyサービス終了のため）。通知はDiscord連携へ
-- `video_capture_wrapper.py` は `core/Camera.py` に統合（使い方は同じ）
-- `video_capture_wrapper.py` は `core/Camera.py` に統合（使い方は同じ）
-- `video_capture_wrapper.py` は `core/Camera.py` に統合（使い方は同じ）
+- `video_capture_wrapper.py` は [`core/Camera.py`](../SerialController/core/Camera.py) に統合（使い方は同じ）
+- `video_capture_wrapper.py` は [`core/Camera.py`](../SerialController/core/Camera.py) に統合（使い方は同じ）
+- `video_capture_wrapper.py` は [`core/Camera.py`](../SerialController/core/Camera.py) に統合（使い方は同じ）
 
 ## 開発基盤（開発者向け）
 
 - `task` ランナー＋ruff＋mypy＋単体テスト（`task ci` で一括）。CIあり
-- 層分け：`core/`（GUI非依存の純粋関数）・`services/`（手順）・`ui/`（画面）。
-  `Window.py` は組立専用。境界は自動検査（`task bounds`）
+- 層分け：[`core/`](../SerialController/core)（GUI非依存の純粋関数）・[`services/`](../SerialController/services)（手順）・[`ui/`](../SerialController/ui)（画面）。
+  [`Window.py`](../SerialController/Window.py) は組立専用。境界は自動検査（`task bounds`）
 - 利用者スクリプト向け公開API（`Commands.*`）は凍結し、自動検査（`task userapi`）。
   詳細は [docs/ARCHITECTURE.md](ARCHITECTURE.md)・[AGENTS.md](../AGENTS.md)

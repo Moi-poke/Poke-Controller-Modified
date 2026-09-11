@@ -6,11 +6,11 @@ zip内の配置：
 - `Commands/PythonCommands/<entry>`（自作スクリプト本体。実ツリーと同じ形）
 - `Template/<name>/...`（テンプレ画像。素の名前は新規禁止）
 
-`pokecon.json` の項目は `core/pack_manifest.py` の検査が正とする。
+`pokecon.json` の項目は [`core/pack_manifest.py`](../SerialController/core/pack_manifest.py) の検査が正とする。
 `entry`・`templates` は相対パスのみ（絶対・`..`・`:` 禁止）。
 `entry` のフォルダ名・ファイル名（拡張子除く）は英字・数字・`_`のみ（例: `my_pack/MyPack.py`、`my-pack/`は不可）。
 画像拡張子は `.png`/`.jpg`/`.jpeg`/`.bmp`。
-entryのimport走査は相対・公開面外を異常、未知トップレベルを注意に留める（正本は`core/user_api_allowlist.py`）。
+entryのimport走査は相対・公開面外を異常、未知トップレベルを注意に留める（正本は[`core/user_api_allowlist.py`](../SerialController/core/user_api_allowlist.py)）。
 
 検証： `uv run --frozen pytest tests/test_pack_manifest.py -q`
 
