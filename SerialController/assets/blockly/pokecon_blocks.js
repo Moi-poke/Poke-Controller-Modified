@@ -46,8 +46,9 @@
   }
 
   // スティックパッド欄の値論理（描画なしの純粋部。node vmで検証する）。
-  // 値の形は "角度,強さ"（例: "90,100"）。角度は度・0〜359へ正規化、
-  // 強さは%・0〜100へ丸める。Direction の流儀（0=右・90=上）に合わせる。
+  // 値の形は "角度,強さ"（例: "90,100"）。角度は8方向（45度刻み）へ
+  // スナップし、強さは常に100%（全倒し）。Direction の流儀
+  // （0=右・90=上）に合わせる。
   var PokeconStick = {
     normAngle: function (a) {
       a = a % 360;
@@ -55,6 +56,12 @@
         a += 360;
       }
       return Math.round(a) % 360;
+    },
+    snapAngle: function (a) {
+      if (!isFinite(a)) {
+        return 90;
+      }
+      return (Math.round(PokeconStick.normAngle(a) / 45) % 8) * 45;
     },
     clampMag: function (m) {
       return Math.min(100, Math.max(0, Math.round(m)));
@@ -77,12 +84,8 @@
         mag: PokeconStick.clampMag(m),
       };
     },
-    formatPadValue: function (angle, mag) {
-      return (
-        PokeconStick.normAngle(Number(angle)) +
-        "," +
-        PokeconStick.clampMag(Number(mag))
-      );
+    formatPadValue: function (angle) {
+      return PokeconStick.snapAngle(Number(angle)) + ",100";
     },
     angleMagToXY: function (angle, magPct, r) {
       var rad = (angle * Math.PI) / 180;
@@ -91,16 +94,15 @@
         y: (-Math.sin(rad) * magPct * r) / 100,
       };
     },
-    xyToAngleMag: function (dx, dy, r) {
-      var range = r > 0 ? r : 0;
-      var len = Math.sqrt(dx * dx + dy * dy);
-      var mag = range > 0 ? Math.round(Math.min(1, len / range) * 100) : 0;
-      var angle = PokeconStick.normAngle((Math.atan2(-dy, dx) * 180) / Math.PI);
-      return { angle: angle, mag: mag };
+    xyToAngleMag: function (dx, dy) {
+      var angle = 90;
+      if (isFinite(dx) && isFinite(dy)) {
+        angle = PokeconStick.snapAngle((Math.atan2(-dy, dx) * 180) / Math.PI);
+      }
+      return { angle: angle, mag: 100 };
     },
   };
   Blockly.PokeconStick = PokeconStick;
-
   // ブロック内蔵のミニスティック欄。48pxの円パッドを直接ドラッグする。
   // 値は "角度,強さ" 文字列で持ち運び（SERIALIZABLE のため保存物に残る）。
   // 描画（initView/updateSize_）は実ブラウザでのみ走り、検証・生成の
@@ -119,7 +121,7 @@
       if (!parsed) {
         return null;
       }
-      return parsed.angle + "," + parsed.mag;
+      return PokeconStick.formatPadValue(parsed.angle);
     }
     getText_() {
       return "";
@@ -144,7 +146,7 @@
       var dot = document.createElementNS(NS, "circle");
       dot.setAttribute("r", "5");
       dot.setAttribute("fill", "#06c");
-      dot.setAttribute("style", "cursor:crosshair");
+      dot.setAttribute("style", "cursor:grab");
       this.fieldGroup_.appendChild(dot);
       this.padDot_ = dot;
       // 要素捕捉でpad内完結にする（window共有の既存modalと干渉させない）。
@@ -161,6 +163,7 @@
       };
       circle.addEventListener("pointerdown", function (ev) {
         dragging = true;
+        dot.style.cursor = "grabbing";
         // ブロック自体のドラッグ開始に伝搬させない（パッド操作に専念する）。
         if (ev.stopPropagation) {
           ev.stopPropagation();
@@ -189,6 +192,7 @@
       });
       var stop = function () {
         dragging = false;
+        dot.style.cursor = "grab";
       };
       circle.addEventListener("pointerup", stop);
       circle.addEventListener("pointercancel", stop);
@@ -261,7 +265,7 @@
     },
     {
       type: "pokecon_stick",
-      message0: "スティック %1 %2 角度 %3 強さ %4 長さ %5 待ち %6",
+      message0: "スティック %1 %2 角度 %3 長さ %4 待ち %5",
       args0: [
         {
           type: "field_dropdown",
@@ -273,7 +277,6 @@
         },
         { type: "field_stickpad", name: "PAD", value: "90,100" },
         { type: "field_number", name: "ANGLE", value: 90, min: 0, max: 360 },
-        { type: "field_number", name: "MAG", value: 100, min: 0, max: 100 },
         { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
         { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
       ],
@@ -281,7 +284,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "L/Rスティックをパッドか数値で倒す（角度＋強さは連動）。",
+      tooltip: "L/Rスティックをパッドか角度で倒す（8方向・強さ100%固定）。",
     },
     {
       type: "pokecon_wait",
@@ -548,16 +551,17 @@
       return v;
     });
   });
-  // スティック欄の相互反映。PAD（パッド）とANGLE/MAG（数値）を同期する。
+  // スティック欄の相互反映。PAD（パッド）とANGLE（数値）を同期する。
+  // 角度は8方向へスナップし、強さは100%固定（PAD正規形 "角度,100"）。
   // 生成コードはPADを正とする（下のstickPadValueと対）。
   // 再入防止のguardつき。保存物の読込時（validator発火）もそのまま寄る。
   Blockly.Extensions.register("pokecon_stick_pad_sync", function () {
     var pad = this.getField("PAD");
     var ang = this.getField("ANGLE");
-    var mag = this.getField("MAG");
-    if (!pad || !ang || !mag) {
+    if (!pad || !ang) {
       return;
     }
+    // 旧保存物のMAG欄が残っていても触らない（100%固定のため）。
     var syncing = false;
     function padToNums(v) {
       var b = pad.getSourceBlock();
@@ -576,28 +580,23 @@
       syncing = true;
       try {
         b.setFieldValue(String(parsed.angle), "ANGLE");
-        b.setFieldValue(String(parsed.mag), "MAG");
       } finally {
         syncing = false;
       }
       return v;
     }
-    function numsToPad(changed, v) {
-      var b = changed.getSourceBlock();
+    function angleToPad(field, v) {
+      var b = field.getSourceBlock();
       if (!b || syncing) {
         return v;
       }
-      var other = changed.name === "ANGLE" ? "MAG" : "ANGLE";
-      var a = changed.name === "ANGLE" ? v : b.getFieldValue("ANGLE");
-      var m = changed.name === "MAG" ? v : b.getFieldValue(other);
-      var na = Number(a);
-      var nm = Number(m);
-      if (!isFinite(na) || !isFinite(nm)) {
+      var na = Number(v);
+      if (!isFinite(na)) {
         return v;
       }
       syncing = true;
       try {
-        b.setFieldValue(PokeconStick.formatPadValue(na, nm), "PAD");
+        b.setFieldValue(PokeconStick.formatPadValue(na), "PAD");
       } finally {
         syncing = false;
       }
@@ -605,10 +604,7 @@
     }
     pad.setValidator(padToNums);
     ang.setValidator(function (v) {
-      return numsToPad(this, v);
-    });
-    mag.setValidator(function (v) {
-      return numsToPad(this, v);
+      return angleToPad(this, v);
     });
   });
   // リポジトリは4スペース字下げ（ruff format）。既定の2スペースのままでは通らない。

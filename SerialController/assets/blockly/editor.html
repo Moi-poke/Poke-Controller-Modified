@@ -1203,12 +1203,16 @@ html, body { height: 100%; margin: 0; }
       var r = pad.getBoundingClientRect();
       var dx = clientX - (r.left + r.width / 2);
       var dy = clientY - (r.top + r.height / 2);
-      var len = Math.sqrt(dx * dx + dy * dy);
       var range = r.width / 2 - 6;
-      var mag = Math.round(Math.min(1, range > 0 ? len / range : 0) * 100);
-      var angle = Math.round(normAngle(Math.atan2(-dy, dx) * 180 / Math.PI));
-      angleEl.value = String(angle);
-      magEl.value = String(mag);
+      // 8方向スナップ・強さ100%固定は PokeconStick が正本（本区画は非表示）。
+      var v = { angle: 90, mag: 100 };
+      try {
+        if (Blockly.PokeconStick) {
+          v = Blockly.PokeconStick.xyToAngleMag(dx, dy, range > 0 ? range : 0);
+        }
+      } catch (e) { /* 既定のまま */ }
+      angleEl.value = String(v.angle);
+      magEl.value = String(v.mag);
       draw();
     }
     var dragging = false;

@@ -1018,21 +1018,27 @@ def test_stick_block_registered() -> None:
     assert "field_stickpad" in src
     assert "PokeconStick" in src
     assert "parsePadValue" in src
-    # パッド欄・数値欄・同期拡張がスティック定義にあること。
+    # パッド欄・角度欄・同期拡張がスティック定義にあること。強さ欄は無い。
     stick_sec = src[src.index('type: "pokecon_stick"') :]
     stick_sec = stick_sec[: stick_sec.index('type: "pokecon_wait"')]
     assert '"PAD"' in stick_sec
     assert '"ANGLE"' in stick_sec
-    assert '"MAG"' in stick_sec
-    assert "pokecon_stick_pad_sync" in stick_sec or "pokecon_stick_pad_sync" in src
+    assert '"MAG"' not in stick_sec
+    assert "pokecon_stick_pad_sync" in src
     # パッドのドラッグがブロック移動に伝搬しないこと。
     assert "stopPropagation" in src
-    assert "PokeconStick" in src
-    assert "parsePadValue" in src
+    # 8方向スナップとグリップカーソルがあること。
+    assert "snapAngle" in src
+    assert "grab" in src
 
 
 def test_toolbox_lists_stick_and_single_program() -> None:
     """toolboxにスティックがあり、保存時にプログラム1個制限があること."""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "pokecon_stick" in html
+    assert "stickpad" in html.lower() or "stick-pad" in html or "stickPad" in html
+    assert "1個まで" in html
+    assert "'PAD'" in html or '"PAD"' in html
 
 
 def test_top_stick_ui_hidden() -> None:
@@ -1073,24 +1079,22 @@ const B = sandbox.Blockly;
 const ws = new B.Workspace();
 B.serialization.workspaces.load({ blocks: { languageVersion: 0, blocks: [
   { type: 'pokecon_stick',
-    fields: { STICK: 'L', PAD: '90,100', ANGLE: 90, MAG: 100, DURATION: 0.1, WAIT: 0.2 } },
+    fields: { STICK: 'L', PAD: '90,100', ANGLE: 90, DURATION: 0.1, WAIT: 0.2 } },
 ] } }, ws);
 const blk = ws.getAllBlocks(false)[0];
 function eq(a, b, label) {
   if (String(a) !== String(b)) { fail(label + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
 }
-// PAD → 数値へ反映されること。
+// PAD → 数値へ反映されること。強さは100%に正規化されること。
 blk.setFieldValue('180,50', 'PAD');
+eq(blk.getFieldValue('PAD'), '180,100', 'pad正規化');
 eq(blk.getFieldValue('ANGLE'), 180, 'pad->angle');
-eq(blk.getFieldValue('MAG'), 50, 'pad->mag');
-// 数値 → PADへ反映されること。
-blk.setFieldValue(270, 'ANGLE');
-eq(blk.getFieldValue('PAD'), '270,50', 'angle->pad');
-blk.setFieldValue(25, 'MAG');
-eq(blk.getFieldValue('PAD'), '270,25', 'mag->pad');
+// 数値 → PADへ反映されること（8方向スナップ＋100%）。
+blk.setFieldValue(30, 'ANGLE');
+eq(blk.getFieldValue('PAD'), '45,100', 'angle->pad');
 // 生成コードはPADを正とすること。
 const code = B.Python.forBlock['pokecon_stick'](blk, B.Python);
-if (code.indexOf('Direction(Stick.LEFT, 270, magnification=0.25)') === -1) {
+if (code.indexOf('Direction(Stick.LEFT, 45, magnification=1)') === -1) {
   fail('生成がPAD追従しない: ' + code);
 }
 ws.dispose();
@@ -1109,11 +1113,6 @@ def test_browser_sticksync_pad_and_numbers() -> None:
     )
     assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
     assert "STICKSYNC-PROBE-OK" in proc.stdout
-    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
-    assert "pokecon_stick" in html
-    assert "stickpad" in html.lower() or "stick-pad" in html or "stickPad" in html
-    assert "1個まで" in html
-    assert "'PAD'" in html or '"PAD"' in html
 
 
 PROBE_STICK_JS = """\
@@ -1248,13 +1247,27 @@ if (!p) { fail('範囲外を読めない'); }
 eq(p.angle, 10, 'angle正規化');
 eq(p.mag, 100, 'mag丸め');
 eq(S.formatPadValue(90, 100), '90,100', 'format');
+eq(S.formatPadValue(30), '45,100', 'formatスナップ');
+eq(S.formatPadValue(350), '0,100', 'format周回');
+eq(S.snapAngle(30), 45, 'snap');
+eq(S.snapAngle(350), 0, 'snap周回');
+eq(S.snapAngle(180), 180, 'snap維持');
 const xy = S.angleMagToXY(90, 100, 54);
 if (Math.abs(xy.x) > 1e-9 || xy.y !== -54) { fail('XY換算: ' + JSON.stringify(xy)); }
 const back = S.xyToAngleMag(0, -54, 54);
 eq(back.angle, 90, '逆換算angle');
 eq(back.mag, 100, '逆換算mag');
+// 8方向にスナップすること（30度→45度）。
+const off = S.xyToAngleMag.apply(null, (function () {
+  const o = S.angleMagToXY(30, 100, 54);
+  return [o.x, o.y, 54];
+})());
+eq(off.angle, 45, 'スナップangle');
+eq(off.mag, 100, 'スナップmag');
+// 強さは常に100%（短いドラッグ・中心も100）。
+eq(S.xyToAngleMag(5, 0, 54).mag, 100, '短mag');
 const center = S.xyToAngleMag(0, 0, 54);
-eq(center.mag, 0, '中心mag');
+eq(center.mag, 100, '中心mag');
 if (typeof B.StickPadField !== 'function') { fail('StickPadField が無い'); }
 if (typeof B.StickPadField.fromJson !== 'function') { fail('fromJson が無い'); }
 // 旧保存物相当：PAD無し・ANGLE/MAGありの偽ブロックは従来値で出すこと。
