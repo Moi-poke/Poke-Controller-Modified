@@ -4,6 +4,8 @@
 
 ![](https://github.com/Moi-Poke/Poke-Controller/blob/photo/photos/poke-con-modded.png)
 
+![メインGUI](https://github.com/Moi-Poke/Poke-Controller/blob/photo/photos/gui.png)
+
 ## 変更点
 
 ### ver4.0.0
@@ -127,6 +129,8 @@ python .\SerialController\Window.py
 
 複数台を並列で動かすときは、ランチャーを使うかプロファイルを指定します。
 プロファイルごとに `SerialController/settings.<名前>.ini` が自動で作られます。
+
+![ランチャー](https://github.com/Moi-Poke/Poke-Controller/blob/photo/photos/launcher.png)
 
 ```cmd
 python .\SerialController\launcher.py
