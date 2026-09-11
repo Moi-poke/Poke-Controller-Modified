@@ -244,3 +244,68 @@ def test_audio_tone_calls_pass() -> None:
         "\n",
     )
     assert blockly_validate.validate_generated_code(code) == []
+
+
+def dialog_ws(*fields_list: dict[str, object]) -> str:
+    import json as _json
+
+    chain: dict[str, object] | None = None
+    for fields in reversed(list(fields_list)):
+        block: dict[str, object] = {
+            "type": "pokecon_dialog_choice",
+            "fields": fields,
+        }
+        if chain is not None:
+            block["next"] = {"block": chain}
+        chain = block
+    assert chain is not None
+    return _json.dumps({"blocks": {"languageVersion": 0, "blocks": [chain]}})
+
+
+def test_dialog_vars_valid_passes() -> None:
+    ws = dialog_ws(
+        {
+            "VAR": "setting",
+            "TITLE": "設定",
+            "LABEL": "項目",
+            "OPTIONS": "A,B",
+            "DEFAULT": "A",
+        },
+    )
+    assert blockly_validate.validate_dialog_vars(ws) == []
+
+
+def test_dialog_vars_bad_name_rejected() -> None:
+    for bad in ["", "123abc", "class", "self", "do", "NAME", "a-b"]:
+        ws = dialog_ws({"VAR": bad})
+        assert blockly_validate.validate_dialog_vars(ws) != [], bad
+
+
+def test_dialog_number_range_rejected() -> None:
+    import json as _json
+
+    ws = _json.dumps(
+        {
+            "blocks": {
+                "languageVersion": 0,
+                "blocks": [
+                    {
+                        "type": "pokecon_dialog_number",
+                        "fields": {
+                            "VAR": "n",
+                            "TITLE": "t",
+                            "LABEL": "l",
+                            "MIN": 10,
+                            "MAX": 1,
+                            "DEFAULT": 5,
+                        },
+                    }
+                ],
+            }
+        }
+    )
+    assert blockly_validate.validate_dialog_vars(ws) != []
+
+
+def test_dialog_vars_broken_json_ignored() -> None:
+    assert blockly_validate.validate_dialog_vars("{broken") == []

@@ -78,6 +78,8 @@ _KNOWN_SELF_METHODS = frozenset(
         "print2",
         "discord_text",
         "discord_image",
+        "dialogue",
+        "dialogue6widget",
         "isContainTemplate",
         "isContainTemplate_max",
         "isContainTemplateGPU",
@@ -311,3 +313,80 @@ def validate_workspace_json(text: str) -> list[str]:
     if not isinstance(blocks, dict) or not isinstance(blocks.get("blocks"), list):
         return ["ワークスペースJSONに `blocks.blocks` がありません"]
     return []
+
+
+#: 設定ダイアログをもつブロック種。
+_DIALOG_BLOCKS = frozenset(
+    {
+        "pokecon_dialog_choice",
+        "pokecon_dialog_number",
+        "pokecon_dialog_check",
+    }
+)
+
+#: 設定の受け変数に使えない名前。
+_DIALOG_RESERVED = frozenset({"self", "do", "NAME", "True", "False", "None"})
+
+
+def _walk_blocks(block: object, found: list[dict[str, object]]) -> None:
+    """ワークスペースJSON内を再帰でたどり、ブロックを集める。"""
+    if not isinstance(block, dict):
+        return
+    found.append(block)
+    inputs = block.get("inputs")
+    if isinstance(inputs, dict):
+        for slot in inputs.values():
+            if isinstance(slot, dict) and isinstance(slot.get("block"), dict):
+                _walk_blocks(slot["block"], found)
+    nxt = block.get("next")
+    if isinstance(nxt, dict) and isinstance(nxt.get("block"), dict):
+        _walk_blocks(nxt["block"], found)
+
+
+def validate_dialog_vars(text: str) -> list[str]:
+    """設定ダイアログの受け変数・数値範囲を検査する。異常の一覧を返す。
+
+    壊れたJSONはここでは黙る（validate_workspace_json 側が落とす）。
+    """
+    import keyword
+
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    blocks = data.get("blocks")
+    if not isinstance(blocks, dict) or not isinstance(blocks.get("blocks"), list):
+        return []
+    found: list[dict[str, object]] = []
+    for top in blocks["blocks"]:
+        _walk_blocks(top, found)
+    errors: list[str] = []
+    for block in found:
+        if block.get("type") not in _DIALOG_BLOCKS:
+            continue
+        fields = block.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        var = fields.get("VAR")
+        if not isinstance(var, str) or not var.strip():
+            errors.append("設定の受け変数名を書いてください")
+            continue
+        if (
+            _STEM_RE.fullmatch(var) is None
+            or var in keyword.kwlist
+            or var in _DIALOG_RESERVED
+        ):
+            errors.append(f"受け変数名は英字・数字・`_`にしてください: {var}")
+            continue
+        if block.get("type") == "pokecon_dialog_number":
+            try:
+                lo = float(str(fields.get("MIN", "")))
+                hi = float(str(fields.get("MAX", "")))
+            except (TypeError, ValueError):
+                errors.append(f"数値の範囲が読めません: {var}")
+                continue
+            if lo > hi:
+                errors.append(f"数値の最小が最大を超えています: {var}")
+    return errors

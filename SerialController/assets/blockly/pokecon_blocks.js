@@ -502,6 +502,51 @@
       tooltip: "Discordへ通知する。画像付きは画像認識ありになる。",
     },
     {
+      type: "pokecon_dialog_choice",
+      message0: "設定 %1 題 %2 項目 %3 選択肢 %4 既定 %5",
+      args0: [
+        { type: "field_input", name: "VAR", text: "setting" },
+        { type: "field_input", name: "TITLE", text: "設定" },
+        { type: "field_input", name: "LABEL", text: "項目" },
+        { type: "field_input", name: "OPTIONS", text: "A,B" },
+        { type: "field_input", name: "DEFAULT", text: "A" },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 20,
+      tooltip: "実行前に選択肢から選ばせる。取消は終了する。",
+    },
+    {
+      type: "pokecon_dialog_number",
+      message0: "設定数値 %1 題 %2 項目 %3 最小 %4 最大 %5 既定 %6",
+      args0: [
+        { type: "field_input", name: "VAR", text: "count" },
+        { type: "field_input", name: "TITLE", text: "設定" },
+        { type: "field_input", name: "LABEL", text: "個数" },
+        { type: "field_number", name: "MIN", value: 1 },
+        { type: "field_number", name: "MAX", value: 10 },
+        { type: "field_number", name: "DEFAULT", value: 3 },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 20,
+      tooltip: "実行前に数値を選ばせる。取消は終了する。",
+    },
+    {
+      type: "pokecon_dialog_check",
+      message0: "設定確認 %1 題 %2 項目 %3 既定 %4",
+      args0: [
+        { type: "field_input", name: "VAR", text: "confirm" },
+        { type: "field_input", name: "TITLE", text: "確認" },
+        { type: "field_input", name: "LABEL", text: "送る" },
+        { type: "field_checkbox", name: "DEFAULT", checked: true },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 20,
+      tooltip: "実行前に確認を取る。取消は終了する。",
+    },
+    {
       type: "pokecon_audio_tone_contains",
       message0: "音 %1〜%2Hz が閾値 %3 を超えた 第2 %4〜%5Hz 閾値 %6",
       args0: [
@@ -1373,6 +1418,85 @@
       valueOrEmpty(block, generator, "CONTENT") +
       ")\n"
     );
+  };
+
+  // 設定ダイアログ。受け変数へ入れ、取消は終了する。
+  // 戻りはlistのため [0] で取り出す。数値・確認は型を寄せる。
+  function dialogAssign(block, varName, spec, takeFirst) {
+    return (
+      varName +
+      " = self.dialogue6widget(" +
+      pyStr(block.getFieldValue("TITLE")) +
+      ", [" +
+      spec +
+      "])\n" +
+      "if " +
+      varName +
+      " is None:\n" +
+      '    self.print2("取り消しました。")\n' +
+      "    self.finish()\n" +
+      "    " +
+      varName +
+      " = []\n" +
+      "else:\n" +
+      "    " +
+      varName +
+      " = " +
+      takeFirst +
+      "\n"
+    );
+  }
+
+  function dialogVar(block) {
+    var v = "";
+    try {
+      v = block.getFieldValue("VAR");
+    } catch (e) {
+      v = "";
+    }
+    return String(v || "").trim() || "setting";
+  }
+
+  pythonGenerator.forBlock["pokecon_dialog_choice"] = function (block) {
+    var varName = dialogVar(block);
+    var options = String(block.getFieldValue("OPTIONS") || "")
+      .split(",")
+      .map(function (p) {
+        return pyStr(String(p).trim());
+      })
+      .join(", ");
+    var spec =
+      '["combo", ' +
+      pyStr(block.getFieldValue("LABEL")) +
+      ", [" +
+      options +
+      "], " +
+      pyStr(block.getFieldValue("DEFAULT")) +
+      "]";
+    return dialogAssign(block, varName, spec, varName + "[0]");
+  };
+
+  pythonGenerator.forBlock["pokecon_dialog_number"] = function (block) {
+    var varName = dialogVar(block);
+    var spec =
+      '["spin", ' +
+      pyStr(block.getFieldValue("LABEL")) +
+      ", list(map(str, range(" +
+      block.getFieldValue("MIN") +
+      ", " +
+      block.getFieldValue("MAX") +
+      " + 1))), " +
+      pyStr(String(block.getFieldValue("DEFAULT"))) +
+      "]";
+    return dialogAssign(block, varName, spec, "int(" + varName + "[0])");
+  };
+
+  pythonGenerator.forBlock["pokecon_dialog_check"] = function (block) {
+    var varName = dialogVar(block);
+    var def = block.getFieldValue("DEFAULT") === "TRUE" ? "True" : "False";
+    var spec =
+      '["check", ' + pyStr(block.getFieldValue("LABEL")) + ", " + def + "]";
+    return dialogAssign(block, varName, spec, "bool(" + varName + "[0])");
   };
 
   // 第2帯域は 0 < LO2 < HI2 のときだけ付ける（0,0で単帯域・旧保存物互換）。
