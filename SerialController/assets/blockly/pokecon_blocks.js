@@ -1,6 +1,7 @@
 // PokeCon用ブロック定義と生成器（ブラウザ用）。
-// 対応：program（NAME＋DO）、press（ボタン＋長さ＋待ち）、wait（秒）。
-// 繰り返し・条件は標準ブロック（controls_repeat等）を使う。
+// 対応：program（NAME＋DO）、press（ボタン＋長さ＋待ち）、wait（秒）、
+// サブルーチン（sub_def 定義＋sub_call 呼出、引数あり）、comment（# 注釈）。
+// 繰り返し・条件・数値は標準ブロック（controls_repeat等）を使う。
 (function () {
   "use strict";
 
@@ -12,7 +13,7 @@
     (typeof Blockly !== "undefined" && Blockly.Python) || null;
   if (!pythonGenerator) {
     throw new Error(
-      "Blockly.Python がありません（python_compressed.js の読込を確認してください）"
+      "Blockly.Python がありません（python_compressed.js の読込を確認してください）",
     );
   }
 
@@ -26,6 +27,21 @@
         .replace(/\n/g, "\\n") +
       '"'
     );
+  }
+
+  function parseSubArgs(text) {
+    var t = String(text == null ? "" : text).trim();
+    if (!t) {
+      return [];
+    }
+    return t
+      .split(",")
+      .map(function (p) {
+        return String(p).trim();
+      })
+      .filter(function (p) {
+        return p.length > 0;
+      });
   }
 
   Blockly.defineBlocksWithJsonArray([
@@ -79,6 +95,40 @@
       nextStatement: null,
       colour: 160,
     },
+    {
+      type: "pokecon_sub_def",
+      message0: "サブルーチン %1 引数 %2 %3",
+      args0: [
+        { type: "field_input", name: "NAME", text: "my_sub" },
+        { type: "field_input", name: "ARGS", text: "" },
+        { type: "input_statement", name: "DO" },
+      ],
+      colour: 290,
+      tooltip: "トップレベルに置く。呼ぶ側から self.名前() で呼べる。",
+    },
+    {
+      type: "pokecon_sub_call",
+      message0: "呼ぶ %1 引数 %2 %3 %4",
+      args0: [
+        { type: "field_input", name: "NAME", text: "my_sub" },
+        { type: "input_value", name: "ARG0" },
+        { type: "input_value", name: "ARG1" },
+        { type: "input_value", name: "ARG2" },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 290,
+      tooltip: "サブルーチン定義を呼び出す。引数は左から順に渡る。",
+    },
+    {
+      type: "pokecon_comment",
+      message0: "# %1",
+      args0: [{ type: "field_input", name: "TEXT", text: "メモ" }],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 60,
+      tooltip: "生成コードに # コメントとして残る。実行には影響しない。",
+    },
   ]);
 
   // ブロック上の📷ボタン。押すと範囲選択モーダルをそのブロック用に開く。
@@ -109,7 +159,11 @@
       type: "pokecon_vision_contains",
       message0: "画像 %1 がある 閾値 %2 範囲 %3 グレー %4 %5 %6",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        {
+          type: "field_dropdown",
+          name: "TEMPLATE",
+          options: [["my-pack/a.png", "my-pack/a.png"]],
+        },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
         {
@@ -129,9 +183,14 @@
     },
     {
       type: "pokecon_vision_wait_appear",
-      message0: "画像 %1 が出るまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
+      message0:
+        "画像 %1 が出るまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        {
+          type: "field_dropdown",
+          name: "TEMPLATE",
+          options: [["my-pack/a.png", "my-pack/a.png"]],
+        },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
@@ -153,9 +212,14 @@
     },
     {
       type: "pokecon_vision_wait_gone",
-      message0: "画像 %1 が消えるまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
+      message0:
+        "画像 %1 が消えるまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        {
+          type: "field_dropdown",
+          name: "TEMPLATE",
+          options: [["my-pack/a.png", "my-pack/a.png"]],
+        },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
@@ -179,7 +243,11 @@
       type: "pokecon_vision_position",
       message0: "画像 %1 の位置 閾値 %2 範囲 %3 グレー %4 %5 %6",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        {
+          type: "field_dropdown",
+          name: "TEMPLATE",
+          options: [["my-pack/a.png", "my-pack/a.png"]],
+        },
         { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
         { type: "field_input", name: "CROP", text: "" },
         {
@@ -245,7 +313,12 @@
         return [n, n];
       });
       var cur = f.getValue();
-      if (cur && !opts.some(function (o) { return o[1] === cur; })) {
+      if (
+        cur &&
+        !opts.some(function (o) {
+          return o[1] === cur;
+        })
+      ) {
         opts.unshift([cur, cur]);
       }
       // 空欄も常時選べる（従来の空テキストと同等。保存時は書式検査ではねられる）。
@@ -280,15 +353,76 @@
   // リポジトリは4スペース字下げ（ruff format）。既定の2スペースのままでは通らない。
   pythonGenerator.INDENT = "    ";
 
+  function collectSubDefs(block) {
+    var ws = block ? block.workspace : null;
+    if (!ws || typeof ws.getAllBlocks !== "function") {
+      return [];
+    }
+    var defs = ws.getAllBlocks(false).filter(function (b) {
+      return b.type === "pokecon_sub_def";
+    });
+    defs.sort(function (a, b) {
+      var na = "",
+        nb = "";
+      try {
+        na = String(a.getFieldValue("NAME") || "");
+        nb = String(b.getFieldValue("NAME") || "");
+      } catch (e) {
+        na = "";
+        nb = "";
+      }
+      if (na < nb) {
+        return -1;
+      }
+      if (na > nb) {
+        return 1;
+      }
+      return 0;
+    });
+    return defs;
+  }
+
+  function buildSubMethod(defBlock, generator) {
+    var rawName = "";
+    try {
+      rawName = defBlock.getFieldValue("NAME");
+    } catch (e) {
+      rawName = "";
+    }
+    var name = String(rawName || "").trim() || "__empty_sub__";
+    var args = [];
+    try {
+      args = parseSubArgs(defBlock.getFieldValue("ARGS"));
+    } catch (e) {
+      args = [];
+    }
+    var body = "";
+    try {
+      body = generator.statementToCode(defBlock, "DO");
+    } catch (e) {
+      body = "";
+    }
+    var inner = body ? generator.prefixLines(body, "    ") : "        pass\n";
+    var sig = args.length ? "self, " + args.join(", ") : "self";
+    return "    def " + name + "(" + sig + ") -> None:\n" + inner + "\n";
+  }
+
   pythonGenerator.forBlock["pokecon_program"] = function (block, generator) {
     var name = block.getFieldValue("NAME");
     var body = generator.statementToCode(block, "DO");
     var inner = body ? generator.prefixLines(body, "    ") : "        pass\n";
     // statementToCodeだけ・prefixLinesだけの片方では字下げが壊れる（spike確定）。
     // 両方を使ってdo()の中に寄せる。
+    var defs = collectSubDefs(block);
+    var methodsCode = defs
+      .map(function (d) {
+        return buildSubMethod(d, generator);
+      })
+      .join("");
+    var combined = body + methodsCode;
     var vision =
       /self\.(isContainTemplate|waitTemplate|waitTemplateGone|getTemplatePosition|waitStable|getColorRatio|isSimilarColor|isContainTemplateDump|findAllTemplates|countTemplate)\s*\(/.test(
-        body
+        combined,
       );
     var head;
     if (vision) {
@@ -316,7 +450,59 @@
         "\n\n" +
         "    def do(self) -> None:\n";
     }
-    return head + inner;
+    if (!methodsCode) {
+      return head + inner;
+    }
+    return head + inner + "\n" + methodsCode;
+  };
+
+  // 定義自体は program 側で集めてメソッド化するため、単体では何も出さない。
+  // （workspaceToCode の重複を避ける。入子でも外でも集める。）
+  pythonGenerator.forBlock["pokecon_sub_def"] = function () {
+    return "";
+  };
+
+  pythonGenerator.forBlock["pokecon_sub_call"] = function (block, generator) {
+    var rawName = "";
+    try {
+      rawName = block.getFieldValue("NAME");
+    } catch (e) {
+      rawName = "";
+    }
+    var name = String(rawName || "").trim() || "__empty_sub__";
+    var args = [];
+    ["ARG0", "ARG1", "ARG2"].forEach(function (inputName) {
+      var code = "";
+      try {
+        code = generator.valueToCode(block, inputName, generator.ORDER_NONE);
+      } catch (e) {
+        code = "";
+      }
+      if (code != null && String(code).trim() !== "") {
+        args.push(String(code).trim());
+      }
+    });
+    return "self." + name + "(" + args.join(", ") + ")\n";
+  };
+
+  pythonGenerator.forBlock["pokecon_comment"] = function (block) {
+    var text = "";
+    try {
+      text = block.getFieldValue("TEXT");
+    } catch (e) {
+      text = "";
+    }
+    var lines = String(text == null ? "" : text).split(/\r?\n/);
+    if (!lines.length) {
+      return "#\n";
+    }
+    return (
+      lines
+        .map(function (line) {
+          return "# " + line;
+        })
+        .join("\n") + "\n"
+    );
   };
 
   pythonGenerator.forBlock["pokecon_press"] = function (block) {
@@ -347,15 +533,22 @@
   }
 
   function visionGray(block) {
-    var g = typeof block.getFieldValue === "function" ? block.getFieldValue("USE_GRAY") : null;
-    if (g === "TRUE") { return ", use_gray=True"; }
-    if (g === "FALSE") { return ", use_gray=False"; }
+    var g =
+      typeof block.getFieldValue === "function"
+        ? block.getFieldValue("USE_GRAY")
+        : null;
+    if (g === "TRUE") {
+      return ", use_gray=True";
+    }
+    if (g === "FALSE") {
+      return ", use_gray=False";
+    }
     return "";
   }
 
   pythonGenerator.forBlock["pokecon_vision_contains"] = function (
     block,
-    generator
+    generator,
   ) {
     var code =
       "self.isContainTemplate(" +
@@ -398,7 +591,7 @@
 
   pythonGenerator.forBlock["pokecon_vision_position"] = function (
     block,
-    generator
+    generator,
   ) {
     var code =
       "self.getTemplatePosition(" +
@@ -423,7 +616,7 @@
 
   pythonGenerator.forBlock["pokecon_vision_color"] = function (
     block,
-    generator
+    generator,
   ) {
     var cropPart = (function () {
       var c = String(block.getFieldValue("CROP") || "").trim();
@@ -431,7 +624,9 @@
       return m ? "[" + m[1] + "," + m[2] + "," + m[3] + "," + m[4] + "]" : "[]";
     })();
     var code =
-      "self.isSimilarColor(" + cropPart + ", [" +
+      "self.isSimilarColor(" +
+      cropPart +
+      ", [" +
       block.getFieldValue("H1") +
       "," +
       block.getFieldValue("S1") +

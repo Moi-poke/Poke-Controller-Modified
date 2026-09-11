@@ -979,3 +979,228 @@ def test_color_block_def_has_crop() -> None:
     color_gen = src[gen_start:]
     assert "isSimilarColor" in color_gen
     assert '"CROP"' in color_gen
+
+
+def test_subroutine_and_comment_blocks_registered() -> None:
+    """サブルーチン定義・呼出・コメントのブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_sub_def",
+        "pokecon_sub_call",
+        "pokecon_comment",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    # 呼出は self.xxx(…)、コメントは # …、定義は def … を出すこと。
+    assert "self." in src
+    assert '"# "' in src or "'# '" in src or '"#"' in src
+
+
+def test_toolbox_lists_subroutine_and_comment() -> None:
+    """toolboxに新ブロックが並び、標準に変数・論理・計算があること."""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_sub_def",
+        "pokecon_sub_call",
+        "pokecon_comment",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+    for std in ["logic_compare", "math_arithmetic", "text"]:
+        assert std in html, f"toolboxに {std} が無い"
+
+
+PROBE_SUB_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('SUB-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_sub_def', 'pokecon_sub_call', 'pokecon_comment']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'SubTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_comment',
+              fields: { TEXT: '開始メモ' },
+              next: {
+                block: {
+                  type: 'pokecon_sub_call',
+                  fields: { NAME: 'my_sub' },
+                  inputs: {
+                    ARG0: { block: { type: 'math_number', fields: { NUM: 3 } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'pokecon_sub_def',
+        fields: { NAME: 'my_sub', ARGS: 'n' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_press',
+              fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_subroutine_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_SUB_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "def my_sub(self, n)" in code
+    assert "self.my_sub(3)" in code
+    assert "# 開始メモ" in code
+    assert "self.press(Button.A" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_SUB_VISION_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('SUB-VISION-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'SubVision' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_sub_call',
+              fields: { NAME: 'check' },
+            },
+          },
+        },
+      },
+      {
+        type: 'pokecon_sub_def',
+        fields: { NAME: 'check', ARGS: '' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_vision_wait_appear',
+              fields: { TEMPLATE: 'my-pack/a.png', TIMEOUT: 10, THRESHOLD: 0.7, CROP: '' },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_subroutine_vision_switches_base() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_SUB_VISION_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "ImageProcPythonCommand" in code
+    assert "def check(self)" in code
+    assert "self.check()" in code
+    assert blockly_validate.validate_generated_code(code) == []
