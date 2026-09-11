@@ -44,6 +44,17 @@ html, body { height: 100%; margin: 0; }
 <button id="capsave" disabled>切出し保存</button>
 <span id="capstatus"></span>
 </div>
+<div id="bar4" style="padding: 0 8px 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+<span>スティック</span>
+<span id="stickpad" style="position: relative; display: inline-block; width: 120px; height: 120px; border: 1px solid #999; border-radius: 50%; background: #f4f4f4; cursor: crosshair; touch-action: none;">
+<span id="stickdot" style="position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #06c; left: 54px; top: 54px; pointer-events: none;"></span>
+</span>
+<label>L/R <select id="stickside"><option value="LEFT">L</option><option value="RIGHT">R</option></select></label>
+<label>角度 <input id="stickangle" type="number" min="0" max="360" step="1" value="90" style="width: 5em;"></label>
+<label>強さ <input id="stickmag" type="number" min="0" max="100" step="1" value="100" style="width: 5em;"></label>
+<button id="stickapply">選択中へ反映</button>
+<span id="stickstatus"></span>
+</div>
 <div id="capmodal">
 <div id="capmodalbox">
 <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
@@ -127,6 +138,7 @@ html, body { height: 100%; margin: 0; }
             { kind: 'block', type: 'pokecon_sub_call' },
             { kind: 'block', type: 'pokecon_comment' },
             { kind: 'block', type: 'pokecon_press' },
+            { kind: 'block', type: 'pokecon_stick' },
             { kind: 'block', type: 'pokecon_wait' },
           ],
         },
@@ -240,9 +252,13 @@ html, body { height: 100%; margin: 0; }
       setStatus('生成器がありません（python_compressed.js の読込を確認してください）', true);
       return;
     }
-    var hasProgram = ws.getTopBlocks(false).some(function (b) { return b.type === 'pokecon_program'; });
-    if (!hasProgram) {
+    var programs = ws.getTopBlocks(false).filter(function (b) { return b.type === 'pokecon_program'; });
+    if (programs.length === 0) {
       setStatus('「プログラム」ブロックを置き、その中に操作を並べてください（単体では保存できません）', true);
+      return;
+    }
+    if (programs.length > 1) {
+      setStatus('「プログラム」は1個までにしてください（今' + programs.length + '個あります）', true);
       return;
     }
     var stem = document.getElementById('stem').value;
@@ -1138,6 +1154,131 @@ html, body { height: 100%; margin: 0; }
       null);
   });
   document.getElementById('capretake').addEventListener('click', capFetch);
+  // ---- 仮想スティック（pokecon_stick 用） ----
+  // パッドのドラッグで角度（度）・強さ（%）を決め、数値欄とも連動する。
+  // 「選択中へ反映」で選択中（なければ最後に触った）スティックブロックへ
+  // 書き戻す。角度→座標の換算と生成コードは pokecon_blocks.js 側。
+  // pointerイベント＋pad内完結にする（windowのmousemoveは既存modalと
+  // 共有のため触らない）。
+  (function () {
+    var pad = document.getElementById('stickpad');
+    if (!pad) { return; }
+    var dot = document.getElementById('stickdot');
+    var sideEl = document.getElementById('stickside');
+    var angleEl = document.getElementById('stickangle');
+    var magEl = document.getElementById('stickmag');
+    var applyEl = document.getElementById('stickapply');
+    if (!sideEl || !angleEl || !magEl || !applyEl) { return; }
+    var R = 54; // ドット中心の可動半径（pad 120px・dot 12px）
+    function setStatus(s, isErr) {
+      var el = document.getElementById('stickstatus');
+      if (!el) { return; }
+      el.textContent = s;
+      el.style.color = isErr ? '#c00' : '#333';
+      el.style.fontWeight = isErr ? 'bold' : 'normal';
+    }
+    function normAngle(a) {
+      a = a % 360;
+      if (a < 0) { a += 360; }
+      return a;
+    }
+    function readInputs() {
+      var a = parseFloat(angleEl.value);
+      var m = parseFloat(magEl.value);
+      if (isNaN(a)) { a = 90; }
+      if (isNaN(m)) { m = 100; }
+      return { angle: normAngle(a), mag: Math.min(100, Math.max(0, m)) };
+    }
+    function draw() {
+      if (!dot) { return; }
+      var v = readInputs();
+      var rad = v.angle * Math.PI / 180;
+      var x = Math.cos(rad) * v.mag / 100 * R;
+      var y = -Math.sin(rad) * v.mag / 100 * R;
+      dot.style.left = (60 + x - 6) + 'px';
+      dot.style.top = (60 + y - 6) + 'px';
+    }
+    function fromPoint(clientX, clientY) {
+      var r = pad.getBoundingClientRect();
+      var dx = clientX - (r.left + r.width / 2);
+      var dy = clientY - (r.top + r.height / 2);
+      var len = Math.sqrt(dx * dx + dy * dy);
+      var range = r.width / 2 - 6;
+      var mag = Math.round(Math.min(1, range > 0 ? len / range : 0) * 100);
+      var angle = Math.round(normAngle(Math.atan2(-dy, dx) * 180 / Math.PI));
+      angleEl.value = String(angle);
+      magEl.value = String(mag);
+      draw();
+    }
+    var dragging = false;
+    pad.addEventListener('pointerdown', function (ev) {
+      dragging = true;
+      try {
+        if (pad.setPointerCapture && ev.pointerId !== undefined) {
+          pad.setPointerCapture(ev.pointerId);
+        }
+      } catch (e) { /* 掴めなくてもドラッグは続ける */ }
+      fromPoint(ev.clientX, ev.clientY);
+      if (ev.preventDefault) { ev.preventDefault(); }
+    });
+    pad.addEventListener('pointermove', function (ev) {
+      if (!dragging) { return; }
+      fromPoint(ev.clientX, ev.clientY);
+    });
+    pad.addEventListener('pointerup', function () { dragging = false; });
+    pad.addEventListener('pointercancel', function () { dragging = false; });
+    angleEl.addEventListener('input', draw);
+    magEl.addEventListener('input', draw);
+    var lastId = null;
+    ws.addChangeListener(function (e) {
+      if (!e || e.type !== SELECTED_TYPE) { return; }
+      var id = e.newElementId || null;
+      var b = id ? ws.getBlockById(id) : null;
+      if (b && b.type === 'pokecon_stick') {
+        lastId = id;
+        preload(b);
+      } else if (id) {
+        lastId = null;
+      }
+    });
+    function preload(b) {
+      try {
+        var s = b.getFieldValue('STICK');
+        if (s) { sideEl.value = s; }
+        var a = parseFloat(b.getFieldValue('ANGLE'));
+        if (!isNaN(a)) { angleEl.value = String(Math.min(360, Math.max(0, a))); }
+        var m = parseFloat(b.getFieldValue('MAG'));
+        if (!isNaN(m)) { magEl.value = String(Math.min(100, Math.max(0, m))); }
+      } catch (e) { /* 読めなければ今の値を保つ */ }
+      draw();
+    }
+    applyEl.addEventListener('click', function () {
+      var target =
+        (typeof Blockly.getSelected === 'function') ? Blockly.getSelected() : null;
+      if (!target || target.type !== 'pokecon_stick') {
+        target = lastId ? ws.getBlockById(lastId) : null;
+      }
+      if (!target || target.type !== 'pokecon_stick') {
+        setStatus('スティックブロックを選んでください', true);
+        return;
+      }
+      var a = parseFloat(angleEl.value);
+      var m = parseFloat(magEl.value);
+      if (isNaN(a) || a < 0 || a > 360) {
+        setStatus('角度は0〜360で書いてください', true);
+        return;
+      }
+      if (isNaN(m) || m < 0 || m > 100) {
+        setStatus('強さは0〜100で書いてください', true);
+        return;
+      }
+      target.setFieldValue(sideEl.value, 'STICK');
+      target.setFieldValue(String(a), 'ANGLE');
+      target.setFieldValue(String(m), 'MAG');
+      setStatus('反映しました', false);
+    });
+    draw();
+  })();
   refreshFiles();
   refreshTemplates();
 })();

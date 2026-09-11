@@ -167,3 +167,37 @@ def test_subroutine_non_ascii_name_rejected() -> None:
         "    def \u30c6\u30b9\u30c8(self) -> None:\n        self.press(Button.A)\n\n",
     )
     assert blockly_validate.validate_generated_code(code) != []
+
+
+def test_multiple_programs_rejected() -> None:
+    code = (
+        "from Commands.Keys import Button\n"
+        "from Commands.PythonCommandBase import PythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(PythonCommand):\n"
+        '    NAME = "A"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.press(Button.A)\n"
+        "\n\n"
+        "class BlocklyCmd2(PythonCommand):\n"
+        '    NAME = "B"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.press(Button.B)\n"
+    )
+    assert blockly_validate.validate_generated_code(code) != []
+
+
+def test_stick_import_and_press_passes() -> None:
+    code = (
+        "from Commands.Keys import Button, Direction, Stick\n"
+        "from Commands.PythonCommandBase import PythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(PythonCommand):\n"
+        '    NAME = "ブロック作成"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.press(Direction(Stick.LEFT, 90, magnification=1.0))\n"
+    )
+    assert blockly_validate.validate_generated_code(code) == []

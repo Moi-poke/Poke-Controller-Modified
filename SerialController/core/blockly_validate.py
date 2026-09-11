@@ -255,6 +255,7 @@ def validate_generated_code(code: str) -> list[str]:
     any_name = False
     any_do = False
     found_pair = False
+    program_count = 0
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             has_name = False
@@ -273,6 +274,9 @@ def validate_generated_code(code: str) -> list[str]:
             any_do = any_do or has_do
             if has_name and has_do:
                 found_pair = True
+                program_count += 1
+    if program_count > 1:
+        errors.append("プログラムは1個までにしてください")
     if not found_pair:
         if not any_name:
             errors.append('`NAME = "..."`（空でない文字）がありません')

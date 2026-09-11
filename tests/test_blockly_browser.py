@@ -1009,6 +1009,105 @@ def test_toolbox_lists_subroutine_and_comment() -> None:
         assert std in html, f"toolboxに {std} が無い"
 
 
+def test_stick_block_registered() -> None:
+    """スティックブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert 'type: "pokecon_stick"' in src
+    assert 'forBlock["pokecon_stick"]' in src
+    assert "Direction(" in src
+
+
+def test_toolbox_lists_stick_and_single_program() -> None:
+    """toolboxにスティックがあり、保存時にプログラム1個制限があること."""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "pokecon_stick" in html
+    assert "stickpad" in html.lower() or "stick-pad" in html or "stickPad" in html
+    assert "1個まで" in html
+
+
+PROBE_STICK_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STICK-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_stick'] !== 'function') {
+  fail('pokecon_stick が登録されていない');
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'StickTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_stick',
+              fields: { STICK: 'LEFT', ANGLE: 90, MAG: 100, DURATION: 0.5, WAIT: 0.2 },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_stick_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STICK_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "Direction(Stick.LEFT, 90, magnification=1)" in code
+    assert "duration=0.5" in code
+    assert "wait=0.2" in code
+    assert "from Commands.Keys import Button, Direction, Stick" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
 PROBE_SUB_JS = """\
 'use strict';
 const fs = require('fs');

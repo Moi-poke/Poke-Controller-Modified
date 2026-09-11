@@ -1,5 +1,6 @@
 // PokeCon用ブロック定義と生成器（ブラウザ用）。
-// 対応：program（NAME＋DO）、press（ボタン＋長さ＋待ち）、wait（秒）、
+// 対応：program（NAME＋DO）、press（ボタン＋長さ＋待ち）、
+// stick（L/R＋角度＋強さ＋長さ＋待ち）、wait（秒）、
 // サブルーチン（sub_def 定義＋sub_call 呼出、引数あり）、comment（# 注釈）。
 // 繰り返し・条件・数値は標準ブロック（controls_repeat等）を使う。
 (function () {
@@ -84,6 +85,28 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
+    },
+    {
+      type: "pokecon_stick",
+      message0: "スティック %1 角度 %2 強さ %3 長さ %4 待ち %5",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "STICK",
+          options: [
+            ["L", "LEFT"],
+            ["R", "RIGHT"],
+          ],
+        },
+        { type: "field_number", name: "ANGLE", value: 90, min: 0, max: 360 },
+        { type: "field_number", name: "MAG", value: 100, min: 0, max: 100 },
+        { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
+        { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "L/Rスティックを角度（度）＋強さ（%）で倒す。",
     },
     {
       type: "pokecon_wait",
@@ -424,11 +447,16 @@
       /self\.(isContainTemplate|waitTemplate|waitTemplateGone|getTemplatePosition|waitStable|getColorRatio|isSimilarColor|isContainTemplateDump|findAllTemplates|countTemplate)\s*\(/.test(
         combined,
       );
+    // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
+    var useStick = /Direction\s*\(/.test(combined);
+    var keysImport = useStick
+      ? "from Commands.Keys import Button, Direction, Stick\n"
+      : "from Commands.Keys import Button\n";
     var head;
     if (vision) {
       // press系と混ぜても `Button` が未定義にならないよう、vision側にも付ける。
       head =
-        "from Commands.Keys import Button\n" +
+        keysImport +
         "from Commands.PythonCommandBase import ImageProcPythonCommand\n" +
         "\n\n" +
         "class BlocklyCmd(ImageProcPythonCommand):\n" +
@@ -441,7 +469,7 @@
         "    def do(self) -> None:\n";
     } else {
       head =
-        "from Commands.Keys import Button\n" +
+        keysImport +
         "from Commands.PythonCommandBase import PythonCommand\n" +
         "\n\n" +
         "class BlocklyCmd(PythonCommand):\n" +
@@ -512,6 +540,42 @@
     return (
       "self.press(Button." +
       btn +
+      ", duration=" +
+      dur +
+      ", wait=" +
+      wait +
+      ")\n"
+    );
+  };
+
+  pythonGenerator.forBlock["pokecon_stick"] = function (block) {
+    var rawStick = "";
+    try {
+      rawStick = block.getFieldValue("STICK");
+    } catch (e) {
+      rawStick = "";
+    }
+    var stick = rawStick === "RIGHT" ? "RIGHT" : "LEFT";
+    var angle = Number(block.getFieldValue("ANGLE"));
+    if (!isFinite(angle)) {
+      angle = 90;
+    }
+    var magPct = Number(block.getFieldValue("MAG"));
+    if (!isFinite(magPct)) {
+      magPct = 100;
+    }
+    magPct = Math.min(100, Math.max(0, magPct));
+    var mag = magPct / 100;
+    var dur = block.getFieldValue("DURATION");
+    var wait = block.getFieldValue("WAIT");
+    return (
+      "self.press(Direction(Stick." +
+      stick +
+      ", " +
+      angle +
+      ", magnification=" +
+      mag +
+      ")" +
       ", duration=" +
       dur +
       ", wait=" +
