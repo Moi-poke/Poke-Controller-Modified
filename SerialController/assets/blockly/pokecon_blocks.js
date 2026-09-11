@@ -1100,8 +1100,8 @@
     var sig = args.length ? "self, " + args.join(", ") : "self";
     if (ret != null && String(ret).trim() !== "") {
       // 戻り値つき。注釈なしにする（-> None のまま return 値を書くと
-      // 型検査で落ちるため）。
-      inner += "    return " + String(ret).trim() + "\n";
+      // 型検査で落ちるため）。字下げは do() 本体と同じ8桁にする。
+      inner += "        return " + String(ret).trim() + "\n";
       return "    def " + name + "(" + sig + "):\n" + inner + "\n";
     }
     if (!inner) {
@@ -1139,23 +1139,53 @@
       );
     // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
     var useStick = /Direction\s*\(/.test(combined);
+    var useButton = /Button\s*\./.test(combined);
     // 経過時間を使うときだけ time を足し、do() 先頭で起点を取る。
     var useTime = /_blockly_t0/.test(combined);
-    var keysImport =
-      (useTime ? "import time\n" : "") +
-      (useStick
-        ? "from Commands.Keys import Button, Direction, Stick\n"
-        : "from Commands.Keys import Button\n");
+    // 乱数を使うときだけ random を足す（未使用のimportを出さない）。
+    // 本体側も同名で足すため、こちらへ一本化する（二重化防止）。
+    var useRandom = /random\./.test(combined);
+    if (useRandom && generator.definitions_) {
+      delete generator.definitions_["import_random"];
+    }
     if (useTime) {
       inner = "        self._blockly_t0 = time.time()\n" + inner;
     }
+    // 自前のimport群はdefinitions_へ寄せる。finish()がimport正規表現で
+    // 判別して変数初期化より先に出すため、順序が保たれる。
+    // （従来どおり先頭へ出る。変数を使うと初期化がimport群の後へ回る。）
+    var baseImport = "from Commands.PythonCommandBase import PythonCommand\n";
+    if (needImageProc && useAudio) {
+      // 画像＋音声の併用。実行側の ImageProc 分岐に載り、音声源は属性で渡る。
+      baseImport =
+        "from Commands.PythonCommandBase import ImageProcAudioPythonCommand\n";
+    } else if (useAudio) {
+      // 音声のみ。実行側の Audio 分岐が音声源を位置引数で渡す。
+      baseImport = "from Commands.PythonCommandBase import AudioPythonCommand\n";
+    } else if (needImageProc) {
+      // press系と混ぜても `Button` が未定義にならないよう、vision側にも付ける。
+      baseImport =
+        "from Commands.PythonCommandBase import ImageProcPythonCommand\n";
+    }
+    var stdImports =
+      (useRandom ? "import random\n" : "") + (useTime ? "import time\n" : "");
+    var keyNames = [];
+    if (useButton) {
+      keyNames.push("Button");
+    }
+    if (useStick) {
+      keyNames.push("Direction", "Stick");
+    }
+    var keysLine =
+      keyNames.length > 0
+        ? "from Commands.Keys import " + keyNames.join(", ") + "\n"
+        : "";
+    generator.definitions_["pokecon_imports"] =
+      (stdImports ? stdImports + "\n" : "") + keysLine + baseImport;
     var head;
     if (needImageProc && useAudio) {
       // 画像＋音声の併用。実行側の ImageProc 分岐に載り、音声源は属性で渡る。
       head =
-        keysImport +
-        "from Commands.PythonCommandBase import ImageProcAudioPythonCommand\n" +
-        "\n\n" +
         "class BlocklyCmd(ImageProcAudioPythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +
@@ -1167,9 +1197,6 @@
     } else if (useAudio) {
       // 音声のみ。実行側の Audio 分岐が音声源を位置引数で渡す。
       head =
-        keysImport +
-        "from Commands.PythonCommandBase import AudioPythonCommand\n" +
-        "\n\n" +
         "class BlocklyCmd(AudioPythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +
@@ -1181,9 +1208,6 @@
     } else if (needImageProc) {
       // press系と混ぜても `Button` が未定義にならないよう、vision側にも付ける。
       head =
-        keysImport +
-        "from Commands.PythonCommandBase import ImageProcPythonCommand\n" +
-        "\n\n" +
         "class BlocklyCmd(ImageProcPythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +
@@ -1194,9 +1218,6 @@
         "    def do(self) -> None:\n";
     } else {
       head =
-        keysImport +
-        "from Commands.PythonCommandBase import PythonCommand\n" +
-        "\n\n" +
         "class BlocklyCmd(PythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +

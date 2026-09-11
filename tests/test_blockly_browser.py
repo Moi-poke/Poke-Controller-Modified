@@ -1596,7 +1596,8 @@ def test_browser_stick_codegen() -> None:
     assert "Direction(Stick.LEFT, 90, magnification=1)" in code
     assert "duration=0.5" in code
     assert "wait=0.2" in code
-    assert "from Commands.Keys import Button, Direction, Stick" in code
+    assert "from Commands.Keys import Direction, Stick" in code
+    assert "Button" not in code.split("class BlocklyCmd")[0]
     assert blockly_validate.validate_generated_code(code) == []
 
 
@@ -2009,6 +2010,7 @@ def test_browser_subroutine_return_codegen() -> None:
     code = proc.stdout[start:end]
     assert "def get_num(self):" in code
     assert "return 42" in code
+    assert "\n        return 42" in code
     assert "self.get_num()" in code
     assert blockly_validate.validate_generated_code(code) == []
 
@@ -2599,3 +2601,87 @@ def test_browser_dialog_codegen() -> None:
     assert "count = int(count[0])" in code
     assert "confirm = bool(confirm[0])" in code
     assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_RANDOM_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('RANDOM-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: { NAME: 'RandomTest' },
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+// 使うときだけ import random が出ること。
+const used = genCode(programWith({
+  type: 'pokecon_print',
+  fields: { KIND: 'print' },
+  inputs: {
+    TEXT: {
+      block: {
+        type: 'math_random_int',
+        inputs: {
+          FROM: { block: { type: 'math_number', fields: { NUM: 1 } } },
+          TO: { block: { type: 'math_number', fields: { NUM: 6 } } },
+        },
+      },
+    },
+  },
+}));
+if (used.indexOf('import random') === -1) { fail('import randomが無い: ' + used); }
+if (used.indexOf('import random') !== used.lastIndexOf('import random')) { fail('import randomが重複: ' + used); }
+if (used.indexOf('random.randint(1, 6)') === -1) { fail('randint生成: ' + used); }
+// 使わないときは出ないこと。
+const unused = genCode(programWith({
+  type: 'pokecon_press',
+  fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+}));
+if (unused.indexOf('import random') !== -1) { fail('未使用でimport randomが出た'); }
+console.log('RANDOM-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_random_import_codegen() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_RANDOM_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "RANDOM-PROBE-OK" in proc.stdout
