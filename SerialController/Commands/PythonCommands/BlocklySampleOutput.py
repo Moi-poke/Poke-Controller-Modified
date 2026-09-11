@@ -5,6 +5,7 @@ from Commands.PythonCommandBase import PythonCommand
 
 class BlocklyCmd(PythonCommand):
     NAME = "出力例"
+    TAGS = ["blockly", "サンプル"]
 
     def do(self) -> None:
         print("結果:" + str(random.randint(1, 6)))

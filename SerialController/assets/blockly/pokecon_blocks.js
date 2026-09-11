@@ -223,9 +223,10 @@
   Blockly.defineBlocksWithJsonArray([
     {
       type: "pokecon_program",
-      message0: "プログラム %1 %2",
+      message0: "プログラム %1 タグ %2 %3",
       args0: [
         { type: "field_input", name: "NAME", text: "ブロック作成" },
+        { type: "field_input", name: "TAGS", text: "blockly" },
         { type: "input_statement", name: "DO" },
       ],
       colour: 230,
@@ -1110,8 +1111,39 @@
     return "    def " + name + "(" + sig + ") -> None:\n" + inner + "\n";
   }
 
+  // プログラム欄のタグ文面を読む。区切りは TagEditor と同じく , と 、。
+  // 空・重複は落とし、1つも無ければ blockly 既定にする（旧保存物互換）。
+  function programTags(block) {
+    var raw = "";
+    try {
+      raw = block.getFieldValue("TAGS");
+    } catch (e) {
+      raw = "";
+    }
+    var tags = String(raw == null ? "" : raw)
+      .split(/[,、]/)
+      .map(function (p) {
+        return String(p).trim();
+      })
+      .filter(function (p, i, arr) {
+        return p.length > 0 && arr.indexOf(p) === i;
+      });
+    if (!tags.length) {
+      tags = ["blockly"];
+    }
+    return tags;
+  }
+
   pythonGenerator.forBlock["pokecon_program"] = function (block, generator) {
     var name = block.getFieldValue("NAME");
+    var tagsLine =
+      "    TAGS = [" +
+      programTags(block)
+        .map(function (t) {
+          return pyStr(t);
+        })
+        .join(", ") +
+      "]\n";
     var body = generator.statementToCode(block, "DO");
     var inner = body ? generator.prefixLines(body, "    ") : "        pass\n";
     // statementToCodeだけ・prefixLinesだけの片方では字下げが壊れる（spike確定）。
@@ -1189,7 +1221,9 @@
         "class BlocklyCmd(ImageProcAudioPythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +
-        "\n\n" +
+        "\n" +
+        tagsLine +
+        "\n" +
         "    def __init__(self, cam, gui=None, audio=None):\n" +
         "        super().__init__(cam, gui, audio)\n" +
         "\n" +
@@ -1200,7 +1234,9 @@
         "class BlocklyCmd(AudioPythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +
-        "\n\n" +
+        "\n" +
+        tagsLine +
+        "\n" +
         "    def __init__(self, audio=None):\n" +
         "        super().__init__(audio)\n" +
         "\n" +
@@ -1211,7 +1247,9 @@
         "class BlocklyCmd(ImageProcPythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +
-        "\n\n" +
+        "\n" +
+        tagsLine +
+        "\n" +
         "    def __init__(self, cam, gui=None):\n" +
         "        super().__init__(cam, gui)\n" +
         "\n" +
@@ -1221,7 +1259,9 @@
         "class BlocklyCmd(PythonCommand):\n" +
         "    NAME = " +
         pyStr(name) +
-        "\n\n" +
+        "\n" +
+        tagsLine +
+        "\n" +
         "    def do(self) -> None:\n";
     }
     if (!methodsCode) {

@@ -3,6 +3,7 @@ from Commands.PythonCommandBase import AudioPythonCommand
 
 class BlocklyCmd(AudioPythonCommand):
     NAME = "音検知例"
+    TAGS = ["blockly", "サンプル"]
 
     def __init__(self, audio=None):
         super().__init__(audio)

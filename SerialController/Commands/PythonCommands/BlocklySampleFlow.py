@@ -6,6 +6,7 @@ count = None
 
 class BlocklyCmd(PythonCommand):
     NAME = "変数フロー例"
+    TAGS = ["blockly", "サンプル"]
 
     def do(self) -> None:
         count = 0

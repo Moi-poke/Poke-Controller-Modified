@@ -2685,3 +2685,92 @@ def test_browser_random_import_codegen() -> None:
     )
     assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
     assert "RANDOM-PROBE-OK" in proc.stdout
+
+
+def test_program_tags_field_registered() -> None:
+    """プログラム欄にTAGSがあり、生成器がTAGS行を出すこと（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert '"TAGS"' in src
+    assert "TAGS = " in src
+
+
+PROBE_TAGS_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('TAGS-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(fields, doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: fields,
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+function pressA() {
+  return { type: 'pokecon_press', fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 } };
+}
+// 明示タグ → そのまま出すこと。
+const tagged = genCode(programWith(
+  { NAME: 'TagTest', TAGS: 'blockly,サンプル' }, pressA()));
+if (tagged.indexOf('TAGS = ["blockly", "サンプル"]') === -1) {
+  fail('明示タグ生成: ' + tagged);
+}
+// 無指定・旧保存物 → blockly 既定になること。
+const legacy = genCode(programWith({ NAME: 'TagTest' }, pressA()));
+if (legacy.indexOf('TAGS = ["blockly"]') === -1) {
+  fail('既定タグ生成: ' + legacy);
+}
+console.log('=== GENERATED START ===');
+console.log(tagged);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_program_tags_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_TAGS_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert blockly_validate.validate_generated_code(code) == []
