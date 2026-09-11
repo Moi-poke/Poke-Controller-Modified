@@ -495,29 +495,35 @@
     },
     {
       type: "pokecon_audio_tone_contains",
-      message0: "音 %1〜%2Hz が閾値 %3 を超えた",
+      message0: "音 %1〜%2Hz が閾値 %3 を超えた 第2 %4〜%5Hz 閾値 %6",
       args0: [
         { type: "field_number", name: "LO", value: 3000, min: 0, max: 22050 },
         { type: "field_number", name: "HI", value: 3200, min: 0, max: 22050 },
         { type: "field_number", name: "THRESH", value: 1000000 },
+        { type: "field_number", name: "LO2", value: 0, min: 0, max: 22050 },
+        { type: "field_number", name: "HI2", value: 0, min: 0, max: 22050 },
+        { type: "field_number", name: "THRESH2", value: 0 },
       ],
       output: "Boolean",
       colour: 250,
-      tooltip: "指定帯域の音量が閾値を超えたら真（要調整）。",
+      tooltip: "指定帯域の音量が閾値を超えたら真（要調整）。第2は0,0で使わない。",
     },
     {
       type: "pokecon_audio_wait_tone",
-      message0: "音 %1〜%2Hz を待つ 閾値 %3 上限 %4",
+      message0: "音 %1〜%2Hz を待つ 閾値 %3 上限 %4 第2 %5〜%6Hz 閾値 %7",
       args0: [
         { type: "field_number", name: "LO", value: 3000, min: 0, max: 22050 },
         { type: "field_number", name: "HI", value: 3200, min: 0, max: 22050 },
         { type: "field_number", name: "THRESH", value: 1000000 },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
+        { type: "field_number", name: "LO2", value: 0, min: 0, max: 22050 },
+        { type: "field_number", name: "HI2", value: 0, min: 0, max: 22050 },
+        { type: "field_number", name: "THRESH2", value: 0 },
       ],
       previousStatement: null,
       nextStatement: null,
       colour: 250,
-      tooltip: "指定帯域の音が鳴るまで待つ（要調整）。",
+      tooltip: "指定帯域の音が鳴るまで待つ（要調整）。第2は0,0で使わない。",
     },
     {
       type: "pokecon_vision_press_until",
@@ -1350,16 +1356,36 @@
     );
   };
 
+  // 第2帯域は 0 < LO2 < HI2 のときだけ付ける（0,0で単帯域・旧保存物互換）。
   function audioToneArgs(block) {
-    return (
+    var bands =
       "[(" +
       block.getFieldValue("LO") +
       ", " +
       block.getFieldValue("HI") +
-      ")], [" +
-      block.getFieldValue("THRESH") +
-      "]"
-    );
+      ")]";
+    var threshs = "[" + block.getFieldValue("THRESH") + "]";
+    var lo2 = Number(block.getFieldValue("LO2"));
+    var hi2 = Number(block.getFieldValue("HI2"));
+    if (isFinite(lo2) && isFinite(hi2) && lo2 > 0 && lo2 < hi2) {
+      bands =
+        "[(" +
+        block.getFieldValue("LO") +
+        ", " +
+        block.getFieldValue("HI") +
+        "), (" +
+        block.getFieldValue("LO2") +
+        ", " +
+        block.getFieldValue("HI2") +
+        ")]";
+      threshs =
+        "[" +
+        block.getFieldValue("THRESH") +
+        ", " +
+        block.getFieldValue("THRESH2") +
+        "]";
+    }
+    return bands + ", " + threshs;
   }
 
   pythonGenerator.forBlock["pokecon_audio_tone_contains"] = function (

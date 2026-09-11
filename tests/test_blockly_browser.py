@@ -1062,6 +1062,10 @@ def test_audio_blocks_registered() -> None:
     ]:
         assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
         assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    # 第2帯域（2音同時判定用）があること。0,0で単帯域になる。
+    assert '"LO2"' in src
+    assert '"HI2"' in src
+    assert '"THRESH2"' in src
     html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
     assert "音声" in html
     for block_type in [
@@ -2283,3 +2287,91 @@ def test_browser_vision_helper_codegen() -> None:
     assert 'self.countTemplate("my-pack/a.png"' in code
     assert "ImageProcPythonCommand" in code
     assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_DUALBAND_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('DUALBAND-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: { NAME: 'DualBand' },
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+// 2帯域 → 両方出すこと（色違いの3100＋4200Hz方式）。
+const dual = genCode(programWith({
+  type: 'pokecon_audio_wait_tone',
+  fields: { LO: 3000, HI: 3200, THRESH: 1000000, LO2: 4150, HI2: 4400, THRESH2: 2000000, TIMEOUT: 10 },
+}));
+if (dual.indexOf('self.waitTone([(3000, 3200), (4150, 4400)], [1000000, 2000000], timeout=10)') === -1) {
+  fail('2帯域生成: ' + dual);
+}
+// 0,0 → 単帯域のままであること（旧保存物互換）。
+const single = genCode(programWith({
+  type: 'controls_if',
+  inputs: {
+    IF0: {
+      block: {
+        type: 'pokecon_audio_tone_contains',
+        fields: { LO: 3000, HI: 3200, THRESH: 1000000, LO2: 0, HI2: 0, THRESH2: 0 },
+      },
+    },
+    DO0: {
+      block: {
+        type: 'pokecon_press',
+        fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+      },
+    },
+  },
+}));
+if (single.indexOf('self.isTonePresent([(3000, 3200)], [1000000])') === -1) {
+  fail('単帯域維持: ' + single);
+}
+console.log('DUALBAND-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_dualband_codegen() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_DUALBAND_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "DUALBAND-PROBE-OK" in proc.stdout

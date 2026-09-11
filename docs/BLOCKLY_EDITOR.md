@@ -22,7 +22,7 @@
 
 出力： 「表示」ブロック（表示／結果＋値）で `print(...)`／`self.print2(...)` を出す。「スクショ」ブロックで `self.camera.saveCapture()`（自動保存名）を出す。「Discord」ブロック（テキスト／画像付き＋内容）で `self.discord_text(...)`／`self.discord_image(...)` を出す。スクショ・画像付きDiscordを使うと生成コードは自動で `ImageProcPythonCommand`（カメラあり）になる。
 
-音声： 「音声」分類に2種。トーン検知（値・標準ifの条件に直結）とトーン待ち（文）。帯域（Hz）・閾値・上限（待ちのみ）を指定し、`self.isTonePresent(...)`／`self.waitTone(...)` を出す。閾値は環境依存のため要調整（`listen_shiny2.py` の平常値×倍率の方式が目安）。音声のみなら `AudioPythonCommand`、画像系と混ざると自動で `ImageProcAudioPythonCommand`（カメラ＋音声）になる。Audio欄の入力が必要。
+音声： 「音声」分類に2種。トーン検知（値・標準ifの条件に直結）とトーン待ち（文）。帯域（Hz）・閾値・上限（待ちのみ）に加え、第2帯域（Hz・閾値、0,0で使わない）を指定でき、2帯域同時判定（色違いの3100＋4200Hz方式）になる。`self.isTonePresent(...)`／`self.waitTone(...)` を出す。閾値は環境依存のため要調整（`listen_shiny2.py` の平常値×倍率の方式が目安）。音声のみなら `AudioPythonCommand`、画像系と混ざると自動で `ImageProcAudioPythonCommand`（カメラ＋音声）になる。Audio欄の入力が必要。
 
 画像認識の複合操作： 「出るまで押す」「消えるまで押す」（画像＋ボタン＋上限）で `self.press_until(...)`／`self.press_until_gone(...)` を出す（A連打で戦闘開始待ち等）。「N個出るまで待つ」で `self.wait_count(...)`、「個数」（値）で `self.countTemplate(...)` を出す（卵・孵化数の判定等）。いずれもテンプレ選択・範囲・グレー欄つき。
 
