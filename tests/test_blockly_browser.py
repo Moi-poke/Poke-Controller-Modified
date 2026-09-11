@@ -2007,3 +2007,121 @@ def test_browser_subroutine_return_codegen() -> None:
     assert "return 42" in code
     assert "self.get_num()" in code
     assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_standard_core_blocks_in_toolbox() -> None:
+    """中断・否定・剰余・加算の標準ブロックがtoolboxにあること."""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "controls_flow_statements",
+        "logic_negate",
+        "math_modulo",
+        "math_change",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_STD_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STD-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'StdTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'controls_repeat',
+              fields: { TIMES: 10 },
+              inputs: {
+                DO: {
+                  block: {
+                    type: 'controls_if',
+                    inputs: {
+                      IF0: {
+                        block: {
+                          type: 'logic_negate',
+                          inputs: {
+                            BOOL: {
+                              block: {
+                                type: 'pokecon_vision_contains',
+                                fields: { TEMPLATE: 'my-pack/a.png', THRESHOLD: 0.7, CROP: '' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                      DO0: {
+                        block: {
+                          type: 'controls_flow_statements',
+                          fields: { FLOW: 'BREAK' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_standard_core_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STD_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "break" in code
+    assert "not " in code
+    assert blockly_validate.validate_generated_code(code) == []
