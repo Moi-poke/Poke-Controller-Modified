@@ -8,7 +8,7 @@
 
 保存物： `Commands/PythonCommands/<保存名>.py`と同名`.blockly.json`の対。保存名は英字・数字・`_`（例: MyBlock）。`.blockly.json`は一覧を壊さない（`.py`のみ走査）。
 
-ブロック： program（NAME＋DO、1個まで）、press（ボタン14種＋長さ＋待ち）、stick（L/R＋パッド＋角度＋長さ＋待ち）、wait（秒）、hold（押し続け）、holdEnd（離す）、finish（正常終了）、pressRep（連打）、表示（ログ出し）、スクショ、Discord通知。サブルーチン（定義＋呼出、引数あり）、コメント（`#` 生成）。繰り返し・条件・数値・変数・文字列結合・乱数は標準ブロックを使う。
+ブロック： program（NAME＋DO、1個まで）、press（ボタン14種＋長さ＋待ち）、stick（L/R＋パッド＋角度＋長さ＋待ち）、wait（秒）、hold（押し続け）、holdEnd（離す）、finish（正常終了）、pressRep（連打）、表示（ログ出し）、スクショ、Discord通知。サブルーチン（定義＋呼出、引数あり）、コメント（`#` 生成）。繰り返し・条件・中断・比較・論理・否定・数値・四則・剰余・加算・乱数・テキスト・結合・変数は標準ブロックを使う。
 
 保持・終了・連打： 「hold」ブロック（ボタン・スティック方向＋待ち）で押しっぱなしにし、「holdEnd」ブロックで離す（卵孵化中のスティック倒しっぱなし等）。「finish」ブロックで正常終了する（色違い検出時等）。「pressRep」ブロック（対象・回数・長さ・間隔・待ち）で連打する。
 
@@ -23,6 +23,8 @@
 出力： 「表示」ブロック（表示／結果＋値）で `print(...)`／`self.print2(...)` を出す。「スクショ」ブロックで `self.camera.saveCapture()`（自動保存名）を出す。「Discord」ブロック（テキスト／画像付き＋内容）で `self.discord_text(...)`／`self.discord_image(...)` を出す。スクショ・画像付きDiscordを使うと生成コードは自動で `ImageProcPythonCommand`（カメラあり）になる。
 
 音声： 「音声」分類に2種。トーン検知（値・標準ifの条件に直結）とトーン待ち（文）。帯域（Hz）・閾値・上限（待ちのみ）を指定し、`self.isTonePresent(...)`／`self.waitTone(...)` を出す。閾値は環境依存のため要調整（`listen_shiny2.py` の平常値×倍率の方式が目安）。音声のみなら `AudioPythonCommand`、画像系と混ざると自動で `ImageProcAudioPythonCommand`（カメラ＋音声）になる。Audio欄の入力が必要。
+
+画像認識の複合操作： 「出るまで押す」「消えるまで押す」（画像＋ボタン＋上限）で `self.press_until(...)`／`self.press_until_gone(...)` を出す（A連打で戦闘開始待ち等）。「N個出るまで待つ」で `self.wait_count(...)`、「個数」（値）で `self.countTemplate(...)` を出す（卵・孵化数の判定等）。いずれもテンプレ選択・範囲・グレー欄つき。
 
 欄の形式： TEMPLATE欄は候補からのコンボボックス選択（未登録名は先頭に残る。`(空欄)`で消せる）。CROP欄は空＝全体または`x1,y1,x2,y2`（実画素）。THRESHOLD欄は0〜1（既定0.7）。PREVIEW欄は指定中画像の縮小表示（幅120pxまで、出ない名は壊れ表示になることがある。表示のみで保存物・生成コードは変わらない）。
 

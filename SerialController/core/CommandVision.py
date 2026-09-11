@@ -138,6 +138,7 @@ class VisionMixin:
     # 待ち系は継承側（OperateMixin 経由の PythonCommand）が用意する。
     # Mixin 単体には無いため、型だけ宣言する。
     wait: Callable[[float], None]
+    press: Callable[..., None]
     _deadline: Callable[[float], Callable[[], bool]]
     _runElapsed: Callable[[], float]
 
@@ -865,6 +866,57 @@ class VisionMixin:
                 return False
             self.wait(interval)
 
+    def press_until(
+        self,
+        template_path,
+        buttons: Any,
+        timeout=10.0,
+        interval=0.2,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        duration=0.1,
+    ) -> bool:
+        """出るまで押す。出たら True、時間切れなら False。
+
+        A連打で戦闘開始を待つような定番形。waitTemplate と press を
+        組み合わせたものを1つにし、打ち切りと停止対応をこぼさない。
+        """
+        expired = self._deadline(timeout)
+        while True:
+            hit, _, _ = self._matchOnce(template_path, threshold, use_gray, crop)
+            if hit:
+                return True
+            if expired():
+                logger.debug(f"press_until timeout: {template_path}")
+                return False
+            self.press(buttons, duration, interval)
+
+    def press_until_gone(
+        self,
+        template_path,
+        buttons: Any,
+        timeout=10.0,
+        interval=0.2,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+        duration=0.1,
+    ) -> bool:
+        """消えるまで押す。消えたら True、時間切れなら False。
+
+        press_until の逆。会話送りでメッセージ枠が抜けるのを待つ用途。
+        """
+        expired = self._deadline(timeout)
+        while True:
+            hit, _, _ = self._matchOnce(template_path, threshold, use_gray, crop)
+            if not hit:
+                return True
+            if expired():
+                logger.debug(f"press_until_gone timeout: {template_path}")
+                return False
+            self.press(buttons, duration, interval)
+
     def waitStable(
         self,
         quiet=0.5,
@@ -1077,6 +1129,34 @@ class VisionMixin:
         return len(
             self.findAllTemplates(template_path, threshold, use_gray, crop, max_count)
         )
+
+    def wait_count(
+        self,
+        template_path,
+        count: int,
+        timeout=10.0,
+        interval=0.2,
+        threshold=0.7,
+        use_gray=True,
+        crop=None,
+    ) -> bool:
+        """N個以上見つかるまで待つ。満たせば True、時間切れなら False。
+
+        max_count は要求数以上に広げておく。既定20のまま N>20 を
+        待つと永久に満たさない。
+        """
+        need = max(int(count), 1)
+        expired = self._deadline(timeout)
+        while True:
+            if (
+                self.countTemplate(template_path, threshold, use_gray, crop, need)
+                >= need
+            ):
+                return True
+            if expired():
+                logger.debug(f"wait_count timeout: {template_path}")
+                return False
+            self.wait(interval)
 
     def getColorRatio(self, crop, lower_hsv, upper_hsv) -> float:
         """指定領域で、その色が占める割合(0.0〜1.0)を返す。

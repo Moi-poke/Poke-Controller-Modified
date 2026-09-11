@@ -520,6 +520,141 @@
       tooltip: "指定帯域の音が鳴るまで待つ（要調整）。",
     },
     {
+      type: "pokecon_vision_press_until",
+      message0: "画像 %1 が出るまで %2 を押す 上限 %3 閾値 %4 範囲 %5 グレー %6 %7 %8",
+      args0: [
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        {
+          type: "field_dropdown",
+          name: "TARGET",
+          options: [
+            ["Y", "Button.Y"],
+            ["B", "Button.B"],
+            ["A", "Button.A"],
+            ["X", "Button.X"],
+            ["L", "Button.L"],
+            ["R", "Button.R"],
+            ["ZL", "Button.ZL"],
+            ["ZR", "Button.ZR"],
+            ["MINUS", "Button.MINUS"],
+            ["PLUS", "Button.PLUS"],
+            ["LCLICK", "Button.LCLICK"],
+            ["RCLICK", "Button.RCLICK"],
+            ["HOME", "Button.HOME"],
+            ["CAPTURE", "Button.CAPTURE"],
+          ],
+        },
+        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
+      ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 210,
+    },
+    {
+      type: "pokecon_vision_press_until_gone",
+      message0: "画像 %1 が消えるまで %2 を押す 上限 %3 閾値 %4 範囲 %5 グレー %6 %7 %8",
+      args0: [
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        {
+          type: "field_dropdown",
+          name: "TARGET",
+          options: [
+            ["Y", "Button.Y"],
+            ["B", "Button.B"],
+            ["A", "Button.A"],
+            ["X", "Button.X"],
+            ["L", "Button.L"],
+            ["R", "Button.R"],
+            ["ZL", "Button.ZL"],
+            ["ZR", "Button.ZR"],
+            ["MINUS", "Button.MINUS"],
+            ["PLUS", "Button.PLUS"],
+            ["LCLICK", "Button.LCLICK"],
+            ["RCLICK", "Button.RCLICK"],
+            ["HOME", "Button.HOME"],
+            ["CAPTURE", "Button.CAPTURE"],
+          ],
+        },
+        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
+      ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 210,
+    },
+    {
+      type: "pokecon_vision_wait_count",
+      message0: "画像 %1 が %2 個出るまで待つ 上限 %3 閾値 %4 範囲 %5 グレー %6 %7 %8",
+      args0: [
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        { type: "field_number", name: "COUNT", value: 2, min: 1, max: 100 },
+        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
+      ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 210,
+    },
+    {
+      type: "pokecon_vision_count",
+      message0: "画像 %1 の個数 閾値 %2 範囲 %3 グレー %4 %5 %6",
+      args0: [
+        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_input", name: "CROP", text: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          width: 120,
+          height: 90,
+          alt: "*",
+        },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
+      ],
+      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      output: "Number",
+      colour: 210,
+    },
+    {
       type: "pokecon_sub_def",
       message0: "サブルーチン %1 引数 %2 %3 戻り値 %4",
       args0: [
@@ -930,7 +1065,7 @@
       .join("");
     var combined = body + methodsCode;
     var vision =
-      /self\.(isContainTemplate|waitTemplate|waitTemplateGone|getTemplatePosition|waitStable|getColorRatio|isSimilarColor|isContainTemplateDump|findAllTemplates|countTemplate)\s*\(/.test(
+      /self\.(isContainTemplate|waitTemplate|waitTemplateGone|getTemplatePosition|waitStable|getColorRatio|isSimilarColor|isContainTemplateDump|findAllTemplates|countTemplate|press_until|press_until_gone|wait_count)\s*\(/.test(
         combined,
       );
     // カメラ・画像付きDiscordも ImageProc（cam あり）が必要なため同扱いにする。
@@ -1308,6 +1443,71 @@
       visionGray(block) +
       ")\n"
     );
+  };
+
+  pythonGenerator.forBlock["pokecon_vision_press_until"] = function (block) {
+    return (
+      "self.press_until(" +
+      pyStr(block.getFieldValue("TEMPLATE")) +
+      ", " +
+      block.getFieldValue("TARGET") +
+      ", timeout=" +
+      block.getFieldValue("TIMEOUT") +
+      ", threshold=" +
+      block.getFieldValue("THRESHOLD") +
+      visionCrop(block) +
+      visionGray(block) +
+      ")\n"
+    );
+  };
+
+  pythonGenerator.forBlock["pokecon_vision_press_until_gone"] = function (
+    block,
+  ) {
+    return (
+      "self.press_until_gone(" +
+      pyStr(block.getFieldValue("TEMPLATE")) +
+      ", " +
+      block.getFieldValue("TARGET") +
+      ", timeout=" +
+      block.getFieldValue("TIMEOUT") +
+      ", threshold=" +
+      block.getFieldValue("THRESHOLD") +
+      visionCrop(block) +
+      visionGray(block) +
+      ")\n"
+    );
+  };
+
+  pythonGenerator.forBlock["pokecon_vision_wait_count"] = function (block) {
+    return (
+      "self.wait_count(" +
+      pyStr(block.getFieldValue("TEMPLATE")) +
+      ", " +
+      block.getFieldValue("COUNT") +
+      ", timeout=" +
+      block.getFieldValue("TIMEOUT") +
+      ", threshold=" +
+      block.getFieldValue("THRESHOLD") +
+      visionCrop(block) +
+      visionGray(block) +
+      ")\n"
+    );
+  };
+
+  pythonGenerator.forBlock["pokecon_vision_count"] = function (
+    block,
+    generator,
+  ) {
+    var code =
+      "self.countTemplate(" +
+      pyStr(block.getFieldValue("TEMPLATE")) +
+      ", threshold=" +
+      block.getFieldValue("THRESHOLD") +
+      visionCrop(block) +
+      visionGray(block) +
+      ")";
+    return [code, generator.ORDER_ATOMIC];
   };
 
   pythonGenerator.forBlock["pokecon_vision_position"] = function (
