@@ -94,6 +94,8 @@ class SerialService:
         self._run_transport: Any = None
         # 前走終了時のM計数。次走の差分の基準にする（初走は基準なし）。
         self.last_m: dict[str, int] | None = None
+        # コード版の写し（走行開始行に付ける）。初回だけgitへ聞く。
+        self._code_version_cache: str | None = None
         # 起動引数で指定された通信方式。設定より優先する（一時的な指定で、
         # 画面から選び直したら効かせない）。
         self.transport_override = ""
@@ -101,6 +103,33 @@ class SerialService:
     def set_log_dir(self, path: str) -> None:
         """走行記録CSVの置き場を変える（検証用）。"""
         self._log_dir = str(path)
+
+    def code_version(self) -> str:
+        """コード版（git短縮ハッシュ）。取れなければ空文字。
+
+        ビルド違いの混線防止用。重いので初回だけ聞いて覚える。
+        失敗は握る（記録の欠落は実行を止めない）。
+        """
+        if self._code_version_cache is not None:
+            return self._code_version_cache
+        version = ""
+        try:
+            import subprocess
+
+            repo = os.path.dirname(os.path.abspath(self._base_dir))
+            done = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if done.returncode == 0:
+                version = done.stdout.strip()
+        except Exception:
+            version = ""
+        self._code_version_cache = version
+        return version
 
     # -- 選択の解決（純粋な手続き） ------------------------------------------
 
@@ -487,6 +516,7 @@ class SerialService:
                     transport=tname,
                     dwell_ms=dwell,
                     repeat_ms=repeat,
+                    version=self.code_version(),
                 )
             )
         except Exception:

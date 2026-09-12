@@ -83,12 +83,20 @@ def format_run_start(
     transport: Any,
     dwell_ms: Any,
     repeat_ms: Any,
+    version: str = "",
 ) -> str:
-    """走行開始の1行。何がどの条件で走ったかを残す。"""
-    return (
+    """走行開始の1行。何がどの条件で走ったかを残す。
+
+    version はコード版（git短縮ハッシュ等）。ビルド違いの混線を
+    防ぐため、渡されたときだけ付ける。
+    """
+    text = (
         f"走行開始: {cmd_name} profile={profile} transport={transport} "
         f"dwell={dwell_ms}ms repeat={repeat_ms}ms"
     )
+    if version:
+        text += f" code={version}"
+    return text
 
 
 def format_run_end(

@@ -81,6 +81,18 @@ def test_format_run_start_contains_identity() -> None:
     assert "repeat=24ms" in text
 
 
+def test_format_run_start_contains_version_when_given() -> None:
+    text = format_run_start(
+        cmd_name="X",
+        profile="pico",
+        transport="pico_uart",
+        dwell_ms=16,
+        repeat_ms=24,
+        version="022b33b",
+    )
+    assert "code=022b33b" in text
+
+
 def test_format_run_end_contains_verdict() -> None:
     text = format_run_end(
         cmd_name="高速日時変更 Pico用",
