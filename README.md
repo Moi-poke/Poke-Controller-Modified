@@ -215,7 +215,8 @@ Pythonで書く！Switchの自動化支援ソフトウェア
 
 通常のボタン押下  
 `self.press(Button.A) # Aボタンを押して離す`  
-`self.press(Button.A, 0.1, 1) # Aボタンを0.1秒間押して離した後, 1秒待機`
+`self.press(Button.A, 0.1, 1) # Aボタンを0.1秒間押して離した後, 1秒待機`  
+`self.pressEvery(Button.A, 0.09, 0.05) # 0.09秒間隔で0.05秒間押す（連打の周期指定）`
 
 左右スティック & HAT(十字)キー  
 `self.press(Direction.RIGHT, 5) # 左スティックを右に5秒間倒す`  

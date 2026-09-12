@@ -71,6 +71,7 @@ _KNOWN_SELF_METHODS = frozenset(
     {
         "press",
         "pressRep",
+        "pressEvery",
         "hold",
         "holdEnd",
         "wait",

@@ -3,7 +3,7 @@
 """CommandOperate.py - 操作 API と待ち（OperateMixin）.
 
 内容:
-  ・操作   press / pressRep / hold / holdEnd
+  ・操作   press / pressRep / pressEvery / hold / holdEnd
   ・待ち   wait / short_wait / _precise_sleep / _wait_or_stop / _deadline
   ・関所   _gate / _gateRelease / checkIfAlive / _waitResume
   ・その他 timeLeap（Switch の日付を進める操作）
@@ -46,7 +46,7 @@ class StopThread(Exception):
 class OperateMixin:
     """操作 API と待ち。PythonCommand へ重ねて使う。
 
-    外向きの API（press / pressRep / hold / holdEnd / wait / short_wait /
+    外向きの API（press / pressRep / pressEvery / hold / holdEnd / wait / short_wait /
       checkIfAlive / timeLeap）は名前・引数・意味とも1文字も変えていない。
     """
 
@@ -89,6 +89,32 @@ class OperateMixin:
             self._gate()
             self.press(buttons, duration, 0 if i == repeat - 1 else interval)
         self.wait(wait)
+
+    # press button every interval(s), holding duration(s)
+    def pressEvery(self, buttons: Any, interval: float, duration: float) -> None:
+        """press開始間隔で duration だけ押す。waitの逆算が要らない。
+
+        press(btn, duration, wait) が「押下＋解放後待ち」なのに対し、
+        こちらは「開始間隔＋保持幅」で指定する。連打の周期を守りたい
+        ときに使う（実測：duration 0.05・interval 0.09 で全通）。
+        duration が interval を超えたら interval に丸め、理由を残す
+        （負待ちで固まらないため）。
+        """
+        self._gate()
+        interval = float(interval)
+        duration = float(duration)
+        if duration > interval:
+            logger.warning(
+                f"pressEvery: duration({duration}) が interval({interval}) を"
+                "超えたため interval に丸めます"
+            )
+            duration = interval
+        start = time.perf_counter()
+        self.keys.input(buttons)
+        self.wait(duration)
+        self.keys.inputEnd(buttons)
+        self.wait(max(0.0, interval - (time.perf_counter() - start)))
+        self.checkIfAlive()
 
     # add hold buttons
     def hold(self, buttons: Any, wait: float = 0.1) -> None:
