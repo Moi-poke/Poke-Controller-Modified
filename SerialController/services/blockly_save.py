@@ -100,6 +100,7 @@ def save_blockly(
     errors = blockly_validate.validate_stem(stem)
     errors.extend(blockly_validate.validate_workspace_json(workspace_json))
     errors.extend(blockly_validate.validate_generated_code(python_code))
+    errors.extend(blockly_validate.validate_dialog_vars(workspace_json))
     if errors:
         return SaveResult(
             status="failed",

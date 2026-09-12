@@ -680,6 +680,19 @@ class ImageProcPythonCommand(PythonCommand, VisionMixin):
             return False
 
 
+class ImageProcAudioPythonCommand(ImageProcPythonCommand, AudioMixin):
+    """画像認識＋音声検知の併用基底クラス。
+
+    Blockly の画像ブロックと音声ブロックの併用時に使う。
+    実行側（command_panel の ImageProc 分岐）にそのまま載る。
+    カメラ・GUI は位置引数で、音声源は audio 引数か属性で渡す。
+    """
+
+    def __init__(self, cam: Any, gui: Any = None, audio: Any = None) -> None:
+        super().__init__(cam, gui)
+        self._initAudio(audio)
+
+
 class AudioPythonCommand(PythonCommand, AudioMixin):
     """音声検知つきのコマンド基底クラス（ImageProcPythonCommand の音声版）。"""
 

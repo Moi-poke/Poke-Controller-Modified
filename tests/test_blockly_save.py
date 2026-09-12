@@ -178,3 +178,23 @@ def test_save_rollback_on_second_write(
     assert res.status == "failed"
     assert not (app / "Commands" / "PythonCommands" / "MyBlock.py").exists()
     assert not (app / "Commands" / "PythonCommands" / "MyBlock.blockly.json").exists()
+
+
+def test_bad_dialog_var_fails_without_files(tmp_path: Path) -> None:
+    app = make_app(tmp_path)
+    ws = json.dumps(
+        {
+            "blocks": {
+                "languageVersion": 0,
+                "blocks": [
+                    {
+                        "type": "pokecon_dialog_choice",
+                        "fields": {"VAR": "class"},
+                    }
+                ],
+            }
+        }
+    )
+    res = blockly_save.save_blockly(app, "MyBlock", ws, good_code())
+    assert res.status == "failed"
+    assert list((app / "Commands" / "PythonCommands").iterdir()) == []

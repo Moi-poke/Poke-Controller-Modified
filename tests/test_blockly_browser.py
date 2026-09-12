@@ -979,3 +979,1844 @@ def test_color_block_def_has_crop() -> None:
     color_gen = src[gen_start:]
     assert "isSimilarColor" in color_gen
     assert '"CROP"' in color_gen
+
+
+def test_subroutine_and_comment_blocks_registered() -> None:
+    """サブルーチン定義・呼出・コメントのブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_sub_def",
+        "pokecon_sub_call",
+        "pokecon_comment",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    # 呼出は self.xxx(…)、コメントは # …、定義は def … を出すこと。
+    assert "self." in src
+    assert '"# "' in src or "'# '" in src or '"#"' in src
+
+
+def test_toolbox_lists_subroutine_and_comment() -> None:
+    """toolboxに新ブロックが並び、標準に変数・論理・計算があること."""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_sub_def",
+        "pokecon_sub_call",
+        "pokecon_comment",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+    for std in ["logic_compare", "math_arithmetic", "text"]:
+        assert std in html, f"toolboxに {std} が無い"
+
+
+def test_stick_block_registered() -> None:
+    """スティックブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert 'type: "pokecon_stick"' in src
+    assert 'forBlock["pokecon_stick"]' in src
+    assert "Direction(" in src
+    assert "field_stickpad" in src
+    assert "PokeconStick" in src
+    assert "parsePadValue" in src
+    # パッド欄・角度欄・同期拡張がスティック定義にあること。強さ欄は無い。
+    stick_sec = src[src.index('type: "pokecon_stick"') :]
+    stick_sec = stick_sec[: stick_sec.index('type: "pokecon_wait"')]
+    assert '"PAD"' in stick_sec
+    assert '"ANGLE"' in stick_sec
+    assert '"MAG"' not in stick_sec
+    assert "pokecon_stick_pad_sync" in src
+    # パッドのドラッグがブロック移動に伝搬しないこと。
+    assert "stopPropagation" in src
+    # 8方向スナップとグリップカーソルがあること。
+    assert "snapAngle" in src
+    # グリップはブロック移動（grab/grabbing）と被らない移動カーソルにすること。
+    assert "cursor:move" in src
+    assert "grab" not in src
+
+
+def test_output_blocks_registered() -> None:
+    """出力系ブロック（表示・スクショ・Discord）と生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_print",
+        "pokecon_screenshot",
+        "pokecon_discord",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_print",
+        "pokecon_screenshot",
+        "pokecon_discord",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+def test_audio_blocks_registered() -> None:
+    """音声ブロック（トーン検知・待ち）と生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_audio_tone_contains",
+        "pokecon_audio_wait_tone",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    # 第2帯域（2音同時判定用）があること。0,0で単帯域になる。
+    assert '"LO2"' in src
+    assert '"HI2"' in src
+    assert '"THRESH2"' in src
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "音声" in html
+    for block_type in [
+        "pokecon_audio_tone_contains",
+        "pokecon_audio_wait_tone",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_AUDIO_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('AUDIO-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_audio_tone_contains', 'pokecon_audio_wait_tone']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+// 音声のみ → Audio基底。
+const audioOnly = genCode([
+  {
+    type: 'pokecon_program',
+    fields: { NAME: 'AudioOnly' },
+    inputs: {
+      DO: {
+        block: {
+          type: 'pokecon_audio_wait_tone',
+          fields: { LO: 3000, HI: 3200, THRESH: 1000000, TIMEOUT: 10 },
+        },
+      },
+    },
+  },
+]);
+if (audioOnly.indexOf('AudioPythonCommand') === -1) {
+  fail('音声のみでAudio基底にならない: ' + audioOnly);
+}
+if (audioOnly.indexOf('self.waitTone([(3000, 3200)], [1000000], timeout=10)') === -1) {
+  fail('waitTone生成: ' + audioOnly);
+}
+// 画像＋音声 → 併用基底。
+const mixed = genCode([
+  {
+    type: 'pokecon_program',
+    fields: { NAME: 'Mixed' },
+    inputs: {
+      DO: {
+        block: {
+          type: 'pokecon_vision_wait_appear',
+          fields: { TEMPLATE: 'my-pack/a.png', TIMEOUT: 10, THRESHOLD: 0.7, CROP: '' },
+        },
+      },
+    },
+  },
+  {
+    type: 'pokecon_sub_def',
+    fields: { NAME: 'check', ARGS: '' },
+    inputs: {
+      DO: {
+        block: {
+          type: 'controls_if',
+          inputs: {
+            IF0: {
+              block: {
+                type: 'pokecon_audio_tone_contains',
+                fields: { LO: 3000, HI: 3200, THRESH: 1000000 },
+              },
+            },
+            DO0: {
+              block: {
+                type: 'pokecon_press',
+                fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+]);
+if (mixed.indexOf('ImageProcAudioPythonCommand') === -1) {
+  fail('混在で併用基底にならない: ' + mixed);
+}
+if (mixed.indexOf('self.isTonePresent([(3000, 3200)], [1000000])') === -1) {
+  fail('isTonePresent生成: ' + mixed);
+}
+console.log('=== GENERATED START ===');
+console.log(mixed);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_audio_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_AUDIO_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "ImageProcAudioPythonCommand" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_hold_finish_repetition_blocks_registered() -> None:
+    """保持・終了・連打ブロックと生成器、標準の結合・乱数がtoolboxにあること."""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_hold",
+        "pokecon_hold_end",
+        "pokecon_finish",
+        "pokecon_press_rep",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_hold",
+        "pokecon_hold_end",
+        "pokecon_finish",
+        "pokecon_press_rep",
+        "text_join",
+        "math_random_int",
+        "math_random_float",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_HOLD_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('HOLD-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_hold', 'pokecon_hold_end', 'pokecon_finish', 'pokecon_press_rep']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'HoldTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_hold',
+              fields: { TARGET: 'Button.A', WAIT: 0.1 },
+              next: {
+                block: {
+                  type: 'pokecon_press_rep',
+                  fields: { TARGET: 'Button.B', COUNT: 3, DURATION: 0.1, INTERVAL: 0.1, WAIT: 0.2 },
+                  next: {
+                    block: {
+                      type: 'pokecon_hold_end',
+                      fields: { TARGET: 'Button.A', WAIT: 0.1 },
+                      next: { block: { type: 'pokecon_finish' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_hold_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_HOLD_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "self.hold(Button.A" in code
+    assert "self.pressRep(Button.B, 3" in code
+    assert "self.holdEnd(Button.A" in code
+    assert "self.finish()" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_OUTPUT_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('OUTPUT-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_print', 'pokecon_screenshot', 'pokecon_discord']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'OutputTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_print',
+              fields: { KIND: 'print' },
+              inputs: {
+                TEXT: { block: { type: 'text', fields: { TEXT: 'hi' } } },
+              },
+              next: {
+                block: {
+                  type: 'pokecon_screenshot',
+                  next: {
+                    block: {
+                      type: 'pokecon_discord',
+                      fields: { KIND: 'image' },
+                      inputs: {
+                        CONTENT: { block: { type: 'text', fields: { TEXT: 'done' } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_output_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_OUTPUT_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "print('hi')" in code
+    assert "self.camera.saveCapture()" in code
+    assert "self.discord_image(content='done')" in code
+    # カメラ系が混ざるためImageProc基底になること。
+    assert "ImageProcPythonCommand" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_toolbox_lists_stick_and_single_program() -> None:
+    """toolboxにスティックがあり、保存時にプログラム1個制限があること."""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "pokecon_stick" in html
+    assert "stickpad" in html.lower() or "stick-pad" in html or "stickPad" in html
+    assert "1個まで" in html
+    assert "'PAD'" in html or '"PAD"' in html
+
+
+def test_top_stick_ui_hidden() -> None:
+    """画面上部の仮想スティック区画は非表示であること（ブロック内蔵のため）。"""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    m = html.index('id="bar4"')
+    tag = html[m : html.index(">", m)]
+    assert "display" in tag and "none" in tag
+
+
+PROBE_STICKSYNC_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STICKSYNC-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const B = sandbox.Blockly;
+const ws = new B.Workspace();
+B.serialization.workspaces.load({ blocks: { languageVersion: 0, blocks: [
+  { type: 'pokecon_stick',
+    fields: { STICK: 'L', PAD: '90,100', ANGLE: 90, DURATION: 0.1, WAIT: 0.2 } },
+] } }, ws);
+const blk = ws.getAllBlocks(false)[0];
+function eq(a, b, label) {
+  if (String(a) !== String(b)) { fail(label + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
+}
+// PAD → 数値へ反映されること。強さは100%に正規化されること。
+blk.setFieldValue('180,50', 'PAD');
+eq(blk.getFieldValue('PAD'), '180,100', 'pad正規化');
+eq(blk.getFieldValue('ANGLE'), 180, 'pad->angle');
+// 数値 → PADへ反映されること（8方向スナップ＋100%）。
+blk.setFieldValue(30, 'ANGLE');
+eq(blk.getFieldValue('PAD'), '45,100', 'angle->pad');
+// 生成コードはPADを正とすること。
+const code = B.Python.forBlock['pokecon_stick'](blk, B.Python);
+if (code.indexOf('Direction(Stick.LEFT, 45, magnification=1)') === -1) {
+  fail('生成がPAD追従しない: ' + code);
+}
+ws.dispose();
+console.log('STICKSYNC-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_sticksync_pad_and_numbers() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STICKSYNC_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "STICKSYNC-PROBE-OK" in proc.stdout
+
+
+PROBE_STICK_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STICK-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_stick'] !== 'function') {
+  fail('pokecon_stick が登録されていない');
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'StickTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_stick',
+              fields: { STICK: 'LEFT', PAD: '90,100', DURATION: 0.5, WAIT: 0.2 },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_stick_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STICK_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "Direction(Stick.LEFT, 90, magnification=1)" in code
+    assert "duration=0.5" in code
+    assert "wait=0.2" in code
+    assert "from Commands.Keys import Direction, Stick" in code
+    assert "Button" not in code.split("class BlocklyCmd")[0]
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_STICKPAD_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STICKPAD-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const B = sandbox.Blockly;
+if (!B.PokeconStick) { fail('Blockly.PokeconStick が無い'); }
+const S = B.PokeconStick;
+function eq(a, b, label) {
+  if (a !== b) { fail(label + ': ' + JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
+}
+let p = S.parsePadValue('90,100');
+if (!p) { fail('基本形を読めない'); }
+eq(p.angle, 90, 'angle');
+eq(p.mag, 100, 'mag');
+p = S.parsePadValue(' 0,0 ');
+if (!p) { fail('0,0 を読めない'); }
+eq(p.angle, 0, 'angle0');
+eq(p.mag, 0, 'mag0');
+if (S.parsePadValue('') !== null) { fail('空文字はnull'); }
+if (S.parsePadValue(null) !== null) { fail('nullはnull'); }
+if (S.parsePadValue('a,b') !== null) { fail('非数値はnull'); }
+if (S.parsePadValue('90') !== null) { fail('要素不足はnull'); }
+p = S.parsePadValue('370,150');
+if (!p) { fail('範囲外を読めない'); }
+eq(p.angle, 10, 'angle正規化');
+eq(p.mag, 100, 'mag丸め');
+eq(S.formatPadValue(90, 100), '90,100', 'format');
+eq(S.formatPadValue(30), '45,100', 'formatスナップ');
+eq(S.formatPadValue(350), '0,100', 'format周回');
+eq(S.snapAngle(30), 45, 'snap');
+eq(S.snapAngle(350), 0, 'snap周回');
+eq(S.snapAngle(180), 180, 'snap維持');
+const xy = S.angleMagToXY(90, 100, 54);
+if (Math.abs(xy.x) > 1e-9 || xy.y !== -54) { fail('XY換算: ' + JSON.stringify(xy)); }
+const back = S.xyToAngleMag(0, -54, 54);
+eq(back.angle, 90, '逆換算angle');
+eq(back.mag, 100, '逆換算mag');
+// 8方向にスナップすること（30度→45度）。
+const off = S.xyToAngleMag.apply(null, (function () {
+  const o = S.angleMagToXY(30, 100, 54);
+  return [o.x, o.y, 54];
+})());
+eq(off.angle, 45, 'スナップangle');
+eq(off.mag, 100, 'スナップmag');
+// 強さは常に100%（短いドラッグ・中心も100）。
+eq(S.xyToAngleMag(5, 0, 54).mag, 100, '短mag');
+const center = S.xyToAngleMag(0, 0, 54);
+eq(center.mag, 100, '中心mag');
+if (typeof B.StickPadField !== 'function') { fail('StickPadField が無い'); }
+if (typeof B.StickPadField.fromJson !== 'function') { fail('fromJson が無い'); }
+// 旧保存物相当：PAD無し・ANGLE/MAGありの偽ブロックは従来値で出すこと。
+const legacy = B.Python.forBlock['pokecon_stick']({
+  getFieldValue: function (n) {
+    if (n === 'STICK') { return 'RIGHT'; }
+    if (n === 'ANGLE') { return 180; }
+    if (n === 'MAG') { return 50; }
+    if (n === 'DURATION') { return 0.5; }
+    if (n === 'WAIT') { return 0.2; }
+    return null;
+  },
+}, B.Python);
+if (legacy.indexOf('Direction(Stick.RIGHT, 180, magnification=0.5)') === -1) {
+  fail('旧欄フォールバック: ' + legacy);
+}
+console.log('STICKPAD-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_stickpad_logic_and_legacy() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STICKPAD_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "STICKPAD-PROBE-OK" in proc.stdout
+
+
+PROBE_SUB_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('SUB-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_sub_def', 'pokecon_sub_call', 'pokecon_comment']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'SubTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_comment',
+              fields: { TEXT: '開始メモ' },
+              next: {
+                block: {
+                  type: 'pokecon_sub_call',
+                  fields: { NAME: 'my_sub' },
+                  inputs: {
+                    ARG0: { block: { type: 'math_number', fields: { NUM: 3 } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'pokecon_sub_def',
+        fields: { NAME: 'my_sub', ARGS: 'n' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_press',
+              fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_subroutine_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_SUB_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "def my_sub(self, n)" in code
+    assert "self.my_sub(3)" in code
+    assert "# 開始メモ" in code
+    assert "self.press(Button.A" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_SUB_VISION_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('SUB-VISION-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'SubVision' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_sub_call',
+              fields: { NAME: 'check' },
+            },
+          },
+        },
+      },
+      {
+        type: 'pokecon_sub_def',
+        fields: { NAME: 'check', ARGS: '' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_vision_wait_appear',
+              fields: { TEMPLATE: 'my-pack/a.png', TIMEOUT: 10, THRESHOLD: 0.7, CROP: '' },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_subroutine_vision_switches_base() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_SUB_VISION_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "ImageProcPythonCommand" in code
+    assert "def check(self)" in code
+    assert "self.check()" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_subroutine_return_blocks_registered() -> None:
+    """戻り値つき呼出ブロックと定義のRETURN入力があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert 'type: "pokecon_sub_call_value"' in src
+    assert 'forBlock["pokecon_sub_call_value"]' in src
+    assert '"RETURN"' in src
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "pokecon_sub_call_value" in html
+
+
+PROBE_SUBRET_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('SUBRET-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_sub_call_value'] !== 'function') {
+  fail('pokecon_sub_call_value が登録されていない');
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'SubRet' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_print',
+              fields: { KIND: 'print' },
+              inputs: {
+                TEXT: {
+                  block: {
+                    type: 'pokecon_sub_call_value',
+                    fields: { NAME: 'get_num' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'pokecon_sub_def',
+        fields: { NAME: 'get_num', ARGS: '' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_press',
+              fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+            },
+          },
+          RETURN: { block: { type: 'math_number', fields: { NUM: 42 } } },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_subroutine_return_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_SUBRET_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "def get_num(self):" in code
+    assert "return 42" in code
+    assert "\n        return 42" in code
+    assert "self.get_num()" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_standard_core_blocks_in_toolbox() -> None:
+    """中断・否定・剰余・加算の標準ブロックがtoolboxにあること."""
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "controls_flow_statements",
+        "logic_negate",
+        "math_modulo",
+        "math_change",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_STD_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('STD-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'StdTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'controls_repeat',
+              fields: { TIMES: 10 },
+              inputs: {
+                DO: {
+                  block: {
+                    type: 'controls_if',
+                    inputs: {
+                      IF0: {
+                        block: {
+                          type: 'logic_negate',
+                          inputs: {
+                            BOOL: {
+                              block: {
+                                type: 'pokecon_vision_contains',
+                                fields: { TEMPLATE: 'my-pack/a.png', THRESHOLD: 0.7, CROP: '' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                      DO0: {
+                        block: {
+                          type: 'controls_flow_statements',
+                          fields: { FLOW: 'BREAK' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_standard_core_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_STD_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "break" in code
+    assert "not " in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_vision_helper_blocks_registered() -> None:
+    """押すまで待ち系・件数系ブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_vision_press_until",
+        "pokecon_vision_press_until_gone",
+        "pokecon_vision_wait_count",
+        "pokecon_vision_count",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_vision_press_until",
+        "pokecon_vision_press_until_gone",
+        "pokecon_vision_wait_count",
+        "pokecon_vision_count",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_VISION_HELP_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('VISION-HELP-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of [
+  'pokecon_vision_press_until',
+  'pokecon_vision_press_until_gone',
+  'pokecon_vision_wait_count',
+  'pokecon_vision_count',
+]) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'VisionHelp' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_vision_press_until',
+              fields: { TEMPLATE: 'my-pack/a.png', TARGET: 'Button.A', TIMEOUT: 10, THRESHOLD: 0.7, CROP: '' },
+              next: {
+                block: {
+                  type: 'pokecon_vision_wait_count',
+                  fields: { TEMPLATE: 'my-pack/a.png', COUNT: 3, TIMEOUT: 10, THRESHOLD: 0.7, CROP: '' },
+                  next: {
+                    block: {
+                      type: 'pokecon_vision_press_until_gone',
+                      fields: { TEMPLATE: 'my-pack/a.png', TARGET: 'Button.B', TIMEOUT: 10, THRESHOLD: 0.7, CROP: '' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        type: 'pokecon_sub_def',
+        fields: { NAME: 'howmany', ARGS: '' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'controls_if',
+              inputs: {
+                IF0: {
+                  block: {
+                    type: 'logic_compare',
+                    fields: { OP: 'GTE' },
+                    inputs: {
+                      A: {
+                        block: {
+                          type: 'pokecon_vision_count',
+                          fields: { TEMPLATE: 'my-pack/a.png', THRESHOLD: 0.7, CROP: '' },
+                        },
+                      },
+                      B: { block: { type: 'math_number', fields: { NUM: 2 } } },
+                    },
+                  },
+                },
+                DO0: {
+                  block: {
+                    type: 'pokecon_press',
+                    fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_vision_helper_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_VISION_HELP_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert 'self.press_until("my-pack/a.png", Button.A' in code
+    assert 'self.wait_count("my-pack/a.png", 3' in code
+    assert 'self.press_until_gone("my-pack/a.png", Button.B' in code
+    assert 'self.countTemplate("my-pack/a.png"' in code
+    assert "ImageProcPythonCommand" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_DUALBAND_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('DUALBAND-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: { NAME: 'DualBand' },
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+// 2帯域 → 両方出すこと（色違いの3100＋4200Hz方式）。
+const dual = genCode(programWith({
+  type: 'pokecon_audio_wait_tone',
+  fields: { LO: 3000, HI: 3200, THRESH: 1000000, LO2: 4150, HI2: 4400, THRESH2: 2000000, TIMEOUT: 10 },
+}));
+if (dual.indexOf('self.waitTone([(3000, 3200), (4150, 4400)], [1000000, 2000000], timeout=10)') === -1) {
+  fail('2帯域生成: ' + dual);
+}
+// 0,0 → 単帯域のままであること（旧保存物互換）。
+const single = genCode(programWith({
+  type: 'controls_if',
+  inputs: {
+    IF0: {
+      block: {
+        type: 'pokecon_audio_tone_contains',
+        fields: { LO: 3000, HI: 3200, THRESH: 1000000, LO2: 0, HI2: 0, THRESH2: 0 },
+      },
+    },
+    DO0: {
+      block: {
+        type: 'pokecon_press',
+        fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+      },
+    },
+  },
+}));
+if (single.indexOf('self.isTonePresent([(3000, 3200)], [1000000])') === -1) {
+  fail('単帯域維持: ' + single);
+}
+console.log('DUALBAND-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_dualband_codegen() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_DUALBAND_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "DUALBAND-PROBE-OK" in proc.stdout
+
+
+def test_elapsed_block_registered() -> None:
+    """経過時間ブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert 'type: "pokecon_elapsed"' in src
+    assert 'forBlock["pokecon_elapsed"]' in src
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    assert "pokecon_elapsed" in html
+
+
+PROBE_ELAPSED_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('ELAPSED-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_elapsed'] !== 'function') {
+  fail('pokecon_elapsed が登録されていない');
+}
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: { NAME: 'ElapsedTest' },
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+// 使うときだけ import time＋起点が出ること。
+const used = genCode(programWith({
+  type: 'controls_if',
+  inputs: {
+    IF0: {
+      block: {
+        type: 'logic_compare',
+        fields: { OP: 'GTE' },
+        inputs: {
+          A: { block: { type: 'pokecon_elapsed' } },
+          B: { block: { type: 'math_number', fields: { NUM: 3600 } } },
+        },
+      },
+    },
+    DO0: { block: { type: 'pokecon_finish' } },
+  },
+}));
+if (used.indexOf('import time') === -1) { fail('import timeが無い: ' + used); }
+if (used.indexOf('self._blockly_t0 = time.time()') === -1) { fail('起点が無い: ' + used); }
+if (used.indexOf('(time.time() - self._blockly_t0)') === -1) { fail('elapsed生成: ' + used); }
+// 使わないときは出ないこと（未使用importを作らない）。
+const unused = genCode(programWith({
+  type: 'pokecon_press',
+  fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+}));
+if (unused.indexOf('import time') !== -1) { fail('未使用でimport timeが出た: ' + unused); }
+if (unused.indexOf('_blockly_t0') !== -1) { fail('未使用で起点が出た: ' + unused); }
+console.log('=== GENERATED START ===');
+console.log(used);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_elapsed_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_ELAPSED_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_dialog_blocks_registered() -> None:
+    """設定ダイアログブロックと生成器があること（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_dialog_choice",
+        "pokecon_dialog_number",
+        "pokecon_dialog_check",
+    ]:
+        assert f'type: "{block_type}"' in src, f"{block_type} 定義が無い"
+        assert f'forBlock["{block_type}"]' in src, f"{block_type} 生成器が無い"
+    html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
+    for block_type in [
+        "pokecon_dialog_choice",
+        "pokecon_dialog_number",
+        "pokecon_dialog_check",
+    ]:
+        assert block_type in html, f"toolboxに {block_type} が無い"
+
+
+PROBE_DIALOG_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('DIALOG-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+for (const t of ['pokecon_dialog_choice', 'pokecon_dialog_number', 'pokecon_dialog_check']) {
+  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {
+    fail(t + ' が登録されていない');
+  }
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'DialogTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_dialog_choice',
+              fields: { VAR: 'color', TITLE: '色', LABEL: '項目', OPTIONS: '赤,青', DEFAULT: '赤' },
+              next: {
+                block: {
+                  type: 'pokecon_dialog_number',
+                  fields: { VAR: 'count', TITLE: '数', LABEL: '個数', MIN: 1, MAX: 10, DEFAULT: 3 },
+                  next: {
+                    block: {
+                      type: 'pokecon_dialog_check',
+                      fields: { VAR: 'confirm', TITLE: '確認', LABEL: '送る', DEFAULT: 'TRUE' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_dialog_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_DIALOG_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "color = self.dialogue6widget(" in code
+    assert "if color is None:" in code
+    assert "self.finish()" in code
+    assert "count = int(count[0])" in code
+    assert "confirm = bool(confirm[0])" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+PROBE_RANDOM_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('RANDOM-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: { NAME: 'RandomTest' },
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+// 使うときだけ import random が出ること。
+const used = genCode(programWith({
+  type: 'pokecon_print',
+  fields: { KIND: 'print' },
+  inputs: {
+    TEXT: {
+      block: {
+        type: 'math_random_int',
+        inputs: {
+          FROM: { block: { type: 'math_number', fields: { NUM: 1 } } },
+          TO: { block: { type: 'math_number', fields: { NUM: 6 } } },
+        },
+      },
+    },
+  },
+}));
+if (used.indexOf('import random') === -1) { fail('import randomが無い: ' + used); }
+if (used.indexOf('import random') !== used.lastIndexOf('import random')) { fail('import randomが重複: ' + used); }
+if (used.indexOf('random.randint(1, 6)') === -1) { fail('randint生成: ' + used); }
+// 使わないときは出ないこと。
+const unused = genCode(programWith({
+  type: 'pokecon_press',
+  fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 },
+}));
+if (unused.indexOf('import random') !== -1) { fail('未使用でimport randomが出た'); }
+console.log('RANDOM-PROBE-OK');
+"""
+
+
+@NEEDS_NODE
+def test_browser_random_import_codegen() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_RANDOM_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    assert "RANDOM-PROBE-OK" in proc.stdout
+
+
+def test_program_tags_field_registered() -> None:
+    """プログラム欄にTAGSがあり、生成器がTAGS行を出すこと（node無し）。"""
+    src = (BLOCKLY / "pokecon_blocks.js").read_text(encoding="utf-8")
+    assert '"TAGS"' in src
+    assert "TAGS = " in src
+
+
+PROBE_TAGS_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('TAGS-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+function genCode(blocks) {
+  const ws = new sandbox.Blockly.Workspace();
+  sandbox.Blockly.serialization.workspaces.load(
+    { blocks: { languageVersion: 0, blocks } }, ws);
+  const code = gen.workspaceToCode(ws);
+  ws.dispose();
+  return code;
+}
+function programWith(fields, doBlock) {
+  return [{
+    type: 'pokecon_program',
+    fields: fields,
+    inputs: { DO: { block: doBlock } },
+  }];
+}
+function pressA() {
+  return { type: 'pokecon_press', fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 } };
+}
+// 明示タグ → そのまま出すこと。
+const tagged = genCode(programWith(
+  { NAME: 'TagTest', TAGS: 'blockly,サンプル' }, pressA()));
+if (tagged.indexOf('TAGS = ["blockly", "サンプル"]') === -1) {
+  fail('明示タグ生成: ' + tagged);
+}
+// 無指定・旧保存物 → blockly 既定になること。
+const legacy = genCode(programWith({ NAME: 'TagTest' }, pressA()));
+if (legacy.indexOf('TAGS = ["blockly"]') === -1) {
+  fail('既定タグ生成: ' + legacy);
+}
+console.log('=== GENERATED START ===');
+console.log(tagged);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_program_tags_codegen() -> None:
+    from core import blockly_validate
+
+    proc = subprocess.run(
+        ["node", "-e", PROBE_TAGS_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_samples_carry_unified_tags() -> None:
+    """同梱サンプルは blockly＋Sample タグで統一されていること。"""
+    import ast
+    import json
+
+    base = ROOT / "SerialController" / "Commands" / "PythonCommands"
+    stems = sorted(p.name[: -len(".py")] for p in base.glob("BlocklySample*.py"))
+    assert stems, "サンプルがありません"
+    for stem in stems:
+        code = (base / f"{stem}.py").read_text(encoding="utf-8")
+        tree = ast.parse(code)
+        tags = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if (
+                        isinstance(item, ast.Assign)
+                        and len(item.targets) == 1
+                        and isinstance(item.targets[0], ast.Name)
+                        and item.targets[0].id == "TAGS"
+                        and isinstance(item.value, ast.List)
+                    ):
+                        tags = [
+                            e.value
+                            for e in item.value.elts
+                            if isinstance(e, ast.Constant)
+                        ]
+        assert tags == ["blockly", "Sample"], f"{stem}.py のTAGS: {tags}"
+        ws = json.loads((base / f"{stem}.blockly.json").read_text(encoding="utf-8"))
+
+        def walk(block: object) -> None:
+            assert isinstance(block, dict)
+            if block.get("type") == "pokecon_program":
+                assert block.get("fields", {}).get("TAGS") == "blockly,Sample", stem
+                return
+            inputs = block.get("inputs", {})
+            assert isinstance(inputs, dict)
+            for slot in inputs.values():
+                if isinstance(slot, dict) and isinstance(slot.get("block"), dict):
+                    walk(slot["block"])
+
+        for top in ws["blocks"]["blocks"]:
+            if isinstance(top, dict) and top.get("type") == "pokecon_program":
+                walk(top)
