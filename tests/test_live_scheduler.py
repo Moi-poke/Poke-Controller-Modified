@@ -182,3 +182,55 @@ def test_stick_chain_collapses_to_latest() -> None:
     sched.advance(1.0)
     assert sched.current()["lx"] == 56  # 最新だけが出る
     assert sched.pending_empty()
+
+
+def test_same_repress_young_neutral_fuses() -> None:
+    """同ボタンの背中合わせ連打では未送出の中立を落として融合する。
+
+    中立の age が 1 dwell 未満＝ワイヤに出ていないため、落としても
+    見た目は変わらない（長押し相当・Legacy等価）。周期延伸が起きない。
+    """
+    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
+    sched.push(_snap(4, 1))
+    sched.advance(0.0)
+    assert sched.current()["btn"] == 4
+    sched.push(_snap(0, 2), now=0.002)  # 解放（未送出）
+    sched.push(_snap(4, 3), now=0.005)  # 直後の再押下。中立は3msで未送出
+    assert sched.stats()["merged"] == 1
+    delivered: list[int] = []
+    last: int | None = None
+    for step in range(500):
+        sched.advance(0.008 * (step + 1))
+        cur = sched.current()
+        if cur is not None and int(cur["revision"]) != last:
+            last = int(cur["revision"])
+            delivered.append(last)
+        if sched.pending_empty() and last == 3:
+            break
+    assert delivered == [1, 3]  # 中立 rev2 は線に出ない
+    assert sched.pending_empty()
+
+
+def test_same_repress_old_neutral_kept() -> None:
+    """中立が 1 dwell 以上経った再押下では中立を残す（連打の可視性）。
+
+    100ms間隔の連打（中立 age 約30ms）は2発に数える。
+    """
+    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
+    sched.push(_snap(4, 1))
+    sched.advance(0.0)
+    sched.push(_snap(0, 2), now=0.001)
+    sched.push(_snap(4, 3), now=0.030)  # 中立から29ms後。dwell超過
+    assert sched.stats()["merged"] == 0
+    delivered: list[int] = []
+    last: int | None = None
+    for step in range(500):
+        sched.advance(0.008 * (step + 1))
+        cur = sched.current()
+        if cur is not None and int(cur["revision"]) != last:
+            last = int(cur["revision"])
+            delivered.append(last)
+        if sched.pending_empty() and last == 3:
+            break
+    assert delivered == [1, 2, 3]
+    assert sched.pending_empty()
