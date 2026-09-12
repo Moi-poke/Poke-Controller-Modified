@@ -8,6 +8,10 @@ mailbox（容量1・上書き）の置換である。上書きは8ms未満の押
 短くは絶対にしない）。スティックのみの差分は畳んでよい
 （legacyの間引きと同じ基準。ボタンのエッジは絶対に捨てない）。
 
+未送出の中立は、異なる押下が来たら落とす。ワイヤに出ていない
+中立を落としても見た目は変わらず、レガシー（状態行の上書き）と
+同等の遷移になる。同ボタンの再押下では残す（連打の2発目を潰さない）。
+
 時計を持たない。時刻は引数でもらう（検証は仮想時刻を通す）。
 排他は自前ロックで行う（workerと申告スレッドが同時に触る）。
 """
@@ -17,6 +21,11 @@ from __future__ import annotations
 import threading
 from collections import deque
 from typing import Any
+
+# 中立の値。Sender の姿勢初期値（POSTURE_CENTER / POSTURE_HAT_CENTER）と
+# 同じ値を使う。Keys の CENTER / Hat.CENTER とも一致する。
+_NEUTRAL_HAT = 8
+_NEUTRAL_AXIS = 128
 
 
 class LiveScheduler:
@@ -49,6 +58,32 @@ class LiveScheduler:
         except (KeyError, TypeError, ValueError):
             return False
 
+    @staticmethod
+    def _is_full_neutral(snap: dict[str, Any]) -> bool:
+        """全項目が中立か。押下も倒しも無い状態とみなす。"""
+        try:
+            return (
+                int(snap["btn"]) == 0
+                and int(snap["hat"]) == _NEUTRAL_HAT
+                and int(snap["lx"]) == _NEUTRAL_AXIS
+                and int(snap["ly"]) == _NEUTRAL_AXIS
+                and int(snap["rx"]) == _NEUTRAL_AXIS
+                and int(snap["ry"]) == _NEUTRAL_AXIS
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _same_content(left: dict[str, Any], right: dict[str, Any]) -> bool:
+        """姿勢の6項目が等しいか。revision（順序情報）は比べない。"""
+        try:
+            return all(
+                int(left[key]) == int(right[key])
+                for key in ("btn", "hat", "lx", "ly", "rx", "ry")
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
     def push(self, snap: dict[str, Any]) -> None:
         """1エッジを列へ積む。捨てずに数える（溢れは最古を捨て計数）。"""
         with self._lock:
@@ -57,6 +92,29 @@ class LiveScheduler:
                 self._pending[-1] = dict(snap)
                 self._merged += 1
                 return
+            if (
+                self._pending
+                and self._is_full_neutral(self._pending[-1])
+                and not self._is_full_neutral(snap)
+            ):
+                # 末尾の中立はまだ送出していない。その後に異なる状態が
+                # 来たら、中立を挟まず直接遷移してよい（出ていない物は
+                # 落としても見た目が変わらない）。直近の非中立と同じ
+                # 内容の再押下は残す（中立の可視性が要る連打のため）。
+                # 参照は列内の新しい方から探し、無ければ送出中を見る。
+                # どちらにも無ければ（起動直後など）残す。
+                ref: dict[str, Any] | None = None
+                for older in reversed(list(self._pending)[:-1]):
+                    if not self._is_full_neutral(older):
+                        ref = older
+                        break
+                if ref is None and self._current is not None:
+                    if not self._is_full_neutral(self._current):
+                        ref = self._current
+                if ref is not None and not self._same_content(ref, snap):
+                    self._pending[-1] = dict(snap)
+                    self._merged += 1
+                    return
             if len(self._pending) >= self._capacity:
                 self._pending.popleft()
                 self._dropped += 1

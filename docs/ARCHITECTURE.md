@@ -61,10 +61,11 @@ import しない。逆向きの依存は [`tools/check_core.py`](../tools/check_
 - legacy（Leonardo 系）: `S` に相当する数字行を送りっぱなし
 - Pico live: 姿勢スナップショットを 8ms スロットで取出し、無変化の
   再送は 24ms に間引く（Pico の UART 10ms ポーリング＋32B FIFO に合わせ、
-  8ms 連送のオーバーランを避ける）。最低保持は既定 24ms
-  （`Transport.live_min_dwell_ms` で 8〜64ms 可変）。200ms watchdog は
-  24ms 再送で十分賄う。8ms 未満の押下はPC側タイミング
-  (S行で押して待って離す) で送る
+  8ms 連送のオーバーランを避ける）。全状態の最低保持は既定 16ms
+  （`Transport.live_min_dwell_ms` で 8〜64ms 可変。8msスロット量子化で
+  実効16ms×2状態=32msとなり、40ms間隔の連打を滞留なく通せる上限）。
+  未送出の中立は異状態への遷移で落とす（レガシー同等）。
+  200ms watchdog は 24ms 再送で十分賄う
 
 ## コマンドの発見と実行
 

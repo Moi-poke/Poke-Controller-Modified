@@ -107,7 +107,7 @@ class GuiSettings:
         )
         # ライブ入力の最低保持ミリ秒（ini＋既定のみ。画面欄は作らない）
         self.live_min_dwell_ms = tk.IntVar(
-            value=transport.getint("live_min_dwell_ms", fallback=24)
+            value=transport.getint("live_min_dwell_ms", fallback=16)
         )
 
         # 入力調停（誰の操作を優先するか）。

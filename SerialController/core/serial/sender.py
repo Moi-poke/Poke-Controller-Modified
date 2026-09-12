@@ -127,8 +127,11 @@ class Sender:
         # 通信方式の切替世代。二重切替の競合で古い方が新しい worker を
         # 止めないよう、番号で見分ける（closeSerial と同じく錠の外で待つ）。
         self._transport_gen = 0
-        # live送出の最低保持秒。既定24ms（8〜64msの範囲で変えられる）。
-        self._live_min_dwell_s = 0.024
+        # live送出の最低保持秒。既定16ms（8〜64msの範囲で変えられる）。
+        # 8msスロット量子化で実効16ms×2状態=32msとなり、40ms間隔の
+        # 連打を滞留なく通せる上限である。repeat間隔（LIVE_REPEAT_S）
+        # とは独立した門である。
+        self._live_min_dwell_s = 0.016
         # Pico live-state 能力がある線だけ worker を立てる。
         if self._liveCapable():
             self.startLiveWorker()
@@ -1523,7 +1526,7 @@ class Sender:
         if not hasattr(self, "_live_lock"):
             self._live_lock = threading.Lock()
         if not hasattr(self, "_live_sched"):
-            min_dwell = float(getattr(self, "_live_min_dwell_s", 0.024))
+            min_dwell = float(getattr(self, "_live_min_dwell_s", 0.016))
             self._live_sched: LiveScheduler = LiveScheduler(min_dwell_s=min_dwell)
         if not hasattr(self, "_live_wake"):
             self._live_wake = threading.Event()

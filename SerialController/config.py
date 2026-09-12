@@ -90,9 +90,10 @@ def default_sections() -> dict[str, dict[str, Any]]:
             # 相対でも絶対でもよい）。各 .py は register(register)
             # という関数を持つこと。空なら読み込まない。
             "plugin_dir": "",
-            # ライブ入力の最低保持ミリ秒。PicoのUARTポーリング（10ms）に
-            # 合わせ、repeatもこの間隔に間引く。8〜64以外は補正で既定へ戻す。
-            "live_min_dwell_ms": 24,
+            # ライブ入力の最低保持ミリ秒。40ms間隔の連打を滞留なく
+            # 通す上限が16ms（8msスロット量子化で実効16ms×2状態=32ms）。
+            # 8〜64以外は補正で既定へ戻す。
+            "live_min_dwell_ms": 16,
         },
         "Arbitration": {
             # 入力調停。off / human / script のいずれか。
@@ -241,7 +242,7 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         except (TypeError, ValueError):
             dwell = None
         if dwell is None or not 8 <= dwell <= 64:
-            transport["live_min_dwell_ms"] = "24"
+            transport["live_min_dwell_ms"] = "16"
             changed.append("Transport.live_min_dwell_ms")
     if parser.has_section("Arbitration"):
         arb = parser["Arbitration"]
