@@ -75,6 +75,67 @@ def summarize(delays_ms: Sequence[float], total: int = ONSET_TRIES) -> dict[str,
     return {"detected": len(values), "total": int(total), "median_ms": mid}
 
 
+def absolute_at(t0: float, tap: Sequence[tuple[float, int]], rate: int) -> int | None:
+    """perf_counter時刻に対応する通算件数。Tapからの内挿。
+
+    locate_played（通算→時刻）の逆向き。連打の各押下時刻を
+    収録波形上の位置へ直すときに使う。Tapより後の時刻は None。
+    """
+    want = float(t0)
+    denom = float(max(1, int(rate)))
+    for t_cb, total_after in tap:
+        if float(t_cb) >= want:
+            return int(total_after - (float(t_cb) - want) * denom)
+    return None
+
+
+def count_onsets(
+    window: np.ndarray,
+    rate: int,
+    refractory_s: float = 0.06,
+    baseline_s: float = 0.5,
+    ratio: float = ONSET_RATIO,
+    floor: float = ONSET_FLOOR,
+) -> list[int]:
+    """全立ち上がり位置を通算件数で返す。不応期で間引く。
+
+    window は先頭からの通算配列（先頭=0件目）。baseline は先頭
+    baseline_s 秒の静けさから取るため、収録は押下より前に
+    余白を置くこと。不応期より近い2発は1件に畳む（二重計数防止）。
+
+    50ms窓の跳ね検出（onset_absolute）の繰り返しでは、音の尻尾で
+    再検出して水増しする。ここでは5ms包絡の極大を拾う。減衰する
+    クリック音は極大が1つなので、尻尾で二重計数しない。
+    """
+    x = np.asarray(window, dtype=np.float64).ravel()
+    if x.size == 0:
+        return []
+    denom = max(1, int(rate))
+    total = int(x.size)
+    base_n = max(1, min(total, int(denom * float(baseline_s))))
+    baseline = window_rms(x[:base_n])
+    threshold = max(float(baseline) * float(ratio), float(floor))
+    width = max(64, int(denom * 0.005))
+    if x.size <= width:
+        return []
+    sq = x * x
+    cumsum = np.concatenate(([0.0], np.cumsum(sq)))
+    env = np.sqrt((cumsum[width:] - cumsum[:-width]) / float(width))
+    refractory = max(1, int(denom * float(refractory_s)))
+    found: list[int] = []
+    pos = 0
+    size = int(env.size)
+    while pos < size:
+        if env[pos] >= threshold:
+            end = min(size, pos + refractory)
+            peak = pos + int(np.argmax(env[pos:end]))
+            found.append(peak)
+            pos = peak + refractory
+        else:
+            pos += 1
+    return found
+
+
 def locate_played(
     tap: Sequence[tuple[float, int]],
     absolute: int,
