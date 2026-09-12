@@ -2774,3 +2774,49 @@ def test_browser_program_tags_codegen() -> None:
     end = proc.stdout.index("=== GENERATED END ===")
     code = proc.stdout[start:end]
     assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_samples_carry_unified_tags() -> None:
+    """同梱サンプルは blockly＋Sample タグで統一されていること。"""
+    import ast
+    import json
+
+    base = ROOT / "SerialController" / "Commands" / "PythonCommands"
+    stems = sorted(p.name[: -len(".py")] for p in base.glob("BlocklySample*.py"))
+    assert stems, "サンプルがありません"
+    for stem in stems:
+        code = (base / f"{stem}.py").read_text(encoding="utf-8")
+        tree = ast.parse(code)
+        tags = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if (
+                        isinstance(item, ast.Assign)
+                        and len(item.targets) == 1
+                        and isinstance(item.targets[0], ast.Name)
+                        and item.targets[0].id == "TAGS"
+                        and isinstance(item.value, ast.List)
+                    ):
+                        tags = [
+                            e.value
+                            for e in item.value.elts
+                            if isinstance(e, ast.Constant)
+                        ]
+        assert tags == ["blockly", "Sample"], f"{stem}.py のTAGS: {tags}"
+        ws = json.loads((base / f"{stem}.blockly.json").read_text(encoding="utf-8"))
+
+        def walk(block: object) -> None:
+            assert isinstance(block, dict)
+            if block.get("type") == "pokecon_program":
+                assert block.get("fields", {}).get("TAGS") == "blockly,Sample", stem
+                return
+            inputs = block.get("inputs", {})
+            assert isinstance(inputs, dict)
+            for slot in inputs.values():
+                if isinstance(slot, dict) and isinstance(slot.get("block"), dict):
+                    walk(slot["block"])
+
+        for top in ws["blocks"]["blocks"]:
+            if isinstance(top, dict) and top.get("type") == "pokecon_program":
+                walk(top)

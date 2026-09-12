@@ -6,7 +6,7 @@ from Commands.PythonCommandBase import PythonCommand
 
 class BlocklyCmd(PythonCommand):
     NAME = "時間制限例"
-    TAGS = ["blockly", "サンプル"]
+    TAGS = ["blockly", "Sample"]
 
     def do(self) -> None:
         self._blockly_t0 = time.time()

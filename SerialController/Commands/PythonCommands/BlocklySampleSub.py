@@ -6,7 +6,7 @@ msg = None
 
 class BlocklyCmd(PythonCommand):
     NAME = "サブルーチン例"
-    TAGS = ["blockly", "サンプル"]
+    TAGS = ["blockly", "Sample"]
 
     def do(self) -> None:
         # 戻り値を表示する

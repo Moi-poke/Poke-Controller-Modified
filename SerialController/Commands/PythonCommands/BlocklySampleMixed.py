@@ -4,7 +4,7 @@ from Commands.PythonCommandBase import ImageProcAudioPythonCommand
 
 class BlocklyCmd(ImageProcAudioPythonCommand):
     NAME = "画像音声例"
-    TAGS = ["blockly", "サンプル"]
+    TAGS = ["blockly", "Sample"]
 
     def __init__(self, cam, gui=None, audio=None):
         super().__init__(cam, gui, audio)

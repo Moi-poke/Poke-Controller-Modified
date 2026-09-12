@@ -4,7 +4,7 @@ from Commands.PythonCommandBase import PythonCommand
 
 class BlocklyCmd(PythonCommand):
     NAME = "保持連打例"
-    TAGS = ["blockly", "サンプル"]
+    TAGS = ["blockly", "Sample"]
 
     def do(self) -> None:
         self.hold(Button.A, wait=0.5)

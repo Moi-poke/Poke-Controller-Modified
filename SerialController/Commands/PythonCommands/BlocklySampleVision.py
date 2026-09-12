@@ -4,7 +4,7 @@ from Commands.PythonCommandBase import ImageProcPythonCommand
 
 class BlocklyCmd(ImageProcPythonCommand):
     NAME = "画像認識例"
-    TAGS = ["blockly", "サンプル"]
+    TAGS = ["blockly", "Sample"]
 
     def __init__(self, cam, gui=None):
         super().__init__(cam, gui)

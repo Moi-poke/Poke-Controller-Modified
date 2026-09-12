@@ -5,7 +5,7 @@ color = None
 
 class BlocklyCmd(PythonCommand):
     NAME = "設定入力例"
-    TAGS = ["blockly", "サンプル"]
+    TAGS = ["blockly", "Sample"]
 
     def do(self) -> None:
         color = self.dialogue6widget("色", [["combo", "項目", ["赤", "青"], "赤"]])
