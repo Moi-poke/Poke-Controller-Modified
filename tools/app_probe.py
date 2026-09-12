@@ -273,8 +273,7 @@ def main() -> int:
     print(
         "live_stats="
         f"put={stats.get('put')} sent={stats.get('sent')} "
-        f"replaced={stats.get('replaced')} dropped={stats.get('dropped')} "
-        f"priority={stats.get('priority')}"
+        f"replaced={stats.get('replaced')} dropped={stats.get('dropped')}"
     )
     # ワイヤdwellを試行ごとに測る（press行→中立行の間隔）。
     wire_rows: list[tuple[float, int]] = []

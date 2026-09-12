@@ -67,7 +67,7 @@ class LiveScheduler:
 - `advance(now)`: `pending`があり、かつ（`current`が無いか、`now - current_sent_at >= min_dwell_s`）なら最古を`current`へ移し`current_sent_at = now`。進める際、先頭の未送出中立より後ろに非中立があれば中立を飛ばす（`merged+=1`）。元スクリプトは状態を上書きし中立を挟まないため。
 - 通常の解放（ボタン/Hat/スティックの中立戻し）は優先送信しない。優先起床で中立を即送出すると次pressがdwell待ちで延び、40ms周期が伸びる。停止系（`sendNeutralAll`・`releaseAll`・`closeSerial`）は優先のまま。
 - `capacity=32`は滞留上限 `32×16ms≒0.5秒` の意味である。通常の操作頻度（press毎200ms前後）では1〜2件に収まる。物理限界（約62状態/秒）を超える申告は伸びた末に溢れ、`dropped`で数える。
-- `priority`引数は`Sender.putLive`の互換のため残すが、スケジューラ内では区別しない（dwell門が優先起床の速射を既に防ぐ）。
+- 優先送信は持たない。シリアル通信は8msごとに状態を送る仕様であり、pressは状態を変化させるだけである。すべての申告は次スロットで読み出される。切断手順の中立だけ `_closing` 指定で順序を守る（速度ではなく順序の保護）。
 
 ### 3.3 workerループ変更（`sender.py:1642-1699`）
 
@@ -109,7 +109,6 @@ if out is None:
 - `replaced`: スティック畳み込み（merged）の数。従来の上書き消失は起きない。
 - `sent`: 送出行数（repeat含む）。
 - `keepalive`: 無変化repeat数。
-- `priority`: 優先申告数（不変）。
 - `dropped`: 追加。キュー溢れ破棄数（0であるべき）。
 - `last_revision` / `inversions`: 不変。
 
@@ -121,7 +120,7 @@ if out is None:
 
 - `Commands.*`公開API（`Keys`/`PythonCommandBase`/`McuCommandBase`/`WakeLink`/`CommandVision`/`CommandAudio`）不変（`task userapi`）。
 - `core/`はtkinter・アプリ層import禁止、`services/`はtkinter・UI禁止（`task bounds`）。
-- `Transport`抽象・`putLive/takeLive/discardLive/waitLiveDrained/getLiveStats`の名前・引数不変。
+- `Transport`抽象・`putLive/takeLive/discardLive/waitLiveDrained/getLiveStats`の名前・引数不変（`putLive`の優先引数は切断順序専用の`_closing`へ置換済み）。
 - legacy_text経路・`McuCommand`・調停・音声／画像系に触れない。
 - コミットは明示指示があるときのみ。
 

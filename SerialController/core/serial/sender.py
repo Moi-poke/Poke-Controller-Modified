@@ -490,18 +490,17 @@ class Sender:
 
             1  新規の live 入力の受付を停止する
             2  未送信の通常状態を破棄する
-            3  中立を優先送信する
+            3  中立を送る（_closing指定。受付停止後のため順序が保たれる）
             4  送出の完了を期限つきで待つ
             5  worker へ停止を要求する
-            6  worker を起床させる
-            7  期限つきで停止を待つ
-            8  入力ログを初期化する
-            9  Transport を閉じる
+            6  期限つきで停止を待つ
+            7  入力ログを初期化する
+            8  Transport を閉じる
 
         中立の送出は worker が生きているうちに行う。worker を止めてから
-        mailbox へ入れても誰も送出しないため、押下が残る。
+        列へ入れても誰も送出しないため、押下が残る。
 
-        ステップ 1 から 8 は try の内側に置き、ステップ 9 は finally で必ず実行
+        ステップ 1 から 7 は try の内側に置き、ステップ 8 は finally で必ず実行
         する。途中で失敗しても回線を開いたままにしない。
 
         錠（_lock）は状態の変更だけに使う。送出の完了待ち・worker の
@@ -520,7 +519,7 @@ class Sender:
                     self.discardLive()
                     # 3: worker が生きているうちに中立を送る。
                     self.releaseAll()
-                    self.putLive(self.snapshot(), priority=True)
+                    self.putLive(self.snapshot(), _closing=True)
             if live:
                 # 4: 送出の完了を待つ。期限を過ぎたら次へ進む。
                 if not self.waitLiveDrained(self.CLOSE_DRAIN_S):
@@ -669,7 +668,7 @@ class Sender:
         次pressがdwell待ちで延び、40ms周期が伸びる。解放の中立は次
         スロットに載せ、追い越されたら落とす（schedulerの融合・skip則）。
         送出そのものは保証される（workerが吐き出す。停止時は releaseAll・
-        closeSerial の優先送信が別に居る）。
+        closeSerial の切断用中立（_closing指定）が別に居る）。
 
         押下は申告した所有者のビット列へ記録し、実際に送る値は
         全所有者の OR とする。同じボタンを 2 者が押している場合、片方が
@@ -702,8 +701,8 @@ class Sender:
         """Hat の向きを差し替え、変化があれば live に渡す。
 
         優先送信はしない（applyButtons と同じ理由。背中合わせ連打の
-        周期延伸を防ぐ）。停止系の中立は sendNeutralAll・releaseAll・
-        closeSerial が優先で送るため、置き去りにはならない。
+        周期延伸を防ぐ）。停止系の中立は切断手順（_closing指定）を含め
+        別経路が担うため、置き去りにはならない。
         """
         snap = None
         with self._lock:
@@ -808,8 +807,7 @@ class Sender:
                 if self._liveCapable():
                     snap = self.snapshot()
         if snap is not None:
-            # 押していた状態を外す方向なので、解放と同じ優先送信とする。
-            self.putLive(snap, priority=True)
+            self.putLive(snap)
         return True
 
     def restoreOwner(self, source: Any = None) -> bool:
@@ -845,7 +843,7 @@ class Sender:
                 if self._liveCapable():
                     snap = self.snapshot()
         if snap is not None:
-            self.putLive(snap, priority=True)
+            self.putLive(snap)
         return True
 
     def isOwnerSuspended(self, source: Any = None) -> bool:
@@ -884,7 +882,7 @@ class Sender:
                 if self._liveCapable():
                     snap = self.snapshot()
         if snap is not None:
-            self.putLive(snap, priority=True)
+            self.putLive(snap)
         return had
 
     def getOwners(self) -> dict[str, Any]:
@@ -1025,7 +1023,7 @@ class Sender:
 
         優先送信はしない（applyButtons と同じ理由）。中立へ戻す途中も
         含めて拒否すると半倒しが残るため、調停の対象外とするのは変えない。
-        停止系の中立は別経路の優先送信が担う。
+        停止系の中立は別経路が担う。
 
         申告は所有者ごとに記録し、送る値は _applyComposed の合成結果と
         する。記録しないと suspend / restore / drop がスティックを拾えず、
@@ -1067,8 +1065,8 @@ class Sender:
     def releaseAll(self) -> None:
         """全項目を中立に戻し、変化があれば live に渡す。
 
-        Stop、Neutral、Release All の経路であり、常に優先送信と
-        する。停止後に押下が残ってはならない。
+        Stop、Neutral、Release All の経路であり、到達を保証する。
+        停止後に押下が残ってはならない（速達ではなく列への投入で守る）。
 
         所有者ごとの申告もすべて取り下げる。これは Stop の意味を
         持つ経路であり、誰の押下も残さない。1 人分だけ取り下げるのは
@@ -1097,7 +1095,7 @@ class Sender:
                 if self._liveCapable():
                     snap = self.snapshot()
         if snap is not None:
-            self.putLive(snap, priority=True)
+            self.putLive(snap)
 
     def getPosture(self) -> dict[str, int]:
         """現在の姿勢の写しを返す（確認・デバッグ用）。"""
@@ -1339,7 +1337,7 @@ class Sender:
         return True
 
     def sendPosture(self, source: str | None = None) -> bool:
-        """現在姿勢を送る。Pico live経路ではmailboxだけを使う。
+        """現在姿勢を送る。Pico live経路では列へ積むだけにする。
 
         送るのは「合成後の全体」である。棄却された系統の値は入って
         いないが、通った別系統の値（常時受理のスティックなど）は入る。
@@ -1349,7 +1347,7 @@ class Sender:
         """
         if not self._accept(source):
             return False
-        # apply* が既に mailbox へ入れている。ここで同期送信
+        # apply* が既に列へ入れている。ここで同期送信
         #   するとGUIスレッドが Transport の錠と UART 書き込みを待ち、
         #   worker と二重送信になる。legacy だけ従来どおり同期送信する。
         if self._liveCapable():
@@ -1358,17 +1356,17 @@ class Sender:
         return True
 
     def sendNeutralAll(self, source: str | None = None) -> bool:
-        """すべて中立へ戻す。live 経路では優先送信で mailbox へ渡す。
+        """すべて中立へ戻す。live 経路では列へ渡す。
 
         既に中立であっても再送する。releaseAll は状態が変わらな
-        ければ mailbox へ渡さないため、ここで現在の snapshot を優先送信
-        する。revision は増やさない。
+        ければ列へ渡さないため、ここで現在の snapshot を渡す。
+        revision は増やさない。
         """
         if not self._accept(source, releasing=True):
             return False
         self.releaseAll()
         if self._liveCapable():
-            self.putLive(self.snapshot(), priority=True)
+            self.putLive(self.snapshot())
             return True
         self.writeRow(self._buildRow())
         return True
@@ -1497,10 +1495,10 @@ class Sender:
     # 前提
     #   startLiveWorker を呼ばない限りスレッドは起動しない。
     #
-    # 優先送信
-    #   Stop、Neutral、Release は次のスロットを待たずに送出する。
-    #   スティックの中間値は畳んでよいが、解放操作は破棄できない。
-    #   破棄すると押下状態が残る。
+    # 到達保証
+    #   Stop、Neutral、Release All は列へ投入する。次のスロットで
+    #   送出される（最大8msの遅れ）。スティックの中間値は畳んでよいが、
+    #   解放操作は破棄できない。破棄すると押下状態が残る。
     # ------------------------------------------------------------------
 
     # 8 ms は 125 Hz に相当し、Pico ファームの報告周期および USB 記述子の
@@ -1523,8 +1521,6 @@ class Sender:
         if not hasattr(self, "_live_sched"):
             min_dwell = float(getattr(self, "_live_min_dwell_s", 0.016))
             self._live_sched: LiveScheduler = LiveScheduler(min_dwell_s=min_dwell)
-        if not hasattr(self, "_live_wake"):
-            self._live_wake = threading.Event()
         if not hasattr(self, "_live_stop"):
             self._live_stop = threading.Event()
         if not hasattr(self, "_live_thread"):
@@ -1535,7 +1531,6 @@ class Sender:
                 "replaced": 0,
                 "sent": 0,
                 "keepalive": 0,
-                "priority": 0,
                 "dropped": 0,
                 "last_revision": -1,
                 "inversions": 0,
@@ -1554,28 +1549,27 @@ class Sender:
             self._live_last_shown_snap: dict[str, Any] | None = None
 
     def putLive(
-        self, snap: dict[str, Any] | None = None, priority: bool = False
+        self, snap: dict[str, Any] | None = None, *, _closing: bool = False
     ) -> None:
         """申告された状態を scheduler の列へ積む（潰さず順に送る）。
 
-        通常の変化では worker を起床させない。次の 8 ms スロットで列の
-        先頭が読み出される。即時に起床させると 125 Hz を超え、UART が滞留する。
+        シリアル通信は8msごとにコントローラーの状態を送る仕様であり、
+        pressは状態を変化させるだけである。解放だけを速達にする優先
+        送信は持たない（速達は次pressのdwell待ちを招き40ms周期を伸ばす）。
+        すべての申告は次の8msスロットで列の先頭から読み出される。
 
-        切断中は優先送信だけを受け付ける。切断時に送る中立の
-        後に、通常の状態が入らないようにするためである。
+        _closing は切断手順専用の内部指定である。切断時に送る中立より
+        後に古い状態が出ないよう、切断中は通常の申告を断る。速度では
+        なく順序の保護であり、優先送信ではない。
         """
         self._ensureLiveState()
-        if self._live_closing and not priority:
+        if self._live_closing and not _closing:
             return
         if snap is None:
             snap = self.snapshot()
         self._live_sched.push(snap, time.perf_counter())
         with self._live_lock:
             self._live_stats["put"] += 1
-            if priority:
-                self._live_stats["priority"] += 1
-        if priority:
-            self._live_wake.set()
 
     def takeLive(self) -> dict[str, Any] | None:
         """互換のために残す取出し口。送出中へ進めて非破壊で覗く。
@@ -1650,15 +1644,13 @@ class Sender:
         self._live_timer_raised = False
 
     def _liveLoop(self, transport: Any) -> None:
-        """8 ms の締切ごとに送出中を送り、無変化時は毎回再送する。
+        """8 ms ごとに最新の姿勢を1行送り続ける（状態同期）。
 
-        待ちには起床合図（_live_wake）を使う。締切までの残り時間を上限と
-        して待ち、合図が来た場合は締切を待たずに送出する。これが
-        優先送信であり、解放と中立を次のスロットまで待たせない。
-
-        通常の変化では合図を出さないため、送出は 8 ms 周期に収まる。これ
-        より速く送っても Pico の HID レポート周期を超えるだけである。
-        短い押下は scheduler が最低保持ぶん延長するため潰れない。
+        シリアル通信は8msごとにコントローラーの状態を送る仕様であり、
+        pressは状態を変化させるだけである。workerは一定周期で列の
+        先頭を読み出すだけで、優先起床は持たない。解放も次のスロット
+        に載る（最大8msの遅れ）。追い越された中立は落とすため、
+        背中合わせ連打の周期は伸びない。
         """
         self._ensureLiveState()
         self._beginPreciseTimer()
@@ -1668,10 +1660,7 @@ class Sender:
                 deadline += self.LIVE_SLOT_S
                 remain = deadline - time.perf_counter()
                 if remain > 0:
-                    # 合図が来れば締切前でも起きる（優先送信）。
-                    if self._live_wake.wait(remain):
-                        self._live_wake.clear()
-                        deadline = time.perf_counter()
+                    time.sleep(remain)
                 else:
                     # 遅れた分は取り戻さない。締切を現在時刻へ引き直す。
                     deadline = time.perf_counter()
@@ -1758,7 +1747,6 @@ class Sender:
             if thread is not None and thread.is_alive():
                 return None
         self._live_stop.clear()
-        self._live_wake.clear()
         with self._live_lock:
             self._live_last_snap = None
             self._live_last_sent_at = None
@@ -1814,14 +1802,12 @@ class Sender:
     def stopLiveWorker(self, timeout: float = 1.0) -> bool:
         """常駐ワーカーを止める。止まるまで待つ。
 
-        止め方の順序が大事: 先に停止印を立て、次に起こす。
-          逆にすると、起こした直後に眠り直す窓ができる。
+        停止印を立て、8ms周期の目覚めを待って合流する（上限timeout）。
         待ちのあいだは _live_lock を持たない。持ったまま join すると、
         起動側が止まるまで待たされる。
         """
         self._ensureLiveState()
         self._live_stop.set()
-        self._live_wake.set()
         with self._live_lock:
             thread = self._live_thread
         if thread is None:
@@ -1880,7 +1866,6 @@ class Sender:
                 "replaced",
                 "sent",
                 "keepalive",
-                "priority",
                 "dropped",
                 "inversions",
             ):

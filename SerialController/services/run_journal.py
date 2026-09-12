@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 # live統計の差分を取るキー。dropped（溢れ捨て）がPC側滞留の証拠になる。
-_LIVE_KEYS = ("put", "sent", "dropped", "keepalive", "replaced", "priority")
+_LIVE_KEYS = ("put", "sent", "dropped", "keepalive", "replaced")
 
 
 def safe_name(name: Any) -> str:
