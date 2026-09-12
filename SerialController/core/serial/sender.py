@@ -1567,7 +1567,7 @@ class Sender:
             return
         if snap is None:
             snap = self.snapshot()
-        self._live_sched.push(snap, time.perf_counter())
+        self._live_sched.push(snap)
         with self._live_lock:
             self._live_stats["put"] += 1
 
