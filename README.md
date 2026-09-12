@@ -6,7 +6,7 @@
 
 ## 変更点
 
-### ver4.0.0
+### ver4.0.1
 主な変更点（詳細は [`docs/V4_CHANGES.md`](docs/V4_CHANGES.md)）
 - 内部構造の大整理（[`services/`](SerialController/services)・[`ui/`](SerialController/ui)・[`core/serial/`](SerialController/core/serial)・[`core/transport/`](SerialController/core/transport) に分割、[`Window.py`](SerialController/Window.py) は組立専用に）
 - Blocklyエディタ・音声対応・シリアルモニタ・スクリプトzip配布・表示フィルタの追加

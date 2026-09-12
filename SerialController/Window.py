@@ -41,7 +41,7 @@ from ui.log_panel import LogPanelMixin
 from ui.serial_panel import SerialPanelMixin
 
 NAME = "Poke-Controller"
-VERSION = "v4.0.0 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
+VERSION = "v4.0.1 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
 
 
 # タイトルに出すコマンド名の上限。長い名前でウィンドウ名が埋まるのを防ぐ

@@ -25,7 +25,7 @@ RECORD_DIRNAME = "InstalledPacks"
 BACKUP_DIRNAME = ".backup"
 
 #: 導入可否の基準にする自アプリの版（pyprojectの数値部に合わせる）。
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.0.1"
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:
