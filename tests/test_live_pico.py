@@ -179,3 +179,33 @@ def test_clear_live_stats_resets_counts() -> None:
         assert stats["sent"] == 0
     finally:
         sender.stopLiveWorker(1.0)
+
+
+def test_release_is_not_priority() -> None:
+    """通常の解放は優先送信しない（背中合わせ連打の周期延伸の防止）。
+
+    元スクリプト（生ser直書き）は解放の中立を挟まず次状態へ上書き
+    する。優先起床で中立を即送出すると、次pressがdwell待ちで延び、
+    40ms周期が伸びる。通常解放は次スロットに載せ、追い越されたら
+    落とす（schedulerの融合・skip則）。停止系は優先のまま。
+    """
+    sender, fake = make_live_sender()
+    try:
+        sender.pressButtons([Button.A])
+        sender.releaseButtons([Button.A])
+        assert wait_for(lambda: "S 0 8 80 80 80 80" in rows(fake), timeout=2.0)
+        assert sender.getLiveStats()["priority"] == 0
+    finally:
+        sender.stopLiveWorker(1.0)
+
+
+def test_release_all_stays_priority() -> None:
+    """停止系の解放は優先送信のまま（置き去り防止の例外）。"""
+    sender, fake = make_live_sender()
+    try:
+        sender.pressButtons([Button.A])
+        sender.releaseAll()
+        assert wait_for(lambda: "S 0 8 80 80 80 80" in rows(fake), timeout=2.0)
+        assert sender.getLiveStats()["priority"] >= 1
+    finally:
+        sender.stopLiveWorker(1.0)

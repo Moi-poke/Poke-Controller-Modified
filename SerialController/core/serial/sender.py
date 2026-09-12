@@ -664,9 +664,12 @@ class Sender:
     ) -> None:
         """ボタンの押下と解放を差分で適用し、変化があれば live に渡す。
 
-        解放を含む申告は優先送信とする。押下が次のスロットまで
-        遅れても操作が一瞬遅れるだけだが、解放が遅れると押しっぱなしに
-        なるため、破棄も待機もさせない。
+        優先送信はしない。元スクリプト（生ser直書き）は解放の中立を
+        挟まず次状態へ上書きするため、優先起床で中立を即送出すると
+        次pressがdwell待ちで延び、40ms周期が伸びる。解放の中立は次
+        スロットに載せ、追い越されたら落とす（schedulerの融合・skip則）。
+        送出そのものは保証される（workerが吐き出す。停止時は releaseAll・
+        closeSerial の優先送信が別に居る）。
 
         押下は申告した所有者のビット列へ記録し、実際に送る値は
         全所有者の OR とする。同じボタンを 2 者が押している場合、片方が
@@ -693,16 +696,16 @@ class Sender:
                 if self._liveCapable():
                     snap = self.snapshot()
         if snap is not None:
-            self.putLive(snap, priority=bool(release))
+            self.putLive(snap)
 
     def applyHat(self, hat: Any = None) -> None:
         """Hat の向きを差し替え、変化があれば live に渡す。
 
-        中立へ戻す場合は優先送信とする。方向が残ると意図しない
-        移動が続くため、解放と同じ扱いにする。
+        優先送信はしない（applyButtons と同じ理由。背中合わせ連打の
+        周期延伸を防ぐ）。停止系の中立は sendNeutralAll・releaseAll・
+        closeSerial が優先で送るため、置き去りにはならない。
         """
         snap = None
-        priority = False
         with self._lock:
             self._ensurePosture()
             self._ensureHatHold()
@@ -714,11 +717,10 @@ class Sender:
             if self._posture["hat"] != self._hat_pos:
                 self._posture["hat"] = self._hat_pos
                 self._bumpRevision()
-                priority = self._hat_pos == self.POSTURE_HAT_CENTER
                 if self._liveCapable():
                     snap = self.snapshot()
         if snap is not None:
-            self.putLive(snap, priority=priority)
+            self.putLive(snap)
 
     # 既定の所有者。source を渡さない経路はここへ集める。
     #   所有者が 1 人だけのときは、合成しても現行と同じ値になる。
@@ -1021,8 +1023,9 @@ class Sender:
     ) -> None:
         """スティック座標を差分で適用し、変化があれば live に渡す。
 
-        中立へ戻す場合のみ優先送信とする。途中の座標は次の値で
-        置き換えてよいが、中立は倒したままの状態を解くため待たせない。
+        優先送信はしない（applyButtons と同じ理由）。中立へ戻す途中も
+        含めて拒否すると半倒しが残るため、調停の対象外とするのは変えない。
+        停止系の中立は別経路の優先送信が担う。
 
         申告は所有者ごとに記録し、送る値は _applyComposed の合成結果と
         する。記録しないと suspend / restore / drop がスティックを拾えず、
@@ -1030,7 +1033,6 @@ class Sender:
         値になるため、送信内容は変わらない。
         """
         snap = None
-        priority = False
         owner = self._ownerKey(source)
         with self._lock:
             self._ensurePosture()
@@ -1041,8 +1043,6 @@ class Sender:
                 or str(stick).upper().endswith("RIGHT")
                 else "L"
             )
-            kx = side.lower() + "x"
-            ky = side.lower() + "y"
             # 自分の前回申告を土台に、渡された軸だけ上書きする。申告が
             # 初めての側は現在の姿勢を土台にする（差分の意味を保つ）。
             prev_claim, _ = self._owner_stick.get(owner, ({}, -1))
@@ -1061,13 +1061,8 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-            if snap is not None:
-                priority = (
-                    int(self._posture[kx]) == self.POSTURE_CENTER
-                    and int(self._posture[ky]) == self.POSTURE_CENTER
-                )
         if snap is not None:
-            self.putLive(snap, priority=priority)
+            self.putLive(snap)
 
     def releaseAll(self) -> None:
         """全項目を中立に戻し、変化があれば live に渡す。

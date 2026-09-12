@@ -64,7 +64,8 @@ class LiveScheduler:
 ```
 
 - `push`: `pending`が空でなければ末尾と比較し、btnとhatが等しければ（スティックのみ差分）末尾を置換して`merged+=1`。末尾が未送出の全中立で、申告が非中立かつ直近の非中立（列内→送出中の順）と内容が違う場合は、末尾を置換して`merged+=1`（レガシーの状態遷移と同等）。同内容の再押下は残すが、中立の age（申告時刻差）が 1 dwell 未満なら落として融合する（`merged+=1`）。出ていない中立の保持延伸は見え方を変えず周期だけ延ばすため。背中合わせ連打は長押し相当になり、累積遅延が起きない（Legacy等価）。申告時刻は`push(snap, now)`で受け、省略時は age 融合をしない。そうでなければ追加。満杯（32件）なら最古を捨てて`dropped+=1`（黙って捨てず計数する）。`put+=1`。
-- `advance(now)`: `pending`があり、かつ（`current`が無いか、`now - current_sent_at >= min_dwell_s`）なら最古を`current`へ移し`current_sent_at = now`。
+- `advance(now)`: `pending`があり、かつ（`current`が無いか、`now - current_sent_at >= min_dwell_s`）なら最古を`current`へ移し`current_sent_at = now`。進める際、先頭の未送出中立より後ろに非中立があれば中立を飛ばす（`merged+=1`）。元スクリプトは状態を上書きし中立を挟まないため。
+- 通常の解放（ボタン/Hat/スティックの中立戻し）は優先送信しない。優先起床で中立を即送出すると次pressがdwell待ちで延び、40ms周期が伸びる。停止系（`sendNeutralAll`・`releaseAll`・`closeSerial`）は優先のまま。
 - `capacity=32`は滞留上限 `32×16ms≒0.5秒` の意味である。通常の操作頻度（press毎200ms前後）では1〜2件に収まる。物理限界（約62状態/秒）を超える申告は伸びた末に溢れ、`dropped`で数える。
 - `priority`引数は`Sender.putLive`の互換のため残すが、スケジューラ内では区別しない（dwell門が優先起床の速射を既に防ぐ）。
 

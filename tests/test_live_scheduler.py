@@ -91,20 +91,36 @@ def test_unshown_neutral_dropped_for_different_press() -> None:
 
 
 def test_unshown_neutral_kept_for_same_repress() -> None:
-    """同ボタンの再押下では中立を残す（連打の2発目を潰さない）。"""
-    sched = LiveScheduler()
-    sched.push(_snap(0, 0))
+    """同ボタンの再押下では中立を残す（連打の2発目を潰さない）。
+
+    実時間どおりに進めた場合：中立は再押下の到着前に送出されるため、
+    skipは発火せず全件届く。100ms間隔の連打の可視性は保たれる。
+    """
+    sched = LiveScheduler()  # dwell 0.016
+    sched.push(_snap(0, 0), now=0.0)
     sched.advance(0.0)
-    sched.push(_snap(4, 1))
-    sched.push(_snap(0, 2))
-    sched.push(_snap(4, 3))  # 同じA。直近の非中立と同じ
+    sched.push(_snap(4, 1), now=0.0)
+    delivered: list[int] = []
+    last: int | None = None
+    now = 0.0
+
+    def step(to: float) -> None:
+        nonlocal now, last
+        while now < to:
+            now = round(now + 0.008, 9)
+            sched.advance(now)
+            cur = sched.current()
+            if cur is not None and int(cur["revision"]) != last:
+                last = int(cur["revision"])
+                delivered.append(last)
+
+    step(0.050)
+    sched.push(_snap(0, 2), now=0.050)
+    step(0.100)
+    sched.push(_snap(4, 3), now=0.100)
+    step(0.200)
     assert sched.stats()["merged"] == 0
-    sched.advance(1.0)
-    assert sched.current()["btn"] == 4
-    sched.advance(2.0)
-    assert sched.current()["btn"] == 0
-    sched.advance(3.0)
-    assert sched.current()["btn"] == 4
+    assert delivered == [0, 1, 2, 3]
     assert sched.pending_empty()
 
 
@@ -146,23 +162,85 @@ def test_40ms_interval_completes_with_16ms_dwell() -> None:
     assert len(seen) == 100
 
 
-def test_40ms_interval_backlogs_with_34ms_dwell() -> None:
-    """dwell 34msでは40ms周期が滞留し溢れ捨てが出る（回帰防止）。
+def test_eb_cadence_stays_discrete_with_16ms_dwell() -> None:
+    """E-b周期（60ms押下＋20ms離し）の同ボタン連打は分離されたまま。
 
-    実効34→40ms×2状態=80msが40ms周期を上回るため、未送出が
-    積み上がり容量32を超える。既定を34へ戻してはならない根拠。
+    中立 age 20ms が dwell 16ms を超えるため融合しない。個別pressの
+    可視性が要る用途の根拠。既定16msを守る錠の1つ。
     """
-    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.034)
+    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
+    sched.push(_snap(4, 1), now=0.0)
     now = 0.0
-    end = 0.0
-    for k in range(100):
-        btn = 4 if k % 2 == 0 else 0
-        sched.push(_snap(btn, k + 1))
-        end = (k + 1) * 0.020
+    delivered: list[int] = []
+    last: int | None = None
+    for cycle in range(5):
+        base = cycle * 0.080
+        while now < base + 0.060:
+            now = round(now + 0.008, 9)
+            sched.advance(now)
+            cur = sched.current()
+            if cur is not None and int(cur["revision"]) != last:
+                last = int(cur["revision"])
+                delivered.append(last)
+        sched.push(_snap(0, 100 + cycle), now=base + 0.060)
+        while now < base + 0.080:
+            now = round(now + 0.008, 9)
+            sched.advance(now)
+            cur = sched.current()
+            if cur is not None and int(cur["revision"]) != last:
+                last = int(cur["revision"])
+                delivered.append(last)
+        sched.push(_snap(4, 200 + cycle), now=base + 0.080)
+    while not sched.pending_empty():
+        now = round(now + 0.008, 9)
+        sched.advance(now)
+        cur = sched.current()
+        if cur is not None and int(cur["revision"]) != last:
+            last = int(cur["revision"])
+            delivered.append(last)
+    assert sched.stats()["merged"] == 0
+    assert delivered.count(1) == 1
+    assert sum(1 for r in delivered if r >= 100 and r < 200) == 5
+    assert sum(1 for r in delivered if r >= 200) == 5
+    assert sched.pending_empty()
+
+
+def test_alternating_40ms_cadence_holds_with_16ms_dwell() -> None:
+    """元スクリプト形（40ms毎の異種交互連打）は遅延なく完遂する。
+
+    生ser直書きは状態を40ms毎に上書きする。schedulerも中立の
+    読み替え・skipで同じ線形にし、全20件が順に・溢れなく届く。
+    最終pressの送出遅延は1スロット（8ms）以内に収まる。
+    """
+    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
+    btns = [4, 2]
+    now = 0.0
+    delivered_at: dict[int, float] = {}
+    order: list[int] = []
+    for k in range(20):
+        sched.push(_snap(btns[k % 2], k + 1), now=now)
+        end = (k + 1) * 0.040
         while now < end:
             now = round(now + 0.008, 9)
             sched.advance(now)
-    assert sched.stats()["dropped"] > 0
+            cur = sched.current()
+            if cur is not None:
+                rev = int(cur["revision"])
+                delivered_at.setdefault(rev, now)
+                if not order or order[-1] != rev:
+                    order.append(rev)
+    while not sched.pending_empty():
+        now = round(now + 0.008, 9)
+        sched.advance(now)
+        cur = sched.current()
+        if cur is not None:
+            rev = int(cur["revision"])
+            delivered_at.setdefault(rev, now)
+            if not order or order[-1] != rev:
+                order.append(rev)
+    assert sched.stats()["dropped"] == 0
+    assert order == list(range(1, 21))
+    assert delivered_at[20] - 19 * 0.040 <= 0.016
 
 
 def test_stick_chain_collapses_to_latest() -> None:
@@ -211,26 +289,60 @@ def test_same_repress_young_neutral_fuses() -> None:
     assert sched.pending_empty()
 
 
-def test_same_repress_old_neutral_kept() -> None:
-    """中立が 1 dwell 以上経った再押下では中立を残す（連打の可視性）。
-
-    100ms間隔の連打（中立 age 約30ms）は2発に数える。
-    """
-    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
-    sched.push(_snap(4, 1))
-    sched.advance(0.0)
-    sched.push(_snap(0, 2), now=0.001)
-    sched.push(_snap(4, 3), now=0.030)  # 中立から29ms後。dwell超過
-    assert sched.stats()["merged"] == 0
+def _drain_revisions(sched: LiveScheduler) -> list[int]:
+    """未送出が空になるまで8ms刻みで進め、送出遷移の revision 列を返す。"""
     delivered: list[int] = []
     last: int | None = None
-    for step in range(500):
-        sched.advance(0.008 * (step + 1))
+    now = 0.0
+    for _ in range(1000):
+        now = round(now + 0.008, 9)
+        sched.advance(now)
         cur = sched.current()
         if cur is not None and int(cur["revision"]) != last:
             last = int(cur["revision"])
             delivered.append(last)
-        if sched.pending_empty() and last == 3:
+        if sched.pending_empty():
             break
-    assert delivered == [1, 2, 3]
+    return delivered
+
+
+def test_advance_skips_superseded_neutral() -> None:
+    """後続の非中立がある未送出中立は飛ばす（周期延伸の防止）。
+
+    push時に残った同内容の古い中立（ageがdwell以上）が、進め時に
+    追い越されていた場合の穴埋め。落とした分は merged に数える。
+    """
+    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
+    sched.push(_snap(4, 1))
+    sched.advance(0.0)
+    assert sched.current()["btn"] == 4
+    sched.push(_snap(0, 2), now=0.001)
+    sched.push(_snap(4, 3), now=0.030)  # age 29msでpush時は残る
+    assert sched.stats()["merged"] == 0
+    sched.advance(1.0)
+    assert sched.current()["btn"] == 4
+    assert sched.current()["revision"] == 3
+    assert sched.stats()["merged"] == 1
     assert sched.pending_empty()
+
+
+def test_advance_keeps_lone_neutral() -> None:
+    """後続がない中立は飛ばさない（解放の到達保証）。"""
+    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
+    sched.push(_snap(4, 1))
+    sched.advance(0.0)
+    sched.push(_snap(0, 2), now=0.010)
+    assert _drain_revisions(sched) == [1, 2]
+    assert sched.pending_empty()
+
+
+def test_advance_waits_dwell_before_skip() -> None:
+    """dwell未満は飛ばしも進めもしない（最小保持の維持）。"""
+    sched = LiveScheduler(slot_s=0.008, min_dwell_s=0.016)
+    sched.push(_snap(4, 1))
+    sched.advance(0.0)
+    sched.push(_snap(0, 2), now=0.002)
+    sched.push(_snap(2, 3), now=0.004)
+    sched.advance(0.008)
+    assert sched.current()["btn"] == 4
+    assert _drain_revisions(sched) == [1, 3]

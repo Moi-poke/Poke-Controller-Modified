@@ -148,7 +148,13 @@ class LiveScheduler:
             self._pending.append((dict(snap), at))
 
     def advance(self, now: float) -> None:
-        """dwell満了なら最古を送出中へ進める。満了前は何もしない。"""
+        """dwell満了なら最古を送出中へ進める。満了前は何もしない。
+
+        進めるとき、先頭の未送出中立より後ろに非中立があれば中立を
+        飛ばす（mergedに数える）。元スクリプト（生ser直書き）は状態を
+        上書きし中立を挟まないため、追い越された中立を送出すると周期
+        だけが延びる。後続がない中立は飛ばさない（解放の到達保証）。
+        """
         with self._lock:
             if not self._pending:
                 return
@@ -158,6 +164,16 @@ class LiveScheduler:
                 and float(now) - self._current_sent_at < self._min_dwell_s
             ):
                 return
+            while (
+                len(self._pending) > 1
+                and self._is_full_neutral(self._pending[0][0])
+                and any(
+                    not self._is_full_neutral(snap)
+                    for snap, _ in list(self._pending)[1:]
+                )
+            ):
+                self._pending.popleft()
+                self._merged += 1
             self._current, _ = self._pending.popleft()
             self._current_sent_at = float(now)
 
