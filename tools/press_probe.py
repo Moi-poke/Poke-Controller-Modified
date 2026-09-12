@@ -108,17 +108,14 @@ def send_state(
     return text
 
 
-def read_mon_counts(ser: serial.Serial) -> dict[str, int]:
+def read_mon_counts(lines: list[str]) -> dict[str, int]:
     """Mモニタの press/ok/ng を読む。無ければ空辞書。
 
     PicoはS行の成否を応答しない（計数するのみ）。M表示の2行目
     `mon empty=.. reply=.. press=.. ok=.. ng=..` が唯一の手掛かり。
     """
-    data = ser.read_all()
-    if not data:
-        return {}
     found: dict[str, int] = {}
-    for line in data.decode("ascii", "replace").splitlines():
+    for line in lines:
         m = re.search(r"press=(\d+)\s+ok=(\d+)\s+ng=(\d+)", line)
         if m:
             found = {

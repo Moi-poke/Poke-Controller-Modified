@@ -141,11 +141,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="")
     ap.add_argument("--button", default="A", choices=sorted(BTN))
+    # 複数ボタンの巡回（MashA型の連打検証用）。空なら --button を使う。
+    # 例: --buttons A,B,X,Y（試行ごとに巡るため状態遷移の連続になる）。
+    ap.add_argument("--buttons", default="")
     ap.add_argument("--duration", type=float, default=0.05)
     ap.add_argument("--interval", type=float, default=0.1)
     ap.add_argument("--times", type=int, default=240)
     ap.add_argument("--via", default="app", choices=("app", "raw"))
     ap.add_argument("--repeat-ms", type=float, default=8.0)
+    # app経路のscheduler最低保持（ミリ秒）。未指定ならSender既定のまま。
+    # 40ms間隔の連打とdwellの干渉（dwell×2>intervalで滞留・dropped）を
+    # 切り分けるためのsweep用。8〜64以外はSender側が無視する。
+    ap.add_argument("--dwell-ms", type=int, default=None)
     ap.add_argument("--audio-device", default=None)
     ap.add_argument("--list-audio", action="store_true")
     # クリック計数の不応期（ミリ秒）。intervalより短くすること。
@@ -163,7 +170,13 @@ def main() -> int:
     if not args.port:
         print("--port が必要です（--list-audio を除く）")
         return 1
-    code, btn = BTN[args.button]
+    seq_src = str(args.buttons).strip() or str(args.button)
+    names = [part.strip().upper() for part in seq_src.split(",") if part.strip()]
+    unknown = [name for name in names if name not in BTN]
+    if not names or unknown:
+        print(f"--buttons が不正です: {args.buttons or args.button}")
+        return 1
+    seq = [(BTN[name][0], BTN[name][1], name) for name in names]
     duration = max(0.0, float(args.duration))
     interval = max(0.0, float(args.interval))
     times = max(1, int(args.times))
@@ -187,6 +200,8 @@ def main() -> int:
         if not sender.openSerial(0, args.port, 115200):
             print("COM Port: can't be established")
             return 1
+        if args.dwell_ms is not None:
+            sender.setLiveMinDwell(int(args.dwell_ms))
         keys = KeyPress(sender, source="script")
     else:
         try:
@@ -236,22 +251,24 @@ def main() -> int:
             pico_base = mon_snapshot_raw(ser)
         time.sleep(0.5)  # 先頭0.5秒の静けさ（計数のbaseline用）
         print(
-            f"-- {args.button} duration={duration}s interval={interval}s "
+            f"-- {','.join(names)} duration={duration}s interval={interval}s "
+            f"dwell={args.dwell_ms}ms "
             f"を {times} 回送ります（{args.via}経路） --"
         )
         print(f"-- CSV: {wire_path} --")
-        for _ in range(times):
+        for i in range(times):
             cycle = time.perf_counter()
+            code_i, btn_i, _name_i = seq[i % len(seq)]
             if via_app:
                 assert keys is not None
-                keys.input(btn)
+                keys.input(btn_i)
                 t0s.append(time.perf_counter())
                 time.sleep(duration)
-                keys.inputEnd(btn)
+                keys.inputEnd(btn_i)
             else:
                 assert ser is not None
                 t0 = time.perf_counter()
-                send_row(code, "press")
+                send_row(code_i, "press")
                 t0s.append(t0)
                 end = t0 + duration
                 while True:
@@ -262,7 +279,7 @@ def main() -> int:
                         time.sleep(end - now)
                         break
                     time.sleep(min(repeat_s, end - now))
-                    send_row(code, "press")
+                    send_row(code_i, "press")
                 for _ in range(3):
                     send_row(0, "release")
                     time.sleep(max(0.0, repeat_s))
