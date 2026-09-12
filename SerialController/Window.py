@@ -186,6 +186,9 @@ class PokeControllerApp(
             on_state_changed=self._apply_runner_state,
             on_list_refresh=self._refresh_after_run,
         )
+        # 走行記録の受け先。SerialService が担い、runner が開始・終了で呼ぶ。
+        # 記録の失敗で実行は壊さない（runner・service 側で握る）。
+        self.runner.set_diag(self.serial, self.profile)
         self._closing = False
         # カメラ開きの直列化錠と発行番号。起動時は裏スレッドで開き、
         # Reload は表で開く。両方が同時に走ると DirectShow の open が

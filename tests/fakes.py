@@ -62,6 +62,45 @@ class NoSerTransport(Transport.Transport):
         _ = (row, measure_perf)
 
 
+class CannedMonTransport(FakeTransport):
+    """M応答の缶詰を持つ線。ser.write(b"M\\n")で即応答する。
+
+    M取得（購読＋heartbeat読み）の検証用。実線の待ちは無い。
+    """
+
+    name = "cannedmon"
+
+    def __init__(self, mon_lines: list[str] | None = None) -> None:
+        super().__init__()
+        self._rx_subs: list[Any] = []
+        self.mon_lines = (
+            list(mon_lines)
+            if mon_lines is not None
+            else ["monitor on", "mon empty=0 reply=0 press=5 ok=10 ng=1"]
+        )
+        self.ser = self._Ser(self)
+
+    class _Ser:
+        def __init__(self, owner: Any) -> None:
+            self._owner = owner
+
+        def write(self, data: bytes) -> int:
+            if bytes(data) == b"M\n":
+                for line in self._owner.mon_lines:
+                    for func in list(self._owner._rx_subs):
+                        func(line)
+            return len(bytes(data))
+
+    def subscribe_rx(self, func: Any) -> Any:
+        self._rx_subs.append(func)
+
+        def _unsub() -> None:
+            if func in self._rx_subs:
+                self._rx_subs.remove(func)
+
+        return _unsub
+
+
 class FakeThread:
     """スレッドの偽物。join したら抜けたことにする。"""
 

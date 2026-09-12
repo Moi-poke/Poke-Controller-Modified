@@ -220,3 +220,70 @@ def test_drain_pending_stale_burst_no_recursion() -> None:
     assert runner._drain_pending_once() is True
     assert runner.state == "idle"
     assert runner._pending.empty()
+
+
+class _Diag:
+    """走行記録の偽物。呼ばれた順だけ残す。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    def begin_command_run(self, name: str, profile: str = "") -> None:
+        self.calls.append(("begin", name, profile))
+
+    def end_command_run(self, reason: str = "") -> dict:
+        self.calls.append(("end", reason))
+        return {}
+
+
+def test_diag_begin_end_on_manual_stop() -> None:
+    runner, clock, _, _, _ = make_runner()
+    diag = _Diag()
+    runner.set_diag(diag, "pico")
+    cmd = FakeCommand(thread=FakeThread(alive=False))
+    runner.request_start(cmd, FakeSer())
+    assert ("begin", "Fake", "pico") in diag.calls
+    runner.request_stop()
+    clock.run_next()
+    assert runner.state == "idle"
+    assert ("end", "手動停止") in diag.calls
+
+
+def test_diag_end_on_natural_finish() -> None:
+    runner, clock, _, _, _ = make_runner()
+    diag = _Diag()
+    runner.set_diag(diag, "pico")
+    cmd = FakeCommand(thread=FakeThread(alive=True))
+    runner.request_start(cmd, FakeSer())
+    on_done = cmd.start_calls[0][1]
+    on_done()
+    clock.run_next()
+    assert runner.state == "idle"
+    assert ("end", "完了") in diag.calls
+
+
+def test_diag_exception_never_breaks_run() -> None:
+    class _Bad:
+        def begin_command_run(self, name: str, profile: str = "") -> None:
+            raise RuntimeError("boom")
+
+        def end_command_run(self, reason: str = "") -> dict:
+            raise RuntimeError("boom")
+
+    runner, clock, _, _, _ = make_runner()
+    runner.set_diag(_Bad(), "pico")
+    cmd = FakeCommand(thread=FakeThread(alive=False))
+    runner.request_start(cmd, FakeSer())
+    assert runner.state == "running"
+    runner.request_stop()
+    clock.run_next()
+    assert runner.state == "idle"
+
+
+def test_no_diag_keeps_old_behavior() -> None:
+    runner, clock, _, _, _ = make_runner()
+    cmd = FakeCommand(thread=FakeThread(alive=False))
+    runner.request_start(cmd, FakeSer())
+    runner.request_stop()
+    clock.run_next()
+    assert runner.state == "idle"

@@ -113,6 +113,13 @@ class CommandRunner:
         # 打ち切り後に塞いだ古い作業の線。生きている間の新規開始は断り
         # 二重駆動にしない。死んだのを見たら外す。
         self._fenced_thread: Any = None
+        # 走行記録の受け先（SerialService）。無いときは記録しない。
+        # Window が組み立て後に set_diag で渡す。呼び出しは例外を握り、
+        # 記録の失敗で実行を壊さない。
+        self._diag: Any = None
+        self._diag_profile = ""
+        # 後始末の理由。手動停止・打切り・完了のいずれか。開始で戻す。
+        self._end_reason = "完了"
 
     # -- 読み取り -----------------------------------------------------------
 
@@ -140,6 +147,40 @@ class CommandRunner:
         判定が狂う。状態はここだけで持つ。
         """
         return self._state != "idle"
+
+    def set_diag(self, diag: Any, profile: str = "") -> None:
+        """走行記録の受け先を渡す。Window が組み立て後に呼ぶ。
+
+        diag は begin_command_run(name, profile) と
+        end_command_run(reason) を持つ（SerialService が担う）。
+        渡さなければ記録しない（従来どおり）。
+        """
+        self._diag = diag
+        self._diag_profile = str(profile)
+
+    def _diag_begin(self, cmd_name: str) -> None:
+        """走行記録の開始。失敗しても実行は続ける。"""
+        diag = self._diag
+        if diag is None:
+            return
+        try:
+            begin = getattr(diag, "begin_command_run", None)
+            if callable(begin):
+                begin(str(cmd_name), self._diag_profile)
+        except Exception:
+            logger.debug("走行記録の開始に失敗", exc_info=True)
+
+    def _diag_end(self, reason: str) -> None:
+        """走行記録の終了。失敗しても後始末は続ける。"""
+        diag = self._diag
+        if diag is None:
+            return
+        try:
+            end = getattr(diag, "end_command_run", None)
+            if callable(end):
+                end(str(reason))
+        except Exception:
+            logger.debug("走行記録の終了に失敗", exc_info=True)
 
     # -- 開始・停止 ---------------------------------------------------------
 
@@ -248,6 +289,9 @@ class CommandRunner:
         # 回数まで「実行回数」に混ざる。ファイルへ書くのは終了時に1回だけ。
         CommandStats.record(self._stats, cmd_name)
         self.stats_dirty = True
+        # 走行記録は開始の確定後に始める。失敗作の記録は残さない。
+        self._end_reason = "完了"
+        self._diag_begin(cmd_name)
         # 記録は辞書へ即時入るので、選択肢もその場で作り直せる。
         # Reload を待つと「さっき使ったのに最近使ったに出ない」ことになる。
         self._on_list_refresh()
@@ -281,6 +325,7 @@ class CommandRunner:
         self._notify(message)
         logger.info(message)
         self._state = "stopping"
+        self._end_reason = "手動停止"
         self._on_state_changed()
         # 一時停止のまま止めると、退避と「人へ渡した」印が残る。止める
         # 前に戻す。resume は停止中でなければ何もしない。渡しっぱなし
@@ -348,6 +393,7 @@ class CommandRunner:
                 # 打ち切り。線を塞いで画面を戻す。新規開始は塞ぎが解けるまで断る。
                 self._fence_live(self._ser)
                 self._fenced_thread = thread
+                self._end_reason = "打切り（線を塞ぎ）"
                 message = (
                     f"コマンドが停止しません（経過 {waited // 1000}秒）。"
                     "画面を戻しますが線は塞いでいます"
@@ -646,6 +692,12 @@ class CommandRunner:
             # すでに戻っている＝別経路で後始末済み。一覧の作り直しを
             # 二重に走らせても実害は無いが、選択の復元が二度動くため省く。
             return
+        try:
+            # 走行記録は後始末の確定時に1回だけ閉じる。二重呼び出しは
+            # already_idle で弾かれるため、ここへ来るのは1回だけ。
+            self._diag_end(self._end_reason)
+        finally:
+            self._end_reason = "完了"
         try:
             # 走行中は選択を動かさないため一覧の更新を見送っている。
             # 空いたこの時点で一覧を見直し、「最近使った」「よく使う」の

@@ -1,7 +1,9 @@
 """SerialService の手順の検証。線は偽物、画面なしで回す。"""
 
+import os
+
 from core import Sender, Transport
-from fakes import FakeTransport
+from fakes import CannedMonTransport, FakeTransport
 from services.serial_service import SenderSpec, SerialService
 
 
@@ -159,6 +161,60 @@ def test_load_plugins_noop() -> None:
     service.load_plugins("")
     service.load_plugins("no_such_dir_at_all")
     assert notices == []
+
+
+def test_run_diag_wire_and_stats(tmp_path: object) -> None:
+    from pathlib import Path
+
+    log_dir = Path(str(tmp_path))
+    service, _ = make_service()
+    service.set_log_dir(str(log_dir))
+    service.sender = Sender.Sender(is_show_serial=False, transport=FakeTransport())
+    service.begin_command_run("Fake", "pico")
+    assert service.sender is not None
+    transport = service.sender.transport
+    # Pico経路は入力ログへ繋がないため聞き手を外す（S行で落ちる偽物の癖除け）。
+    transport._listeners.clear()
+    transport.send_row("S 4 8 80 80 80 80")
+    transport.send_row("S 0 8 80 80 80 80")
+    summary = service.end_command_run("手動停止")
+    assert summary["rows"] == 2
+    assert summary["reason"] == "手動停止"
+    assert os.path.isfile(summary["csv_path"])
+    assert "dropped" in summary["live_delta"]
+    thread = summary.get("m_thread")
+    if thread is not None:
+        thread.join(timeout=5.0)
+    # 記録解除後は追記されない（CSVは2行のまま）
+    with open(summary["csv_path"], encoding="utf-8") as f:
+        assert len(f.readlines()) == 3  # 見出し＋2行
+
+
+def test_run_diag_m_counts_with_canned(tmp_path: object) -> None:
+    from pathlib import Path
+
+    service, _ = make_service()
+    service.set_log_dir(str(Path(str(tmp_path))))
+    service.sender = Sender.Sender(is_show_serial=False, transport=CannedMonTransport())
+    service.begin_command_run("Fake", "pico")
+    summary = service.end_command_run("完了")
+    thread = summary.get("m_thread")
+    if thread is not None:
+        thread.join(timeout=5.0)
+    assert service.last_m == {"press": 5, "ok": 10, "ng": 1}
+
+
+def test_run_diag_without_sender_never_raises(tmp_path: object) -> None:
+    from pathlib import Path
+
+    service, _ = make_service()
+    service.set_log_dir(str(Path(str(tmp_path))))
+    service.begin_command_run("Fake", "pico")
+    summary = service.end_command_run("完了")
+    assert summary["rows"] == 0
+    thread = summary.get("m_thread")
+    if thread is not None:
+        thread.join(timeout=5.0)
 
 
 def test_apply_input_log_no_crash() -> None:
