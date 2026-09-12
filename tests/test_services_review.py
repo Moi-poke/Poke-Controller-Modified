@@ -237,6 +237,8 @@ def test_switch_to_unlinked_still_reports_switched() -> None:
                 input_log_actions="",
                 input_log_enabled=True,
                 input_log_stick_change=False,
+                # ライブ入力の最低保持ミリ秒（SenderSpecの必須項目）
+                live_min_dwell_ms=16,
             )
         )
         _ = FakeTransport

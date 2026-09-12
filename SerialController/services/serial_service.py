@@ -45,6 +45,8 @@ class SenderSpec:
     input_log_actions: str
     input_log_enabled: bool
     input_log_stick_change: bool
+    # ライブ入力の最低保持ミリ秒（8〜64。範囲外はSender側で無視する）
+    live_min_dwell_ms: int
 
 
 class SerialService:
@@ -149,6 +151,8 @@ class SerialService:
         self.sender.setArbitration(
             mode=spec.arbitration_mode, cooldown=spec.arbitration_cooldown
         )
+        # ライブ入力の最低保持を反映する（範囲外はSender側で無視する）
+        self.sender.setLiveMinDwell(spec.live_min_dwell_ms)
         self.apply_input_log(
             spec.input_log_format,
             spec.input_log_actions,

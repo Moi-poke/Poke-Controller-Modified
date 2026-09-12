@@ -105,6 +105,10 @@ class GuiSettings:
         self.transport_plugin_dir = tk.StringVar(
             value=transport.get("plugin_dir", fallback="")
         )
+        # ライブ入力の最低保持ミリ秒（ini＋既定のみ。画面欄は作らない）
+        self.live_min_dwell_ms = tk.IntVar(
+            value=transport.getint("live_min_dwell_ms", fallback=24)
+        )
 
         # 入力調停（誰の操作を優先するか）。
         # 既定は off で本家と同じ挙動。script を選ぶと実行中の
@@ -340,6 +344,7 @@ class GuiSettings:
         self.setting["Transport"] = {
             "name": self.transport_name.get(),
             "plugin_dir": self.transport_plugin_dir.get(),
+            "live_min_dwell_ms": str(self.live_min_dwell_ms.get()),
         }
         self.setting["Arbitration"] = {
             "mode": self.arbitration_mode.get(),

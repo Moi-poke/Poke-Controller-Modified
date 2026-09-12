@@ -92,3 +92,24 @@ def test_ini_round_trip_stable() -> None:
     reread.read_string(buf.getvalue())
     assert config.complete_missing(reread) == []
     assert config.migrate_legacy_keymap(reread) == []
+
+
+def test_live_min_dwell_backfill_and_clamp() -> None:
+    parser = make_parser()
+    config.complete_missing(parser)
+    assert parser["Transport"]["live_min_dwell_ms"] == "24"
+    # 空からの生成は区画名で報告する既存仕様のため、欠落の補完は
+    # キー削除で確かめる（値が既定へ戻り、箇所が報告されること）
+    del parser["Transport"]["live_min_dwell_ms"]
+    changed = config.complete_missing(parser)
+    assert parser["Transport"]["live_min_dwell_ms"] == "24"
+    assert "Transport.live_min_dwell_ms" in changed
+    assert config.complete_missing(parser) == []  # 既定は安定（round-trip不変）
+    parser["Transport"]["live_min_dwell_ms"] = "5"
+    config.complete_missing(parser)
+    assert parser["Transport"]["live_min_dwell_ms"] == "24"
+    parser["Transport"]["live_min_dwell_ms"] = "abc"
+    config.complete_missing(parser)
+    assert parser["Transport"]["live_min_dwell_ms"] == "24"
+    parser["Transport"]["live_min_dwell_ms"] = "32"
+    assert config.complete_missing(parser) == []

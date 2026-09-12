@@ -118,3 +118,64 @@ def test_stop_live_worker_if_stops_own_thread() -> None:
     finally:
         sender.stopLiveWorker(1.0)
     _ = fake
+
+
+def test_short_press_reaches_wire_with_min_dwell() -> None:
+    sender, fake = make_live_sender()
+    try:
+        sender.setLiveMinDwell(16)
+        sender.pressButtons([Button.A])
+        sender.releaseButtons([Button.A])  # 直後に離しても潰れない
+        assert wait_for(lambda: len(fake.written) >= 3, timeout=2.0)
+        # pressの送出は中立のdwell待ちで3行目になるため、後続行も待つ。
+        assert wait_for(
+            lambda: "S 4 8 80 80 80 80" in rows(fake)
+            and rows(fake).index("S 4 8 80 80 80 80") < len(rows(fake)) - 1,
+            timeout=2.0,
+        )
+        sent = rows(fake)
+        assert "S 4 8 80 80 80 80" in sent  # pressがワイヤに出た
+        assert sent.index("S 4 8 80 80 80 80") < len(sent) - 1  # 単発で終わらない
+    finally:
+        sender.stopLiveWorker(1.0)
+
+
+def test_idle_repeats_every_slot() -> None:
+    sender, fake = make_live_sender()
+    try:
+        assert wait_for(lambda: len(fake.written) >= 3, timeout=2.0)
+        assert all(r.startswith("S ") for r in rows(fake))
+    finally:
+        sender.stopLiveWorker(1.0)
+
+
+def test_idle_repeat_is_paced_for_pico_uart_poll() -> None:
+    """無変化の再送はPicoのUARTポーリングに合わせて間引く。
+
+    Picoは10ms周期ポーリング＋32B FIFOで読む。8ms毎の連送は2行が
+    1窓に落ちてオーバーランする実測（ng約23%）のため、repeatは
+    24ms間隔に制限する。新規エッジの即時性は変えない。
+    """
+    sender, fake = make_live_sender()
+    try:
+        time.sleep(0.5)
+        n = len(fake.written)
+        assert 5 <= n <= 45, f"repeat pacing broken: {n} rows in 0.5s"
+    finally:
+        sender.stopLiveWorker(1.0)
+
+
+def test_clear_live_stats_resets_counts() -> None:
+    sender, fake = make_live_sender()
+    try:
+        sender.pressButtons([Button.A])
+        assert wait_for(lambda: len(fake.written) > 0, timeout=2.0)
+        assert sender.stopLiveWorker(1.0) is True
+        sender.clearLiveStats()
+        stats = sender.getLiveStats()
+        assert stats["put"] == 0
+        assert stats["replaced"] == 0
+        assert stats["dropped"] == 0
+        assert stats["sent"] == 0
+    finally:
+        sender.stopLiveWorker(1.0)

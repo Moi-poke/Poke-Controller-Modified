@@ -277,6 +277,8 @@ class SerialPanelMixin:
             input_log_actions=actions,
             input_log_enabled=self.settings.input_log_enabled.get(),
             input_log_stick_change=self.settings.input_log_stick_change.get(),
+            # ライブ入力の最低保持ミリ秒（ini＋既定のみ）
+            live_min_dwell_ms=self.settings.live_min_dwell_ms.get(),
         )
 
     def _apply_input_log_settings(self) -> None:

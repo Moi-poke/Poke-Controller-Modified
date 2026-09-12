@@ -33,6 +33,7 @@ from core.serial.arbitration import (
     list_arbitration_modes as list_arbitration_modes,
     resolve_arbitration_mode as resolve_arbitration_mode,
 )
+from core.serial.live_scheduler import LiveScheduler
 
 # 入力ログの既定。ここを書き換えれば起動時の書式が変わる
 INPUT_LOG_FORMAT = "simple"
@@ -126,6 +127,8 @@ class Sender:
         # 通信方式の切替世代。二重切替の競合で古い方が新しい worker を
         # 止めないよう、番号で見分ける（closeSerial と同じく錠の外で待つ）。
         self._transport_gen = 0
+        # live送出の最低保持秒。既定24ms（8〜64msの範囲で変えられる）。
+        self._live_min_dwell_s = 0.024
         # Pico live-state 能力がある線だけ worker を立てる。
         if self._liveCapable():
             self.startLiveWorker()
@@ -1214,6 +1217,19 @@ class Sender:
         self._ensureArbitration()
         self._arbiter.set(mode=mode, cooldown=cooldown)
 
+    def setLiveMinDwell(self, ms: int) -> None:
+        """live送出の最低保持を変える。8〜64ms以外は無視する。"""
+        try:
+            value = int(ms)
+        except (TypeError, ValueError):
+            return
+        if not 8 <= value <= 64:
+            return
+        self._live_min_dwell_s = value / 1000.0
+        sched = getattr(self, "_live_sched", None)
+        if sched is not None:
+            sched.set_min_dwell(value / 1000.0)
+
     def getArbitration(self) -> dict[str, Any]:
         """現在の調停の設定と実績を返す（設定画面・確認用）。"""
         self._ensureArbitration()
@@ -1469,46 +1485,46 @@ class Sender:
         return encoding.verify_pico_encoder()
 
     # ------------------------------------------------------------------
-    # Pico live worker と latest-state mailbox
+    # Pico live worker と scheduler
     #
     # 何をするものか:
-    #   8ms（125Hz）ごとに現在の姿勢を1行送り続ける仕組み。
+    #   8ms（125Hz）ごとに送出中を1行送り続ける仕組み。
     #   実物のコントローラーが常に現在値を返しているのと同じ考え方。
     #
-    # mailbox（郵便受け）と呼んでいるもの:
-    #   容量1の置き場。新しい姿勢が来たら古いものを上書きする。
-    #   積まない（FIFO にしない）のが要点。125Hz のライブ状態で
-    #     行列を作ると、古い姿勢が後から届いて遅延が溜まる。
-    #   Transport の間引きも同じ作りで、
-    #     保留は常に1行・後から来た行で上書きしている。
+    # scheduler（列＋最低保持）が持つもの:
+    #   申告された姿勢を順に溜める列。短い押下を潰さないよう上書きしない。
+    #   送出開始から最低保持秒が経つまで次の姿勢へ進めない。
+    #   スティックのみの差分は畳んでよいが、ボタンの変わり目は捨てない。
     #
     # 前提
     #   startLiveWorker を呼ばない限りスレッドは起動しない。
     #
     # 優先送信
     #   Stop、Neutral、Release は次のスロットを待たずに送出する。
-    #   スティックの中間値は破棄してよいが、解放操作は破棄できない。
+    #   スティックの中間値は畳んでよいが、解放操作は破棄できない。
     #   破棄すると押下状態が残る。
     # ------------------------------------------------------------------
 
     # 8 ms は 125 Hz に相当し、Pico ファームの報告周期および USB 記述子の
-    #   間隔と同じ値である。これより短い周期で送出しても Switch には
-    #   届かず、UART が滞留する。
+    #   間隔と同じ値である。slotは「変化の取出し」周期であり、送出は
+    #   LIVE_REPEAT_S で間引く（下記）。
     LIVE_SLOT_S = 0.008
-    # keepalive 間隔。実機で測定した維持上限 180 ms の半分を 8 ms 単位に
-    #   切り下げた値である。
-    LIVE_KEEPALIVE_S = 0.088
-    # 切断時に中立の送出を待つ上限。8 ms スロットの数回分を見込む。
-    CLOSE_DRAIN_S = 0.05
+    # repeat間隔。PicoはUARTを10ms周期ポーリング＋32B FIFOで読む。
+    #   8ms毎の連送は2行が1窓に落ちてオーバーランする実測（ng約23%）のため、
+    #   無変化の再送は24msに制限する。新規エッジはdwell門のみで即時送出する。
+    LIVE_REPEAT_S = 0.024
+    # 切断時に中立の送出を待つ上限。中立がdwell待ち最大16msのため余裕を見る。
+    CLOSE_DRAIN_S = 0.10
     # 切断時に worker の停止を待つ上限。閉じられない状態を作らない。
     CLOSE_JOIN_S = 0.30
 
     def _ensureLiveState(self) -> None:
-        """live 経路の mailbox、worker 状態、統計、表示状態を初期化する。"""
+        """live 経路の scheduler、worker 状態、統計、表示状態を初期化する。"""
         if not hasattr(self, "_live_lock"):
             self._live_lock = threading.Lock()
-        if not hasattr(self, "_live_box"):
-            self._live_box: dict[str, Any] | None = None
+        if not hasattr(self, "_live_sched"):
+            min_dwell = float(getattr(self, "_live_min_dwell_s", 0.024))
+            self._live_sched: LiveScheduler = LiveScheduler(min_dwell_s=min_dwell)
         if not hasattr(self, "_live_wake"):
             self._live_wake = threading.Event()
         if not hasattr(self, "_live_stop"):
@@ -1522,6 +1538,7 @@ class Sender:
                 "sent": 0,
                 "keepalive": 0,
                 "priority": 0,
+                "dropped": 0,
                 "last_revision": -1,
                 "inversions": 0,
             }
@@ -1541,10 +1558,10 @@ class Sender:
     def putLive(
         self, snap: dict[str, Any] | None = None, priority: bool = False
     ) -> None:
-        """最新の状態を容量 1 の mailbox へ置く（古い未送信は破棄する）。
+        """申告された状態を scheduler の列へ積む（潰さず順に送る）。
 
-        通常の変化では worker を起床させない。次の 8 ms スロットで最新値
-        が読み出される。即時に起床させると 125 Hz を超え、UART が滞留する。
+        通常の変化では worker を起床させない。次の 8 ms スロットで列の
+        先頭が読み出される。即時に起床させると 125 Hz を超え、UART が滞留する。
 
         切断中は優先送信だけを受け付ける。切断時に送る中立の
         後に、通常の状態が入らないようにするためである。
@@ -1554,10 +1571,8 @@ class Sender:
             return
         if snap is None:
             snap = self.snapshot()
+        self._live_sched.push(snap)
         with self._live_lock:
-            if self._live_box is not None:
-                self._live_stats["replaced"] += 1
-            self._live_box = snap
             self._live_stats["put"] += 1
             if priority:
                 self._live_stats["priority"] += 1
@@ -1565,24 +1580,21 @@ class Sender:
             self._live_wake.set()
 
     def takeLive(self) -> dict[str, Any] | None:
-        """mailbox から取り出す。取り出した後は空にする。
+        """互換のために残す取出し口。送出中へ進めて非破壊で覗く。
 
-        新しい状態がなければ None を返し、worker は送出しない。同じ状態を
-        送出し続けないのは、Pico が 8 ms ごとに自身で HID レポートを送出する
-        ためである。
+        列の先頭を送出中へ進め、その写しを返す。送出中は残るため
+        repeat は継続する。_liveLoop からは呼ばない。
         """
         self._ensureLiveState()
-        with self._live_lock:
-            snap, self._live_box = self._live_box, None
-        return snap
+        now = time.perf_counter()
+        self._live_sched.advance(now)
+        return self._live_sched.current()
 
-    def _showLiveRow(
-        self, snap: dict[str, Any], now: float, is_keepalive: bool
-    ) -> bool:
+    def _showLiveRow(self, snap: dict[str, Any], now: float, is_repeat: bool) -> bool:
         """送信行の表示可否を返す。表示は 20 Hz に制限し、解放と中立は即時に
-        表示する。keepalive は表示しない。
+        表示する。repeat は表示しない。
         """
-        if is_keepalive or not self._should_show_serial():
+        if is_repeat or not self._should_show_serial():
             return False
         prev = self._live_last_shown_snap
         releasing = False
@@ -1640,7 +1652,7 @@ class Sender:
         self._live_timer_raised = False
 
     def _liveLoop(self, transport: Any) -> None:
-        """8 ms の締切ごとに最新状態を送り、無変化時は 88 ms で再送する。
+        """8 ms の締切ごとに送出中を送り、無変化時は毎回再送する。
 
         待ちには起床合図（_live_wake）を使う。締切までの残り時間を上限と
         して待ち、合図が来た場合は締切を待たずに送出する。これが
@@ -1648,6 +1660,7 @@ class Sender:
 
         通常の変化では合図を出さないため、送出は 8 ms 周期に収まる。これ
         より速く送っても Pico の HID レポート周期を超えるだけである。
+        短い押下は scheduler が最低保持ぶん延長するため潰れない。
         """
         self._ensureLiveState()
         self._beginPreciseTimer()
@@ -1666,30 +1679,35 @@ class Sender:
                     deadline = time.perf_counter()
                 if self._live_stop.is_set():
                     break
-                snap = self.takeLive()
                 now = time.perf_counter()
-                is_keepalive = False
-                if snap is None:
-                    with self._live_lock:
-                        last_snap = self._live_last_snap
-                        last_at = self._live_last_sent_at
-                    if (
-                        last_snap is None
-                        or last_at is None
-                        or now - last_at < self.LIVE_KEEPALIVE_S
-                    ):
-                        continue
-                    snap = last_snap
-                    is_keepalive = True
+                self._live_sched.advance(now)
+                out = self._live_sched.current()
+                if out is None:
+                    continue
                 with self._live_lock:
-                    self._live_last_snap = snap
-                self._recordLiveOrder(snap)
+                    prev = self._live_last_snap
+                    self._live_last_snap = out
                 try:
-                    show = self._showLiveRow(snap, now, is_keepalive)
-                    transport.send_row(self.encodePicoState(snap), measure_perf=show)
+                    is_repeat = prev is not None and int(
+                        prev.get("revision", -1)
+                    ) == int(out.get("revision", -2))
+                except (TypeError, ValueError):
+                    is_repeat = False
+                if is_repeat:
+                    # 無変化の再送は間引く。Picoは10ms周期で読むため、
+                    # 8ms毎に出すと2行が1窓に落ちてオーバーランする。
+                    # 新規エッジ（revision変化）はここを通らず即時送出する。
+                    with self._live_lock:
+                        last_at = self._live_last_sent_at
+                    if last_at is not None and now - last_at < self.LIVE_REPEAT_S:
+                        continue
+                self._recordLiveOrder(out)
+                try:
+                    show = self._showLiveRow(out, now, is_repeat)
+                    transport.send_row(self.encodePicoState(out), measure_perf=show)
                     with self._live_lock:
                         self._live_stats["sent"] += 1
-                        if is_keepalive:
+                        if is_repeat:
                             self._live_stats["keepalive"] += 1
                         self._live_last_sent_at = time.perf_counter()
                 except Exception:
@@ -1720,7 +1738,7 @@ class Sender:
 
         確認と起動を _live_lock の中で行う。二重起動で worker が
         漏れると、古い方が止められず線が2本になる。
-        準備（mailbox への投入）は外で行う。錠の中で putLive すると
+        準備（列への投入）は外で行う。錠の中で putLive すると
         同じ錠を取り直して詰まる（Lock は再入不可）。
         動いているときは帳簿に触らず False で抜ける。
         """
@@ -1768,36 +1786,32 @@ class Sender:
             return started
 
     def discardLive(self) -> bool:
-        """mailbox の未送信の状態を破棄する。
+        """scheduler の未送出を破棄する。
 
         破棄したものがあれば True を返す。中立を送る前に呼ぶことで、
         中立の後に古い状態が送出されることを防ぐ。
+        送出中は残しrepeat継続する。
         """
         self._ensureLiveState()
-        with self._live_lock:
-            had = self._live_box is not None
-            self._live_box = None
-        return had
+        return bool(self._live_sched.clear())
 
     def waitLiveDrained(self, timeout: float = 0.05) -> bool:
-        """mailbox が空になるまで待つ。
+        """未送出が空になるまで待つ。
 
-        worker が取り出して送出し終えると mailbox は空になる。期限内に
-        空になれば True を返す。無期限には待たない。終了できない状態を
-        作らないためである。
+        列が空になれば True を返す。無期限には待たない。終了できない状態を
+        作らないためである。worker が止まっていれば待っても進まないため
+        False で抜ける。
         """
         self._ensureLiveState()
         limit = time.perf_counter() + max(float(timeout), 0.0)
         while time.perf_counter() < limit:
-            with self._live_lock:
-                if self._live_box is None:
-                    return True
+            if self._live_sched.pending_empty():
+                return True
             if not self.isLiveWorkerRunning():
                 # worker が居なければ待っても空にならない。
                 return False
             time.sleep(0.001)
-        with self._live_lock:
-            return self._live_box is None
+        return bool(self._live_sched.pending_empty())
 
     def stopLiveWorker(self, timeout: float = 1.0) -> bool:
         """常駐ワーカーを止める。止まるまで待つ。
@@ -1851,12 +1865,17 @@ class Sender:
     def getLiveStats(self) -> dict[str, Any]:
         """帳簿の写しを返す（読むだけ・副作用なし）。"""
         self._ensureLiveState()
+        sched_stats = self._live_sched.stats()
         with self._live_lock:
-            return dict(self._live_stats)
+            out = dict(self._live_stats)
+        out["replaced"] = int(sched_stats.get("merged", 0))
+        out["dropped"] = int(sched_stats.get("dropped", 0))
+        return out
 
     def clearLiveStats(self) -> None:
         """live統計を初期化する。"""
         self._ensureLiveState()
+        self._live_sched.reset_stats()
         with self._live_lock:
             for key in (
                 "put",
@@ -1864,6 +1883,7 @@ class Sender:
                 "sent",
                 "keepalive",
                 "priority",
+                "dropped",
                 "inversions",
             ):
                 self._live_stats[key] = 0
