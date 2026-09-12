@@ -19,6 +19,7 @@ Blocklyエディタの機能拡充（詳細は [`docs/BLOCKLY_EDITOR.md`](docs/B
 - シリアル通信の堅牢化とPico連携（有線／無線）、並列起動、起動高速化
 - Python 3.12以降が必要に（3.12.10固定）
 - 自作スクリプト（`Commands.*`）と `settings.ini` の形式はそのまま使えます
+- 内部整理などの実装にはAIによるコーディング補助を利用しています
 
 ### ver3.6.0
 主な変更点
@@ -144,6 +145,15 @@ python .\SerialController\Window.py --profile switch1 --transport pico_uart
 
 通信方式は `legacy_text`（本家 Leonardo 用）と `pico_uart`（pico-wakeCon 用）の2種です。
 `--transport` を省略したときは設定ファイルの `[Transport] name` を使います。
+
+### 不具合の報告
+
+エラーが出たら、メニューの「コマンド → エラー報告をコピー...」を開いてください。
+環境・エラー文・ログ末尾をまとめた文面が出るので、そのままコピーして Issue に貼れます。
+`settings.ini` の中身や Discord の webhook は含みません。
+
+- ログファイル本体は `log/` 直下（`log_日時.log`）に起動ごとに作られます。添えると原因が追いやすくなります。
+- `log/` が増えてきたら古い物から手で消してかまいません（自動削除はしません）。
 
 ### 開発する方
 

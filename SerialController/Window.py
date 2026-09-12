@@ -41,7 +41,7 @@ from ui.log_panel import LogPanelMixin
 from ui.serial_panel import SerialPanelMixin
 
 NAME = "Poke-Controller"
-VERSION = "v4.0.1 Modified-AI"  # based on 1.0-beta3(custom by @dragonite303)
+VERSION = "v4.0.1 Modified"  # based on 1.0-beta3(custom by @dragonite303)
 
 
 # タイトルに出すコマンド名の上限。長い名前でウィンドウ名が埋まるのを防ぐ
@@ -85,6 +85,10 @@ class PokeControllerApp(
         self._transport_override = str(transport).strip()
         # どの台のウィンドウか一目で分かるようタイトルに出す。
         self.profile = Settings.GuiSettings.sanitize_profile(profile)
+        # 報告窓のために版情報を持たせる。ui 側から Window 本体を
+        # import せずに済ませるため（循環防止）。
+        self.app_name = NAME
+        self.app_version = VERSION
         self._running_command = ""  # タイトルに出す実行中コマンド名
         self._paused = False  # 一時停止中か（タイトル表示に使う）
         self.root.title(f"{NAME} {VERSION}")  # UI 構築後に詳細版へ更新する
@@ -557,6 +561,29 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     app = PokeControllerApp(profile=args.profile, transport=args.transport)
+
+    # 未捕捉の例外を報告窓へ回す。ワーカー内は各所が握って
+    # ファイルへ書くため、ここでは GUI スレッド等の未捕捉だけ扱う。
+    try:
+        from ui import error_report_dialog
+
+        def _report_info() -> dict[str, str]:
+            try:
+                transport = str(app.transport_name.get())
+            except Exception:
+                transport = ""
+            return {
+                "app_version": str(getattr(app, "app_version", VERSION)),
+                "os_name": str(getattr(app, "os_name", platform.system())),
+                "python_version": platform.python_version(),
+                "profile": str(getattr(app, "profile", "")),
+                "transport": transport,
+            }
+
+        error_report_dialog.install_hooks(app.root, _report_info)
+    except Exception:
+        logger.warning("エラー報告フックを登録できませんでした")
+
     app.run()
 
 

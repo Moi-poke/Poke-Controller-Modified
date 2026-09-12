@@ -104,6 +104,11 @@ class PokeController_Menubar(tk.Menu):
         self.menu_command.add(
             "command", command=self.OpenBlocklyEditor, label="Blocklyエディタ..."
         )
+        self.menu_command.add(
+            "command",
+            command=self.OpenErrorReport,
+            label="エラー報告をコピー...",
+        )
 
     @staticmethod
     def _alive(window: Any) -> bool:
@@ -305,6 +310,26 @@ class PokeController_Menubar(tk.Menu):
             is_busy=lambda: self.app.runner.is_busy(),
             reload_commands=self.app.reloadCommands,
             get_frame=blockly_capture.build_get_frame(lambda: self.camera),
+        )
+
+    def OpenErrorReport(self) -> None:
+        """エラー報告の小窓を開く。実手順は ui.error_report_dialog。"""
+        import platform
+
+        from ui import error_report_dialog
+
+        app = self.app
+        try:
+            transport = str(app.transport_name.get())
+        except Exception:
+            transport = ""
+        error_report_dialog.open_error_report(
+            self.root,
+            app_version=str(getattr(app, "app_version", "")),
+            os_name=str(getattr(app, "os_name", platform.system())),
+            python_version=platform.python_version(),
+            profile=str(getattr(app, "profile", "")),
+            transport=transport,
         )
 
     def exit(self) -> None:
