@@ -7,6 +7,12 @@
 ## 変更点
 
 ### ver4.0.1
+Blocklyエディタの機能拡充（詳細は [`docs/BLOCKLY_EDITOR.md`](docs/BLOCKLY_EDITOR.md)）
+- サブルーチン（引数・戻り値）、スティック内蔵パッド、表示・スクショ・Discord通知
+- 保持・終了・連打、音声トーン検知（2帯域・画像音声併用）、画像認識の複合操作・件数
+- 経過時間、実行前設定ダイアログ、プログラムのタグ、動作確認用サンプル11種
+
+### ver4.0.0
 主な変更点（詳細は [`docs/V4_CHANGES.md`](docs/V4_CHANGES.md)）
 - 内部構造の大整理（[`services/`](SerialController/services)・[`ui/`](SerialController/ui)・[`core/serial/`](SerialController/core/serial)・[`core/transport/`](SerialController/core/transport) に分割、[`Window.py`](SerialController/Window.py) は組立専用に）
 - Blocklyエディタ・音声対応・シリアルモニタ・スクリプトzip配布・表示フィルタの追加
