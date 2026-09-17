@@ -69,7 +69,6 @@ class BconTransport(Transport):
         self._on_write_end: Callable[..., None] | None = None
         self._rx_lock = threading.Lock()
         self._rx_subs: list[Callable[[BconFrame], None]] = []
-        self._rx_text_subs: list[Callable[[str], None]] = []
         self._rx_waiters: list[
             tuple[tuple[int, ...], threading.Event, dict[str, Any]]
         ] = []
@@ -121,7 +120,15 @@ class BconTransport(Transport):
             self._logger.warning(f"bconを開けませんでした({name} {rate}bps): {e!r}")
             return False
         with self._lock:
+            old = self.ser
             self.ser = ser
+            # 開き直しで古い欠片が残ると次回の先頭整列を乱すため捨てる。
+            self._parser = BconParser()
+        if old is not None:
+            try:
+                old.close()
+            except Exception as e:
+                self._logger.debug(f"bconの古い線の close に失敗: {e!r}")
         return True
 
     def close(self) -> None:
@@ -129,6 +136,8 @@ class BconTransport(Transport):
         self.stop_rx_pump()
         with self._lock:
             ser, self.ser = self.ser, None
+            # 欠片を持ち越すと次回接続の先頭整列を乱すため捨てる。
+            self._parser = BconParser()
         if ser is None:
             return
         try:
@@ -151,6 +160,16 @@ class BconTransport(Transport):
                 self._logger.debug(f"is_open 判定に失敗: {e!r}")
                 return False
         return False
+
+    def get_raw_serial(self) -> None:
+        """生のシリアルは渡さない。bconはバイナリ専用のため直読み禁止。
+
+        基底の既定は所持のserを返すが、bconの口をWakeLinkのテキスト
+        直読み（CRLF区切り）へ渡すと応答の取り違え・化けの元になる。
+        Noneを返すとWakeLinkは例外なく失敗扱い（False/空）で返し、
+        bcon側の読みはsubscribe_rx/wait_rx経由へ寄る。
+        """
+        return None
 
     # -- 第1区画:姿勢受付（行→中間姿勢。Phase 2でも親側に残る）--
 
