@@ -5,7 +5,7 @@
 入力は `<btn-hex> <hat> [lx ly [rx ry]]` と `end`。
 出力はLEN非依存の中間姿勢（buttons u32＋sticks u16域0-4095中央0x0800）。
 LEN8送出時は `u16>>4` でu8化する（`0x800>>4==0x80`で等価）。
-Y反転はここ1箇所に集約する。Pico側は値をそのままpackする。
+Yはここでは1:1コピーし、反転はsendラッパーで行う。Pico側は値をそのままpackする。
 """
 
 from __future__ import annotations
@@ -81,6 +81,7 @@ def is_end_row(row: str) -> bool:
 
 def _u8_to_u16(value: int) -> int:
     """wire/LEN8のu8（0-255中央0x80）をu16域（0-4095中央0x0800）へ。"""
+    # u8範囲外は0-0xFFにclampする仕様。
     return (max(0, min(0xFF, int(value))) << 4) & 0xFFF
 
 
@@ -114,6 +115,7 @@ def wire_row_to_state(row: str) -> dict[str, int]:
         for btn in _HAT_TO_BTNS[hat]:
             buttons |= btn
     else:
+        # 範囲外HAT（9以上・負値→neutral）は意図的な中立扱い（行自体は棄却しない）。
         for btn in _HAT_TO_BTNS[8]:
             buttons |= btn
     state = neutral_state()
