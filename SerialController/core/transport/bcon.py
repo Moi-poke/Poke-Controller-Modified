@@ -113,12 +113,14 @@ class BconTransport(Transport):
         self._hello_version: tuple[int, int] | None = None
         # baud huntのlast-good先頭用。hello成功で更新する。
         self._last_good_baud = BCON_DEFAULT_BAUDRATE
+        # hunt中のSTATE抑え。Trueのあいだsend_rowは捨てる（HELLO等の
+        # 会話は通す）。huntの出入口で立ててlock・失敗のどちらでも倒す。
+        self._tx_hold = False
         # 受信SEQ（Pico→PC方向）の欠番計数。初回は数えない。
         self._rx_last_seq: int | None = None
         self._rx_seq_gap = 0
-        # ポンプが先に読んでも取りこぼさない直近保持（TYPE→(frame, 時刻)）。
-        # helloは送る前に待ちを登録するが、feed済みのACKが先に届いても
-        # 2秒以内なら採用して無音ハングにしない（購読者・待機へも届ける）。
+        # ポンプが読んだ直近フレームの記録（TYPE→(frame, 時刻)）。
+        # 購読者・待機への分配とは別に残す。握手の成否判定には使わない。
         self._last_frame_by_type: dict[int, tuple[BconFrame, float]] = {}
 
     def open(
@@ -223,8 +225,14 @@ class BconTransport(Transport):
         行→中間姿勢（mapperはY 1:1）→ここでY反転1回→LEN8/12
         →`frame_build`→単一`write()`。錠はSEQ採番だけに使い、
         `write`は外で行う（TextSerialTransportと同一規律）。
-        不正行・未開線・書込失敗は落とさず捨てる。
+        不正行・未開線・書込失敗は落とさず捨てる。baud hunt中は
+        抑えが立っているため捨てる（会話フレームは別口で通す）。
         """
+        with self._lock:
+            held = self._tx_hold
+        if held:
+            self._logger.debug("bconはbaud hunt中のためSTATE送出を抑えます")
+            return
         # 写像は関数内で読む。頂点で読むと循環する（transport初期化中→
         # registry→bcon→serial包→sender→Transport口→transport未完）。
         # 呼び出し時には初期化が済んでいるためここでは安全に読める。
@@ -707,11 +715,12 @@ class BconTransport(Transport):
 
         送る前に待ちを登録してから送る（送ってから登録するとポンプが
         先に読んで届かない）。HELLO_ACKの`[adopted, major, minor, RESULT]`
-        を見て`adopted==0x04 and RESULT==0x00`ならTrue。DOWNGRADEDは
-        注意付きでTrue。UNSUPPORTED・版違いはNEUTRALを1発保ち、版を
-        表示してFalseで止める（送り続けハングにしない）。ACK不在は
-        期限まで再HELLOし、尽きたら再huntへの案内を出してFalse。
-        例外は投げない。直近2秒のACKがあれば再送せず採用する。
+        を見て`adopted==0x04 and RESULT==0x00`ならTrue。DOWNGRADEDを含む
+        非OKはNEUTRALを1発保ち、版を表示してFalseで止める（PCはver=4
+        専用のため送り続けハングにしない）。ACK不在は期限まで再HELLOし、
+        尽きたら再huntへの案内を出してFalse。例外は投げない。
+        直近保持は購読者・待機への分配記録に使い、成功の代用にはしない。
+        握手は必ず往復で行う。
         """
         try:
             try:
@@ -747,25 +756,7 @@ class BconTransport(Transport):
                 print(msg)
                 self._logger.warning(msg)
                 return False
-            # 直近ACKの採用（feed済みが先に届いても取りこぼさない）。
-            try:
-                with self._lock:
-                    cached = self._last_frame_by_type.get(T_HELLO_ACK)
-                if cached is not None:
-                    frame, at = cached
-                    if time.perf_counter() - at <= 2.0:
-                        payload = frame[1]
-                        if len(payload) == 4:
-                            adopted = int(payload[0]) & 0xFF
-                            result = int(payload[3]) & 0xFF
-                            if adopted == PROTO_VER and result == RESULT_OK:
-                                with self._lock:
-                                    rate = self._current_baud()
-                                    if rate is not None:
-                                        self._last_good_baud = rate
-                                return True
-            except Exception:
-                self._logger.debug("HELLO直近確認で例外", exc_info=True)
+            # 握手は必ず往復で行う。直近保持の流用では送った証拠にならない。
             start = time.perf_counter()
             deadline = start + limit
             attempt = 0
@@ -815,16 +806,14 @@ class BconTransport(Transport):
                         return True
                     if adopted == PROTO_VER and result == RESULT_DOWNGRADED:
                         msg = (
-                            "bconがDOWNGRADEDで受けました"
-                            f"(v{major}.{minor})。続行します。"
+                            "bconがDOWNGRADEDで返しました"
+                            f"(v{major}.{minor})。PCはver=4専用のため"
+                            "NEUTRALを保ち止めます（送り続けません）。"
                         )
                         print(msg)
                         self._logger.warning(msg)
-                        with self._lock:
-                            rate = self._current_baud()
-                            if rate is not None:
-                                self._last_good_baud = rate
-                        return True
+                        self._send_neutral_once()
+                        return False
                     # UNSUPPORTED・版違いはNEUTRAL維持＋版表示して止める。
                     if result == RESULT_UNSUPPORTED or adopted != PROTO_VER:
                         msg = (
@@ -863,10 +852,10 @@ class BconTransport(Transport):
     def ping(self, timeout: float = 1.0) -> float | None:
         """PINGを送りPONGのSEQエコーでRTT秒を返す。失敗はNone＋可視log。
 
-        待ち登録→送出の順を守る。PONG payload先頭が送ったSEQと一致
-        したら往復秒を返す。違うSEQのPONGは無視して残り時間で待つ。
+        購読登録→送出の順を守る。期限いっぱいまで1つの購読で待ち、
+        PONG payload先頭が送ったSEQと一致したら往復秒を返す。違うSEQの
+        PONGは無視する（掛け直しで隙間を作らない）。途中で区切らない。
         """
-        t0 = 0.0
         try:
             try:
                 limit = float(timeout)
@@ -901,15 +890,34 @@ class BconTransport(Transport):
                 print(msg)
                 self._logger.warning(msg)
                 return None
-            # 待ち登録→採番→送出（ポンプが先に読んでも届く順序）。
-            found: dict[str, Any] = {}
+            # 購読登録→採番→送出（ポンプが先に読んでも届く順序）。
+            # 期限内は1つの購読で待ち続け、SEQ一致だけを拾う。待ちの
+            # 掛け直しはしない（掛け直しの隙間に落ちたPONGは戻らない）。
+            matched: dict[str, Any] = {}
             done = threading.Event()
-            entry = ((T_PONG,), done, found)
-            with self._rx_lock:
-                self._rx_waiters.append(entry)
-            try:
-                sent_seq = self._take_seq()
+
+            def _on_pong(frame: BconFrame) -> None:
                 try:
+                    if (int(frame[0]) & 0xFF) != T_PONG:
+                        return
+                    want = matched.get("seq")
+                    if want is None:
+                        return
+                    payload = frame[1]
+                    if len(payload) != 1:
+                        return
+                    if (int(payload[0]) & 0xFF) == (int(want) & 0xFF):
+                        matched["rtt"] = time.perf_counter() - float(
+                            matched.get("t0", 0.0)
+                        )
+                        done.set()
+                except Exception:
+                    self._logger.debug("PONG照合で例外", exc_info=True)
+
+            unsub = self.subscribe_rx(_on_pong)
+            try:
+                try:
+                    sent_seq = self._take_seq()
                     frame = frame_build(T_PING, b"", sent_seq)
                 except Exception as e:
                     self._logger.warning(f"bconのPING組立に失敗: {e!r}")
@@ -920,44 +928,19 @@ class BconTransport(Transport):
                     end = self._on_write_end
                 if ser is None:
                     return None
-                t0 = time.perf_counter()
-                deadline = t0 + limit
+                matched["seq"] = sent_seq
+                matched["t0"] = time.perf_counter()
                 self._write_frame(frame, "bcon:PING", False, begin, end, ser)
-                # 一致SEQが来るまで残り時間で待つ（違うSEQは無視）。
-                while True:
-                    remaining = deadline - time.perf_counter()
-                    if remaining <= 0.0:
-                        break
-                    grain = min(0.2, remaining)
-                    # 待機は使い捨てにせず、届いた分を順に調べる。
-                    if not done.wait(grain):
-                        break
-                    got = found.get("frame")
-                    # 次のPONGに備えて待機を作り直す。
-                    with self._rx_lock:
-                        if entry in self._rx_waiters:
-                            self._rx_waiters.remove(entry)
-                    if got is not None:
-                        try:
-                            payload = got[1]
-                            if len(payload) == 1 and (int(payload[0]) & 0xFF) == (
-                                sent_seq & 0xFF
-                            ):
-                                return time.perf_counter() - t0
-                        except (TypeError, ValueError, IndexError):
-                            pass
-                    remaining2 = deadline - time.perf_counter()
-                    if remaining2 <= 0.0:
-                        break
-                    found.clear()
-                    done.clear()
-                    with self._rx_lock:
-                        if entry not in self._rx_waiters:
-                            self._rx_waiters.append(entry)
+                if done.wait(limit):
+                    try:
+                        return float(matched.get("rtt", 0.0))
+                    except (TypeError, ValueError):
+                        return None
             finally:
-                with self._rx_lock:
-                    if entry in self._rx_waiters:
-                        self._rx_waiters.remove(entry)
+                try:
+                    unsub()
+                except Exception:
+                    self._logger.debug("PONG購読解除で例外", exc_info=True)
             msg = f"bconのPONGが来ませんでした({limit:.1f}s)。"
             print(msg)
             self._logger.warning(msg)
@@ -1065,9 +1048,10 @@ class BconTransport(Transport):
         """baudをlast-good先頭＋降順sweepで探し2連続有効でlockする。
 
         candidates無しはBAUD表の降順（last-goodを先頭へ）。0-4の小さな
-        値は表index、それ以外はbps値として読む。lockまでSTATE送出は
-        抑えること（本機は送らないが呼び出し側も送らない）。成功はbps、
-        失敗はNone＋可視log。例外は投げない。BREAK受信時もここへ回す。
+        値は表index、それ以外はbps値として読む。hunt中はSTATE送出を
+        抑える（send_rowは捨てる。HELLO等の会話は通す）。lock・失敗の
+        いずれでも抑えを解く。成功はbps、失敗はNone＋可視log。
+        例外は投げない。BREAK受信時もここへ回す。
         """
         try:
             try:
@@ -1136,35 +1120,40 @@ class BconTransport(Transport):
                     self._logger.warning(msg)
                     return None
             self._logger.info(
-                f"bconのbaud huntを始めます(候補={order})。lockまで送出抑制。"
+                f"bconのbaud huntを始めます(候補={order})。STATE送出を抑えます。"
             )
-            for rate in order:
-                try:
-                    if not self._set_baud(rate):
+            with self._lock:
+                self._tx_hold = True
+            try:
+                for rate in order:
+                    try:
+                        if not self._set_baud(rate):
+                            continue
+                        with self._lock:
+                            self._parser = BconParser()
+                        if not self.hello(timeout=per):
+                            continue
+                        if not self.hello(timeout=per):
+                            continue
+                        with self._lock:
+                            self._last_good_baud = int(rate)
+                        msg = f"bconのbaudを{rate}bpsでlockしました(2連続有効)。"
+                        print(msg)
+                        self._logger.info(msg)
+                        return int(rate)
+                    except Exception:
+                        self._logger.debug("hunt1候補で例外", exc_info=True)
                         continue
-                    with self._lock:
-                        self._parser = BconParser()
-                        self._last_frame_by_type.pop(T_HELLO_ACK, None)
-                    if not self.hello(timeout=per):
-                        continue
-                    # 2連続の2回目は直近採用を使わず新規交換を要求する。
-                    with self._lock:
-                        self._last_frame_by_type.pop(T_HELLO_ACK, None)
-                    if not self.hello(timeout=per):
-                        continue
-                    with self._lock:
-                        self._last_good_baud = int(rate)
-                    msg = f"bconのbaudを{rate}bpsでlockしました(2連続有効)。"
-                    print(msg)
-                    self._logger.info(msg)
-                    return int(rate)
-                except Exception:
-                    self._logger.debug("hunt1候補で例外", exc_info=True)
-                    continue
-            msg = f"bconのbaud huntに失敗しました(候補={order})。配線・電源を確認してください。"
-            print(msg)
-            self._logger.warning(msg)
-            return None
+                msg = (
+                    f"bconのbaud huntに失敗しました(候補={order})。"
+                    "配線・電源を確認してください。"
+                )
+                print(msg)
+                self._logger.warning(msg)
+                return None
+            finally:
+                with self._lock:
+                    self._tx_hold = False
         except Exception as e:
             self._logger.debug(f"baud_huntで例外: {e!r}", exc_info=True)
             return None
@@ -1173,9 +1162,8 @@ class BconTransport(Transport):
         """BAUD_SETでPicoとhostのbaudを切り替える。失敗はFalse＋可視log。
 
         旧レートでBAUD_SET→STATUS-ACK確認→100ms guard→双方切替→
-        残り時間でadopt確認（HELLO）。adopt無しは2s目安で旧レートへ
-        自動復帰する。adopt確認でPicoはBCBRへ永続保存する（2frame
-        adoptで永続）。例外は投げない。
+        残り時間でadopt確認（HELLO 1往復）。adopt無しは2s目安で旧レートへ
+        自動復帰する。Pico側はadopt後にBCBRへ永続保存する。例外は投げない。
         """
         try:
             try:
@@ -1263,14 +1251,13 @@ class BconTransport(Transport):
                 return False
             with self._lock:
                 self._parser = BconParser()
-                self._last_frame_by_type.pop(T_HELLO_ACK, None)
             remaining = max(0.2, limit - 0.8 - 0.1 - (0.0 if limit > 1.0 else 0.0))
             if self.hello(timeout=min(remaining, 2.0)):
                 with self._lock:
                     self._last_good_baud = new_rate
                 msg = (
-                    f"bconのbaudを{new_rate}bpsへ切替えました。"
-                    "2frame adoptでBCBRへ永続保存されます。"
+                    f"bconのbaudを{new_rate}bpsへ切替えました"
+                    "(HELLOでadopt確認。Pico側はadopt後にBCBRへ永続保存します)。"
                 )
                 print(msg)
                 self._logger.info(msg)

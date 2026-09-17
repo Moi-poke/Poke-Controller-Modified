@@ -38,16 +38,85 @@ def _make_scripted_ser(feed_delay: float = 0.001):
 
 def test_bcon_hello_and_ping_with_scripted_ser():
     from core.transport import create_transport
-    from core.transport.bcon_protocol import T_HELLO_ACK, frame_build
+    from core.transport.bcon_protocol import T_HELLO, T_HELLO_ACK, frame_build
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 2 and frame[0] == 0xAB and frame[1] == T_HELLO:
+                    ser.feed(
+                        frame_build(T_HELLO_ACK, bytes([0x04, 0x00, 0x01, 0x00]), 0x00)
+                    )
+                    return
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        assert made.rx_pump_running() is True
+        assert made.hello(timeout=2.0) is True
+        types = [f[1] for f in ser.written if len(f) >= 2 and f[0] == 0xAB]
+        assert T_HELLO in types
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_hello_always_sends_despite_stale_ack():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import T_HELLO, T_HELLO_ACK, frame_build
 
     made = create_transport("bcon")
     ser = _make_scripted_ser()
     made.ser = ser
     made.start_rx_pump()
     try:
-        assert made.rx_pump_running() is True
+        # 直近保持へ古いACKを載せてから呼ぶ。握手省略の採用は許さない。
         ser.feed(frame_build(T_HELLO_ACK, bytes([0x04, 0x00, 0x01, 0x00]), 0x00))
-        assert made.hello(timeout=2.0) is True
+        deadline = time.perf_counter() + 2.0
+        while time.perf_counter() < deadline:
+            with made._lock:
+                if T_HELLO_ACK in made._last_frame_by_type:
+                    break
+            time.sleep(0.005)
+        stop = threading.Event()
+
+        def _responder() -> None:
+            seen = 0
+            while not stop.is_set():
+                with ser._lock:
+                    pending = list(ser.written)
+                for frame in pending[seen:]:
+                    seen += 1
+                    if len(frame) >= 2 and frame[0] == 0xAB and frame[1] == T_HELLO:
+                        ser.feed(
+                            frame_build(
+                                T_HELLO_ACK, bytes([0x04, 0x00, 0x02, 0x00]), 0x01
+                            )
+                        )
+                        return
+                time.sleep(0.002)
+
+        worker = threading.Thread(target=_responder, daemon=True)
+        worker.start()
+        try:
+            assert made.hello(timeout=2.0) is True
+            types = [f[1] for f in ser.written if len(f) >= 2 and f[0] == 0xAB]
+            assert T_HELLO in types
+        finally:
+            stop.set()
+            worker.join(1.0)
     finally:
         made.stop_rx_pump()
 
@@ -132,6 +201,84 @@ def test_bcon_ping_returns_rtt_on_seq_echo():
         made.stop_rx_pump()
 
 
+def test_bcon_ping_waits_full_timeout_for_late_pong():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import T_PING, T_PONG, frame_build
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 4 and frame[0] == 0xAB and frame[1] == T_PING:
+                    # 最初の待ち粒（0.2秒）を超えてから返す。途切れず待つこと。
+                    time.sleep(0.35)
+                    if stop.is_set():
+                        return
+                    ser.feed(frame_build(T_PONG, bytes([frame[3]]), 0x09))
+                    return
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        rtt = made.ping(timeout=2.0)
+        assert rtt is not None
+        assert 0.2 <= rtt < 2.0
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_ping_ignores_wrong_seq_burst():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import T_PING, T_PONG, frame_build
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 4 and frame[0] == 0xAB and frame[1] == T_PING:
+                    seq = frame[3]
+                    wrong = (seq ^ 0xFF) & 0xFF
+                    # 誤SEQと正SEQを1塊で返す。隙間の取落しは許さない。
+                    ser.feed(
+                        frame_build(T_PONG, bytes([wrong]), 0x09)
+                        + frame_build(T_PONG, bytes([seq]), 0x0A)
+                    )
+                    return
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        rtt = made.ping(timeout=2.0)
+        assert rtt is not None
+        assert 0.0 <= rtt < 2.0
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
 def test_bcon_hello_unsupported_holds_neutral_and_stops():
     from core.transport import create_transport
     from core.transport.bcon_protocol import (
@@ -169,6 +316,54 @@ def test_bcon_hello_unsupported_holds_neutral_and_stops():
     worker = threading.Thread(target=_responder, daemon=True)
     worker.start()
     try:
+        assert made.hello(timeout=2.0) is False
+        types = [f[1] for f in ser.written if len(f) >= 2 and f[0] == 0xAB]
+        assert T_HELLO in types
+        assert T_NEUTRAL in types
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_hello_downgraded_holds_neutral_and_stops():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import (
+        RESULT_DOWNGRADED,
+        T_HELLO,
+        T_HELLO_ACK,
+        T_NEUTRAL,
+        frame_build,
+    )
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 2 and frame[0] == 0xAB and frame[1] == T_HELLO:
+                    ser.feed(
+                        frame_build(
+                            T_HELLO_ACK,
+                            bytes([0x04, 0x00, 0x02, RESULT_DOWNGRADED]),
+                            0x00,
+                        )
+                    )
+                    return
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        # PCはver=4専用のためDOWNGRADEDも送り続けず止める。
         assert made.hello(timeout=2.0) is False
         types = [f[1] for f in ser.written if len(f) >= 2 and f[0] == 0xAB]
         assert T_HELLO in types
@@ -359,6 +554,111 @@ def test_bcon_baud_hunt_locks_two_consecutive():
         locked = made.baud_hunt([115200, good_rate], timeout_per=0.5)
         assert locked == good_rate
         assert ser.baudrate == good_rate
+        assert made._tx_hold is False
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_baud_hunt_holds_tx_until_lock():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import T_HELLO, T_HELLO_ACK, T_STATE, frame_build
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+    good_rate = 1000000
+    hunted: dict[str, int | None] = {}
+
+    def _responder() -> None:
+        seen = 0
+        first = True
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 2 and frame[0] == 0xAB and frame[1] == T_HELLO:
+                    if first:
+                        first = False
+                        time.sleep(0.4)
+                        if stop.is_set():
+                            return
+                    ser.feed(
+                        frame_build(T_HELLO_ACK, bytes([0x04, 0x00, 0x01, 0x00]), 0x00)
+                    )
+            time.sleep(0.002)
+
+    def _hunt() -> None:
+        hunted["locked"] = made.baud_hunt([good_rate], timeout_per=1.0)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    hunter = threading.Thread(target=_hunt, daemon=True)
+    worker.start()
+    hunter.start()
+    try:
+        # hunt中の抑えを目視する（2秒以内に立つこと）。
+        deadline = time.perf_counter() + 2.0
+        while time.perf_counter() < deadline and not made._tx_hold:
+            time.sleep(0.005)
+        assert made._tx_hold is True
+        # 抑え中のSTATEは1発も出ないこと。
+        before = [f for f in ser.written if len(f) >= 2 and f[1] == T_STATE]
+        made.send_row("10 08")
+        after = [f for f in ser.written if len(f) >= 2 and f[1] == T_STATE]
+        assert after == before
+        hunter.join(3.0)
+        assert hunted.get("locked") == good_rate
+        assert made._tx_hold is False
+        # 抑えが解けたら送れること。
+        made.send_row("10 08")
+        states = [f for f in ser.written if len(f) >= 2 and f[1] == T_STATE]
+        assert len(states) == len(before) + 1
+    finally:
+        stop.set()
+        hunter.join(3.0)
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_baud_hunt_single_fluke_does_not_lock():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import T_HELLO, T_HELLO_ACK, frame_build
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        replied = False
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 2 and frame[0] == 0xAB and frame[1] == T_HELLO:
+                    # 初回だけ返し2回目は沈黙する。単発ではlockしないこと。
+                    if not replied:
+                        replied = True
+                        ser.feed(
+                            frame_build(
+                                T_HELLO_ACK, bytes([0x04, 0x00, 0x01, 0x00]), 0x00
+                            )
+                        )
+                    return
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        assert made.baud_hunt([1000000], timeout_per=0.4) is None
+        assert made._tx_hold is False
     finally:
         stop.set()
         worker.join(1.0)
@@ -376,6 +676,7 @@ def test_bcon_baud_hunt_fails_to_none_without_hang():
         start = time.perf_counter()
         assert made.baud_hunt([115200], timeout_per=0.2) is None
         assert time.perf_counter() - start < 3.0
+        assert made._tx_hold is False
     finally:
         made.stop_rx_pump()
 
@@ -413,6 +714,52 @@ def test_bcon_set_baud_index_guards_and_reverts():
     try:
         assert made.set_baud_index(1, timeout=1.0) is False
         assert ser.baudrate == 1000000
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_set_baud_index_switches_on_adopt():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import (
+        T_BAUD_SET,
+        T_HELLO,
+        T_HELLO_ACK,
+        T_STATUS,
+        frame_build,
+    )
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    ser.baudrate = 1000000
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) < 2 or frame[0] != 0xAB:
+                    continue
+                if frame[1] == T_BAUD_SET:
+                    status = bytes([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                    ser.feed(frame_build(T_STATUS, status, 0x40))
+                elif frame[1] == T_HELLO:
+                    ser.feed(
+                        frame_build(T_HELLO_ACK, bytes([0x04, 0x00, 0x01, 0x00]), 0x41)
+                    )
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        assert made.set_baud_index(1, timeout=2.0) is True
+        assert ser.baudrate == 460800
     finally:
         stop.set()
         worker.join(1.0)
