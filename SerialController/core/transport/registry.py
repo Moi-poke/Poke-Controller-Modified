@@ -22,6 +22,7 @@ from logging import getLogger
 from typing import Any
 
 from core.transport.base import LEGACY_ROW, VALID_CAPABILITIES, Transport
+from core.transport.bcon import BconTransport
 from core.transport.text_serial import PicoUartTransport, TextSerialTransport
 
 # 既定のプリセット名。設定が無い・読めない・知らない名前のときはここへ戻す
@@ -235,5 +236,12 @@ register_transport(
     PicoUartTransport.name,
     PicoUartTransport,
     description="Picoへfull-state S行を送る（有線=USBシリアル変換器 / 無線=PicoのUSB直結）",
+    builtin=True,
+)
+
+register_transport(
+    BconTransport.name,
+    BconTransport,
+    description="bconへSTATEバイナリを送る（Pico 2 W・既定1Mbps・HELLO必須）",
     builtin=True,
 )

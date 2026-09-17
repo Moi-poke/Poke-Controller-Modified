@@ -6,12 +6,14 @@ registry.py が名前からの選択（設定画面・起動引数用）を持�
 """
 
 from core.transport.base import (
+    BCON_STATE as BCON_STATE,
     LEGACY_ROW as LEGACY_ROW,
     LIVE_WORKER_CAPABILITIES as LIVE_WORKER_CAPABILITIES,
     PICO_LIVE_STATE as PICO_LIVE_STATE,
     VALID_CAPABILITIES as VALID_CAPABILITIES,
     Transport as Transport,
 )
+from core.transport.bcon import BconTransport as BconTransport
 from core.transport.registry import (
     DEFAULT_TRANSPORT as DEFAULT_TRANSPORT,
     create_transport as create_transport,

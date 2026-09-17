@@ -33,11 +33,12 @@ from typing import Any
 # live worker が要る方式だけが LIVE_WORKER_CAPABILITIES へ名を連ねる。
 LEGACY_ROW = "LEGACY_ROW"
 PICO_LIVE_STATE = "PICO_LIVE_STATE"
-VALID_CAPABILITIES = (LEGACY_ROW, PICO_LIVE_STATE)
+BCON_STATE = "BCON_STATE"
+VALID_CAPABILITIES = (LEGACY_ROW, PICO_LIVE_STATE, BCON_STATE)
 # live worker（8ms スロット送出）を必要とする capability の集合。
 # Sender._liveCapable が参照する唯一の表。第3の方式で worker が要る場合は
 # この集合へ加える（登録時に capability 名を合わせるか、ここへ追加する）。
-LIVE_WORKER_CAPABILITIES: set[str] = {PICO_LIVE_STATE}
+LIVE_WORKER_CAPABILITIES: set[str] = {PICO_LIVE_STATE, BCON_STATE}
 
 
 class Transport(abc.ABC):
