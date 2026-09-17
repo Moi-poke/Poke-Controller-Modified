@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -109,7 +111,38 @@ def _write_csv(
             prev = moment
 
 
-def main(argv: list[str] | None = None) -> int:
+def _windows_tick_1ms() -> Callable[[], None]:
+    """Windowsの待ち粒度を1msへ上げる。戻り値は元へ戻す呼び出し。
+
+    既定15.6msのままでは8.33ms刻みが約17msに延び、PC側の時刻だけを
+    見ている本計測器の値を壊す（実アプリ側は起動時に同等の設定を
+    行う）。失敗・非Windowsは busなしの何もしない呼び出しを返す。
+    """
+
+    def _noop() -> None:
+        return None
+
+    if os.name != "nt":
+        return _noop
+    try:
+        import ctypes
+
+        winmm = ctypes.windll.winmm  # type: ignore[attr-defined]
+        if int(winmm.timeBeginPeriod(1)) != 0:
+            return _noop
+    except Exception:
+        return _noop
+
+    def _restore() -> None:
+        try:
+            winmm.timeEndPeriod(1)
+        except Exception:
+            pass
+
+    return _restore
+
+
+def _run(argv: list[str] | None = None) -> int:
     """開→（HELLO）→中立120Hz→要約＋CSV→閉じる。失敗は文言＋非ゼロ。"""
     args = parse_args(argv)
     try:
@@ -167,6 +200,14 @@ def main(argv: list[str] | None = None) -> int:
             print("HELLOで例外のため送出だけ量ります。", file=sys.stderr)
     else:
         print("HELLOを飛ばします（loopback想定）。", file=sys.stderr)
+    try:
+        # 基準は最初の実STATUSで取り直す。起動直後の保持は全0のため、
+        # そのまま比べるとPico累積（別セッション分）まで差分に混ざる。
+        made.request_status(timeout=1.0)
+        status0 = dict(made.last_status())
+        stats0 = dict(made.live_stats())
+    except Exception:
+        pass
     try:
         made.send_row("end")
         made.start_live_loop()
@@ -229,6 +270,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"CSV出力に失敗しました: {e!r}", file=sys.stderr)
         return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """1ms粒度を確保して_runを行う。後始末は必ず戻す。"""
+    restore_tick = _windows_tick_1ms()
+    try:
+        return _run(argv)
+    finally:
+        try:
+            restore_tick()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
