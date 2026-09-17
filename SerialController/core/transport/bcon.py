@@ -601,7 +601,10 @@ class BconTransport(Transport):
             job: tuple[bytes, str, bool] | None = None
             if pending is not None:
                 job = pending
-            elif latest is not None and (now - last_tx) >= interval:
+            elif latest is not None and (now - last_tx) >= interval * 0.5:
+                # 定期再送の門は半周期で見る。Windowsの待ちは±1ms揺らぐ
+                # ため等号ちょうどで比べると1刻みおきに落とし120Hzが
+                # 半減する。早めの再送はPico側200ms維持に無害である。
                 job = (latest[0], latest[1], False)
             if job is None:
                 if next_tx <= now:
