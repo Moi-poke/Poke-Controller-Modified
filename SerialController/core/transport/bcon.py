@@ -44,6 +44,19 @@ BCON_DEFAULT_BAUDRATE = BAUD_TABLE[DEFAULT_BAUD_INDEX]
 BCON_READ_TIMEOUT = 0.05
 BCON_WRITE_TIMEOUT = 0.2
 
+# live loopの既定周期（120Hz）。Picoのtimeout-neutral 200msに対し十分
+# 短く、USB 8msポーリングとも大きくは干渉しない。Phase 2で別過程へ
+# 移すときも値はそのまま持っていく。
+LIVE_INTERVAL_S = 1.0 / 120.0
+
+# 姿勢空間（Keys.Button・Senderの持つ姿勢・PicoのS行）からwire空間
+# （Modified行の<btn-hex>）へのbit写像。添字が姿勢bit・値がwire bit。
+# bcon_mapping._WIRE_TO_VIIPERの添字に合わせる。Keys.Buttonの並び
+# （Y,B,A,X,L,R,ZL,ZR,MINUS,PLUS,LCLICK,RCLICK,HOME,CAPTURE）に依存
+# するため、並びを変えたらここも直すこと。14bit以降は輸送位置が
+# 無いため落とす（spec §3.1のGR/GL/C/Headset落としと同一方針）。
+_POSTURE_TO_WIRE = (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+
 # 受信フレームの中身（種別・荷物・連番）。SEQは方向別mod256。
 BconFrame = tuple[int, bytes, int]
 
@@ -61,6 +74,43 @@ def _invert_y_u16(value: int) -> int:
     if inv < 0:
         return 0
     return inv
+
+
+def _s_row_to_wire_row(row: str) -> str:
+    """Pico式S行（姿勢空間）をModifiedのwire行へ読み替える。
+
+    live workerは姿勢を `S btn hat lx ly rx ry`（姿勢空間・7欄）で
+    渡してくる。bconの写像（wire_row_to_state）はwire空間しか読めない
+    ため、ここでbtnだけをwire bitへ移し、Sを外した6欄へ直す。
+    hat・stick欄は両空間で同値（hat 0-8・u8中央0x80）のため触らない。
+    S行は6欄そろいのためLS/RS両旗（0x0003）を立て、lx/ly→左・
+    rx/ry→右へ振る（wire側quirkのboth扱い）。欄不足・不正値は
+    ValueError（呼び出し側が捨てる）。姿勢A=0x04をwireと読むと
+    bit2→BTN_Yへずれるため、この直しが無いとliveのAがYになる。
+    """
+    parts = row.strip().split()
+    if len(parts) != 7 or parts[0].upper() != "S":
+        raise ValueError(f"bconへ送れないS行形式です: {row!r}")
+    try:
+        posture = int(parts[1], 16)
+    except ValueError:
+        raise ValueError(f"bconへ送れないS行形式です: {row!r}") from None
+    wire = 0x0003
+    bits = int(posture) & 0x3FFF
+    for bit in range(14):
+        if bits & (1 << bit):
+            wire |= 1 << _POSTURE_TO_WIRE[bit]
+    return f"{wire:x} {parts[2]} {parts[3]} {parts[4]} {parts[5]} {parts[6]}"
+
+
+def _is_s_row(text: str) -> bool:
+    """Pico式S行か（先頭S＋空白、またはS単独の崩れ）。wire行と紛れない。
+
+    wireのbtn欄は16進数字のみでSを含まないため、先頭欄がSならS行と
+    断定できる。小文字も受ける（encode側は大文字Sで出す）。
+    """
+    upper = text.upper()
+    return upper.startswith("S ") or upper == "S"
 
 
 class BconTransport(Transport):
@@ -119,6 +169,20 @@ class BconTransport(Transport):
         # 受信SEQ（Pico→PC方向）の欠番計数。初回は数えない。
         self._rx_last_seq: int | None = None
         self._rx_seq_gap = 0
+        # -- 第3区画:120Hz live loop（Task 5）の保持 --
+        # 親→子は最新姿勢のみ（深さ1・上書き・backlogなし）。子→親は
+        # STATUS/PONG/統計のみ。Phase 2ではこの区画だけ別過程へ移す。
+        self._live_loop_thread: threading.Thread | None = None
+        self._live_loop_stop = threading.Event()
+        self._live_loop_event = threading.Event()
+        self._live_interval_s = LIVE_INTERVAL_S
+        self._live_pending: tuple[bytes, str, bool] | None = None
+        self._live_latest: tuple[bytes, str] | None = None
+        self._live_last_tx = 0.0
+        self._live_sent = 0
+        self._live_merged = 0
+        self._live_dropped = 0
+        self._live_rtt_ms: float | None = None
         # ポンプが読んだ直近フレームの記録（TYPE→(frame, 時刻)）。
         # 購読者・待機への分配とは別に残す。握手の成否判定には使わない。
         self._last_frame_by_type: dict[int, tuple[BconFrame, float]] = {}
@@ -170,6 +234,15 @@ class BconTransport(Transport):
             self.ser = ser
             # 開き直しで古い欠片が残ると次回の先頭整列を乱すため捨てる。
             self._parser = BconParser()
+            # 開き直しで古い姿勢を送り直さないよう最新保持も捨てる。
+            # 数え直しのため統計も0へ戻す（live_statsの区切りはopen）。
+            self._live_pending = None
+            self._live_latest = None
+            self._live_last_tx = 0.0
+            self._live_sent = 0
+            self._live_merged = 0
+            self._live_dropped = 0
+            self._live_rtt_ms = None
         if old is not None:
             try:
                 old.close()
@@ -178,7 +251,25 @@ class BconTransport(Transport):
         return True
 
     def close(self) -> None:
-        """線を閉じる。読みポンプを先に止め、閉じるのは錠の外で行う。"""
+        """線を閉じる。読みポンプを先に止め、閉じるのは錠の外で行う。
+
+        終了時はNEUTRALを1発だけ保ってから閉じる（spec §3.1。200ms
+        無音でPicoが全解放する前提で、閉じ際の押下残りを消す）。
+        live loopは先に止める（止めないとNEUTRALの後に更新が載る）。
+        いずれも失敗は捨てる（閉じない状態を作らない）。
+        """
+        try:
+            self.stop_live_loop()
+        except Exception:
+            self._logger.debug("live loopの停止に失敗", exc_info=True)
+        try:
+            if self.ser is not None:
+                with self._lock:
+                    held = self._tx_hold
+                if not held:
+                    self._send_neutral_once()
+        except Exception:
+            self._logger.debug("終了時NEUTRALに失敗", exc_info=True)
         self.stop_rx_pump()
         with self._lock:
             ser, self.ser = self.ser, None
@@ -222,15 +313,24 @@ class BconTransport(Transport):
     def send_row(self, row: str, measure_perf: bool = True) -> None:
         """1行ぶんの姿勢をSTATEバイナリ1発で送る。
 
+        受ける行は2種。Modifiedのwire行（`<btn-hex> <hat> ...`・`end`）
+        と、live workerの出すPico式S行（`S btn hat lx ly rx ry`・姿勢
+        空間）である。S行はwire行へ読み替えてから写す（姿勢A=0x04を
+        wireと読むとBTN_Yへずれる）。読み替え後はどちらも同じ道を通る。
         行→中間姿勢（mapperはY 1:1）→ここでY反転1回→LEN8/12
-        →`frame_build`→単一`write()`。錠はSEQ採番だけに使い、
-        `write`は外で行う（TextSerialTransportと同一規律）。
-        不正行・未開線・書込失敗は落とさず捨てる。baud hunt中は
-        抑えが立っているため捨てる（会話フレームは別口で通す）。
+        →`frame_build`→単一`write()`。錠はSEQ採番・保留取出しだけに
+        使い、`write`は外で行う（TextSerialTransportと同一規律）。
+        不正行・未開線・書込失敗は落とさず捨てる。baud hunt中・baud
+        切替窓は抑えが立っているため捨ててdroppedに数える（会話
+        フレームは別口で通す）。live loop起動中は保留（最新1件上書き・
+        上書き分はmerged）へ載せloopが送る。loop停止中はここで即送する。
         """
+
         with self._lock:
             held = self._tx_hold
         if held:
+            with self._lock:
+                self._live_dropped += 1
             self._logger.debug("bconはbaud hunt中のためSTATE送出を抑えます")
             return
         # 写像は関数内で読む。頂点で読むと循環する（transport初期化中→
@@ -243,7 +343,11 @@ class BconTransport(Transport):
         )
 
         try:
-            state = wire_row_to_state(row)
+            text = row.strip() if isinstance(row, str) else ""
+            if _is_s_row(text):
+                state = wire_row_to_state(_s_row_to_wire_row(text))
+            else:
+                state = wire_row_to_state(row)
         except ValueError as e:
             self._logger.warning(f"bconへ送れない行のため捨てます: {e}")
             return
@@ -261,20 +365,44 @@ class BconTransport(Transport):
             payload = state_to_len12(state)
         else:
             payload = state_to_len8(state)
+        note = row if isinstance(row, str) else ""
         with self._lock:
-            seq = self._tx_seq
-            self._tx_seq = (self._tx_seq + 1) & 0xFF
-            ser = self.ser
-            begin = self._on_write_begin
-            end = self._on_write_end
+            thread = self._live_loop_thread
+            loop_on = thread is not None and thread.is_alive()
+            if loop_on:
+                if self._live_pending is not None:
+                    self._live_merged += 1
+                self._live_pending = (payload, note, bool(measure_perf))
+                event = self._live_loop_event
+            else:
+                seq = self._tx_seq
+                self._tx_seq = (self._tx_seq + 1) & 0xFF
+                ser = self.ser
+                begin = self._on_write_begin
+                end = self._on_write_end
+        if loop_on:
+            try:
+                event.set()
+            except Exception:
+                self._logger.debug("live loopの起床に失敗", exc_info=True)
+            return
         if ser is None:
             self._logger.debug("bconは開いていないため送りません")
             return
         frame = frame_build(T_STATE, payload, seq)
         self._write_frame(frame, row, measure_perf, begin, end, ser)
+        with self._lock:
+            self._live_sent += 1
+            self._live_latest = (payload, note)
+            self._live_last_tx = time.perf_counter()
 
     def flush_pending(self) -> None:
-        """保留があれば送り切る。骨格では間引きを持たないため何もしない。"""
+        """保留があれば送り切る。loop起動中は起こして即送させる。"""
+        try:
+            if self.live_loop_running():
+                self._live_loop_event.set()
+        except Exception:
+            self._logger.debug("flushの起床に失敗", exc_info=True)
 
     # -- 第2区画:フレーム化・SEQ（Phase 2でも境界は同じ）--
 
@@ -326,6 +454,190 @@ class BconTransport(Transport):
             if ok:
                 with self._lock:
                     self._last_tx = time.perf_counter()
+
+    # -- 第3区画:120Hz live loop（独立スレッド＋絶対時刻。Task 5）--
+
+    def live_loop_running(self) -> bool:
+        """120Hz loopが回っているか（読むだけ）。例外は投げない。"""
+        try:
+            thread = self._live_loop_thread
+            return thread is not None and thread.is_alive()
+        except Exception:
+            return False
+
+    def start_live_loop(self, interval_s: float = LIVE_INTERVAL_S) -> bool:
+        """120Hz送出loopを1本だけ起こす。動いていれば True。
+
+        確認と起動を同じ錠の中で行う。二重起動で線が2本になると、
+        古い方が止められず漏れる。範囲外の周期は120Hzへ戻す。
+        例外は投げない。
+        """
+        try:
+            try:
+                interval = float(interval_s)
+            except (TypeError, ValueError):
+                interval = LIVE_INTERVAL_S
+            if math.isnan(interval) or math.isinf(interval):
+                interval = LIVE_INTERVAL_S
+            interval = max(0.001, min(interval, 0.2))
+            with self._lock:
+                thread = self._live_loop_thread
+                if thread is not None and thread.is_alive():
+                    return True
+                self._live_interval_s = interval
+                self._live_loop_stop.clear()
+                self._live_loop_event.clear()
+                worker = threading.Thread(
+                    target=self._live_loop_run, name="BconLive120", daemon=True
+                )
+                self._live_loop_thread = worker
+                worker.start()
+                return True
+        except Exception:
+            self._logger.debug("live loopの起動に失敗", exc_info=True)
+            return False
+
+    def stop_live_loop(self) -> bool:
+        """120Hz loopを止める。止まるまで待つ（上限0.5秒）。
+
+        待ちのあいだは錠を持たない。持ったまま join すると、起動側が
+        止まるまで待たされる。例外は投げない。
+        """
+        try:
+            self._live_loop_stop.set()
+            try:
+                self._live_loop_event.set()
+            except Exception:
+                pass
+            with self._lock:
+                thread = self._live_loop_thread
+            if thread is None:
+                return True
+            thread.join(0.5)
+            alive = thread.is_alive()
+            if not alive:
+                with self._lock:
+                    if self._live_loop_thread is thread:
+                        self._live_loop_thread = None
+            return not alive
+        except Exception:
+            self._logger.debug("live loopの停止に失敗", exc_info=True)
+            return False
+
+    def live_stats(self) -> dict[str, Any]:
+        """送出統計の写しを返す（読むだけ・副作用なし）。
+
+        sentはSTATE送出数（即送＋loop更新）。mergedはloop保留の畳み数
+        （最新1件上書き・backlogなし）。droppedは抑え（hunt・baud切替窓）
+        で捨てたSTATE数。不正行の破棄は数えない（写像の警告を見る）。
+        seq_gapはPico→PC方向のSEQ欠番イベント数（初回不計数）。
+        err_crc/err_dropは直近STATUSのPico側累積（link品質の正準）。
+        rtt_msは直近pingの往復ms、未計測はNone。openで0へ戻る。
+        呼ぶだけで線に触れない。例外は投げない。
+        """
+        try:
+            with self._lock:
+                status = dict(self._last_status)
+                rtt = self._live_rtt_ms
+                return {
+                    "sent": int(self._live_sent),
+                    "merged": int(self._live_merged),
+                    "dropped": int(self._live_dropped),
+                    "seq_gap": int(self._rx_seq_gap),
+                    "err_crc": int(status.get("err_crc", 0)),
+                    "err_drop": int(status.get("err_drop", 0)),
+                    "rtt_ms": None if rtt is None else float(rtt),
+                }
+        except Exception:
+            return {
+                "sent": 0,
+                "merged": 0,
+                "dropped": 0,
+                "seq_gap": 0,
+                "err_crc": 0,
+                "err_drop": 0,
+                "rtt_ms": None,
+            }
+
+    def _live_loop_run(self) -> None:
+        """120Hz loop本体。絶対時刻で刻み、遅れは追従しbacklogを作らない。
+
+        tkinterのafterには載せない（GUIの詰まりから切り離す）。
+        変化はsend_rowがeventで起こすため即送に近い。起床競合で1刻み
+        遅れても保留は消さず次刻みで送る（欠落なし）。抑え（_tx_hold）
+        が立つあいだは送らず保留を捨てる（hunt・baud切替窓のSTATE化け
+        防止。捨て分はdropped）。SEQ採番と保留取出しだけ錠内、書込と
+        購読者呼出しは錠の外（TextSerialTransportと同一規律）。
+        1フレーム1write・SEQ方向別。例外では落ちない。
+        """
+        try:
+            with self._lock:
+                interval = float(self._live_interval_s)
+        except Exception:
+            interval = LIVE_INTERVAL_S
+        next_tx = time.perf_counter() + interval
+        while not self._live_loop_stop.is_set():
+            now = time.perf_counter()
+            timeout = next_tx - now
+            if timeout > 0:
+                try:
+                    self._live_loop_event.wait(timeout)
+                except Exception:
+                    self._logger.debug("live loopの待ちで例外", exc_info=True)
+            try:
+                self._live_loop_event.clear()
+            except Exception:
+                pass
+            if self._live_loop_stop.is_set():
+                break
+            now = time.perf_counter()
+            with self._lock:
+                held = self._tx_hold
+                pending = self._live_pending
+                self._live_pending = None
+                latest = self._live_latest
+                last_tx = self._live_last_tx
+            if held:
+                if pending is not None:
+                    with self._lock:
+                        self._live_dropped += 1
+                next_tx = now + interval
+                continue
+            job: tuple[bytes, str, bool] | None = None
+            if pending is not None:
+                job = pending
+            elif latest is not None and (now - last_tx) >= interval:
+                job = (latest[0], latest[1], False)
+            if job is None:
+                if next_tx <= now:
+                    next_tx = now + interval
+                continue
+            payload, note, show = job
+            with self._lock:
+                seq = self._tx_seq
+                self._tx_seq = (self._tx_seq + 1) & 0xFF
+                ser = self.ser
+                begin = self._on_write_begin
+                end = self._on_write_end
+            if ser is None:
+                self._logger.debug("bconのlive loopは開いていないため送りません")
+                next_tx = now + interval
+                continue
+            try:
+                frame = frame_build(T_STATE, payload, seq)
+            except Exception as e:
+                self._logger.debug(f"bconのlive組立に失敗: {e!r}")
+                next_tx = now + interval
+                continue
+            self._write_frame(frame, note, show, begin, end, ser)
+            now = time.perf_counter()
+            with self._lock:
+                self._live_sent += 1
+                self._live_latest = (payload, note)
+                self._live_last_tx = now
+            next_tx += interval
+            if next_tx <= now:
+                next_tx = now + interval
 
     # -- 聞き手（入力ログ用。バイナリは繋げない）--
 
@@ -933,9 +1245,15 @@ class BconTransport(Transport):
                 self._write_frame(frame, "bcon:PING", False, begin, end, ser)
                 if done.wait(limit):
                     try:
-                        return float(matched.get("rtt", 0.0))
+                        rtt = float(matched.get("rtt", 0.0))
                     except (TypeError, ValueError):
                         return None
+                    try:
+                        with self._lock:
+                            self._live_rtt_ms = rtt * 1000.0
+                    except Exception:
+                        self._logger.debug("RTT保持で例外", exc_info=True)
+                    return rtt
             finally:
                 try:
                     unsub()
@@ -1164,6 +1482,7 @@ class BconTransport(Transport):
         旧レートでBAUD_SET→STATUS-ACK確認→100ms guard→双方切替→
         残り時間でadopt確認（HELLO 1往復）。adopt無しは2s目安で旧レートへ
         自動復帰する。Pico側はadopt後にBCBRへ永続保存する。例外は投げない。
+        切替・復帰窓はSTATE送出を抑える（huntの_tx_holdと同一旗）。
         """
         try:
             try:
@@ -1215,70 +1534,82 @@ class BconTransport(Transport):
             if old_rate == new_rate:
                 self._logger.info(f"bconのbaudは既に{new_rate}bpsです。")
                 return True
-            # 旧レートでSTATUS-ACK確認。
-            found: dict[str, Any] = {}
-            done = threading.Event()
-            entry = ((T_STATUS,), done, found)
-            with self._rx_lock:
-                self._rx_waiters.append(entry)
+            # 切替・復帰窓はSTATE送出を抑える（Task 4残余の持越し）。
+            # 切替瞬間の前後で線の速度が食い違い、STATEが化けてPico側の
+            # errに積まれる。抑え中はsend_row・loopとも送らずdroppedへ
+            # 数える（会話フレームは別口で通す）。抑えはlock・失敗の
+            # いずれでも解く。窓が200msを超えるとPicoが一旦中立へ落とすが、
+            # 復帰後の120Hz更新ですぐ姿勢が戻る（huntと同一扱い）。
+            with self._lock:
+                self._tx_hold = True
             try:
-                ok = self._send_session_frame(
-                    T_BAUD_SET, bytes([idx & 0xFF]), "bcon:BAUD_SET"
-                )
-                if not ok:
-                    msg = "bconのBAUD_SET送出に失敗しました。"
-                    print(msg)
-                    self._logger.warning(msg)
-                    return False
-                if not done.wait(min(0.8, limit)):
-                    msg = "bconのBAUD_SET応答(STATUS)が来ないため切替しません。"
-                    print(msg)
-                    self._logger.warning(msg)
-                    return False
-            finally:
+                # 旧レートでSTATUS-ACK確認。
+                found: dict[str, Any] = {}
+                done = threading.Event()
+                entry = ((T_STATUS,), done, found)
                 with self._rx_lock:
-                    if entry in self._rx_waiters:
-                        self._rx_waiters.remove(entry)
-            # 100ms guard後に双方切替。
-            try:
-                time.sleep(0.1)
-            except Exception:
-                pass
-            if not self._set_baud(new_rate):
-                msg = f"bconのhost側を{new_rate}bpsへ切替えられません。"
+                    self._rx_waiters.append(entry)
+                try:
+                    ok = self._send_session_frame(
+                        T_BAUD_SET, bytes([idx & 0xFF]), "bcon:BAUD_SET"
+                    )
+                    if not ok:
+                        msg = "bconのBAUD_SET送出に失敗しました。"
+                        print(msg)
+                        self._logger.warning(msg)
+                        return False
+                    if not done.wait(min(0.8, limit)):
+                        msg = "bconのBAUD_SET応答(STATUS)が来ないため切替しません。"
+                        print(msg)
+                        self._logger.warning(msg)
+                        return False
+                finally:
+                    with self._rx_lock:
+                        if entry in self._rx_waiters:
+                            self._rx_waiters.remove(entry)
+                # 100ms guard後に双方切替。
+                try:
+                    time.sleep(0.1)
+                except Exception:
+                    pass
+                if not self._set_baud(new_rate):
+                    msg = f"bconのhost側を{new_rate}bpsへ切替えられません。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+                with self._lock:
+                    self._parser = BconParser()
+                remaining = max(0.2, limit - 0.8 - 0.1 - (0.0 if limit > 1.0 else 0.0))
+                if self.hello(timeout=min(remaining, 2.0)):
+                    with self._lock:
+                        self._last_good_baud = new_rate
+                    msg = (
+                        f"bconのbaudを{new_rate}bpsへ切替えました"
+                        "(HELLOでadopt確認。Pico側はadopt後にBCBRへ永続保存します)。"
+                    )
+                    print(msg)
+                    self._logger.info(msg)
+                    return True
+                # 2s目安で自動復帰。
+                try:
+                    self._set_baud(old_rate)
+                except Exception:
+                    pass
+                with self._lock:
+                    try:
+                        self._parser = BconParser()
+                    except Exception:
+                        pass
+                msg = (
+                    f"bconの新baud({new_rate}bps)でadopt確認できないため"
+                    f"{old_rate}bpsへ戻しました。"
+                )
                 print(msg)
                 self._logger.warning(msg)
                 return False
-            with self._lock:
-                self._parser = BconParser()
-            remaining = max(0.2, limit - 0.8 - 0.1 - (0.0 if limit > 1.0 else 0.0))
-            if self.hello(timeout=min(remaining, 2.0)):
+            finally:
                 with self._lock:
-                    self._last_good_baud = new_rate
-                msg = (
-                    f"bconのbaudを{new_rate}bpsへ切替えました"
-                    "(HELLOでadopt確認。Pico側はadopt後にBCBRへ永続保存します)。"
-                )
-                print(msg)
-                self._logger.info(msg)
-                return True
-            # 2s目安で自動復帰。
-            try:
-                self._set_baud(old_rate)
-            except Exception:
-                pass
-            with self._lock:
-                try:
-                    self._parser = BconParser()
-                except Exception:
-                    pass
-            msg = (
-                f"bconの新baud({new_rate}bps)でadopt確認できないため"
-                f"{old_rate}bpsへ戻しました。"
-            )
-            print(msg)
-            self._logger.warning(msg)
-            return False
+                    self._tx_hold = False
         except Exception as e:
             self._logger.debug(f"set_baud_indexで例外: {e!r}", exc_info=True)
             return False

@@ -187,14 +187,14 @@ class Sender:
         将来 end 行の要否等が増えても分岐はここへ集める。
         """
         target = self.transport if transport is None else transport
-        cap = getattr(target, "capability", Transport.LEGACY_ROW)
+        cap = getattr(target, "capability", None)
         try:
-            return cap in Transport.LIVE_WORKER_CAPABILITIES
+            return bool(cap in Transport.LIVE_WORKER_CAPABILITIES)
         except TypeError:
             return False
 
     def isLiveCapable(self) -> bool:
-        """live 経路（Pico の S 行）を使っているか。
+        """live 経路（Pico の S 行・bcon の STATE）を使っているか。
 
         Keys.end の分岐用。live には 'end' という行が無く、送ると
         ERR になる。公開メソッドにしてあるのは、Keys が Transport の
