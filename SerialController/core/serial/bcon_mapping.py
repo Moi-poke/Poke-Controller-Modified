@@ -5,7 +5,8 @@
 入力は `<btn-hex> <hat> [lx ly [rx ry]]` と `end`。
 出力はLEN非依存の中間姿勢（buttons u32＋sticks u16域0-4095中央0x0800）。
 LEN8送出時は `u16>>4` でu8化する（`0x800>>4==0x80`で等価）。
-Yはここでは1:1コピーし、反転はsendラッパーで行う。Pico側は値をそのままpackする。
+Yは1:1コピーのまま渡す。反転はPico側pack（4096-Y）の1回だけ
+（wakecon経路と同一。PC側で反転すると二重反転で上下が逆になる）。
 """
 
 from __future__ import annotations

@@ -126,6 +126,35 @@ def test_bcon_set_hooks_fire_on_send_row():
     assert all(row == "10 08" for _, row in calls)
 
 
+def test_bcon_fallback_port_matches_legacy(monkeypatch):
+    import serial as pyserial
+    from core.transport import TextSerialTransport, create_transport
+
+    made = create_transport("bcon")
+    seen: dict[str, object] = {}
+
+    class FakeSer:
+        is_open = True
+
+        def __init__(self, **kwargs) -> None:
+            seen.update(kwargs)
+
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+        def read(self, n: int) -> bytes:
+            return b""
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(pyserial, "Serial", FakeSer)
+    assert made.open(8, "", 1000000) is True
+    # portName空の代替経路はlegacyと同一の口を指す（portToNumber往復を保つ）。
+    assert seen.get("port") == TextSerialTransport._default_port_path(8)
+    made.close()
+
+
 def test_bcon_use_len12_sends_len12_frame_while_default_stays_len8():
     from core.transport import BconTransport, create_transport
 
@@ -162,7 +191,7 @@ def test_bcon_use_len12_sends_len12_frame_while_default_stays_len8():
     assert frame12[1] == 0x01
     assert frame12[2] == 12
     assert len(frame12) == 17
-    # 中立のLEN12 payloadはBTN u32LE＋u16LE中央0x0800×4（Y反転で不変）。
+    # 中立のLEN12 payloadはBTN u32LE＋u16LE中央0x0800×4（中央は不変）。
     assert frame12[3:15] == bytes(
         [0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08]
     )

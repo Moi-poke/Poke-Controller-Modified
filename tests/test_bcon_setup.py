@@ -326,3 +326,14 @@ def test_transport_default_stays_legacy() -> None:
     assert default_sections()["Transport"]["name"] == "legacy_text"
     src = Path("SerialController/config.py").read_text(encoding="utf-8")
     assert "bcon" in src
+
+
+def test_menubar_opens_bcon_setup() -> None:
+    """Bcon設定がメニューから開ける。WakeSetupと並置（凍結に触れない）。"""
+    from Menubar import PokeController_Menubar
+
+    assert hasattr(PokeController_Menubar, "OpenBconSetup")
+    assert hasattr(PokeController_Menubar, "closingBconSetup")
+    src = Path("SerialController/Menubar.py").read_text(encoding="utf-8")
+    assert "Bcon設定" in src
+    assert "WakeSetup" in src

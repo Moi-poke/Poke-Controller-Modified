@@ -61,21 +61,6 @@ _POSTURE_TO_WIRE = (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 BconFrame = tuple[int, bytes, int]
 
 
-def _invert_y_u16(value: int) -> int:
-    """u16域のYだけを反転する。中立0x0800は保つ。
-
-    式は `4096 - v` の4095止め（Picoのpackと同一式）。中立は
-    `4096 - 0x0800 == 0x0800` で動かない。`0xFFF - v` にすると
-    中立が0x07FFへずれるため使わない。
-    """
-    inv = 4096 - int(value)
-    if inv > 0xFFF:
-        return 0xFFF
-    if inv < 0:
-        return 0
-    return inv
-
-
 def _s_row_to_wire_row(row: str) -> str:
     """Pico式S行（姿勢空間）をModifiedのwire行へ読み替える。
 
@@ -213,7 +198,9 @@ class BconTransport(Transport):
             if num < 0:
                 return False
             if os.name == "nt":
-                name = f"COM{num + 1}"
+                # legacy（TextSerialTransport._default_port_path）と同じ
+                # "COM"+str(portNum)。portToNumberとの往復を保つ。
+                name = "COM" + str(num)
             else:
                 name = f"/dev/ttyUSB{num}"
         try:
@@ -317,9 +304,11 @@ class BconTransport(Transport):
         と、live workerの出すPico式S行（`S btn hat lx ly rx ry`・姿勢
         空間）である。S行はwire行へ読み替えてから写す（姿勢A=0x04を
         wireと読むとBTN_Yへずれる）。読み替え後はどちらも同じ道を通る。
-        行→中間姿勢（mapperはY 1:1）→ここでY反転1回→LEN8/12
-        →`frame_build`→単一`write()`。錠はSEQ採番・保留取出しだけに
-        使い、`write`は外で行う（TextSerialTransportと同一規律）。
+        行→中間姿勢（Yは1:1のまま）→LEN8/12→`frame_build`→単一
+        `write()`。Yの反転はPico側pack（4096-Y）が担う唯一の1回で、
+        PC側では反転しない（wakecon経路と同一の端に載せる）。
+        錠はSEQ採番・保留取出しだけに使い、`write`は外で行う
+        （TextSerialTransportと同一規律）。
         不正行・未開線・書込失敗は落とさず捨てる。baud hunt中・baud
         切替窓は抑えが立っているため捨ててdroppedに数える（会話
         フレームは別口で通す）。live loop起動中は保留（最新1件上書き・
@@ -354,13 +343,9 @@ class BconTransport(Transport):
         except Exception as e:
             self._logger.warning(f"bconの行変換に失敗したため捨てます: {e!r}")
             return
-        # Y反転はここ1箇所。mapperは1:1、Picoは値をそのままpackする。
-        try:
-            state["ly"] = _invert_y_u16(state["ly"])
-            state["ry"] = _invert_y_u16(state["ry"])
-        except (KeyError, TypeError, ValueError) as e:
-            self._logger.warning(f"bconのY反転に失敗したため捨てます: {e!r}")
-            return
+        # Yは反転しない。mapperは1:1で、Pico側pack（4096-Y）が
+        # 唯一の反転である。ここで反転するとwakecon経路（無反転）と
+        # 逆端に載る（二重反転）。u16域のままLEN8/12へ渡す。
         if self.use_len12:
             payload = state_to_len12(state)
         else:

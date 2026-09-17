@@ -3,6 +3,7 @@ from typing import Any
 
 import DiscordNotify
 import WindowUtils
+from BconSetup import BconSetup
 from InputLogConfig import InputLogConfig
 from KeyConfig import PokeKeycon
 from SerialMonitor import SerialMonitor
@@ -21,6 +22,7 @@ class PokeController_Menubar(tk.Menu):
         self.poke_treeview: Any | None = None
         self.key_config: PokeKeycon | None = None
         self.wake_setup: WakeSetup | None = None
+        self.bcon_setup: BconSetup | None = None
         self.serial_monitor: SerialMonitor | None = None
         self.input_log_config: InputLogConfig | None = None
 
@@ -81,6 +83,7 @@ class PokeController_Menubar(tk.Menu):
         self.menu_command.add(
             "command", command=self.OpenWakeSetup, label="Switch2 Wake設定"
         )
+        self.menu_command.add("command", command=self.OpenBconSetup, label="Bcon設定")
         self.menu_command.add(
             "command", command=self.OpenSerialMonitor, label="シリアルモニタ"
         )
@@ -185,6 +188,25 @@ class PokeController_Menubar(tk.Menu):
                 pass
             self.wake_setup = None
 
+    def OpenBconSetup(self) -> None:
+        logger.debug("Open BconSetup window")
+        bcon_window = getattr(self.bcon_setup, "window", None)
+        if bcon_window is not None and self._alive(bcon_window):
+            bcon_window.focus_force()
+            return
+        self.bcon_setup = None
+        self.bcon_setup = BconSetup(self.root, self.ser)
+        self.bcon_setup.window.protocol("WM_DELETE_WINDOW", self.closingBconSetup)
+
+    def closingBconSetup(self) -> None:
+        logger.debug("Close BconSetup window")
+        if self.bcon_setup is not None:
+            try:
+                self.bcon_setup.close()
+            except Exception:
+                pass
+            self.bcon_setup = None
+
     def OpenSerialMonitor(self) -> None:
         logger.debug("Open SerialMonitor window")
         mon_window = getattr(self.serial_monitor, "window", None)
@@ -218,7 +240,13 @@ class PokeController_Menubar(tk.Menu):
             blockly_editor.stop_blockly_editor()
         except Exception:
             pass
-        for name in ("wake_setup", "key_config", "poke_treeview", "input_log_config"):
+        for name in (
+            "wake_setup",
+            "bcon_setup",
+            "key_config",
+            "poke_treeview",
+            "input_log_config",
+        ):
             window = getattr(self, name, None)
             if window is None:
                 continue

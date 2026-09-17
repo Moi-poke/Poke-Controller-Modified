@@ -141,7 +141,28 @@ def test_bcon_s_row_hat_and_sticks():
     made.send_row("S 0 8 ff 80 7f 81")
     states = _state_frames(ser.snapshot())
     assert len(states) == 2
-    assert states[1][7:11] == bytes([0xFF, 0x80, 0x7F, 0x7F])
+    # Yは反転しない。Pico側pack（4096-Y）が唯一の反転であり、
+    # PC側で反転するとwakecon経路と逆端に載る（二重反転）。
+    assert states[1][7:11] == bytes([0xFF, 0x80, 0x7F, 0x81])
+
+
+def test_bcon_stick_y_passes_through_uninverted():
+    """wire行・S行ともY値はそのまま載る（PC側で反転しない）。
+
+    Keys上（LY=0x00）はUART LY=0x00のまま送り、Pico側packの
+    反転1回で輸送最大端へ載る。wakecon経路（無反転）と同一の端。
+    """
+    from core.transport import create_transport
+
+    made = create_transport("bcon")
+    ser = _make_fake_ser()
+    made.ser = ser
+    made.send_row("2 08 00 ff")
+    made.send_row("S 0 8 80 00 80 ff")
+    states = _state_frames(ser.snapshot())
+    assert len(states) == 2
+    assert states[0][7:11] == bytes([0x00, 0xFF, 0x80, 0x80])
+    assert states[1][7:11] == bytes([0x80, 0x00, 0x80, 0xFF])
 
 
 def test_bcon_live_loop_refreshes_and_seqs():

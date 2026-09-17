@@ -52,7 +52,7 @@ Modified行方言（`compat-design §1`）は流用する。`<buttons-hex> <hat-
 - 送信は変化時即送＋8.33ms定期リフレッシュ。1フレーム1`write()`。SEQは方向別mod256。
 - HELLO_ACK確認前にSTATEを流さない（HELLOなし既定受付に甘えない）。UNSUPPORTEDなら再HELLO→再hunt→BAUD_SET復帰へ回し、無音ハングにしない。
 - 予約bitは0送信。GR/GL/C/Headsetは輸送位置なしのため落とす（pack側と同一）。
-- スティックY反転・12bit化方針はPC送信ラッパ1箇所に集約。Picoは8bit値をそのままpackする。
+- スティックYはPC側で反転しない（1:1のまま送る）。反転はPico側pack（`y12 = 4096 - (y8<<4)`）の1回だけ。PC側でも反転すると二重反転で上下が逆になる（wakecon経路は無反転で同一pack式のため、そちらに合わせる）。12bit化（`u8<<4`）は取込側の既存経路に任せる。
 - 終了・切断・USB unmount時はNEUTRALを送る。200ms無音でPicoが全解放する前提で、pause保持はリフレッシュで賄う。
 - `WakeSetup.py`・`pico_uart`・`WakeLink`の既存振る舞いは変えない。
 
