@@ -9,7 +9,6 @@ Phase 2では送信ループ区画だけを別プロセスへ移設する。
 from __future__ import annotations
 
 import math
-import os
 import threading
 import time
 from collections.abc import Callable
@@ -197,12 +196,23 @@ class BconTransport(Transport):
                 return False
             if num < 0:
                 return False
-            if os.name == "nt":
-                # legacy（TextSerialTransport._default_port_path）と同じ
-                # "COM"+str(portNum)。portToNumberとの往復を保つ。
-                name = "COM" + str(num)
-            else:
-                name = f"/dev/ttyUSB{num}"
+            # 既定パスの組み立てはTextSerial側へ一本化する（Darwin分岐の
+            # 二重持ちを避ける）。未知OSのNoneはportName指定へ誘導する。
+            try:
+                from core.transport.text_serial import (
+                    TextSerialTransport as _TextSerial,
+                )
+
+                default_path = _TextSerial._default_port_path(num)
+            except Exception:
+                self._logger.debug("既定パス解決に失敗", exc_info=True)
+                default_path = None
+            if default_path is None:
+                self._logger.warning(
+                    "Not supported OS: portName を直接指定してください"
+                )
+                return False
+            name = default_path
         try:
             ser = serial.Serial(
                 port=name,
@@ -667,22 +677,38 @@ class BconTransport(Transport):
 
     def wait_rx(
         self,
-        wanted_types: int | tuple[int, ...],
+        prefixes: Any = None,
         timeout: float = 0.5,
-    ) -> BconFrame | None:
+        wanted_types: Any = None,
+    ) -> Any:
         """TYPE一致した最初の1フレームを待つ。見つかれば返す。
 
         基底のprefix前方一致ではなくフレームTYPE一致で待つ（バイナリに
         行が無いため）。送る前に待ちを登録してから送ること。送ってから
         登録するとポンプが先に読んで届かない（Task 4のhello/ping用）。
+        基底と同名のprefixes口も受ける。不正値はNoneで返し投げない。
         """
         want: tuple[int, ...]
-        if isinstance(wanted_types, int):
-            want = (wanted_types & 0xFF,)
+        raw: Any = wanted_types if wanted_types is not None else prefixes
+        if raw is None:
+            return None
+        if isinstance(raw, int):
+            want = (int(raw) & 0xFF,)
+        elif isinstance(raw, (bytes, bytearray)):
+            try:
+                want = tuple(int(b) & 0xFF for b in bytes(raw))
+            except (TypeError, ValueError):
+                return None
+            if not want:
+                return None
+        elif isinstance(raw, str):
+            return None
         else:
             try:
-                want = tuple(int(t) & 0xFF for t in wanted_types)
-            except TypeError:
+                want = tuple(int(t) & 0xFF for t in raw)
+            except (TypeError, ValueError, AttributeError):
+                return None
+            if not want:
                 return None
         try:
             raw = float(timeout)
@@ -1007,7 +1033,15 @@ class BconTransport(Transport):
         except Exception:
             self._logger.debug("NEUTRAL送出で例外", exc_info=True)
 
-    def hello(self, timeout: float = 3.0) -> bool:
+    def _gui(self, msg: str, quiet: bool, info: bool = False) -> None:
+        if not quiet:
+            print(msg)
+        if info:
+            self._logger.info(msg)
+        else:
+            self._logger.warning(msg)
+
+    def hello(self, timeout: float = 3.0, quiet: bool = False) -> bool:
         """HELLO(ver=4)を送りHELLO_ACKを確認する。失敗はFalse＋可視log。
 
         送る前に待ちを登録してから送る（送ってから登録するとポンプが
@@ -1033,25 +1067,20 @@ class BconTransport(Transport):
                 limit = max(0.0, min(limit, 10.0))
             if self.ser is None:
                 msg = "bconが開いていないためHELLOを送りません。"
-                print(msg)
-                self._logger.warning(msg)
+                self._gui(msg, quiet)
                 return False
             if not self.rx_pump_running():
                 try:
                     if not self.start_rx_pump() or not self.rx_pump_running():
                         msg = "bconの受信ポンプが動かないためHELLOを送りません。"
-                        print(msg)
-                        self._logger.warning(msg)
+                        self._gui(msg, quiet)
                         return False
                 except Exception:
                     msg = "bconの受信ポンプ起動に失敗したためHELLOを送りません。"
-                    print(msg)
-                    self._logger.warning(msg)
+                    self._gui(msg, quiet)
                     return False
             if limit <= 0.0:
-                msg = "bconのHELLO待ちが0のため送らずFalseを返します。"
-                print(msg)
-                self._logger.warning(msg)
+                self._logger.warning("bconのHELLO待ちが0のため送らずFalseを返します。")
                 return False
             # 握手は必ず往復で行う。直近保持の流用では送った証拠にならない。
             start = time.perf_counter()
@@ -1074,8 +1103,7 @@ class BconTransport(Transport):
                     )
                     if not ok:
                         msg = "bconのHELLO送出に失敗しました。"
-                        print(msg)
-                        self._logger.warning(msg)
+                        self._gui(msg, quiet)
                         return False
                     if not done.wait(grain):
                         continue
@@ -1107,8 +1135,7 @@ class BconTransport(Transport):
                             f"(v{major}.{minor})。PCはver=4専用のため"
                             "NEUTRALを保ち止めます（送り続けません）。"
                         )
-                        print(msg)
-                        self._logger.warning(msg)
+                        self._gui(msg, quiet)
                         self._send_neutral_once()
                         return False
                     # UNSUPPORTED・版違いはNEUTRAL維持＋版表示して止める。
@@ -1126,8 +1153,7 @@ class BconTransport(Transport):
                             f"RESULT=0x{result:02X})。"
                             "NEUTRALを保ち止めます（送り続けません）。"
                         )
-                    print(msg)
-                    self._logger.warning(msg)
+                    self._gui(msg, quiet)
                     self._send_neutral_once()
                     return False
                 finally:
@@ -1139,14 +1165,13 @@ class BconTransport(Transport):
                 f"({attempt}回再送・{limit:.1f}s)。"
                 "再huntへ回してください(baud_hunt)。"
             )
-            print(msg)
-            self._logger.warning(msg)
+            self._gui(msg, quiet)
             return False
         except Exception as e:
             self._logger.debug(f"helloで例外: {e!r}", exc_info=True)
             return False
 
-    def ping(self, timeout: float = 1.0) -> float | None:
+    def ping(self, timeout: float = 1.0, quiet: bool = False) -> float | None:
         """PINGを送りPONGのSEQエコーでRTT秒を返す。失敗はNone＋可視log。
 
         購読登録→送出の順を守る。期限いっぱいまで1つの購読で待ち、
@@ -1167,25 +1192,20 @@ class BconTransport(Transport):
                 limit = max(0.0, min(limit, 5.0))
             if self.ser is None:
                 msg = "bconが開いていないためPINGを送りません。"
-                print(msg)
-                self._logger.warning(msg)
+                self._gui(msg, quiet)
                 return None
             if not self.rx_pump_running():
                 try:
                     if not self.start_rx_pump() or not self.rx_pump_running():
                         msg = "bconの受信ポンプが動かないためPINGを送りません。"
-                        print(msg)
-                        self._logger.warning(msg)
+                        self._gui(msg, quiet)
                         return None
                 except Exception:
                     msg = "bconの受信ポンプ起動に失敗したためPINGを送りません。"
-                    print(msg)
-                    self._logger.warning(msg)
+                    self._gui(msg, quiet)
                     return None
             if limit <= 0.0:
-                msg = "bconのPING待ちが0のため送らずNoneを返します。"
-                print(msg)
-                self._logger.warning(msg)
+                self._logger.warning("bconのPING待ちが0のため送らずNoneを返します。")
                 return None
             # 購読登録→採番→送出（ポンプが先に読んでも届く順序）。
             # 期限内は1つの購読で待ち続け、SEQ一致だけを拾う。待ちの
@@ -1245,8 +1265,7 @@ class BconTransport(Transport):
                 except Exception:
                     self._logger.debug("PONG購読解除で例外", exc_info=True)
             msg = f"bconのPONGが来ませんでした({limit:.1f}s)。"
-            print(msg)
-            self._logger.warning(msg)
+            self._gui(msg, quiet)
             return None
         except Exception as e:
             self._logger.debug(f"pingで例外: {e!r}", exc_info=True)
@@ -1277,7 +1296,9 @@ class BconTransport(Transport):
         except Exception:
             return b""
 
-    def request_status(self, timeout: float = 1.0) -> dict[str, int] | None:
+    def request_status(
+        self, timeout: float = 1.0, quiet: bool = False
+    ) -> dict[str, int] | None:
         """STATUS_REQを送り即時STATUSを待つ。PLAYER_INFO付随も受ける。
 
         成功はlast_status()と同形の写し、失敗はNone＋可視log。
@@ -1297,25 +1318,22 @@ class BconTransport(Transport):
                 limit = max(0.0, min(limit, 5.0))
             if self.ser is None:
                 msg = "bconが開いていないため状態確認を送りません。"
-                print(msg)
-                self._logger.warning(msg)
+                self._gui(msg, quiet)
                 return None
             if not self.rx_pump_running():
                 try:
                     if not self.start_rx_pump() or not self.rx_pump_running():
                         msg = "bconの受信ポンプが動かないため状態確認を送りません。"
-                        print(msg)
-                        self._logger.warning(msg)
+                        self._gui(msg, quiet)
                         return None
                 except Exception:
                     msg = "bconの受信ポンプ起動に失敗したため状態確認を送りません。"
-                    print(msg)
-                    self._logger.warning(msg)
+                    self._gui(msg, quiet)
                     return None
             if limit <= 0.0:
-                msg = "bconの状態確認待ちが0のため送らずNoneを返します。"
-                print(msg)
-                self._logger.warning(msg)
+                self._logger.warning(
+                    "bconの状態確認待ちが0のため送らずNoneを返します。"
+                )
                 return None
             found: dict[str, Any] = {}
             done = threading.Event()
@@ -1326,13 +1344,11 @@ class BconTransport(Transport):
                 ok = self._send_session_frame(T_STATUS_REQ, b"", "bcon:STATUS_REQ")
                 if not ok:
                     msg = "bconの状態確認送出に失敗しました。"
-                    print(msg)
-                    self._logger.warning(msg)
+                    self._gui(msg, quiet)
                     return None
                 if not done.wait(limit):
                     msg = f"bconのSTATUSが来ませんでした({limit:.1f}s)。"
-                    print(msg)
-                    self._logger.warning(msg)
+                    self._gui(msg, quiet)
                     return None
                 return self.last_status()
             finally:
@@ -1434,9 +1450,9 @@ class BconTransport(Transport):
                             continue
                         with self._lock:
                             self._parser = BconParser()
-                        if not self.hello(timeout=per):
+                        if not self.hello(timeout=per, quiet=True):
                             continue
-                        if not self.hello(timeout=per):
+                        if not self.hello(timeout=per, quiet=True):
                             continue
                         with self._lock:
                             self._last_good_baud = int(rate)
@@ -1565,7 +1581,7 @@ class BconTransport(Transport):
                 with self._lock:
                     self._parser = BconParser()
                 remaining = max(0.2, limit - 0.8 - 0.1 - (0.0 if limit > 1.0 else 0.0))
-                if self.hello(timeout=min(remaining, 2.0)):
+                if self.hello(timeout=min(remaining, 2.0), quiet=True):
                     with self._lock:
                         self._last_good_baud = new_rate
                     msg = (
