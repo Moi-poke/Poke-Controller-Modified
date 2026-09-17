@@ -92,6 +92,8 @@ def wire_row_to_state(row: str) -> dict[str, int]:
     LS/RS quirkを再現する。LSのみ→LX/LYへwire lx/ly、RSのみ→RX/RYへ
     wire lx/ly、両方→各々、なし→スティック不変ではなく中立維持の呼び出し側
     が保持する。ここでは欄なし行は中央のまま返す。
+    ボタン欄のみの2欄行はスティックを中央へ寄せる。アナログ保持には
+    6欄の完全姿勢行を使うこと。
     """
     text = row.strip()
     if is_end_row(text):
