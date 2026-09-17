@@ -711,15 +711,15 @@ class BconTransport(Transport):
             if not want:
                 return None
         try:
-            raw = float(timeout)
+            limit_raw = float(timeout)
         except (TypeError, ValueError):
             return None
-        if math.isnan(raw):
+        if math.isnan(limit_raw):
             limit = 0.0
-        elif math.isinf(raw):
+        elif math.isinf(limit_raw):
             limit = 5.0
         else:
-            limit = max(0.0, min(raw, 5.0))
+            limit = max(0.0, min(limit_raw, 5.0))
         if not self.rx_pump_running():
             if self.ser is None or self._rx_stop.is_set():
                 return None
