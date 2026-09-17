@@ -84,7 +84,8 @@ def default_sections() -> dict[str, dict[str, Any]]:
         },
         "Transport": {
             # 通信方式のプリセット名。Transport.py の登録簿にある名前。
-            # 組み込みは legacy_text（従来と同じテキスト行）だけ。
+            # 組み込みは legacy_text（従来と同じテキスト行）・pico_uart・bcon。
+            # 既定は legacy_text のまま（既存の設定ファイルを変えない）。
             "name": "legacy_text",
             # 自作の Transport を置くフォルダ（ブックの場所からの
             # 相対でも絶対でもよい）。各 .py は register(register)
