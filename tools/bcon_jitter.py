@@ -92,7 +92,9 @@ def _write_csv(
     """TX時刻列をCSVへ出す。先頭の#行は実行条件（pandasはcomment='#'で読む）。
 
     列はidx・t_s（開始起点秒）・delta_ms（前回からの間隔・先頭は0.0）。
+    親ディレクトリが無ければ作る（--csvに深い出先を渡しても落とさない）。
     """
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     t0 = tx_times[0] if tx_times else 0.0
     with open(path, "w", newline="", encoding="utf-8") as handle:
         for key, value in meta.items():
