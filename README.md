@@ -11,6 +11,7 @@ Blocklyエディタの機能拡充（詳細は [`docs/BLOCKLY_EDITOR.md`](docs/B
 - サブルーチン（引数・戻り値）、スティック内蔵パッド、表示・スクショ・Discord通知
 - 保持・終了・連打、音声トーン検知（2帯域・画像音声併用）、画像認識の複合操作・件数
 - 経過時間、実行前設定ダイアログ、プログラムのタグ、動作確認用サンプル11種
+- BCON通信方式の追加（詳細は [`docs/BCON_TRANSPORT.md`](docs/BCON_TRANSPORT.md)）
 
 ### ver4.0.0
 主な変更点（詳細は [`docs/V4_CHANGES.md`](docs/V4_CHANGES.md)）
@@ -143,7 +144,8 @@ python .\SerialController\Window.py --profile switch1
 python .\SerialController\Window.py --profile switch1 --transport pico_uart
 ```
 
-通信方式は `legacy_text`（本家 Leonardo 用）と `pico_uart`（pico-wakeCon 用）の2種です。
+通信方式は `legacy_text`（本家 Leonardo 用）と `pico_uart`（pico-wakeCon 用）、
+`bcon`（pico-bcon 用、詳細は [`docs/BCON_TRANSPORT.md`](docs/BCON_TRANSPORT.md)）の3種です。
 `--transport` を省略したときは設定ファイルの `[Transport] name` を使います。
 
 ### 不具合の報告
