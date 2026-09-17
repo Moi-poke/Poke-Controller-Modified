@@ -14,6 +14,22 @@ from core.transport.base import (
     Transport as Transport,
 )
 from core.transport.bcon import BconTransport as BconTransport
+from core.transport.bcon_protocol import (
+    PROTO_VER as PROTO_VER,
+    T_BAUD_SET as T_BAUD_SET,
+    T_HELLO as T_HELLO,
+    T_HELLO_ACK as T_HELLO_ACK,
+    T_NEUTRAL as T_NEUTRAL,
+    T_PING as T_PING,
+    T_PONG as T_PONG,
+    T_STATE as T_STATE,
+    T_STATUS as T_STATUS,
+    T_STATUS_REQ as T_STATUS_REQ,
+    T_WIRED_MODE as T_WIRED_MODE,
+    BconParser as BconParser,
+    crc8 as crc8,
+    frame_build as frame_build,
+)
 from core.transport.registry import (
     DEFAULT_TRANSPORT as DEFAULT_TRANSPORT,
     create_transport as create_transport,
