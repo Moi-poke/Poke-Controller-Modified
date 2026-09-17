@@ -144,6 +144,8 @@ class BconParser:
                 else:
                     ok_len = plen == expect
                 if not ok_len:
+                    # LEN不一致もerr_crcへ数える。PC側の破棄数であり
+                    # Pico側STATUSのerr_crcとは別物である。
                     self.err_crc += 1
                     del self._buf[:1]
                     continue
