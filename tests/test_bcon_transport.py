@@ -124,3 +124,45 @@ def test_bcon_set_hooks_fire_on_send_row():
     made.send_row("10 08")
     assert [kind for kind, _ in calls] == ["begin", "end"]
     assert all(row == "10 08" for _, row in calls)
+
+
+def test_bcon_use_len12_sends_len12_frame_while_default_stays_len8():
+    from core.transport import BconTransport, create_transport
+
+    def _send_once(made, row="end"):
+        written: list[bytes] = []
+
+        class FakeSer:
+            is_open = True
+
+            def write(self, data: bytes) -> int:
+                written.append(bytes(data))
+                return len(data)
+
+        made.ser = FakeSer()
+        made.send_row(row)
+        assert len(written) == 1
+        return written[0]
+
+    default = create_transport("bcon")
+    frame8 = _send_once(default)
+    assert frame8[0] == 0xAB
+    assert frame8[1] == 0x01
+    assert frame8[2] == 8
+    assert len(frame8) == 13
+
+    explicit8 = BconTransport()
+    assert explicit8.use_len12 is False
+    assert _send_once(explicit8)[2] == 8
+
+    wide = BconTransport(use_len12=True)
+    assert wide.use_len12 is True
+    frame12 = _send_once(wide)
+    assert frame12[0] == 0xAB
+    assert frame12[1] == 0x01
+    assert frame12[2] == 12
+    assert len(frame12) == 17
+    # 中立のLEN12 payloadはBTN u32LE＋u16LE中央0x0800×4（Y反転で不変）。
+    assert frame12[3:15] == bytes(
+        [0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08]
+    )
