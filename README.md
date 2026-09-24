@@ -12,6 +12,11 @@ Blocklyエディタの機能拡充（詳細は [`docs/BLOCKLY_EDITOR.md`](docs/B
 - 保持・終了・連打、音声トーン検知（2帯域・画像音声併用）、画像認識の複合操作・件数
 - 経過時間、実行前設定ダイアログ、プログラムのタグ、動作確認用サンプル11種
 - BCON通信方式の追加（詳細は [`docs/BCON_TRANSPORT.md`](docs/BCON_TRANSPORT.md)）
+- キーコンフィグの修正：テンキー数字をメイン行と区別して「テンキー0」〜「テンキー9」と表示、プロファイル別の保存に対応
+- マクロ記録：ボタン操作を録画してPythonコマンドとして保存・再実行できます
+- Bcon設定画面の拡充：BOOTSEL再起動・RUMBLE表示・baud切替、プレイヤーランプ表示、取込の保存確認（「取込を保存しました。」）に対応
+- 取込・BEACONの前提表示：有線中は拒否される旨を出し、W0無線への切替を案内します
+- スクリプト配布の依存導入：不足する依存は確認ダイアログで承認してから導入します
 
 ### ver4.0.0
 主な変更点（詳細は [`docs/V4_CHANGES.md`](docs/V4_CHANGES.md)）
@@ -145,7 +150,7 @@ python .\SerialController\Window.py --profile switch1 --transport pico_uart
 ```
 
 通信方式は `legacy_text`（本家 Leonardo 用）と `pico_uart`（pico-wakeCon 用）、
-`bcon`（pico-bcon 用、詳細は [`docs/BCON_TRANSPORT.md`](docs/BCON_TRANSPORT.md)）の3種です。
+`bcon`（Switch-bcon 用、詳細は [`docs/BCON_TRANSPORT.md`](docs/BCON_TRANSPORT.md)）の3種です。
 `--transport` を省略したときは設定ファイルの `[Transport] name` を使います。
 
 ### 不具合の報告

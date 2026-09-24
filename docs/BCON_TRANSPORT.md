@@ -10,17 +10,24 @@ Pico 側と版を合わせる必要があり、接続には `HELLO`
 側は認証後に BCBR へ永続保存する。
 
 相手で使い分ける。本家 Leonardo には `legacy_text`
-を、pico-wakeCon 系の Pico には `pico_uart` を使う。
-`bcon` ファームを載せた Pico 2 W に繋ぐときだけ
-`bcon` を選ぶ。それ以外では変える必要はない。
+を使う。`switch-bcon` ファームを載せた Pico 2 W に
+繋ぐときだけ `switch-bcon` を選ぶ（旧名 `bcon` も
+受け付ける）。それ以外では変える必要はない。
 
 ## 接続方式の選択と接続
 
 通信方式は `register_transport` の登録簿で管理する。
-組み込みは `legacy_text`、`pico_uart`、`bcon` の 3
+組み込みは `legacy_text`、`switch-bcon`、
+`switch-bcon-proc` の 3
 件である。メイン画面の **Transport:** 欄は
 `list_transports` の一覧をそのまま候補に並べ、選んだ
 名前を `resolve_transport` で確定する。
+
+`switch-bcon-proc` は送出路の別プロセス版である。操作面は
+`switch-bcon` と同じで、120Hz送出・受信・会話opを子プロセス
+で回し、GUIのGIL・描画負荷から切り離す。送出タイミングの
+ばらつき（p99）が小さくなる。子が死んだ呼出しは安全既定値
+（False/None）で返し、開き直しで復帰する。
 
 起動時の優先順位は `--transport` が最上位で、次が設
 定ファイルの `[Transport] name` である。`--transport`
@@ -51,11 +58,24 @@ baud の探索・切替は公開 API の `baud_hunt` と
 - **取込開始**
   横の取込秒数spinbox(1-60秒、初期値15)で秒数を決め、
   CAPTURE_STARTを送る。範囲外は送らず注意だけ出す。
+  取込期限が来たら保存の有無を1行出す（保存時は
+  「取込を保存しました。」）。
 - **BEACON再生**
   BEACON_STARTを送り、保存済み入力の再生を始める。
   未保存時は取込を促す。
 - **状態確認**
   STATUS_REQを送り、flagsやerrcodeとPLAYER_INFOを読む。
+  ランプ表示も最新へ引き直す。
+- **RUMBLE表示**
+  直近の振動出力（L/R）をログに出す。
+- **BOOTSEL再起動**
+  確認後にBOOTSEL相当を送り、再起動する。再起動後は
+  COMが外れるため、繋ぎ直して再HELLOからやり直すこと。
+- **baud切替**
+  横のbaud欄で速度を選び、実行で切り替える。確認後に
+  set_baud_indexを送り、結果と復帰文言を出す。
+- **プレイヤーランプ**
+  PLAYER_INFOのランプ4灯を画面に示す。点灯=黄・消灯=灰。
 - **疎通(PING)**
   PINGを送り、PONGの往復時間とSEQ一致を見る。
 - **W表示**
