@@ -83,6 +83,7 @@ class CameraPanelMixin:
     show_size_tmp: Any
     Command_nb: Any
     _on_setting_changed: Any
+    _apply_content_minsize: Any
 
     def _build_camera_frame(self) -> None:
         self.camera_lf = CameraLabelframe(self.frame_1)
@@ -641,6 +642,7 @@ class CameraPanelMixin:
 
         if tkmsg.askokcancel("確認", "この画面サイズに変更しますか？"):
             self.show_size_tmp = current_index
+            self._apply_content_minsize()
             self._on_setting_changed()
         else:
             self.show_size_cb.current(self.show_size_tmp)

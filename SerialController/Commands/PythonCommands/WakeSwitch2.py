@@ -1,54 +1,67 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Switch2 を起こす。保存済みの wake ビーコンを B で再生する。
+"""Switch2 を起こす。bcon の BEACON_START で保存済みビーコンを再生する。
 
-保存が無ければ起こせない。その場合は GUI の「Switch2 Wake設定」か
-Pico へ直に C を送って取込んでおく。C 行の書式は Registrar 側ではなく
-wakecon の取込（Switch2 をスリープ→Joy-Con の HOME）が要る。
+bcon専用。未保存なら拒否されるため、先に Bcon設定の「取込開始」で
+保存しておく。有線中も拒否されるため、W0無線へ切り替えて再起動後に
+送り直す。送り口は運搬器の公開口だけを使い、新規 import は足さない
+（利用者スクリプトの公開API面を変えない）。
 """
 
 from Commands.PythonCommandBase import PythonCommand
-from Commands.WakeLink import query, send_line
 
 
 class WakeSwitch2(PythonCommand):
     NAME = "Switch2を起こす"
 
     def do(self):
-        transport = self._wake_transport()
+        transport = self._bcon_transport()
         if transport is None:
             self.print2("シリアルが開いていません。先に接続してください。")
             self.finish()
             return
-
-        # 保存の有無だけ確かめる。無ければ B を送っても何も起きない。
-        # ファームの応答は "saved none" か "saved spoof=..." のいずれか。
-        # 部分一致ではなく完全一致で見る。表記が変わったときは、ここで
-        # 受けた行を出して追えるようにする。
-        found = query(transport, "?", ("st ", "saved "), timeout=2.0)
-        saved_lines = [line for line in found if line.startswith("saved ")]
-        saved = any(line != "saved none" for line in saved_lines)
-        if not saved:
-            self.print2("保存された wake がありません。")
-            if saved_lines:
-                self.print2("応答: {}".format(" / ".join(saved_lines)))
-            else:
-                self.print2("応答がありません。接続とファームを確かめてください。")
-            self.print2("GUI の「Switch2 Wake設定」で C 取込を済ませてください。")
+        if getattr(transport, "name", "") != "bcon":
+            self.print2("bconを選んで接続してください。")
+            self.finish()
+            return
+        sender = getattr(transport, "send_beacon", None)
+        if not callable(sender):
+            self.print2("bconの運搬器にBEACON口がありません。")
             self.finish()
             return
 
-        self.print2("wake を再生します（約1.5秒）。")
+        self.print2("wake を再生します。")
         self.print2("Joy-Con の電源は OFF にしておいてください。")
-        if not send_line(transport, "B"):
-            self.print2("送信に失敗しました。接続を確かめてください。")
+        try:
+            status = sender(timeout=2.0)
+        except Exception:
+            status = None
+        if status is None:
+            self.print2("応答がありません。接続とファームを確かめてください。")
             self.finish()
             return
-        self.wait(2.5)
-        self.print2("送りました。Switch2 が起きなければ保存の取り直しを。")
+        try:
+            errcode = int(status.get("errcode", 0)) & 0xFF
+            # STATUS flags の bit5=有線。SSOTは Switch-bcon の spec。
+            wired = bool(int(status.get("flags", 0)) & 0x20)
+        except (TypeError, ValueError, AttributeError):
+            self.print2("応答が読めません。接続を確かめてください。")
+            self.finish()
+            return
+        if errcode == 0x00:
+            self.wait(2.0)
+            self.print2("送りました。Switch2 が起きなければ保存の取り直しを。")
+        elif errcode == 0x11:
+            self.print2("保存された wake がありません。")
+            self.print2("Bcon設定の「取込開始」で保存してください。")
+        elif wired and errcode == 0x10:
+            self.print2("有線中のため拒否されました。")
+            self.print2("W0無線へ切り替え、再起動後に送り直してください。")
+        else:
+            self.print2(f"拒否されました(errcode=0x{errcode:02X})。")
         self.finish()
 
-    def _wake_transport(self):
+    def _bcon_transport(self):
         """Sender が持つ Transport。無ければ None。"""
         keys = getattr(self, "keys", None)
         sender = getattr(keys, "ser", None)

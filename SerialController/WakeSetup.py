@@ -1,5 +1,9 @@
 """WakeSetup.py - Switch2 wake の初期設定とwakecon操作をする小窓。
 
+非推奨(deprecated): pico-wakecon 用の旧画面。現行は switch-bcon の
+「Bcon設定」(BconSetup.py) を使うこと。メニューからも外した。
+ファイル自体は既存の検査・文書が参照するため残す。
+
 wakecon へ C（取込）/ L（一覧）/ B（再生）/ P（疎通）/ ?（状態）/
 W（有線無線の表示切替）/ D・M（表示切替）/ X（破棄）/ K（鍵削除）を送り、
 応答を読む。S・N は操作系（Controller/Keyboard）で、O（色）は

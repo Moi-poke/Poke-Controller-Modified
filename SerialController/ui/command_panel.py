@@ -31,6 +31,7 @@ class CommandPanelMixin:
     """コマンドパネルMixin。単体では使わない。"""
 
     frame_1: Any
+    tab_command: Any
     root: Any
     settings: Any
     serial: SerialService
@@ -84,7 +85,7 @@ class CommandPanelMixin:
     _update_title: Any
 
     def _build_command_frame(self) -> None:
-        self.command_lf = ttk.Labelframe(self.frame_1)
+        self.command_lf = ttk.Labelframe(self.tab_command)
         self.Commands_f = ttk.Frame(self.command_lf)
         self.Commands_2_f = ttk.Frame(self.command_lf)
 
@@ -171,7 +172,7 @@ class CommandPanelMixin:
             fill="none", expand=True, padx=5, pady=5, anchor=tk.E, side="top"
         )
         self.command_lf.config(height="200", text="Command")
-        self.command_lf.grid(column=2, padx="5", row=1, rowspan=2, sticky="nsew")
+        self.command_lf.pack(fill="both", expand=True, padx=5, pady=5)
 
     def _bind_keys(self) -> None:
         self.root.bind("<Key-F5>", self.ReloadCommandWithF5)
