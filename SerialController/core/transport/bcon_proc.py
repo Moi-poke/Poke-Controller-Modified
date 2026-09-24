@@ -45,6 +45,7 @@ _ALLOWED_CALLS = frozenset(
         "hello",
         "ping",
         "request_status",
+        "request_color",
         "last_status",
         "last_player_info",
         "baud_hunt",
@@ -1043,3 +1044,19 @@ class BconProcTransport(Transport):
         except (TypeError, ValueError):
             return False
         return self._rpc_bool("send_config", args, 5.0)
+
+    def request_color(self, timeout: float = 1.0) -> bytes | None:
+        try:
+            limit = float(timeout)
+        except (TypeError, ValueError):
+            limit = 1.0
+        ok, result = self._call("request_color", (limit,), timeout=limit)
+        if not ok or result is None:
+            return None
+        try:
+            payload = bytes(result)
+        except (TypeError, ValueError):
+            return None
+        if len(payload) != 12:
+            return None
+        return payload

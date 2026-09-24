@@ -28,6 +28,8 @@ from core.transport.bcon_protocol import (
     T_BAUD_SET,
     T_BEACON_START,
     T_BOOTSEL,
+    T_COLOR_GET,
+    T_COLOR_INFO,
     T_EMULATE_MODE,
     T_HELLO,
     T_HELLO_ACK,
@@ -1942,6 +1944,61 @@ class BconTransport(Transport):
         except (TypeError, ValueError):
             return False
         return bool(self._send_session_frame(kind, body, f"bcon:0x{kind:02X}"))
+
+    def request_color(self, timeout: float = 1.0) -> bytes | None:
+        """COLOR_GETを送りCOLOR_INFOの12Bを待つ。失敗・無応答はNone。
+
+        待ち登録→送出の順を守る。例外は投げない。
+        """
+        try:
+            try:
+                limit = float(timeout)
+            except (TypeError, ValueError):
+                limit = 1.0
+            if math.isnan(limit):
+                limit = 1.0
+            elif math.isinf(limit):
+                limit = 5.0
+            else:
+                limit = max(0.0, min(limit, 5.0))
+            if self.ser is None:
+                return None
+            if not self.rx_pump_running():
+                try:
+                    if not self.start_rx_pump() or not self.rx_pump_running():
+                        return None
+                except Exception:
+                    return None
+            if limit <= 0.0:
+                return None
+            found: dict[str, Any] = {}
+            done = threading.Event()
+            entry = ((T_COLOR_INFO,), done, found)
+            with self._rx_lock:
+                self._rx_waiters.append(entry)
+            try:
+                ok = self._send_session_frame(T_COLOR_GET, b"", "bcon:COLOR_GET")
+                if not ok:
+                    return None
+                if not done.wait(limit):
+                    return None
+                frame = found.get("frame")
+                if frame is None:
+                    return None
+                try:
+                    payload = bytes(frame[1])
+                except (TypeError, ValueError, IndexError):
+                    return None
+                if len(payload) != 12:
+                    return None
+                return payload
+            finally:
+                with self._rx_lock:
+                    if entry in self._rx_waiters:
+                        self._rx_waiters.remove(entry)
+        except Exception as e:
+            self._logger.debug(f"request_colorで例外: {e!r}", exc_info=True)
+            return None
 
     def send_beacon(self, timeout: float = 2.0) -> dict[str, int] | None:
         """BEACON_STARTを送り直後のSTATUS写しを返す。失敗・無応答はNone。
