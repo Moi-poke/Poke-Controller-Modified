@@ -7,7 +7,6 @@ from BconSetup import BconSetup
 from InputLogConfig import InputLogConfig
 from KeyConfig import PokeKeycon
 from SerialMonitor import SerialMonitor
-from WakeSetup import WakeSetup
 from get_pokestatistics import GetFromHomeGUI
 from loguru import logger
 
@@ -21,15 +20,33 @@ class PokeController_Menubar(tk.Menu):
 
         self.poke_treeview: Any | None = None
         self.key_config: PokeKeycon | None = None
-        self.wake_setup: WakeSetup | None = None
         self.bcon_setup: BconSetup | None = None
         self.serial_monitor: SerialMonitor | None = None
         self.input_log_config: InputLogConfig | None = None
 
         self.menu = tk.Menu(self, tearoff=False)
         self.menu_command = tk.Menu(self, tearoff=False)
+        self.menu_view = tk.Menu(self, tearoff=False)
         self.add(tk.CASCADE, menu=self.menu, label="メニュー")
         self.menu.add(tk.CASCADE, menu=self.menu_command, label="コマンド")
+        self.menu.add(tk.CASCADE, menu=self.menu_view, label="表示")
+        self.menu_view.add(
+            "command",
+            command=lambda: self.applyWindowSize(1280, 720),
+            label="1280x720",
+        )
+        self.menu_view.add(
+            "command",
+            command=lambda: self.applyWindowSize(1920, 1080),
+            label="1920x1080",
+        )
+        self.menu_view.add("separator")
+        self.menu_view.add(
+            "command", command=lambda: self.lockAspect(True), label="16:9 に固定"
+        )
+        self.menu_view.add(
+            "command", command=lambda: self.lockAspect(False), label="固定を解除"
+        )
 
         self.menu.add("separator")
         # 「設定(dummy)」は command 未指定の未実装項目だったため、実装されるまで
@@ -79,9 +96,6 @@ class PokeController_Menubar(tk.Menu):
         )
         self.menu_command.add(
             "command", command=self.OpenKeyConfig, label="キーコンフィグ"
-        )
-        self.menu_command.add(
-            "command", command=self.OpenWakeSetup, label="Switch2 Wake設定"
         )
         self.menu_command.add("command", command=self.OpenBconSetup, label="Bcon設定")
         self.menu_command.add(
@@ -156,9 +170,26 @@ class PokeController_Menubar(tk.Menu):
             return
         self.key_config = None
 
-        kc_window = PokeKeycon(self.root)
+        # プロファイル別iniを編集するため、アプリ本体のprofileを渡す。
+        # 旧来の呼び出し・テスト用の偽appにprofileが無くても落ちないようgetattrで守る。
+        kc_window = PokeKeycon(
+            self.root,
+            profile=getattr(self.app, "profile", ""),
+            on_saved=self._reload_live_keymap,
+        )
         kc_window.protocol("WM_DELETE_WINDOW", self.closingKeyConfig)
         self.key_config = kc_window
+
+    def _reload_live_keymap(self) -> None:
+        """保存直後に生きている実体へ割り当てを読み直させる。
+
+        実体が無ければ何もしない（次回の有効化で新割当を読む）。
+        偽app（テスト用）に serial が無くても落ちない。
+        """
+        serial = getattr(self.app, "serial", None)
+        reload = getattr(serial, "reload_keyboard_map", None)
+        if callable(reload):
+            reload()
 
     def closingKeyConfig(self) -> None:
         logger.debug("Close KeyConfig window")
@@ -169,24 +200,28 @@ class PokeController_Menubar(tk.Menu):
                 pass
             self.key_config = None
 
-    def OpenWakeSetup(self) -> None:
-        logger.debug("Open WakeSetup window")
-        wake_window = getattr(self.wake_setup, "window", None)
-        if wake_window is not None and self._alive(wake_window):
-            wake_window.focus_force()
+    def applyWindowSize(self, width: int, height: int) -> None:
+        """メインウィンドウ全体を指定サイズにする。保存は終了時に行う。"""
+        root: Any = self.root
+        try:
+            root.geometry(f"{int(width)}x{int(height)}")
+        except Exception as e:
+            logger.warning(f"画面サイズの変更に失敗しました: {e!r}")
             return
-        self.wake_setup = None
-        self.wake_setup = WakeSetup(self.root, self.ser)
-        self.wake_setup.window.protocol("WM_DELETE_WINDOW", self.closingWakeSetup)
+        logger.info(f"画面サイズを{int(width)}x{int(height)}にしました。")
 
-    def closingWakeSetup(self) -> None:
-        logger.debug("Close WakeSetup window")
-        if self.wake_setup is not None:
-            try:
-                self.wake_setup.close()
-            except Exception:
-                pass
-            self.wake_setup = None
+    def lockAspect(self, lock: bool) -> None:
+        """16:9 の縦横比固定を入/切する。失敗は警告のみ。"""
+        root: Any = self.root
+        try:
+            if lock:
+                root.wm_aspect(16, 9, 16, 9)
+            else:
+                root.wm_aspect("", "", "", "")
+        except Exception as e:
+            logger.warning(f"縦横比の切替に失敗しました: {e!r}")
+            return
+        logger.info(f"縦横比の固定を{'有効' if lock else '解除'}にしました。")
 
     def OpenBconSetup(self) -> None:
         logger.debug("Open BconSetup window")
@@ -241,7 +276,6 @@ class PokeController_Menubar(tk.Menu):
         except Exception:
             pass
         for name in (
-            "wake_setup",
             "bcon_setup",
             "key_config",
             "poke_treeview",

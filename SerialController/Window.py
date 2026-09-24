@@ -48,6 +48,13 @@ VERSION = "v4.0.1 Modified"  # based on 1.0-beta3(custom by @dragonite303)
 TITLE_COMMAND_MAX = 20
 
 
+# メインウィンドウの最小サイズ。全ウィジェットが見えるよう、
+# 中身の frame_1（1280x720 要求）に合わせる。縮めすぎによる
+# 操作欄のクリップを防ぐ。
+MIN_WINDOW_WIDTH = 1280
+MIN_WINDOW_HEIGHT = 720
+
+
 # すべてのパスをこの1点から解決する。起動する場所（カレント
 # ディレクトリ）が変わっても同じ場所を指すようにするため。
 # 相対パスのままだと、別ディレクトリから絶対パスで起動した場合や
@@ -123,6 +130,10 @@ class PokeControllerApp(
 
         self.menu = PokeController_Menubar(self)
         self.root.config(menu=self.menu)
+        # プレビュー確定後に中身の実寸で最小化を制限する。
+        # _build_ui 時点では canvas が最終寸法になっていないため、
+        # ここで測り直す（早すぎると小さな値で無意味になる）。
+        self._apply_content_minsize()
 
     # ------------------------------------------------------------------
     # 状態
@@ -228,6 +239,7 @@ class PokeControllerApp(
     def _build_ui(self) -> None:
         self.frame_1 = ttk.Frame(self.root)
         self._build_camera_frame()
+        self._build_setting_tabs()
         self._build_audio_frame()
         self._build_serial_frame()
         self._build_control_frame()
@@ -237,6 +249,70 @@ class PokeControllerApp(
         self.frame_1.config(height=720, padding=5, relief="flat", width=1280)
         self.frame_1.pack(expand=True, fill="both", side="top")
         self.frame_1.columnconfigure(3, weight=1)
+        # タブ欄とログ欄の行を縦に伸ばす。カメラ行と道具行は固定。
+        self.frame_1.rowconfigure(1, weight=1)
+        self.frame_1.rowconfigure(2, weight=1)
+        self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+
+    def _apply_content_minsize(self) -> None:
+        """中身の要求寸法を最小サイズにする。タブの見切れ防止。
+
+        固定値だけでは背の高いタブ（コマンド等）が隠れる。実測の
+        要求寸法を下限にし、小さい画面では画面内に収まる上限で切る。
+        """
+        try:
+            self.root.update_idletasks()
+            req_w = int(self.frame_1.winfo_reqwidth()) + 10
+            req_h = int(self.frame_1.winfo_reqheight()) + 10
+            scr_w = int(self.root.winfo_screenwidth())
+            scr_h = int(self.root.winfo_screenheight())
+        except Exception:
+            self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+            return
+        min_w = max(MIN_WINDOW_WIDTH, min(req_w, scr_w))
+        min_h = max(MIN_WINDOW_HEIGHT, min(req_h, max(720, scr_h - 80)))
+        try:
+            self.root.minsize(min_w, min_h)
+        except Exception:
+            self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+
+    def _build_setting_tabs(self) -> None:
+        """シリアル/コントローラ/オーディオ/コマンドのタブ枠を作る。
+
+        各パネルは自分のタブへ Labelframe を載せる。カメラとログは
+        タブの外に残し、常時見えるようにする。
+        """
+        self.setting_nb = ttk.Notebook(self.frame_1)
+        self.tab_serial = ttk.Frame(self.setting_nb)
+        self.tab_controller = ttk.Frame(self.setting_nb)
+        self.tab_audio = ttk.Frame(self.setting_nb)
+        self.tab_command = ttk.Frame(self.setting_nb)
+        self.setting_nb.add(self.tab_serial, text="シリアル")
+        self.setting_nb.add(self.tab_controller, text="コントローラ")
+        self.setting_nb.add(self.tab_audio, text="オーディオ")
+        self.setting_nb.add(self.tab_command, text="コマンド")
+        self.setting_nb.grid(
+            column=0, columnspan=3, padx="5", row=1, rowspan=3, sticky="nsew"
+        )
+        self.setting_nb.bind(
+            "<<NotebookTabChanged>>", self._unfocus_setting_tab, add=""
+        )
+
+    def _unfocus_setting_tab(self, event: Any = None) -> None:
+        """タブ切替でコンボ等へフォーカスが入るのを戻す。
+
+        コンボにフォーカスがあると矢印キーが選択変更に奪われ、
+        キーボード操作と相性が悪い。タブ枠自体へ移す。
+        """
+        try:
+            tab = self.setting_nb.nametowidget(self.setting_nb.select())
+        except Exception:
+            tab = None
+        target = tab if tab is not None else self.frame_1
+        try:
+            target.focus_set()
+        except Exception:
+            pass
 
     def loadSettings(self) -> None:
         self.settings = Settings.GuiSettings(self.profile)
@@ -375,6 +451,12 @@ class PokeControllerApp(
         # TclError（can't delete Tcl command）になる。
         # 停止の見張りの予約は runner が持つのでそちらで消す。
         self.runner.cancel_watch()
+        # LED・振動の巡回予約も同じ相手(root)へ頼んで消す。残すと
+        # destroyの最中に発火し、破棄途中のCanvasを触ってTclErrorになる。
+        try:
+            self._cancel_player_lamp_patrol()
+        except Exception as e:
+            logger.warning(f"ランプ巡回の停止で例外: {e}")
         for widget, after_id in (
             (self.logArea, self._display_after_id),
             (self.root, self._sash_after_id),

@@ -18,6 +18,7 @@ import time
 import tkinter as tk
 import traceback
 from collections import deque
+from collections.abc import Callable
 from tkinter.scrolledtext import ScrolledText
 from typing import Any
 
@@ -54,6 +55,21 @@ STICK_SEND_MAG_STEP = 0.25  # これ以上倒し量が変われば間隔を無�
 MOTION_MIN_INTERVAL = 0.008
 IDLE_INTERVAL_MS = 200  # 映像を表示しないあいだの描画ループ周期(ms)
 LOG_DIR = "log"
+
+# live_sender が isOpened を再照会するまでの猶予(秒)。
+# マウス Motion は 8ms 間引き後も約125Hzで届き、そのたび isOpened を
+# 呼ぶと switch-bcon-proc では同期 RPC（最大8秒級）が Tk スレッドで
+# 直列に積まれ、GUI が数十秒固まる。TTL 内は前回の判定を使い回し、
+# 嵐を O(1) 回の照会に畳む。タイマーは足さず、呼ばれたときにだけ
+# 期限を見る（lazy）。後方互換のため値は monkeypatch で変えられる。
+SER_OPENED_TTL_S = 0.5
+
+# 時刻源。テストでは monkeypatch で差し替える（実機では単調時刻）。
+_ser_opened_clock: Callable[[], float] = time.monotonic
+
+# 送り先ごとの opened 判定。id(ser) -> (ser 本体, 開いているか, 時刻)。
+# 本体も添えるのは id 使い回し（別物が同じ id を取る）の取り違え防止。
+_SER_OPENED_CACHE: dict[int, tuple[Any, bool, float]] = {}
 
 
 class CaptureAreaProxy:
@@ -112,24 +128,39 @@ class CaptureAreaProxy:
         return getattr(self.__dict__["_proxy_target"], name)
 
 
-def live_sender(ser: Any) -> Any:
+def live_sender(ser: Any, *, _force_refresh: bool = False) -> Any:
     """送り先。未接続なら None を返す。
 
     操作画面（ControllerGUI）と映像画面（CaptureArea）の両方から使う。
     未接続のまま操作すると、None への呼び出しで AttributeError になる。
     開いているかを見てから触る。isOpened を持たない古い送り先は、
     従来どおり触る。
+
+    isOpened の判定は SER_OPENED_TTL_S のあいだ使い回す。Motion の嵐
+    （約125Hz）で毎回 RPC を呼ぶと Tk が固まるため。押し始めと離す
+    ときは _force_refresh=True で必ず再照会すること。特に離す操作は
+    真偽を間違えると中立が届かず倒したままになる。
+    isOpened が投げたら閉じているものとして扱い、Tk へは逃がさない。
     """
+
     if ser is None:
         return None
     opened = getattr(ser, "isOpened", None)
-    if callable(opened):
-        try:
-            if not opened():
-                return None
-        except Exception:
-            return None
-    return ser
+    if not callable(opened):
+        return ser
+    # 照会の前後で時刻を2回読むと、差し替え時計の進み方で TTL がずれる。
+    # 照会前の1回だけ読む（数msのずれは TTL 0.5s に埋もれる）。
+    now = _ser_opened_clock()
+    if not _force_refresh:
+        hit = _SER_OPENED_CACHE.get(id(ser))
+        if hit is not None and hit[0] is ser and now - hit[2] < SER_OPENED_TTL_S:
+            return ser if hit[1] else None
+    try:
+        is_open = bool(opened())
+    except Exception:
+        is_open = False
+    _SER_OPENED_CACHE[id(ser)] = (ser, is_open, now)
+    return ser if is_open else None
 
 
 class _StickRecorder:
@@ -876,7 +907,10 @@ class CaptureArea(tk.Canvas):
           引っかかりうる。離した状態が届かないと倒したままになるため、
            呼び出し側で flushPending して必ず送り切る（従来どおり）。
         """
-        ser = live_sender(self.ser)
+        # 離す操作は TTL を待たず必ず再照会する。古い「開」を信じて
+        # 送ると閉じた回線へ投げ、古い「閉」を信じると中立が届かず
+        # 倒したまま残る。離す頻度は低いので RPC 1回のコストは問題ない。
+        ser = live_sender(self.ser, _force_refresh=True)
         if ser is None:
             return
         # 離す操作も送り主付きの操作口を通す（送り主はマウス）。
@@ -1016,6 +1050,9 @@ class CaptureArea(tk.Canvas):
     # ------------------------------------------------------------------
     def mouseLeftPress(self, event: Any, ser: Any = None) -> None:
         """左スティックの操作を開始する。"""
+        # 押し始めに真値を1回だけ掴み、直後の Motion の嵐は TTL 内の
+        # 使い回しで捌く。押す頻度は低いので RPC 1回は問題ない。
+        live_sender(self.ser, _force_refresh=True)
         if self.master.is_use_right_stick_mouse.get():
             self.UnbindRightClick()
         self.config(cursor="dot")
@@ -1061,6 +1098,8 @@ class CaptureArea(tk.Canvas):
     # ------------------------------------------------------------------
     def mouseRightPress(self, event: Any, ser: Any = None) -> None:
         """右スティックの操作を開始する。"""
+        # 左と同じく押し始めに真値を掴み、嵐は TTL で捌く。
+        live_sender(self.ser, _force_refresh=True)
         if self.master.is_use_left_stick_mouse.get():
             self.UnbindLeftClick()
         self.config(cursor="dot")

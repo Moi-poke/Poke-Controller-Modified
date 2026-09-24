@@ -101,10 +101,9 @@ def selectCombobox(combobox: ttk.Combobox, value: str) -> None:
 
 def makeLogText(holder: Any) -> tk.Text:
     """ログ表示用の Text を作る（2つの欄で同じ設定を使う）。"""
-    # wrap を既定の "char" のままにすると、長い行が来るたびに折り返し
-    # 計算でレイアウトを取り直す。横スクロールは holder が
-    # scrolltype="both" なので既にある。
-    text = tk.Text(holder.container, wrap="none")
+    # 幅で単語折り返しする。長い行が来るたび折り返し計算で
+    # レイアウトを取り直すが、右端カットより読みやすさを優先する。
+    text = tk.Text(holder.container, wrap="word")
     text.config(blockcursor=True, height=10, insertunfocussed="none", maxundo=0)
     text.config(relief="flat", state="disabled", undo=False, width=50)
     text.pack(expand=True, fill="both", side="top")
