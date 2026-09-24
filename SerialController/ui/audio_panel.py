@@ -9,6 +9,7 @@ PokeControllerApp に混ぜて使う（多重継承）。camera_panel.py と同�
 from __future__ import annotations
 
 import datetime
+import math
 import os
 import threading
 import time
@@ -27,10 +28,27 @@ from loguru import logger
 METER_INTERVAL_MS = 200
 
 
+def format_volume_label(value: Any) -> str:
+    """音量表示を作る。線形の割合にdB換算を添える。
+
+    スライダーは取込波形への線形倍率（1.0=等倍・約0dB）であり、
+    知覚上の等間隔ではない。80%は約-1.9dBである。
+    """
+    try:
+        ratio = max(0.0, min(float(value), 1.0))
+    except (TypeError, ValueError):
+        ratio = 0.0
+    pct = int(round(ratio * 100.0))
+    if ratio <= 0.0:
+        return f"{pct}% (-∞ dB)"
+    return f"{pct}% ({20.0 * math.log10(ratio):.1f} dB)"
+
+
 class AudioPanelMixin:
     """音声パネルMixin。単体では使わない。"""
 
     frame_1: Any
+    tab_audio: Any
     root: Any
     settings: Any
     serial: Any
@@ -49,6 +67,8 @@ class AudioPanelMixin:
     audio_reload_button: Any
     audio_record_button: Any
     audio_measure_button: Any
+    audio_volume_scale: Any
+    audio_volume_label: Any
     _audio_meter_after_id: Any
     _probe_thread: Any
     _probe_done: Any
@@ -66,7 +86,7 @@ class AudioPanelMixin:
     _on_setting_changed: Any
 
     def _build_audio_frame(self) -> None:
-        self.audio_lf = ttk.Labelframe(self.frame_1, text="Audio")
+        self.audio_lf = ttk.Labelframe(self.tab_audio, text="Audio")
         self.audio_input_name = tk.StringVar()
         self.audio_output_name = tk.StringVar()
         self.audio_monitor = tk.BooleanVar()
@@ -132,10 +152,25 @@ class AudioPanelMixin:
             row=2, column=1, columnspan=5, sticky="w"
         )
 
-        # 配置は明示rowで固定する。row省略の自動配置はgridした時点で
-        # 空いている行へ置かれるため、後に明示配置されるSerial/Command枠の
-        # 下敷きになる（row=1へ入り込んで隠れる）。兄弟枠と同じ流儀にする。
-        self.audio_lf.grid(columnspan=3, padx="5", row=3, sticky="ew")
+        ttk.Label(self.audio_lf, text="Volume:").grid(padx="5", row=3, column=0)
+        self.audio_volume_scale = ttk.Scale(
+            self.audio_lf,
+            from_=0.0,
+            to=1.0,
+            variable=self.audio_volume,
+            command=lambda _value: self._update_volume_label(),
+        )
+        self.audio_volume_scale.grid(
+            padx="5", row=3, column=1, columnspan=3, sticky="ew"
+        )
+        self.audio_volume_scale.bind(
+            "<ButtonRelease-1>", self._onVolumeReleased, add=""
+        )
+        self.audio_volume_label = ttk.Label(self.audio_lf, text="80%")
+        self.audio_volume_label.grid(padx="5", row=3, column=4, sticky="w")
+
+        # タブの中へ載せる。タブ内ではこの枠が唯一のためpackで広げる。
+        self.audio_lf.pack(fill="both", expand=True, padx=5, pady=5)
         # 入出力コンボのある列にだけ重みを付け、枠が広がった分を吸わせる。
         # 無いと width=28 文字で頭打ちになり、長い機器名が省略表示になる。
         self.audio_lf.columnconfigure(1, weight=1)
@@ -306,6 +341,7 @@ class AudioPanelMixin:
         )
         self.audio_monitor.set(self.settings.audio_monitor_enabled.get())
         self.audio_volume.set(self.settings.audio_monitor_volume.get())
+        self._update_volume_label()
         self._update_latency_label()
 
     def _update_latency_label(self) -> None:
@@ -380,6 +416,34 @@ class AudioPanelMixin:
             self._on_setting_changed()
         else:
             self.audio_output_name.set(self.audio_service.display_output(previous))
+
+    def _update_volume_label(self) -> None:
+        """音量バーの表示（%＋dB）を変数の値に合わせる。"""
+        try:
+            text = format_volume_label(self.audio_volume.get())
+        except Exception:
+            return
+        try:
+            self.audio_volume_label.config(text=text)
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _onVolumeReleased(self, *event: Any) -> None:
+        """音量バー確定時に保存する。開き直さないため途切れない。
+
+        ドラッグ中は表示だけ動かし、離した値をサービスへ渡す。
+        鳴らし中は出力コールバックが読む値のため即反映し、
+        停止中は次回の有効化で使う。出力の開き直し（GUI固まりの
+        原因）は行わない。
+        """
+        try:
+            vol = max(0.0, min(float(self.audio_volume.get()), 1.0))
+        except (TypeError, ValueError):
+            return
+        self._update_volume_label()
+        self.settings.audio_monitor_volume.set(vol)
+        self.audio_service.set_volume(vol)
+        self._on_setting_changed()
 
     def _onMonitorToggled(self, *event: Any) -> None:
         on = bool(self.audio_monitor.get())

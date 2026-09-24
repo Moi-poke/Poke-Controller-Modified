@@ -173,6 +173,22 @@ class AudioService:
             return False
         return True
 
+    def set_volume(self, volume: float) -> None:
+        """モニター音量だけ変える。開き直さないため途切れない。
+
+        出力コールバックが毎回読む値のため、鳴らし中は即反映する。
+        停止中は次回の有効化で使う。0.0-1.0へ収める。例外は投げない。
+        """
+        try:
+            v = max(0.0, min(float(volume), 1.0))
+        except (TypeError, ValueError) as e:
+            logger.warning(f"音量が数値でないため変えません: {e}")
+            return
+        try:
+            self.capture.setMonitorVolume(v)
+        except Exception as e:
+            logger.warning(f"音量の反映に失敗しました: {e}")
+
     def set_monitor(self, on: bool, out_name: str, volume: float) -> bool:
         """モニター再生のON/OFF。入力未openではONにしない。"""
         if on and not self.capture.isOpened():
