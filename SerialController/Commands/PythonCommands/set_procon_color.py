@@ -1,6 +1,8 @@
 """プロコンの色を GUI で選んで変える。
 
-画面から色見本を選び、OK を押すと Pico へ O 行を1本送る。
+bcon の口では COLOR_SET（send_config 0x32・12B）を1発送り、
+直後の STATUS で確かめる。O 行・query・WakeLink・direct_serial は
+bcon の口では使わない（非bconの旧来口だけに残す）。
 色はフラッシュに保存されるので、Pico の電源を切っても残る。
 
 反映のタイミング:
@@ -8,12 +10,25 @@
     変わらないときは、Switch のコントローラー登録を解除して繋ぎ直す。
 
 相手:
-    pico-wakecon の O 行（ui.c handle_line）。旧 C と同書式で
-    先頭1字を読み飛ばすため、O で送る。C は取込（秒数）のため、
-    色を C で送ると取込が始まってしまう。書式は hid.c の
-    probe_parse_color_line と対（4つの16進 / 応答は color 行）。
+    非bconの旧来口では pico-wakecon の O 行（ui.c handle_line）。
+    旧 C と同書式で先頭1字を読み飛ばすため、O で送る。C は
+    取込（秒数）のため、色を C で送ると取込が始まってしまう。
+    書式は hid.c の probe_parse_color_line と対（4つの16進 /
+    応答は color 行）。
 """
 
+from typing import Any
+
+# 色の読み・荷造り・errcode説明の実体は core/procon_color.py に1つだけ置く。
+# 利用者台本の凍結面では BconSetup・core を直接読めないため、公開口の
+# Commands/CommandColor.py から読む（BconSetup の小窓も同じ実体を読む）。
+from Commands.CommandColor import (
+    build_color_payload,
+    describe_bcon_errcode,
+    is_bcon_transport,
+    parse_color_hex,
+    send_config_frame,
+)
 from Commands.PythonCommandBase import PythonCommand
 from Commands.WakeLink import query
 
@@ -68,22 +83,14 @@ CUSTOM_LABEL = "── 自分で入れる ──"
 def normalize(value: object) -> str | None:
     """6桁の16進へ整える。整えられなければ None を返す。
 
+    読みは BconSetup.parse_color_hex に寄せる（#/0x・大文字可）。
     受け付ける形: "ff0000" / "FF0000" / "#ff0000" / "0xff0000"
     3桁（"f00"）は受け付けない。意図と違う色になる恐れがあるため。
     """
-    if not isinstance(value, str):
+    rgb = parse_color_hex(value)
+    if rgb is None:
         return None
-    text = value.strip().lower()
-    if text.startswith("#"):
-        text = text[1:]
-    elif text.startswith("0x"):
-        text = text[2:]
-    if len(text) != 6:
-        return None
-    for ch in text:
-        if ch not in "0123456789abcdef":
-            return None
-    return text
+    return "{:02x}{:02x}{:02x}".format(*rgb)
 
 
 class SetProconColor(PythonCommand):
@@ -140,7 +147,19 @@ class SetProconColor(PythonCommand):
                 return
             colors.append(fixed)
 
+        # bcon の口では COLOR_SET を1発送り、直後の STATUS で確かめる。
+        # O 行・query・WakeLink・direct_serial は使わない。
+        transport = self._color_transport()
+        if transport is not None and is_bcon_transport(transport):
+            self.print2("色を「{}」にします。".format(label))
+            for name, value in zip(PART_NAMES, colors):
+                self.print2("  {} #{}".format(name, value))
+            self._send_bcon_color(transport, colors)
+            self.finish()
+            return
+
         # 送る行を組み立てる。書式は pico-wakecon の O 行と対。
+        # 非bconの旧来口だけで使う。bcon の口では送らない。
         #     O <本体> <ボタン> <左> <右>
         #   C ではいけない。C は取込（秒数）のため、色を C で送ると
         #   取込スキャンが始まってしまう。
@@ -150,7 +169,6 @@ class SetProconColor(PythonCommand):
         for name, value in zip(PART_NAMES, colors):
             self.print2("  {} #{}".format(name, value))
 
-        transport = self._color_transport()
         if transport is not None:
             # 応答を読む形で送る。成功なら color 行、書式違いなら usage 行。
             # 旧ファーム（O を知らない版）は何も返さない。
@@ -184,6 +202,42 @@ class SetProconColor(PythonCommand):
         )
 
         self.finish()
+
+    def _send_bcon_color(self, transport: Any, colors: list[str]) -> None:
+        slots = [parse_color_hex(value) for value in colors]
+        if any(slot is None for slot in slots):
+            self.print2("色の読み取りに失敗しました。6桁の16進を確かめてください。")
+            return
+        try:
+            payload = build_color_payload(slots)
+        except ValueError:
+            self.print2("色の組み立てに失敗しました。4つの6桁16進を確かめてください。")
+            return
+        if not send_config_frame(transport, 0x32, payload):
+            self.print2("COLOR_SET を送れませんでした。繋ぎ直してください。")
+            return
+        try:
+            request = getattr(transport, "request_status", None)
+            status = request(timeout=1.0) if callable(request) else None
+        except Exception:
+            status = None
+        if status is None:
+            self.print2("送りました。STATUS応答がありません。")
+            return
+        try:
+            errcode = int(status.get("errcode", 0)) & 0xFF
+        except (TypeError, ValueError, AttributeError):
+            self.print2("送りました。STATUSの読み取りに失敗しました。")
+            return
+        detail = describe_bcon_errcode(errcode)
+        if errcode == 0x00:
+            self.print2("送りました。色はフラッシュに保存されます。")
+            self.print2(detail)
+        else:
+            self.print2("送りましたが、FWが受け付けませんでした。{}".format(detail))
+        self.print2(
+            "画面に反映されないときは、Switch 側で登録を解除して繋ぎ直してください。"
+        )
 
     def _color_transport(self):
         """Sender が持つ Transport。無ければ None。"""
