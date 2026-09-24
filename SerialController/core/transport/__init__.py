@@ -15,8 +15,11 @@ from core.transport.base import (
 )
 from core.transport.bcon import BconTransport as BconTransport
 from core.transport.bcon_protocol import (
+    BOOTSEL_MAGIC as BOOTSEL_MAGIC,
     PROTO_VER as PROTO_VER,
     T_BAUD_SET as T_BAUD_SET,
+    T_BOOTSEL as T_BOOTSEL,
+    T_EMULATE_MODE as T_EMULATE_MODE,
     T_HELLO as T_HELLO,
     T_HELLO_ACK as T_HELLO_ACK,
     T_NEUTRAL as T_NEUTRAL,

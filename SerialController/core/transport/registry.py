@@ -23,10 +23,18 @@ from typing import Any
 
 from core.transport.base import LEGACY_ROW, VALID_CAPABILITIES, Transport
 from core.transport.bcon import BconTransport
-from core.transport.text_serial import PicoUartTransport, TextSerialTransport
+from core.transport.bcon_proc import (
+    PROC_PRESET_DESCRIPTION,
+    PROC_PRESET_NAME,
+    BconProcTransport,
+)
+from core.transport.text_serial import TextSerialTransport
 
 # 既定のプリセット名。設定が無い・読めない・知らない名前のときはここへ戻す
 DEFAULT_TRANSPORT = "legacy_text"
+
+# 旧名 → 現行名。表示名の変更後も既存の設定・起動引数を動かす。
+TRANSPORT_ALIASES = {"bcon": "switch-bcon"}
 
 # 名前 → {"factory": 呼ぶと Transport を返すもの, "description": 説明,
 #         "capability": 許可済み能力, "builtin": 最初から入っているか}
@@ -133,6 +141,8 @@ def resolve_transport_name(name: str | None) -> str:
         return DEFAULT_TRANSPORT
     if key in _REGISTRY:
         return key
+    if key in TRANSPORT_ALIASES:
+        return TRANSPORT_ALIASES[key]
     msg = (
         f"通信方式 '{key}' は登録されていません。"
         f"既定の '{DEFAULT_TRANSPORT}' を使います。"
@@ -233,15 +243,15 @@ register_transport(
 )
 
 register_transport(
-    PicoUartTransport.name,
-    PicoUartTransport,
-    description="Picoへfull-state S行を送る（有線=USBシリアル変換器 / 無線=PicoのUSB直結）",
+    "switch-bcon",
+    BconTransport,
+    description="Switch-bconへSTATEバイナリを送る（Pico 2 W・既定1Mbps・HELLO必須）",
     builtin=True,
 )
 
 register_transport(
-    BconTransport.name,
-    BconTransport,
-    description="bconへSTATEバイナリを送る（Pico 2 W・既定1Mbps・HELLO必須）",
+    PROC_PRESET_NAME,
+    BconProcTransport,
+    description=PROC_PRESET_DESCRIPTION,
     builtin=True,
 )
