@@ -33,7 +33,15 @@ from collections.abc import Callable
 from typing import Any
 
 from LogPane import DropOldestQueue
-from core.transport.base import BCON_STATE
+from core.procon_color import (
+    _CONFIG_TYPE_NAMES as _CONFIG_TYPE_NAMES,
+    build_color_payload as build_color_payload,
+    config_reject_type as config_reject_type,
+    describe_bcon_errcode as describe_bcon_errcode,
+    is_bcon_transport as is_bcon_transport,
+    parse_color_hex as parse_color_hex,
+    send_config_frame as send_config_frame,
+)
 from core.transport.bcon import decode_rumble
 from core.transport.bcon_baud import (
     BAUD_DEFAULT_INDEX,
@@ -55,7 +63,7 @@ from core.transport.bcon_protocol import (
     T_RUMBLE,
 )
 
-BCON_WINDOW_TITLE = "Bcon設定"
+BCON_WINDOW_TITLE = "Switch-Bcon設定"
 
 # 計測の間引き幅。debugへの書き出しはこの秒数に1件までにする。
 # per-frameのI/Oにしないための枠で、数え自体は毎回行う。
@@ -83,8 +91,8 @@ CAPTURE_MAX_S = 60
 COLOR_SLOT_NAMES = ("本体", "本体2", "左", "右")
 COLOR_DEFAULTS = ("000000", "000000", "000000", "000000")
 
-# プレイヤーLEDの色（PLAYER_INFOのランプ表示）。点灯=黄・消灯=灰。
-PLAYER_LAMP_ON_COLOR = "yellow"
+# プレイヤーLEDの色（PLAYER_INFOのランプ表示）。点灯=黄緑・消灯=灰。
+PLAYER_LAMP_ON_COLOR = "green yellow"
 PLAYER_LAMP_OFF_COLOR = "gray"
 
 # STATUS flags（SSOTは Switch-bcon の spec/protocol_v3.md §5.5）。
@@ -103,18 +111,9 @@ STATUS_FLAG_NAMES = (
 )
 STATUS_FLAG_WIRED = 0x20
 
-# CONFIG拒否（0x10+(TYPE&0x0F)）の TYPE 名。0x38 EMULATE_MODE まで載せる。
-_CONFIG_TYPE_NAMES = {
-    0x30: "CAPTURE_START",
-    0x31: "BEACON_START",
-    0x32: "COLOR_SET",
-    0x33: "KEY_DELETE",
-    0x34: "WIRED_MODE",
-    0x35: "STATUS_REQ",
-    0x36: "BAUD_SET",
-    0x37: "BOOTSEL",
-    0x38: "EMULATE_MODE",
-}
+# 色の読みと荷造り・errcode説明の実体は core/procon_color.py にある。
+# ここでは旧名のまま読めるよう再公開だけする（利用者台本は
+# Commands/CommandColor.py から読む）。
 
 
 def parse_capture_seconds(raw: Any) -> int | None:
@@ -128,72 +127,105 @@ def parse_capture_seconds(raw: Any) -> int | None:
     return None
 
 
-def parse_color_hex(text: Any) -> tuple[int, int, int] | None:
-    """RRGGBB（先頭 # 可）を RGB 3つ組へ。読めなければ None（送らない）。"""
-    try:
-        cleaned = str(text).strip().lstrip("#")
-    except (TypeError, ValueError, AttributeError):
-        return None
-    if len(cleaned) != 6:
-        return None
-    try:
-        value = int(cleaned, 16)
-    except ValueError:
-        return None
-    return ((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+# 色問合せの読取失敗時に出す一文。試験盤と一字一句同じこと。
+COLOR_READ_FALLBACK_NOTE = "色の読み取りに失敗しました。000000で表示します。"
 
 
-def build_color_payload(slots: Any) -> bytes:
-    """RGB 4つ組から COLOR_SET の12Bを作る。4つ無ければ ValueError。"""
+def request_color(transport: Any, timeout: float = 1.0) -> bytes | None:
+    """本体色の12Bを問う。成功は12B、来なければNone（例外なし）。
+
+    送受の実体は運搬器の `request_color`（COLOR_GET送出＋COLOR_INFO待ち）。
+    ここは委譲と形の確認だけ受け持つ。口が無い・壊れた応答でも落とさない。
+    """
     try:
-        items = list(slots)
+        try:
+            limit = float(timeout)
+        except (TypeError, ValueError):
+            limit = 1.0
+        method = getattr(transport, "request_color", None)
+        if not callable(method):
+            return None
+        try:
+            result = method(timeout=limit)
+        except TypeError:
+            try:
+                result = method(limit)
+            except Exception:
+                return None
+        if result is None:
+            return None
+        payload = bytes(result)
+    except Exception:
+        return None
+    if len(payload) != 12:
+        return None
+    return payload
+
+
+def prefill_color_entries(transport: Any, entries: Any, notify: Any = None) -> None:
+    """開いた直後の4欄へ問合せ結果を前埋めする。失敗は000000＋注意。
+
+    entries は `.get()`/`.set()` を持つ4つ組（StringVar相当）。
+    notify は注意文を受ける口（`notes.append` 相当）。例外は投げない。
+    """
+    try:
+        items = list(entries)
     except TypeError:
-        raise ValueError(f"色は4つ組で入れてください: {slots!r}") from None
+        return
     if len(items) != 4:
-        raise ValueError(f"色は4つ組で入れてください: {len(items)}つ")
-    out = bytearray()
+        return
+    try:
+        payload = request_color(transport)
+    except Exception:
+        payload = None
+    if payload is not None and len(payload) == 12:
+        for index, item in enumerate(items):
+            try:
+                red = int(payload[index * 3]) & 0xFF
+                green = int(payload[index * 3 + 1]) & 0xFF
+                blue = int(payload[index * 3 + 2]) & 0xFF
+                item.set(f"{red:02x}{green:02x}{blue:02x}")
+            except Exception:
+                try:
+                    item.set("000000")
+                except Exception:
+                    pass
+        return
     for item in items:
         try:
-            red, green, blue = item
-            out.extend([int(red) & 0xFF, int(green) & 0xFF, int(blue) & 0xFF])
-        except (TypeError, ValueError):
-            raise ValueError(f"色の組が不正です: {item!r}") from None
-    return bytes(out)
+            item.set("000000")
+        except Exception:
+            pass
+    if callable(notify):
+        try:
+            notify(COLOR_READ_FALLBACK_NOTE)
+        except Exception:
+            pass
 
 
-def config_reject_type(errcode: Any) -> int | None:
-    """CONFIG拒否（0x10-0x1F）を拒否元の TYPE へ戻す。違えば None。"""
+def update_color_preview(entries: Any, canvas: Any, items: Any) -> None:
+    """Entry文字列→Canvasのfillへ映す（打鍵のたびの見た目だけ）。
+
+    不正な欄は前を残す（送らない・落とさない）。例外は投げない。
+    """
     try:
-        code = int(errcode) & 0xFF
-    except (TypeError, ValueError):
-        return None
-    if 0x10 <= code <= 0x1F:
-        return 0x30 | (code & 0x0F)
-    return None
-
-
-def describe_bcon_errcode(errcode: Any) -> str:
-    """STATUS errcodeの日本語説明。CONFIG拒否は拒否元の TYPE 名まで解く。"""
-    try:
-        code = int(errcode) & 0xFF
-    except (TypeError, ValueError):
-        return f"不明({errcode!r})"
-    table = {
-        0x00: "正常",
-        0x01: "LEN不正",
-        0x02: "CRC不一致",
-        0x03: "SEQ欠番",
-        0x04: "未対応",
-        0x05: "UART overrun",
-        0x06: "overflow",
-    }
-    if code in table:
-        return str(table[code])
-    rejected = config_reject_type(code)
-    if rejected is not None:
-        name = _CONFIG_TYPE_NAMES.get(rejected, f"0x{rejected:02X}")
-        return f"CONFIG拒否（{name}・0x10+(TYPE&0x0F)=0x{code:02X}）"
-    return f"不明(0x{code:02X})"
+        entry_list = list(entries)
+        item_list = list(items)
+    except TypeError:
+        return
+    for entry, item in zip(entry_list, item_list):
+        try:
+            raw = entry.get()
+        except Exception:
+            continue
+        slot = parse_color_hex(raw)
+        if slot is None:
+            continue
+        try:
+            red, green, blue = slot
+            canvas.itemconfigure(item, fill=f"#{red:02x}{green:02x}{blue:02x}")
+        except Exception:
+            continue
 
 
 def read_bcon_current_bps(transport: Any) -> int | None:
@@ -287,53 +319,6 @@ def decode_player_save(byte: int) -> bool:
     """PLAYER_INFO の flags bit2を保存済みへ。予約bit3-7は見ない。"""
     value = int(byte) & 0xFF
     return bool(value & PLAYER_FLAG_CAP_SAVED)
-
-
-def is_bcon_transport(transport: Any) -> bool:
-    """bconの運搬器か。bcon以外には CONFIG を送らないための門。"""
-    if transport is None:
-        return False
-    try:
-        if getattr(transport, "name", "") == "bcon":
-            return True
-        return getattr(transport, "capability", "") == BCON_STATE
-    except Exception:
-        return False
-
-
-def send_config_frame(transport: Any, type_: int, payload: bytes) -> bool:
-    """CONFIG系を1発で送る。公開口を使う。
-
-    運搬器の公開口（send_config）があれば使い、無い旧実装だけ
-    内部の会話口（_send_session_frame）へ落とす。口が無い・
-    失敗は False で返し、落とさない。
-    """
-    if transport is None:
-        return False
-    try:
-        kind = int(type_) & 0xFF
-        body = bytes(payload)
-    except (TypeError, ValueError):
-        return False
-    public = getattr(transport, "send_config", None)
-    if callable(public):
-        try:
-            return bool(public(kind, body))
-        except Exception:
-            return False
-    sender = getattr(transport, "_send_session_frame", None)
-    if not callable(sender):
-        return False
-    try:
-        return bool(
-            sender(
-                kind,
-                body,
-                f"bcon-setup:0x{kind:02X}",
-            )
-        )
-    except Exception:
-        return False
 
 
 def _pre_status_snapshot(transport: Any) -> dict[str, Any] | None:
@@ -567,6 +552,7 @@ class BconSetup:
         row5.pack(fill=tk.X, pady=2)
         ttk.Label(row5, text="色(RRGGBB)").pack(side=tk.LEFT)
         self._colors: list[Any] = []
+        color_entries: list[Any] = []
         for index, (slot, default) in enumerate(zip(COLOR_SLOT_NAMES, COLOR_DEFAULTS)):
             ttk.Label(row5, text=slot).pack(
                 side=tk.LEFT, padx=(6 if index == 0 else 2, 0)
@@ -575,8 +561,24 @@ class BconSetup:
             entry = ttk.Entry(row5, width=8, textvariable=var)
             entry.pack(side=tk.LEFT, padx=2)
             self._colors.append(var)
+            color_entries.append(entry)
+        self._color_canvas = tk.Canvas(row5, width=96, height=20, highlightthickness=0)
+        self._color_canvas.pack(side=tk.LEFT, padx=4)
+        self._color_items: list[int] = []
+        for index in range(4):
+            left = 2 + index * 24
+            self._color_items.append(
+                self._color_canvas.create_rectangle(
+                    left, 2, left + 20, 18, fill="#000000", outline="#4D4D4D"
+                )
+            )
+        for entry, var in zip(color_entries, self._colors):
+            entry.bind("<KeyRelease>", lambda _e: self._refresh_color_preview())
+            var.trace_add("write", lambda *_a: self._refresh_color_preview())
         self._btn_color = ttk.Button(row5, text="色変更", command=self._on_color)
         self._btn_color.pack(side=tk.LEFT, padx=4)
+        self._refresh_color_preview()
+        self._query_color_on_open()
 
         row_player = ttk.Frame(body)
         row_player.pack(fill=tk.X, pady=2)
@@ -747,6 +749,48 @@ class BconSetup:
             if decode_player_save(int(flags) & 0xFF):
                 self._capture_saved_seen = True
         except (TypeError, ValueError):
+            pass
+
+    def _refresh_color_preview(self) -> None:
+        """色4欄の見た目を小矩形へ映す。打鍵のたびの表示だけ（送らない）。"""
+        try:
+            update_color_preview(
+                getattr(self, "_colors", []),
+                getattr(self, "_color_canvas", None),
+                getattr(self, "_color_items", []),
+            )
+        except Exception:
+            pass
+
+    def _query_color_on_open(self) -> None:
+        """窓を開いたら本体色を問い、4欄へ前埋めする。線待ちは別スレッド。"""
+        try:
+            sender = self._sender
+            transport = getattr(sender, "transport", None)
+        except Exception:
+            return
+        if transport is None or not is_bcon_transport(transport):
+            return
+
+        def job() -> None:
+            try:
+                payload = request_color(transport)
+            except Exception:
+                payload = None
+            if getattr(self, "_closed", False):
+                return
+            try:
+                if payload is not None:
+                    self._queue.put(("color_prefill", bytes(payload)))
+                else:
+                    self._queue.put(("color_prefill", b""))
+            except Exception:
+                pass
+
+        try:
+            thread = threading.Thread(target=self._guarded, args=(job,), daemon=True)
+            thread.start()
+        except Exception:
             pass
 
     def _arm_capture_deadline(self, seconds: int) -> None:
@@ -1109,6 +1153,36 @@ class BconSetup:
                     pending_arm = int(text)
                 except (TypeError, ValueError):
                     pending_arm = None
+            elif kind == "color_prefill":
+                try:
+                    payload = bytes(text) if text else b""
+                except (TypeError, ValueError):
+                    payload = b""
+                if len(payload) == 12:
+                    for index, var in enumerate(getattr(self, "_colors", [])):
+                        try:
+                            var.set(
+                                f"{payload[index * 3]:02x}"
+                                f"{payload[index * 3 + 1]:02x}"
+                                f"{payload[index * 3 + 2]:02x}"
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        self._refresh_color_preview()
+                    except Exception:
+                        pass
+                else:
+                    for var in getattr(self, "_colors", []):
+                        try:
+                            var.set("000000")
+                        except Exception:
+                            pass
+                    try:
+                        self._refresh_color_preview()
+                    except Exception:
+                        pass
+                    lines.append(f"{COLOR_READ_FALLBACK_NOTE}\n")
         if has_player:
             # 復号前の (lamp, flags) か、短い欠片の b"" が来る。
             if isinstance(pending_player, tuple) and len(pending_player) == 2:
