@@ -87,6 +87,10 @@ class SwitchKeyboardController(Keyboard):
         self.setting.optionxform = str  # type: ignore[assignment, method-assign]
 
         path = setting_path or self.SETTING_PATH
+        self.setting_path = path
+        # 再読込で外れた押下中キーの離鍵用に旧割当を残す。
+        # 押下側は現 key_map だけ見るため旧キーで再入はしない。
+        self._stale_map: dict[Any, Any] = {}
         logger.debug(f"キーコンフィグを読み込みます: {path}")
         if not os.path.isfile(path):
             if path == self.SETTING_PATH:
@@ -107,14 +111,56 @@ class SwitchKeyboardController(Keyboard):
 
         logger.debug("キーコンフィグの読み込みが完了しました")
 
-    def _load_key_map(self, section: str) -> dict[Any, Any]:
+    def reload_key_map(self) -> bool:
+        """設定ファイルを読み直して key_map を作り直す。
+
+        Listener は作り直さない。押下中（holding / holdingDir /
+        holdingHatDir）は持ち越す。持ち越したキーが新割当から外れて
+        いても離鍵で終わわれるよう旧割当を残し、解放時に捨てる。
+        ファイルが無い・読めないときは旧割当のまま False を返す。
+        """
+        path = self.setting_path
+        if not os.path.isfile(path):
+            logger.warning(f"キーコンフィグが無いため再読込しません: {path}")
+            return False
+        fresh = configparser.ConfigParser()
+        fresh.optionxform = str  # type: ignore[assignment, method-assign]
+        try:
+            read_ok = fresh.read(path, encoding="utf-8")
+        except (configparser.Error, OSError, UnicodeError) as e:
+            logger.warning(f"キーコンフィグの再読込に失敗しました: {e}")
+            return False
+        if not read_ok:
+            logger.warning(f"キーコンフィグが読めないため再読込しません: {path}")
+            return False
+
+        new_map: dict[Any, Any] = {}
+        for section in ("KeyMap-Button", "KeyMap-Direction", "KeyMap-Hat"):
+            new_map.update(self._load_key_map(section, fresh))
+
+        old_map = self.key_map
+        self.setting = fresh
+        self.key_map = new_map
+        stale: dict[Any, Any] = {}
+        held = list(self.holding) + list(self.holdingDir) + list(self.holdingHatDir)
+        for key in held:
+            if key not in new_map and key in old_map:
+                stale[key] = old_map[key]
+        self._stale_map = stale
+        logger.info("キー割り当てを再読み込みしました")
+        return True
+
+    def _load_key_map(
+        self, section: str, setting: configparser.ConfigParser | None = None
+    ) -> dict[Any, Any]:
         """settings.ini の1セクションを {入力キー: Enum} の辞書に変換する。"""
-        if not self.setting.has_section(section):
+        source = setting if setting is not None else self.setting
+        if not source.has_section(section):
             logger.warning(f"{section} セクションがありません。読み飛ばします")
             return {}
 
         key_map: dict[Any, Any] = {}
-        for name, value in self.setting.items(section):
+        for name, value in source.items(section):
             enum_member = self._to_enum(name)
             if enum_member is None:
                 continue
@@ -152,9 +198,10 @@ class SwitchKeyboardController(Keyboard):
     def _to_input_key(self, value: str) -> Any:
         """設定値を pynput のキー表現へ変換する。
 
-        受け付けるのは2つの形式だけにする。
-          "a"      … 1文字の通常キー
-          "Key.up" … pynput の特殊キー
+        受け付けるのは3つの形式だけにする。
+          "a"        … 1文字の通常キー
+          "Key.up"   … pynput の特殊キー
+          "Numpad.1" … テンキー数字（メイン行の "1" と区別する）
         空文字は「未割当」を意味するので、警告を出さずに読み飛ばす
         （Hat のように既定では割り当てない項目があるため）。
 
@@ -166,6 +213,12 @@ class SwitchKeyboardController(Keyboard):
         value = (value or "").strip()
         if not value:
             return None  # 未割当
+        if value.startswith("Numpad."):
+            # テンキー数字は正規文字列のまま引く（char 照合と混ぜない）。
+            digit = value[len("Numpad.") :]
+            if len(digit) == 1 and digit.isdigit():
+                return value
+            return None
         if len(value) == 1:
             return value  # 'a' などの文字キーはそのまま
         if value.startswith("Key."):
@@ -174,6 +227,15 @@ class SwitchKeyboardController(Keyboard):
 
     def _resolve_input(self, key: Any) -> tuple:
         """押されたキーから (キー, 対応する Enum の型) を求める。未割当なら (None, None)。"""
+        # テンキー数字は char より先に見る（char はメイン行と同じ "1" になる）。
+        # vk が無い環境（他プラットフォーム等）では従来路へ落ちる。
+        vk = getattr(key, "vk", None)
+        if isinstance(vk, int) and 96 <= vk <= 105:
+            _np = f"Numpad.{vk - 96}"
+            mapped_np = self.key_map.get(_np)
+            if mapped_np is None:
+                return None, None
+            return _np, type(mapped_np)
         _k = getattr(key, "char", None)
         if _k is None:
             _k = key  # 特殊キーは Key オブジェクトのまま引く
@@ -181,6 +243,33 @@ class SwitchKeyboardController(Keyboard):
         if mapped is None:
             return None, None
         return _k, type(mapped)
+
+    def _lookup(self, key: Any) -> Any:
+        """現割当を優先し、再読込で外れた押下中は旧割当で引く。"""
+        mapped = self.key_map.get(key)
+        if mapped is None:
+            mapped = self._stale_map.get(key)
+        return mapped
+
+    def _resolve_for_release(
+        self, key: Any
+    ) -> tuple[Any | None, Any | None, Any | None]:
+        """離鍵用に (キー, Enum の型, Enum) を求める。
+
+        現 key_map を優先する。再読込で外れた押下中キーだけ旧割当で
+        補う。押下側はこの補完を見ない。
+        """
+        _k, key_type = self._resolve_input(key)
+        if _k is not None:
+            return _k, key_type, self.key_map[_k]
+        raw = getattr(key, "char", None)
+        if raw is None:
+            raw = key
+        if raw in self.holding or raw in self.holdingDir:
+            mapped = self._stale_map.get(raw)
+            if mapped is not None:
+                return raw, type(mapped), mapped
+        return None, None, None
 
     def on_press(self, key: Any) -> None:
         if key is None:
@@ -215,47 +304,70 @@ class SwitchKeyboardController(Keyboard):
             logger.warning("未知のキーが離されました")
             return
 
-        _k, key_type = self._resolve_input(key)
-        if _k is None:
+        _k, key_type, mapped = self._resolve_for_release(key)
+        if _k is None or mapped is None:
             return
 
         if key_type is type(Button.A):
             if _k in self.holding:
                 self.holding.remove(_k)
-                self.key.inputEnd(self.key_map[_k])
+                self._stale_map.pop(_k, None)
+                self.key.inputEnd(mapped)
         elif key_type is type(Direction.LEFT):
             if _k in self.holdingDir:
                 self.holdingDir.remove(_k)
+                self._stale_map.pop(_k, None)
                 if not self.holdingDir:
-                    self.key.inputEnd(self.key_map[_k])
+                    self.key.inputEnd(mapped)
                 self.inputDir(self.holdingDir)
         elif key_type is type(Hat.TOP):
             if _k in self.holding:
                 self.holding.remove(_k)
-                self.key.inputEnd(self.key_map[_k], unset_hat=True)
+                self._stale_map.pop(_k, None)
+                self.key.inputEnd(mapped, unset_hat=True)
 
     def inputDir(self, dirs: list[Any]) -> None:
         if len(dirs) == 0:
             return
         if len(dirs) == 1:
-            self.key.input(self.key_map[dirs[0]])
+            mapped = self._lookup(dirs[0])
+            if mapped is None:
+                return
+            self.key.input(mapped)
             return
 
-        valid_dirs = dirs[-2:]  # 直近2方向だけを見る
-        to_input = []
-        if Key.up in valid_dirs:
-            if Key.right in valid_dirs:
-                to_input.append(Direction.UP_RIGHT)
-            elif Key.left in valid_dirs:
-                to_input.append(Direction.UP_LEFT)
-        elif Key.down in valid_dirs:
-            if Key.left in valid_dirs:
-                to_input.append(Direction.DOWN_LEFT)
-            elif Key.right in valid_dirs:
-                to_input.append(Direction.DOWN_RIGHT)
+        # 保持中の各入力キーを key_map 経由で Direction に解決する。
+        # 矢印キー決め打ちだと文字キー割り当て（WASD など）で斜めが出ないため。
+        resolved = [self._lookup(d) for d in dirs]
+        vertical = None  # 直近の上下（UP/DOWN）
+        horizontal = None  # 直近の左右（LEFT/RIGHT）
+        for mapped in reversed(resolved):
+            if vertical is None and (
+                mapped is Direction.UP or mapped is Direction.DOWN
+            ):
+                vertical = mapped
+            if horizontal is None and (
+                mapped is Direction.LEFT or mapped is Direction.RIGHT
+            ):
+                horizontal = mapped
+            if vertical is not None and horizontal is not None:
+                break
 
-        if not to_input:
-            # 上下同時押しなど斜めに解決できない組み合わせは直近の1方向を使う
-            self.key.input(self.key_map[valid_dirs[-1]])
+        if vertical is not None and horizontal is not None:
+            # 縦×横が揃えば斜めに入力する
+            if vertical is Direction.UP:
+                if horizontal is Direction.RIGHT:
+                    self.key.input(Direction.UP_RIGHT)
+                else:
+                    self.key.input(Direction.UP_LEFT)
+            else:
+                if horizontal is Direction.LEFT:
+                    self.key.input(Direction.DOWN_LEFT)
+                else:
+                    self.key.input(Direction.DOWN_RIGHT)
             return
-        self.key.input(to_input)
+        # 上下同時押しなど斜めに解決できない組み合わせは直近の1方向を使う
+        fallback = self._lookup(dirs[-1])
+        if fallback is None:
+            return
+        self.key.input(fallback)

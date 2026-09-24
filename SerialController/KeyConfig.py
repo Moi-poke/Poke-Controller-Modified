@@ -146,10 +146,17 @@ ALL_ITEMS: tuple[KeyItem, ...] = tuple(item for tab in TABS for item in tab.item
 def key_to_text(key: Any) -> str | None:
     """pynput のキーを settings.ini へ書く文字列にする。
 
-    英数字は "a" のような1文字、特殊キーは "Key.up" の形。どちらでも
-    ない場合（IME 経由の入力など）は None を返して割り当てを見送る。
-    Keyboard._to_input_key() がこの2形式を解釈するので、書式を合わせる。
+    英数字は "a" のような1文字、特殊キーは "Key.up" の形。テンキー数字は
+    char がメイン行と同じになるため、先に仮想キーコードを見て
+    "Numpad.0"〜"Numpad.9" へ分ける。どちらでもない場合（IME 経由の
+    入力など）は None を返して割り当てを見送る。
+    Keyboard._to_input_key() がこの3形式を解釈するので、書式を合わせる。
     """
+    # テンキー数字は char より先に見る（char はメイン行と同じ "1" になる）。
+    # vk が無い環境（他プラットフォーム等）では従来路へ落ちる。
+    vk = getattr(key, "vk", None)
+    if isinstance(vk, int) and 96 <= vk <= 105:
+        return f"Numpad.{vk - 96}"
     char = getattr(key, "char", None)
     if char:
         return str(char)
@@ -177,6 +184,13 @@ def text_to_display(value: str) -> str:
         return arrows[value]
     if value.startswith("Key."):
         return value[4:]
+    if value.startswith("Numpad."):
+        # テンキー数字の表示。"Numpad.1".isdigit() は False のため
+        # 旧プレースホルダ判定と衝突しないが、桁の検証は明示する。
+        digit = value[len("Numpad.") :]
+        if len(digit) == 1 and digit.isdigit():
+            return f"テンキー{digit}"
+        return value
     if value.isdigit():
         # 旧 settings.ini のプレースホルダ（10000 など）。実際のキーでは
         # ないので、割り当て直しが要ることが分かる表示にする。
@@ -191,9 +205,17 @@ class PokeKeycon:
     するものなので、閉じれば元に戻せるほうが扱いやすい。
     """
 
-    def __init__(self, master: tk.Misc | None = None, profile: str = "") -> None:
+    def __init__(
+        self,
+        master: tk.Misc | None = None,
+        profile: str = "",
+        on_saved: Callable[[], None] | None = None,
+    ) -> None:
         self.master = master
         self.settings = GuiSettings(profile)
+        # 保存直後に生きている実体へ読み直させる合図。無ければ何もしない。
+        # Window/tkinter には触らない素の呼び出しに限る。
+        self.on_saved = on_saved
 
         # {(section, name): 現在の割り当て}。適用するまでここだけを書き換える
         self.values: dict[tuple[str, str], str] = {}
@@ -496,10 +518,15 @@ class PokeKeycon:
         self._dirty = False
         self.stop_capture()
         logger.info("キー割り当てを保存しました")
+        if self.on_saved is not None:
+            try:
+                self.on_saved()
+            except Exception as e:
+                logger.warning(f"キー割り当ての即時反映に失敗しました: {e}")
         tkmsg.showinfo(
             "保存しました",
             "キー割り当てを保存しました。\n"
-            "反映するには Use Keyboard を切り替え直してください。",
+            "動作中のキーボード操作へすぐに反映しました。",
             parent=self.kc,
         )
 
