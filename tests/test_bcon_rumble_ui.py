@@ -214,7 +214,7 @@ def test_rumble_patrol_updates_label() -> None:
     assert "3" in mixin.rumble_label.text
     assert "4" in mixin.rumble_label.text
     # PLAYERランプは0x05の復号のまま（rumbleで上書きしない）。
-    assert mixin.player_lamp_canvas.fills[20] == "yellow"
+    assert mixin.player_lamp_canvas.fills[20] == "green yellow"
     assert mixin.player_lamp_canvas.fills[21] == "gray"
 
     transport.rx_subs[0]((0x22, b"", 0))
@@ -319,7 +319,7 @@ def test_patrol_reflects_subscribe_cache() -> None:
     assert transport.player_info_calls == 0
     assert transport.rumble_calls == 0
     # PLAYERランプは0x05の復号のまま（rumbleで上書きしない）。
-    assert mixin.player_lamp_canvas.fills[20] == "yellow"
+    assert mixin.player_lamp_canvas.fills[20] == "green yellow"
     assert mixin.player_lamp_canvas.fills[21] == "gray"
     assert "3" in mixin.rumble_label.text
     assert "4" in mixin.rumble_label.text

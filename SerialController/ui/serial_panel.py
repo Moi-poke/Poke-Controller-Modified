@@ -551,6 +551,13 @@ class SerialPanelMixin:
         def job() -> None:
             import time as _time
 
+            # 購読を先に結ぶ。STATUS付随のPLAYER_INFOが購読なしでは
+            # 画面の写しへ届かない（付随は変化時のみ送られるため、
+            # 定常の実機では取りこぼすと灰色のまま残る）。
+            try:
+                self._ensure_player_lamp_subscription(transport)
+            except Exception:
+                pass
             for _ in range(3):
                 try:
                     status = request(timeout=1.0)
@@ -561,6 +568,31 @@ class SerialPanelMixin:
                 except (TypeError, ValueError, AttributeError):
                     _time.sleep(1.0)
                     continue
+                # ランプ種付けはこの裏仕事で行う。Tk の巡回
+                # （_poll_player_lamp）は購読写しを読むだけで、線へは
+                # 取りに行かない。Tk を止めないよう取得はここだけに
+                # 寄せ、画面への反映は after 経由の既存経路に任せる。
+                # STATUS_REQ には PLAYER_INFO が付随する（付随分は購読
+                # _on_bcon_rx_frame へ届く）。付随の無い応答では写しが
+                # 空のまま残るため、到達済みの既定（全消灯）を置く。
+                # 空でない写し（届き済みの真値）は上書きしない。
+                # 見た目は空と同じ全消灯で、後続の購読で上書きされる。
+                try:
+                    if not bytes(getattr(self, "_player_info_cache", b"") or b""):
+                        # 運搬器の保持に付随の真値があれば写す。購読なしで
+                        # 届いた分（起動直前の定常分）を拾う。保持も空の
+                        # ときだけ既定を置く。写しの読み書きは記憶域だけ
+                        # で、Tk・線には触れない。
+                        held = b""
+                        reader = getattr(transport, "last_player_info", None)
+                        if callable(reader):
+                            try:
+                                held = bytes(reader() or b"")
+                            except Exception:
+                                held = b""
+                        self._player_info_cache = held if held else b"\x00"
+                except (TypeError, ValueError):
+                    pass
                 try:
                     self.root.after(0, lambda: self._apply_bcon_wired_display(wired))
                 except Exception:
@@ -769,7 +801,11 @@ class SerialPanelMixin:
             pass
 
     def _poll_player_lamp(self) -> None:
-        """購読写しの反映だけ。500ms毎の画面側巡回。Tkから線へ取りに行かない。"""
+        """購読写しの反映だけ行う。500ms毎の画面側巡回。
+
+        Tkから線への往復はしない。未受信の写しは空のまま
+        （全消灯・振動:（なし））で置く。
+        """
         try:
             transport = self._bcon_transport()
         except Exception:
@@ -789,7 +825,7 @@ class SerialPanelMixin:
             except (TypeError, ValueError):
                 value = 0
             for index, item in enumerate(self._player_lamp_items):
-                color = "yellow" if (value >> index) & 1 else "gray"
+                color = "green yellow" if (value >> index) & 1 else "gray"
                 self.player_lamp_canvas.itemconfigure(item, fill=color)
             try:
                 rumble = bytes(getattr(self, "_rumble_cache", b"") or b"")

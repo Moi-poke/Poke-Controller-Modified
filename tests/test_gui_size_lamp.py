@@ -115,11 +115,18 @@ def test_serial_panel_has_lamp_and_bcon_rows() -> None:
         assert hasattr(SerialPanelMixin, name), name
     src = Path("SerialController/ui/serial_panel.py").read_text(encoding="utf-8")
     assert "player_lamp_canvas" in src
-    # 巡回は購読写しだけ読む（TkからRPCしない）。Tk側にgetter名は無い。
+    # 巡回は購読写しだけ読む（TkからRPCしない）。巡回本体にgetter名は無い。
+    # 接続直後の裏仕事（_sync_bcon_display job）だけが保持の真値を写す。
     assert "subscribe_rx" in src
     assert "_player_info_cache" in src
-    assert "last_player_info" not in src
-    assert "last_rumble" not in src
+    poll = src[src.index("def _poll_player_lamp") : src.index("def _start_serial")]
+    assert "last_player_info" not in poll
+    assert "last_rumble" not in poll
+    assert "request_status" not in poll
+    job = src[
+        src.index("def _sync_bcon_display") : src.index("def _apply_bcon_wired_display")
+    ]
+    assert "last_player_info" in job
     assert "set_emulate_mode" in src
     assert "set_wired_mode" in src
     assert "grid_remove" in src
