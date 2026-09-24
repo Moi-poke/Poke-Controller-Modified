@@ -38,6 +38,17 @@ from loguru import logger
 from services import run_journal
 from services.run_journal import read_m_counts
 
+# 開閉判定の使い回し猶予(秒)。GuiAssets.SER_OPENED_TTL_S と同じ値に揃える。
+# is_open は表示ポンプ（200ms）や題名更新など Tk スレッドから高頻度で
+# 呼ばれる。switch-bcon-proc では子プロセス往復（最大で約8秒級）のため、
+# Tk スレッドで同期問い合わせすると1回の停滞がポンプ間隔の崩れとして
+# そのまま出る。TTL 内は前回の判定を使い回し、TTL 切れの問い直しは
+# 裏スレッドへ回してその間も古い値を返す（stale-while-revalidate）。
+# TTL だけだと切れるたび Tk が8秒止まるため、裏へ回す方を必須とする。
+# 初回（未照会）は閉じているものとして返す。後方互換のため値は
+# monkeypatch で変えられる。
+IS_OPEN_TTL_S = 0.5
+
 
 @dataclass
 class SenderSpec:
@@ -99,6 +110,13 @@ class SerialService:
         # 起動引数で指定された通信方式。設定より優先する（一時的な指定で、
         # 画面から選び直したら効かせない）。
         self.transport_override = ""
+        # 開閉判定の写し。Tk スレッドは RPC を待たず、ここだけ見る。
+        # 実体が差し替わったら古い写しは捨てる（id 使い回しの取り違え防止）。
+        self._open_lock = threading.Lock()
+        self._open_sender: Any = None
+        self._open_snapshot = False
+        self._open_snapshot_at = 0.0
+        self._open_refreshing = False
 
     def set_log_dir(self, path: str) -> None:
         """走行記録CSVの置き場を変える（検証用）。"""
@@ -207,6 +225,8 @@ class SerialService:
         )
         # ライブ入力の最低保持を反映する（範囲外はSender側で無視する）
         self.sender.setLiveMinDwell(spec.live_min_dwell_ms)
+        # 作り直した送り先は閉じている。古い写しを使い回さない。
+        self._note_open(False)
         self.apply_input_log(
             spec.input_log_format,
             spec.input_log_actions,
@@ -305,6 +325,7 @@ class SerialService:
 
         self.key_press = None
         if self.sender.openSerial(port_num, port_name, baud):
+            self._note_open(True)
             via = self.sender.getTransportName()
             message = f"COM Port {port_name} connected successfully ({via} / {baud}bps)"
             self._notify(message)
@@ -318,6 +339,7 @@ class SerialService:
             return (True, keyboard_active)
 
         self.key_press = None
+        self._note_open(False)
         message = f"COM Port {port_name} を開けませんでした ({baud}bps)"
         self._notify(message)
         logger.warning(message)
@@ -334,6 +356,7 @@ class SerialService:
         if self.sender is not None and self.sender.isOpened():
             self._notify("Port is closed.")
             self.sender.closeSerial()
+        self._note_open(False)
         self.key_press = None
 
     # -- キーボード -------------------------------------------------------------
@@ -384,11 +407,85 @@ class SerialService:
                 logger.warning(f"キーボードの停止で例外: {e}")
             self.keyboard = None
 
+    def reload_keyboard_map(self) -> None:
+        """生きている実体のキー割り当てを読み直す。
+
+        キーコンフィグ保存直後に呼ぶ。Listener は作り直さない。
+        実体が無ければ何もしない（次回の有効化で新割当を読む）。
+        """
+        if self.keyboard is None:
+            return
+        try:
+            self.keyboard.reload_key_map()
+        except Exception as e:
+            logger.warning(f"キー割り当ての再読込で例外: {e}")
+
     # -- 状態・終了 ---------------------------------------------------------------
 
     def is_open(self) -> bool:
-        """回線が開いているかを返す。"""
-        return self.sender is not None and self.sender.isOpened()
+        """回線が開いているかを返す。Tk から呼ぶため RPC を待たない。
+
+        写しが新しければそのまま返し、古ければ裏スレッドで問い直して
+        その間も古い値を返す。死んだ運搬層は閉じているものとして扱い、
+        例外は Tk へ逃がさない。
+        """
+        try:
+            return self._is_open_cached()
+        except Exception:
+            return False
+
+    def _is_open_cached(self) -> bool:
+        """写しを読む。古ければ裏での問い直しを1件だけ予約する。"""
+        sender = self.sender
+        if sender is None:
+            return False
+        now = time.monotonic()
+        with self._open_lock:
+            same = self._open_sender is sender
+            fresh = same and (now - self._open_snapshot_at) < IS_OPEN_TTL_S
+            value = self._open_snapshot if same else False
+            need = not fresh and not self._open_refreshing
+            if need:
+                self._open_refreshing = True
+        if need:
+            self._start_open_refresh(sender)
+        return value
+
+    def _start_open_refresh(self, sender: Any) -> None:
+        """裏で開閉を問い直し、写しを直す。Tk は待たない。"""
+
+        def job() -> None:
+            try:
+                value = bool(sender.isOpened())
+            except Exception:
+                value = False
+            with self._open_lock:
+                # その間に送り先が差し替わっていたら古い答えは捨てる。
+                if self.sender is sender:
+                    self._open_sender = sender
+                    self._open_snapshot = value
+                    self._open_snapshot_at = time.monotonic()
+                self._open_refreshing = False
+
+        try:
+            threading.Thread(target=job, daemon=True).start()
+        except Exception:
+            with self._open_lock:
+                self._open_refreshing = False
+
+    def _note_open(self, value: bool) -> None:
+        """開閉の確定を写しへ直書きする。開く・閉じる手順の直後に呼ぶ。
+
+        結果が分かっているため RPC はしない。送り先の差し替え直後にも
+        呼ぶ（古い写しの取り違え防止）。
+        """
+        try:
+            with self._open_lock:
+                self._open_sender = self.sender
+                self._open_snapshot = bool(value)
+                self._open_snapshot_at = time.monotonic()
+        except Exception:
+            pass
 
     def flush_input_log(self) -> None:
         """溜まった入力ログを送り先へ流す（表示ポンプから呼ぶ）。"""
@@ -403,7 +500,9 @@ class SerialService:
         self.stop_keyboard()
         if self.sender is not None and self.sender.isOpened():
             self.sender.closeSerial()
+            self._note_open(False)
             return True
+        self._note_open(False)
         return False
 
     # -- 走行記録（コマンドの開始・終了に付随する診断） ----------------------

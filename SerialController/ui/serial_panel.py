@@ -9,6 +9,8 @@ services.SerialService が持ち、ここでは確認ダイアログ・tk 変数
 
 from __future__ import annotations
 
+import threading
+import time
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
@@ -19,11 +21,16 @@ from GuiAssets import ControllerGUI
 from loguru import logger
 from services.serial_service import SenderSpec, SerialService
 
+# STATUS flags の bit5=有線。SSOTは Switch-bcon の spec/protocol_v3.md。
+_STATUS_FLAG_WIRED = 0x20
+
 
 class SerialPanelMixin:
     """シリアルパネルMixin。単体では使わない。"""
 
     frame_1: Any
+    tab_serial: Any
+    tab_controller: Any
     root: Any
     settings: Any
     os_name: str
@@ -50,6 +57,23 @@ class SerialPanelMixin:
     transport_cb: Any
     arbitration_label: Any
     arbitration_cb: Any
+    player_lamp_label: Any
+    player_lamp_canvas: Any
+    rumble_label: Any
+    _player_lamp_items: list
+    _player_lamp_after: Any
+    _player_info_cache: bytes
+    _rumble_cache: bytes
+    _player_lamp_unsub: Any
+    _player_lamp_transport: Any
+    bcon_row: Any
+    bcon_wired_label: Any
+    bcon_wired: Any
+    bcon_wired_rb_wireless: Any
+    bcon_wired_rb_wired: Any
+    bcon_emulate_label: Any
+    bcon_emulate: Any
+    bcon_emulate_cb: Any
     control_lf: Any
     is_use_keyboard: Any
     _kb_window_active: Any
@@ -65,7 +89,7 @@ class SerialPanelMixin:
     _update_title: Any
 
     def _build_serial_frame(self) -> None:
-        self.serial_lf = ttk.Labelframe(self.frame_1)
+        self.serial_lf = ttk.Labelframe(self.tab_serial)
 
         self.com_port_label = ttk.Label(self.serial_lf)
         self.com_port_label.config(text="COM Port: ")
@@ -144,20 +168,102 @@ class SerialPanelMixin:
         #   挙動で、script を選ぶと実行中の手操作を断る。
         self.arbitration_label = ttk.Label(self.serial_lf)
         self.arbitration_label.config(text="入力調停: ")
-        self.arbitration_label.grid(column=0, padx="5", row=2, sticky="ew")
+        self.arbitration_label.grid(column=0, padx="5", row=3, sticky="ew")
 
         self.arbitration_cb = ttk.Combobox(self.serial_lf)
         self.arbitration_cb.config(
             state="readonly", textvariable=self.arbitration_mode, width=28
         )
-        self.arbitration_cb.grid(column=1, padx="5", row=2, sticky="ew")
+        self.arbitration_cb.grid(column=1, padx="5", row=3, sticky="ew")
         self.arbitration_cb.bind("<<ComboboxSelected>>", self.applyArbitration, add="")
 
+        # プレイヤーランプ（bcon の PLAYER_INFO を省スペース表示）。
+        # Bcon設定小窓の4灯と同じく bit0=LED1..bit3=LED4 の横並び。
+        # Transport行の右端へ置き、左の空きをコンボの伸びで吸う。
+        self.player_lamp_label = ttk.Label(self.serial_lf)
+        self.player_lamp_label.config(text="LED: ")
+        self.player_lamp_label.grid(column=2, padx="5", row=1, sticky="e")
+
+        self.player_lamp_canvas = tk.Canvas(
+            self.serial_lf, width=86, height=18, highlightthickness=0
+        )
+        self.player_lamp_canvas.grid(column=3, padx="5", row=1, sticky="e")
+        self._player_lamp_items = []
+        for index in range(4):
+            left = 2 + index * 21
+            self._player_lamp_items.append(
+                self.player_lamp_canvas.create_rectangle(
+                    left,
+                    2,
+                    left + 14,
+                    16,
+                    fill="gray",
+                    outline="#4D4D4D",
+                )
+            )
+        self._player_lamp_after = None
+        # 巡回が読む購読写し。受信スレッドが置き、Tkは読むだけ。
+        # 未受信・差し替え直後は空（全消灯・振動:（なし））。
+        self._player_info_cache = b""
+        self._rumble_cache = b""
+        self._player_lamp_unsub = None
+        self._player_lamp_transport = None
+        self.rumble_label = ttk.Label(self.serial_lf)
+        self.rumble_label.config(text="振動: ")
+        self.rumble_label.grid(column=4, padx="5", row=1, sticky="e")
+
+        # bcon の有線/無線切替と種別切替。同行の内枠へ束ねる。
+        # 内枠が列いっぱいに伸びるため、種別の右端はCOM欄の右端に揃う。
+        # bcon接続時のみ有効。
+        self.bcon_wired_label = ttk.Label(self.serial_lf)
+        self.bcon_wired_label.config(text="接続方式: ")
+        self.bcon_wired_label.grid(column=0, padx="5", row=2, sticky="ew")
+
+        self.bcon_row = ttk.Frame(self.serial_lf)
+        self.bcon_row.grid(column=1, padx="5", row=2, sticky="ew")
+
+        self.bcon_wired = tk.StringVar(value="無線")
+        self.bcon_wired_rb_wireless = ttk.Radiobutton(
+            self.bcon_row,
+            text="無線",
+            value="無線",
+            variable=self.bcon_wired,
+            command=self.applyBconWired,
+        )
+        self.bcon_wired_rb_wireless.pack(side="left")
+        self.bcon_wired_rb_wired = ttk.Radiobutton(
+            self.bcon_row,
+            text="有線",
+            value="有線",
+            variable=self.bcon_wired,
+            command=self.applyBconWired,
+        )
+        self.bcon_wired_rb_wired.pack(side="left")
+
+        self.bcon_emulate_label = ttk.Label(self.bcon_row)
+        self.bcon_emulate_label.config(text="種別: ")
+        self.bcon_emulate_label.pack(side="left", padx=(8, 0))
+
+        self.bcon_emulate = tk.StringVar(value="Pro Controller")
+        self.bcon_emulate_cb = ttk.Combobox(self.bcon_row)
+        self.bcon_emulate_cb.config(
+            state="readonly",
+            textvariable=self.bcon_emulate,
+            width=14,
+            values=("Pro Controller", "Joy-Con (L)", "Joy-Con (R)"),
+        )
+        self.bcon_emulate_cb.pack(side="left", fill="x", expand=True)
+        self.bcon_emulate_cb.bind("<<ComboboxSelected>>", self.applyBconEmulate, add="")
+        # 左のコンボ列を伸ばし、右端の表示・切替へ寄せる。
+        self.serial_lf.columnconfigure(1, weight=1)
+
         self.serial_lf.config(text="Serial Settings")
-        self.serial_lf.grid(column=0, columnspan=2, padx="5", row=1, sticky="nsew")
+        self.serial_lf.pack(fill="both", expand=True, padx=5, pady=5)
+        self._refresh_bcon_rows()
+        self._poll_player_lamp()
 
     def _build_control_frame(self) -> None:
-        self.control_lf = ttk.Labelframe(self.frame_1)
+        self.control_lf = ttk.Labelframe(self.tab_controller)
 
         self.is_use_keyboard = tk.BooleanVar()
         self.cb_use_keyboard = ttk.Checkbutton(self.control_lf)
@@ -193,7 +299,7 @@ class SerialPanelMixin:
         self.simpleConButton.grid(column=0, padx="10", pady="5", row=1, sticky="ew")
 
         self.control_lf.config(height="200", text="Controller")
-        self.control_lf.grid(column=0, padx="5", row=2, columnspan=2, sticky="nsew")
+        self.control_lf.pack(fill="both", expand=True, padx=5, pady=5)
 
     def _currentBaudRate(self) -> int:
         """Baud Rate を通常の int で返す。数値として読めないときだけ既定。
@@ -376,6 +482,342 @@ class SerialPanelMixin:
         logger.info(message)
         self._on_setting_changed()
 
+    def _bcon_transport(self) -> Any:
+        """bcon接続中の運搬器。bcon以外・未接続はNone。
+
+        名前ではなく能力で見る。別プロセス版（switch-bcon-proc）
+        も同じ口を持つためここで拾う。
+        """
+        from core.transport.base import BCON_STATE
+
+        sender = getattr(self.serial, "sender", None)
+        transport = getattr(sender, "transport", None)
+        if getattr(transport, "name", "") == "bcon":
+            return transport
+        try:
+            if getattr(transport, "capability", "") == BCON_STATE:
+                return transport
+        except Exception:
+            pass
+        return None
+
+    def _bcon_only_widgets(self) -> tuple:
+        """bcon選択時だけ見せる部品。legacy系に無いLED・切替が対象。"""
+        parts: list[Any] = [
+            self.player_lamp_label,
+            self.player_lamp_canvas,
+            self.bcon_wired_label,
+            self.bcon_row,
+        ]
+        rumble = getattr(self, "rumble_label", None)
+        if rumble is not None:
+            parts.append(rumble)
+        return tuple(parts)
+
+    def _refresh_bcon_rows(self) -> None:
+        """bcon行の有効・無効を接続状態に合わせる。
+
+        bcon以外では選べないうえ、行自体を隠す（legacy系に無い
+        機能を見せない）。grid_remove/grid の対で戻す。
+        """
+        show = self._bcon_transport() is not None
+        try:
+            self.bcon_emulate_cb.config(state="readonly" if show else "disabled")
+            rb_state = "normal" if show else "disabled"
+            self.bcon_wired_rb_wireless.config(state=rb_state)
+            self.bcon_wired_rb_wired.config(state=rb_state)
+        except Exception:
+            pass
+        for widget in self._bcon_only_widgets():
+            try:
+                if show:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+            except Exception:
+                pass
+
+    def _sync_bcon_display(self) -> None:
+        """接続直後に有線/無線の表示を実機へ合わせる。取得は別スレッド。
+
+        開いた直後はHELLO往復中のため1回で届かないことがある。
+        1秒おきに最大3回まで取り直す。
+        """
+        transport = self._bcon_transport()
+        request = getattr(transport, "request_status", None)
+        if transport is None or not callable(request):
+            return
+
+        def job() -> None:
+            import time as _time
+
+            for _ in range(3):
+                try:
+                    status = request(timeout=1.0)
+                except Exception:
+                    status = None
+                try:
+                    wired = bool(int(status.get("flags", 0)) & _STATUS_FLAG_WIRED)
+                except (TypeError, ValueError, AttributeError):
+                    _time.sleep(1.0)
+                    continue
+                try:
+                    self.root.after(0, lambda: self._apply_bcon_wired_display(wired))
+                except Exception:
+                    pass
+                return
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _apply_bcon_wired_display(self, wired: bool) -> None:
+        try:
+            self.bcon_wired.set("有線" if wired else "無線")
+        except Exception:
+            pass
+
+    def applyBconWired(self, event: Any = None) -> None:
+        """Bcon接続行で選んだ有線/無線を実機へ送る。"""
+        transport = self._bcon_transport()
+        if transport is None:
+            print("bcon接続時のみ切替えられます。")
+            self._refresh_bcon_rows()
+            return
+        enable = self.bcon_wired.get() == "有線"
+        if (
+            tkmsg.askquestion(
+                "確認",
+                f"{'有線(USB直結・BT停止)' if enable else '無線'}に切替えます。続けますか?",
+            )
+            != "yes"
+        ):
+            return
+        setter = getattr(transport, "set_wired_mode", None)
+        if not callable(setter):
+            print("bcon接続時のみ切替えられます。")
+            return
+        self._run_bcon_setter("有線/無線切替", setter, (enable,), {"timeout": 1.0})
+
+    def applyBconEmulate(self, event: Any = None) -> None:
+        """Bcon接続行で選んだコントローラ種別を実機へ送る。"""
+        transport = self._bcon_transport()
+        names = ("Pro Controller", "Joy-Con (L)", "Joy-Con (R)")
+        try:
+            role = list(names).index(self.bcon_emulate.get())
+        except ValueError:
+            print("種別は一覧から選んでください。")
+            return
+        if transport is None:
+            print("bcon接続時のみ切替えられます。")
+            self._refresh_bcon_rows()
+            return
+        if (
+            tkmsg.askquestion("確認", f"{names[role]}に切替えます。続けますか?")
+            != "yes"
+        ):
+            return
+        setter = getattr(transport, "set_emulate_mode", None)
+        if not callable(setter):
+            print("bcon接続時のみ切替えられます。")
+            return
+        self._run_bcon_setter("種別切替", setter, (role,), {"timeout": 1.0})
+
+    def _run_bcon_setter(
+        self, label: str, setter: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> None:
+        """実機への切替 RPC を裏スレッドで走らせる。Tk は待たない。
+
+        setter は子プロセス往復のためボタンから同期呼びすると Tk が
+        数秒固まる。値は呼び出し前に Tk 側で読み切っているため、裏へ
+        渡すのは素の値だけになる。反映（_refresh_bcon_rows）は Tk へ
+        after(0) で戻す。終了後は捨てる。
+        """
+
+        def job() -> None:
+            try:
+                setter(*args, **kwargs)
+            except Exception as e:
+                # print はキュー経由のため裏からでも安全。利用者の目に
+                # 届け、詳細はファイルへ残す。
+                print(f"{label}に失敗しました: {e}")
+                logger.warning(f"{label}に失敗しました: {e}")
+            try:
+                if getattr(self, "_closing", False):
+                    return
+                self.root.after(0, self._finish_bcon_setter)
+            except Exception:
+                pass
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _finish_bcon_setter(self) -> None:
+        """裏での切替の反映。Tk スレッドで走る。"""
+        if getattr(self, "_closing", False):
+            return
+        try:
+            self._refresh_bcon_rows()
+        except Exception:
+            pass
+
+    def _note_bcon_rpc(self, name: str, ms: float) -> None:
+        # getter往復の写しを残すだけ（H1切り分け用・画面に触れない）。
+        # 遅い往復だけdebugへ間引きで出す（既定では出ない）。
+        try:
+            last = getattr(self, "_bcon_rpc_last_ms", None)
+            if not isinstance(last, dict):
+                last = {}
+                self._bcon_rpc_last_ms = last
+            peak = getattr(self, "_bcon_rpc_max_ms", None)
+            if not isinstance(peak, dict):
+                peak = {}
+                self._bcon_rpc_max_ms = peak
+            value = float(ms)
+            last[name] = value
+            if value > float(peak.get(name, 0.0)):
+                peak[name] = value
+            if value >= 50.0:
+                now = time.perf_counter()
+                prev = float(getattr(self, "_bcon_rpc_log_t", 0.0))
+                if now - prev >= 5.0:
+                    self._bcon_rpc_log_t = now
+                    logger.debug(f"bcon RPC遅延 {name}={value:.1f}ms")
+        except Exception:
+            pass
+
+    def bcon_rpc_latency_ms(self) -> dict[str, float]:
+        # 直近の往復ms写し。呼ぶだけで線・画面に触れない。
+        try:
+            raw = getattr(self, "_bcon_rpc_last_ms", None)
+            return dict(raw) if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _on_bcon_rx_frame(self, frame: Any) -> None:
+        """購読経路のframe写し。受信スレッドで走る。画面に触れない。
+
+        本家・別プロセス版どちらの購読も (種別, payload, 連番) で来る。
+        PLAYER_INFO(0x23)とRUMBLE(0x22)だけ写し、それ以外は捨てる。
+        """
+        try:
+            ftype = int(frame[0]) & 0xFF
+            payload = bytes(frame[1])
+        except (TypeError, ValueError, IndexError):
+            return
+        try:
+            if ftype == 0x23:
+                self._player_info_cache = payload
+            elif ftype == 0x22:
+                self._rumble_cache = payload
+        except Exception:
+            pass
+
+    def _ensure_player_lamp_subscription(self, transport: Any) -> None:
+        """購読の付け替え。Tkで走るが線への往復はしない。
+
+        運搬器が変わったときだけ繋ぎ直す。替わった側の古い写しは捨てる
+        （前の運搬器の表示を残さない）。購読口の無い運搬器は写し捨てのみ。
+        """
+        try:
+            current = getattr(self, "_player_lamp_transport", None)
+        except Exception:
+            current = None
+        if transport is current:
+            return
+        try:
+            unsub = getattr(self, "_player_lamp_unsub", None)
+        except Exception:
+            unsub = None
+        if callable(unsub):
+            try:
+                unsub()
+            except Exception:
+                pass
+        try:
+            self._player_lamp_unsub = None
+            self._player_lamp_transport = transport
+            self._player_info_cache = b""
+            self._rumble_cache = b""
+        except Exception:
+            pass
+        if transport is None:
+            return
+        subscribe = getattr(transport, "subscribe_rx", None)
+        if not callable(subscribe):
+            return
+        try:
+            self._player_lamp_unsub = subscribe(self._on_bcon_rx_frame)
+        except Exception:
+            try:
+                self._player_lamp_unsub = None
+            except Exception:
+                pass
+
+    def _cancel_player_lamp_patrol(self) -> None:
+        """巡回の予約を取り消す。終了・破棄の前に呼ぶ。"""
+        try:
+            after_id = getattr(self, "_player_lamp_after", None)
+        except Exception:
+            after_id = None
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        try:
+            self._player_lamp_after = None
+        except Exception:
+            pass
+
+    def _poll_player_lamp(self) -> None:
+        """購読写しの反映だけ。500ms毎の画面側巡回。Tkから線へ取りに行かない。"""
+        try:
+            transport = self._bcon_transport()
+        except Exception:
+            transport = None
+        try:
+            self._ensure_player_lamp_subscription(transport)
+        except Exception:
+            pass
+        try:
+            try:
+                payload = bytes(getattr(self, "_player_info_cache", b"") or b"")
+            except (TypeError, ValueError):
+                payload = b""
+            lamp = payload[0] if len(payload) >= 1 else 0
+            try:
+                value = int(lamp) & 0x0F
+            except (TypeError, ValueError):
+                value = 0
+            for index, item in enumerate(self._player_lamp_items):
+                color = "yellow" if (value >> index) & 1 else "gray"
+                self.player_lamp_canvas.itemconfigure(item, fill=color)
+            try:
+                rumble = bytes(getattr(self, "_rumble_cache", b"") or b"")
+            except (TypeError, ValueError):
+                rumble = b""
+            try:
+                from core.transport.bcon import decode_rumble
+
+                left, right = decode_rumble(rumble)
+                left, right = int(left) & 0xFF, int(right) & 0xFF
+            except Exception:
+                left, right = 0, 0
+            label = getattr(self, "rumble_label", None)
+            if label is not None:
+                try:
+                    if rumble:
+                        label.config(text=f"振動: L={left} R={right}")
+                    else:
+                        label.config(text="振動: （なし）")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self._player_lamp_after = self.root.after(500, self._poll_player_lamp)
+        except Exception:
+            self._player_lamp_after = None
+
     def _start_serial(self) -> None:
         self.serial.build_sender(self._sender_spec(), transport_logger=logger)
         self.activateSerial()
@@ -414,6 +856,9 @@ class SerialPanelMixin:
             self._bindKeyboardFocus()
         else:
             self._unbindKeyboardFocus()
+        self._refresh_bcon_rows()
+        if connected:
+            self._sync_bcon_display()
         self._on_setting_changed()
         self._update_title()
 
@@ -426,6 +871,7 @@ class SerialPanelMixin:
         self.serial.disconnect()
         self._unbindKeyboardFocus()
         self.is_use_keyboard.set(False)
+        self._refresh_bcon_rows()
         self._on_setting_changed()
         self._update_title()
 

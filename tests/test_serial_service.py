@@ -45,8 +45,8 @@ def test_build_sender_legacy() -> None:
 def test_selected_transport_override() -> None:
     service, _ = make_service()
     assert service.selected_transport_name("legacy_text") == "legacy_text"
-    service.transport_override = "pico_uart"
-    assert service.selected_transport_name("legacy_text") == "pico_uart"
+    service.transport_override = "switch-bcon"
+    assert service.selected_transport_name("legacy_text") == "switch-bcon"
     service.clear_override()
     assert service.selected_transport_name("legacy_text") == "legacy_text"
     # 未知名は既定へ落ちる（理由つき）
