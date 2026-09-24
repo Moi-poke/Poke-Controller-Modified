@@ -19,7 +19,11 @@ Commands.* のうち利用者スクリプトが使ってよい経路と、標準
 from __future__ import annotations
 
 # Commands.* のうち利用者スクリプトが使ってよい経路。
-# （Keys / PythonCommandBase / McuCommandBase / WakeLink / CommandVision / CommandAudio）
+# （Keys / PythonCommandBase / McuCommandBase / WakeLink / CommandVision / CommandAudio
+#  ＋ CommandColor）。CommandColor は core/procon_color.py の再公開で、
+#  中身は12B色荷物とerrcode説明の純粋助けだけ（GUI・線に触れない）。
+#  BconSetup の小窓と set_procon_color 台本が同じ読みを使うための
+#  単一正本であり、窓側の再編に台本が巻き込まれないよう凍結面に載せる。
 ALLOWED_COMMANDS_SUBS = frozenset(
     {
         "Keys",
@@ -28,6 +32,7 @@ ALLOWED_COMMANDS_SUBS = frozenset(
         "WakeLink",
         "CommandVision",
         "CommandAudio",
+        "CommandColor",
     }
 )
 
