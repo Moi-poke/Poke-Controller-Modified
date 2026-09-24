@@ -68,7 +68,15 @@ def _cmd_install(args: argparse.Namespace) -> int:
     from services import script_pack
 
     print("注意: アプリが起動中・実行中なら先に止めてください（CLI では見張れません）")
-    res = script_pack.install_zip(args.app_dir, args.zip, allow_overwrite=args.yes)
+    res = script_pack.install_zip(
+        args.app_dir, args.zip, allow_overwrite=args.yes, allow_install_deps=args.yes
+    )
+    if res.status == "confirm-install-deps":
+        print(res.message)
+        for dep in res.missing:
+            print(f"依存: {dep}")
+        print("依存があっても導入するには --yes を付けてください")
+        return 1
     if res.status == "confirm-overwrite":
         print(res.message)
         print("上書きするには --yes を付けてください")

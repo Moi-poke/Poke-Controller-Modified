@@ -37,6 +37,14 @@ def _summary_text(manifest: Any, warnings: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _missing_text(missing: list[str]) -> str:
+    """確認ダイアログに出す不足依存の一覧。5件まで出す。"""
+    lines = [f"依存: {name}" for name in missing[:5]]
+    if len(missing) > 5:
+        lines.append(f"依存: ほか {len(missing) - 5} 件")
+    return "\n".join(lines)
+
+
 def install_script_zip(
     root: tk.Misc,
     app_dir: str,
@@ -61,6 +69,24 @@ def install_script_zip(
         print(f"導入できません: {res.message}")
         tkmsg.showerror("導入失敗", res.message, parent=root)
         return
+    deps_approved = False
+    if res.status == "confirm-install-deps":
+        body = (
+            f"{res.manifest.name} は追加の依存が必要です。\n"
+            "このまま導入してよいですか。\n\n"
+            + _summary_text(res.manifest, res.warnings)
+            + "\n"
+            + _missing_text(res.missing)
+        )
+        if not tkmsg.askyesno("依存確認", body, parent=root):
+            print("導入を取り消しました")
+            return
+        deps_approved = True
+        res = script_pack.install_zip(app_dir, zippath, allow_install_deps=True)
+        if res.status == "failed" or res.manifest is None:
+            print(f"導入できません: {res.message}")
+            tkmsg.showerror("導入失敗", res.message, parent=root)
+            return
     if res.status == "confirm-overwrite":
         body = (
             f"{res.manifest.name} は版 {res.current_version} が導入済みです。\n"
@@ -70,7 +96,9 @@ def install_script_zip(
         if not tkmsg.askyesno("上書き確認", body, parent=root):
             print("導入を取り消しました")
             return
-        res = script_pack.install_zip(app_dir, zippath, allow_overwrite=True)
+        res = script_pack.install_zip(
+            app_dir, zippath, allow_overwrite=True, allow_install_deps=deps_approved
+        )
         if res.status != "installed" or res.manifest is None:
             print(f"導入できません: {res.message}")
             tkmsg.showerror("導入失敗", res.message, parent=root)
@@ -83,6 +111,10 @@ def install_script_zip(
         done += f"\n注意: {warning}"
     if len(res.warnings) > 5:
         done += f"\n注意: ほか {len(res.warnings) - 5} 件"
+    for dep in res.missing[:5]:
+        done += f"\n依存: {dep}"
+    if len(res.missing) > 5:
+        done += f"\n依存: ほか {len(res.missing) - 5} 件"
     print(done)
     tkmsg.showinfo("導入完了", done, parent=root)
 
