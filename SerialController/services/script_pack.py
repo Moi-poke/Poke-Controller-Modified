@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import zipfile
@@ -26,6 +29,15 @@ BACKUP_DIRNAME = ".backup"
 
 #: 導入可否の基準にする自アプリの版（pyprojectの数値部に合わせる）。
 APP_VERSION = "4.0.1"
+
+#: 依存導入の実行上限秒（blocking run の既定。短命の pip 呼び出しは
+#: Popen の非同期化が要らないため、溜め込まず待てる値に留める）。
+DEPS_INSTALL_TIMEOUT = 120.0
+
+#: 依存名の許容形（英数・`_.-` と任意の `==` 版指定のみ）。
+#: 供給網の注意：承認済み・版固定のパッケージだけを通す。不明な指定子
+#: （`;`・URL・パス・空白など）は外して failed にする。
+_SAFE_DEP_RE = re.compile(r"^[A-Za-z0-9_.-]+(==[A-Za-z0-9_.-]+)?$")
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:
@@ -102,15 +114,19 @@ def _atomic_copy(src: Path, dst: Path) -> None:
 
 @dataclass
 class InstallResult:
-    """導入の結果。status は installed / confirm-overwrite / failed。"""
+    """導入の結果。status は installed / confirm-overwrite / confirm-install-deps / failed。"""
 
     status: str
     message: str
     manifest: pack_manifest.PackManifest | None = None
     files: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
     backup_rel: str | None = None
     current_version: str | None = None
+    installed_deps: list[str] = field(default_factory=list)
+    deps_stdout: str = ""
+    deps_stderr: str = ""
 
 
 @dataclass
@@ -136,6 +152,7 @@ class InstalledRecord:
     files: list[str]
     installed_at: str
     zip_name: str
+    dependencies: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, indent=2)
@@ -143,6 +160,8 @@ class InstalledRecord:
     @staticmethod
     def from_json(text: str) -> InstalledRecord:
         data = json.loads(text)
+        raw_deps = data.get("dependencies", [])
+        deps = [str(v) for v in raw_deps] if isinstance(raw_deps, list) else []
         return InstalledRecord(
             name=str(data["name"]),
             version=str(data["version"]),
@@ -154,6 +173,7 @@ class InstalledRecord:
             files=[str(v) for v in data["files"]],
             installed_at=str(data["installed_at"]),
             zip_name=str(data["zip_name"]),
+            dependencies=deps,
         )
 
 
@@ -186,14 +206,113 @@ def list_installed(app_dir: str | Path) -> list[InstalledRecord]:
     return records
 
 
+def _clean_dep_names(packages: list[str]) -> list[str]:
+    """重複を除いた依存名の一覧を返す（順序は保つ）。"""
+    cleaned: list[str] = []
+    for name in packages:
+        item = name.strip()
+        if item and item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
+
+def install_dependencies(
+    packages: list[str],
+    *,
+    allow_install_deps: bool = False,
+    timeout: float = DEPS_INSTALL_TIMEOUT,
+) -> InstallResult:
+    """不足依存を pip で導入する。承認が無ければ実行せず confirm で返す。
+
+    承認ゲートを先に置く。allow_install_deps が偽なら subprocess へは
+    一切触らず confirm-install-deps で止める（自動導入はしない）。
+    実行系は sys.executable -m pip install を blocking run で呼び、
+    stdout/stderr を捕捉する（代替手段: uv pip install）。
+    失敗・タイムアウトは failed にして出力を残す。Popen は使わない
+    （短命の pip 呼び出しに非同期化の証拠が無いため）。
+    """
+    # 供給網の注意：承認済み・版固定のパッケージだけを通す。ここでは
+    # 呼び出し側が confirm-install-deps で示した名前だけを受け、形の
+    # 怪しいものは実行前に落とす。
+    targets = _clean_dep_names(list(packages))
+    if not allow_install_deps:
+        return InstallResult(
+            status="confirm-install-deps",
+            message=(
+                f"追加の依存が必要です（{', '.join(targets)}）。導入してよいですか。"
+                if targets
+                else "追加の依存が必要です。導入してよいですか。"
+            ),
+            missing=targets,
+        )
+    if not targets:
+        return InstallResult(status="installed", message="導入する依存はありません。")
+    for item in targets:
+        if not _SAFE_DEP_RE.match(item):
+            return InstallResult(
+                status="failed",
+                message=f"導入できない依存名です: {item!r}",
+                missing=targets,
+            )
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "pip", "install", *targets],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        out = str(e.stdout or "") if e.stdout else ""
+        err = str(e.stderr or "") if e.stderr else ""
+        message = f"依存の導入が時間切れです（{', '.join(targets)}）。"
+        if out or err:
+            message += f"\nstdout: {out}\nstderr: {err}"
+        logger.warning(message)
+        return InstallResult(
+            status="failed",
+            message=message,
+            missing=targets,
+            deps_stdout=out,
+            deps_stderr=err,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        message = f"依存を導入できません（{', '.join(targets)}）: {e}"
+        logger.warning(message)
+        return InstallResult(status="failed", message=message, missing=targets)
+    stdout = done.stdout or ""
+    stderr = done.stderr or ""
+    if done.returncode != 0:
+        message = f"依存を導入できません（{', '.join(targets)}）。"
+        if stdout or stderr:
+            message += f"\nstdout: {stdout}\nstderr: {stderr}"
+        logger.warning(message)
+        return InstallResult(
+            status="failed",
+            message=message,
+            missing=targets,
+            deps_stdout=stdout,
+            deps_stderr=stderr,
+        )
+    logger.info(f"依存を導入: {', '.join(targets)}")
+    return InstallResult(
+        status="installed",
+        message=f"依存を導入しました（{', '.join(targets)}）。",
+        missing=targets,
+        installed_deps=targets,
+        deps_stdout=stdout,
+        deps_stderr=stderr,
+    )
+
+
 def install_zip(
     app_dir: str | Path,
     zip_path: str | Path,
     *,
     allow_overwrite: bool = False,
+    allow_install_deps: bool = False,
     app_version: str = APP_VERSION,
 ) -> InstallResult:
-    """配布zipを導入する。上書きが必要なら confirm-overwrite で返す。"""
+    """配布zipを導入する。上書き・不足依存が必要なら確認状態で返す。"""
     app = Path(app_dir)
     with tempfile.TemporaryDirectory(prefix="pokecon_pack_") as tmp:
         staged = Path(tmp) / "staged"
@@ -218,6 +337,40 @@ def install_zip(
                     f"（現在 {app_version}）。アプリを更新してください。"
                 ),
             )
+        staged_entry = (
+            staged
+            / "Commands"
+            / "PythonCommands"
+            / PurePosixPath(manifest.entry).as_posix()
+        )
+        missing = pack_zip.missing_third_party(staged_entry)
+        if missing and not allow_install_deps:
+            return InstallResult(
+                status="confirm-install-deps",
+                manifest=manifest,
+                warnings=list(report.warnings),
+                missing=list(missing),
+                message=(
+                    f"{manifest.name} は追加の依存が必要です"
+                    f"（{', '.join(missing)}）。導入してよいですか。"
+                ),
+            )
+        deps_result: InstallResult | None = None
+        if missing and allow_install_deps:
+            deps_result = install_dependencies(list(missing), allow_install_deps=True)
+            if deps_result.status != "installed":
+                return InstallResult(
+                    status="failed",
+                    manifest=manifest,
+                    warnings=list(report.warnings),
+                    missing=list(missing),
+                    installed_deps=[],
+                    deps_stdout=deps_result.deps_stdout,
+                    deps_stderr=deps_result.deps_stderr,
+                    message=(
+                        f"{manifest.name} の依存を導入できません: {deps_result.message}"
+                    ),
+                )
         old = read_record(app, manifest.name)
         if old is not None and not allow_overwrite:
             if old.version == manifest.version:
@@ -230,6 +383,7 @@ def install_zip(
                 status="confirm-overwrite",
                 manifest=manifest,
                 warnings=list(report.warnings),
+                missing=list(missing),
                 current_version=old.version,
                 message=(
                     f"{manifest.name} は版 {old.version} が導入済みです。"
@@ -309,6 +463,9 @@ def install_zip(
             files=rels,
             installed_at=time.strftime("%Y-%m-%d %H:%M:%S"),
             zip_name=Path(zip_path).name,
+            dependencies=(
+                list(deps_result.installed_deps) if deps_result is not None else []
+            ),
         )
         rec_path = _record_path(app, manifest.name)
         rec_path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,7 +478,13 @@ def install_zip(
             manifest=manifest,
             files=rels,
             warnings=list(report.warnings),
+            missing=list(missing),
             backup_rel=backup_root.relative_to(app).as_posix() if backed else None,
+            installed_deps=(
+                list(deps_result.installed_deps) if deps_result is not None else []
+            ),
+            deps_stdout=deps_result.deps_stdout if deps_result is not None else "",
+            deps_stderr=deps_result.deps_stderr if deps_result is not None else "",
             message=(
                 f"導入しました: {manifest.name} 版{manifest.version}"
                 f"（{len(rels)}件： manifestを除く）"

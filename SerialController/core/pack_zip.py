@@ -55,6 +55,46 @@ class StagedReport:
         return not self.errors and self.manifest is not None
 
 
+def _unknown_top_levels(tree: ast.AST) -> list[str]:
+    """構文木から未知トップレベル（不足の第三者依存候補）を順序付きで返す。
+
+    標準ライブラリ・THIRD_PARTY 正本・Commands は除く。相対 import は
+    対象外（異常扱いのためここでは数えない）。重複は除く。
+    """
+    allowed_top = set(sys.stdlib_module_names) | _THIRD_PARTY | {"Commands"}
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                top = a.name.split(".")[0]
+                if top not in allowed_top and top not in found:
+                    found.append(top)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.level > 0:
+                continue
+            if node.module:
+                top = node.module.split(".")[0]
+                if top not in allowed_top and top not in found:
+                    found.append(top)
+    return found
+
+
+def missing_third_party(entry_file: str | Path) -> list[str]:
+    """entry の不足第三者依存（未知トップレベル）の一覧を返す。
+
+    THIRD_PARTY 正本と標準ライブラリを除き、import / from 両形式を見る。
+    読めない・壊れた entry は空を返す（異常は scan 側が落とす）。
+    """
+    try:
+        tree = ast.parse(
+            Path(entry_file).read_text(encoding="utf-8"),
+            filename=Path(entry_file).name,
+        )
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        return []
+    return _unknown_top_levels(tree)
+
+
 def scan_entry_imports(entry_file: Path) -> tuple[list[str], list[str]]:
     """entry の import を走査する。(異常, 注意) を返す。
 
