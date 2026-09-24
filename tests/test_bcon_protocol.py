@@ -71,6 +71,30 @@ def test_bcon_parser_resyncs_with_sync_byte_in_payload():
     assert out == [(T_STATE, payload, 0x10)]
 
 
+def test_bcon_bootsel_type_magic_and_len():
+    from core.transport.bcon_protocol import (
+        BOOTSEL_MAGIC,
+        T_BOOTSEL,
+        BconParser,
+        frame_build,
+        proto_expected_len,
+    )
+
+    # SSOT: Switch-bcon protocol.h T_BOOTSEL=0x37・magic 0x5A・LEN=1。
+    assert T_BOOTSEL == 0x37
+    assert BOOTSEL_MAGIC == 0x5A
+    assert proto_expected_len(T_BOOTSEL) == 1
+    # LEN=1は受理する。
+    parser = BconParser()
+    good = frame_build(T_BOOTSEL, bytes([BOOTSEL_MAGIC]), 0x09)
+    assert parser.feed(good) == [(T_BOOTSEL, bytes([BOOTSEL_MAGIC]), 0x09)]
+    # LEN不一致（0/2）は破棄しerr_crcを数える。
+    parser = BconParser()
+    assert parser.feed(frame_build(T_BOOTSEL, b"", 0x0A)) == []
+    assert parser.feed(frame_build(T_BOOTSEL, bytes([0x5A, 0x00]), 0x0B)) == []
+    assert parser.err_crc == 2
+
+
 def test_bcon_rx_seq_first_not_counted_and_gap_events():
     import threading
     import time

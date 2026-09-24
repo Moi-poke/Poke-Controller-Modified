@@ -19,18 +19,23 @@ import serial
 from core.transport.base import BCON_STATE, Transport
 from core.transport.bcon_protocol import (
     BAUD_TABLE,
+    BOOTSEL_MAGIC,
     DEFAULT_BAUD_INDEX,
     PROTO_VER,
     RESULT_DOWNGRADED,
     RESULT_OK,
     RESULT_UNSUPPORTED,
     T_BAUD_SET,
+    T_BEACON_START,
+    T_BOOTSEL,
+    T_EMULATE_MODE,
     T_HELLO,
     T_HELLO_ACK,
     T_NEUTRAL,
     T_PING,
     T_PLAYER_INFO,
     T_PONG,
+    T_RUMBLE,
     T_STATE,
     T_STATUS,
     T_STATUS_REQ,
@@ -42,6 +47,10 @@ from core.transport.bcon_protocol import (
 BCON_DEFAULT_BAUDRATE = BAUD_TABLE[DEFAULT_BAUD_INDEX]
 BCON_READ_TIMEOUT = 0.05
 BCON_WRITE_TIMEOUT = 0.2
+
+# EMULATE_MODE の役割番号。Pico 側 personality と同じ並び。
+# 0=Pro Controller・1=Joy-Con (L)・2=Joy-Con (R)。
+EMULATE_ROLE_NAMES = ("Pro Controller", "Joy-Con (L)", "Joy-Con (R)")
 
 # live loopの既定周期（120Hz）。Picoのtimeout-neutral 200msに対し十分
 # 短く、USB 8msポーリングとも大きくは干渉しない。Phase 2で別過程へ
@@ -97,6 +106,24 @@ def _is_s_row(text: str) -> bool:
     return upper.startswith("S ") or upper == "S"
 
 
+def decode_rumble(payload: bytes) -> tuple[int, int]:
+    """RUMBLE payload（2B: 左・右の強さ0-255）を通読用の対へ直す。
+
+    不正（2B未満・非bytes的）は(0, 0)。例外は投げない。表示側の
+    整数化だけを受け持ち、tkinterには触れない。
+    """
+    try:
+        data = bytes(payload)
+    except (TypeError, ValueError):
+        return (0, 0)
+    if len(data) < 2:
+        return (0, 0)
+    try:
+        return (int(data[0]) & 0xFF, int(data[1]) & 0xFF)
+    except (TypeError, ValueError, IndexError):
+        return (0, 0)
+
+
 class BconTransport(Transport):
     """bcon用。STATEバイナリを送りSTATUS/PONG/ACKを読む。"""
 
@@ -111,6 +138,9 @@ class BconTransport(Transport):
             self._logger.setLevel(DEBUG)
             self._logger.propagate = True
         self._lock = threading.RLock()
+        # 送出の錠。採番→組立→writeを1単位で包み線上のSEQ順＝採番順にする。
+        # 必ず_lockの外側で取る（順序は_write_lock→_lock、逆は禁止）。
+        self._write_lock = threading.Lock()
         self._tx_seq = 0
         self.use_len12 = bool(use_len12)
         self._on_write_begin: Callable[..., None] | None = None
@@ -136,6 +166,8 @@ class BconTransport(Transport):
         self._last_status_time = 0.0
         self._last_player_info = b""
         self._last_player_time = 0.0
+        self._last_rumble = b""
+        self._last_rumble_time = 0.0
         # 直近HELLO_ACK（adopted/major/minor/result）と版表示用。
         self._last_hello_ack: dict[str, int] = {
             "adopted": 0,
@@ -317,8 +349,8 @@ class BconTransport(Transport):
         行→中間姿勢（Yは1:1のまま）→LEN8/12→`frame_build`→単一
         `write()`。Yの反転はPico側pack（4096-Y）が担う唯一の1回で、
         PC側では反転しない（wakecon経路と同一の端に載せる）。
-        錠はSEQ採番・保留取出しだけに使い、`write`は外で行う
-        （TextSerialTransportと同一規律）。
+        採番→組立→writeは_write_lockで1単位に包む（線上のSEQ順＝採番順。
+        TextSerialTransportと同一規律）。
         不正行・未開線・書込失敗は落とさず捨てる。baud hunt中・baud
         切替窓は抑えが立っているため捨ててdroppedに数える（会話
         フレームは別口で通す）。live loop起動中は保留（最新1件上書き・
@@ -369,27 +401,29 @@ class BconTransport(Transport):
                     self._live_merged += 1
                 self._live_pending = (payload, note, bool(measure_perf))
                 event = self._live_loop_event
-            else:
-                seq = self._tx_seq
-                self._tx_seq = (self._tx_seq + 1) & 0xFF
-                ser = self.ser
-                begin = self._on_write_begin
-                end = self._on_write_end
         if loop_on:
             try:
                 event.set()
             except Exception:
                 self._logger.debug("live loopの起床に失敗", exc_info=True)
             return
-        if ser is None:
-            self._logger.debug("bconは開いていないため送りません")
-            return
-        frame = frame_build(T_STATE, payload, seq)
-        self._write_frame(frame, row, measure_perf, begin, end, ser)
-        with self._lock:
-            self._live_sent += 1
-            self._live_latest = (payload, note)
-            self._live_last_tx = time.perf_counter()
+        # 同期送出も採番→組立→書込を1単位で包む（会話・loopとの逆転防止）。
+        with self._write_lock:
+            with self._lock:
+                seq = self._tx_seq
+                self._tx_seq = (self._tx_seq + 1) & 0xFF
+                ser = self.ser
+                begin = self._on_write_begin
+                end = self._on_write_end
+            if ser is None:
+                self._logger.debug("bconは開いていないため送りません")
+                return
+            frame = frame_build(T_STATE, payload, seq)
+            self._write_frame(frame, row, measure_perf, begin, end, ser)
+            with self._lock:
+                self._live_sent += 1
+                self._live_latest = (payload, note)
+                self._live_last_tx = time.perf_counter()
 
     def flush_pending(self) -> None:
         """保留があれば送り切る。loop起動中は起こして即送させる。"""
@@ -418,8 +452,12 @@ class BconTransport(Transport):
         begin: Callable[..., None] | None,
         end: Callable[..., None] | None,
         ser: Any,
-    ) -> None:
-        """1フレームを1回のwriteで出す（錠を持たない）。"""
+    ) -> bool:
+        """1フレームを1回のwriteで出す。成否を返す。
+
+        呼び側は_write_lock保持で呼ぶ（採番→組立→書込の1単位）。
+        短い書込・例外はFalse。SEQは巻き戻さない。例外は投げない。
+        """
         if begin is not None:
             try:
                 begin(row, measure_perf)
@@ -427,8 +465,9 @@ class BconTransport(Transport):
                 self._logger.debug("書き出し前フックで例外", exc_info=True)
         ok = False
         try:
-            ser.write(frame)
-            ok = True
+            count = ser.write(frame)
+            # 短い書込は失敗扱い（戻り無しは確かめようが無いため成功扱い）。
+            ok = count is None or int(count) == len(frame)
             if end is not None:
                 try:
                     end(row, measure_perf)
@@ -449,6 +488,7 @@ class BconTransport(Transport):
             if ok:
                 with self._lock:
                     self._last_tx = time.perf_counter()
+        return ok
 
     # -- 第3区画:120Hz live loop（独立スレッド＋絶対時刻。Task 5）--
 
@@ -561,8 +601,9 @@ class BconTransport(Transport):
         変化はsend_rowがeventで起こすため即送に近い。起床競合で1刻み
         遅れても保留は消さず次刻みで送る（欠落なし）。抑え（_tx_hold）
         が立つあいだは送らず保留を捨てる（hunt・baud切替窓のSTATE化け
-        防止。捨て分はdropped）。SEQ採番と保留取出しだけ錠内、書込と
-        購読者呼出しは錠の外（TextSerialTransportと同一規律）。
+        防止。捨て分はdropped）。保留取出しだけ錠内、採番→組立→書込は
+        送出の錠で会話と排他（線上のSEQ順＝採番順）、購読者呼出しは錠の外
+        （TextSerialTransportと同一規律）。
         1フレーム1write・SEQ方向別。例外では落ちない。
         """
         try:
@@ -611,23 +652,25 @@ class BconTransport(Transport):
                     next_tx = now + interval
                 continue
             payload, note, show = job
-            with self._lock:
-                seq = self._tx_seq
-                self._tx_seq = (self._tx_seq + 1) & 0xFF
-                ser = self.ser
-                begin = self._on_write_begin
-                end = self._on_write_end
-            if ser is None:
-                self._logger.debug("bconのlive loopは開いていないため送りません")
-                next_tx = now + interval
-                continue
-            try:
-                frame = frame_build(T_STATE, payload, seq)
-            except Exception as e:
-                self._logger.debug(f"bconのlive組立に失敗: {e!r}")
-                next_tx = now + interval
-                continue
-            self._write_frame(frame, note, show, begin, end, ser)
+            # 採番→組立→書込を1単位で包む（会話フレームとの逆転防止）。
+            with self._write_lock:
+                with self._lock:
+                    seq = self._tx_seq
+                    self._tx_seq = (self._tx_seq + 1) & 0xFF
+                    ser = self.ser
+                    begin = self._on_write_begin
+                    end = self._on_write_end
+                if ser is None:
+                    self._logger.debug("bconのlive loopは開いていないため送りません")
+                    next_tx = now + interval
+                    continue
+                try:
+                    frame = frame_build(T_STATE, payload, seq)
+                except Exception as e:
+                    self._logger.debug(f"bconのlive組立に失敗: {e!r}")
+                    next_tx = now + interval
+                    continue
+                self._write_frame(frame, note, show, begin, end, ser)
             now = time.perf_counter()
             with self._lock:
                 self._live_sent += 1
@@ -909,6 +952,12 @@ class BconTransport(Transport):
                         self._last_player_time = now
                     except Exception:
                         self._logger.debug("PLAYER_INFO保持で例外", exc_info=True)
+                elif ftype == T_RUMBLE:
+                    try:
+                        self._last_rumble = bytes(frame[1])
+                        self._last_rumble_time = now
+                    except Exception:
+                        self._logger.debug("RUMBLE保持で例外", exc_info=True)
         except Exception:
             self._logger.debug("rx直近保持で例外", exc_info=True)
         try:
@@ -940,13 +989,30 @@ class BconTransport(Transport):
         """受信を読み続け、確定分を分配する。例外では落ちない。
 
         読み口はここへ一本化する。2か所で read すると横取りが起きる。
+        到着確認（in_waiting）してから読む。ブロッキングreadは
+        データ到着済みでも復帰が遅れる環境があり、PONG等の往復が
+        タイムアウト周期に量子化される。到着を見てから読めば即復帰する。
         """
         while not self._rx_stop.is_set():
             ser = self.ser
             if ser is None:
                 break
             try:
-                chunk = ser.read(64)
+                waiting = getattr(ser, "in_waiting", None)
+                if waiting is None:
+                    chunk = ser.read(64)
+                else:
+                    try:
+                        available = int(waiting() if callable(waiting) else waiting)
+                    except Exception:
+                        break
+                    if available <= 0:
+                        try:
+                            time.sleep(0.001)
+                        except Exception:
+                            pass
+                        continue
+                    chunk = ser.read(min(int(available), 64))
             except Exception:
                 self._logger.warning(
                     "rx 読み取りで例外のためポンプを止めます", exc_info=True
@@ -965,38 +1031,30 @@ class BconTransport(Transport):
     # -- 会話層:HELLO/PING/STATUS/BAUD（Task 4・無音ハング防止）--
 
     def _send_session_frame(self, type_: int, payload: bytes, row_note: str) -> bool:
-        """会話フレームを1発で送る。SEQ採番だけ錠内、writeは外。"""
-        try:
-            seq = self._take_seq()
-            frame = frame_build(int(type_) & 0xFF, bytes(payload), seq)
-        except ValueError as e:
-            self._logger.warning(f"bconの会話フレームが組めません: {e}")
-            return False
-        except Exception as e:
-            self._logger.warning(f"bconの会話フレーム組立に失敗: {e!r}")
-            return False
-        with self._lock:
-            ser = self.ser
-            begin = self._on_write_begin
-            end = self._on_write_end
-        if ser is None:
-            self._logger.debug("bconは開いていないため会話を送りません")
-            return False
-        before = (
-            len(getattr(ser, "written", []) or []) if hasattr(ser, "written") else -1
-        )
-        try:
-            self._write_frame(frame, row_note, False, begin, end, ser)
-        except Exception as e:
-            self._logger.debug(f"bconの会話送出で例外: {e!r}")
-            return False
-        if hasattr(ser, "written"):
+        """会話フレームを1発で送る。採番→組立→書込を1単位で包む。
+
+        待ち登録→送出の順は呼び側が守る（ここでは錠を持ったまま待たない）。
+        書込の失敗（短い書込・例外）はFalseで返す。SEQは巻き戻さない。
+        """
+        # 採番→組立→書込のあいだ他の送出を入れない（線上のSEQ順＝採番順）。
+        with self._write_lock:
             try:
-                after = len(ser.written or [])
-                return after != before
-            except Exception:
-                return True
-        return True
+                seq = self._take_seq()
+                frame = frame_build(int(type_) & 0xFF, bytes(payload), seq)
+            except ValueError as e:
+                self._logger.warning(f"bconの会話フレームが組めません: {e}")
+                return False
+            except Exception as e:
+                self._logger.warning(f"bconの会話フレーム組立に失敗: {e!r}")
+                return False
+            with self._lock:
+                ser = self.ser
+                begin = self._on_write_begin
+                end = self._on_write_end
+            if ser is None:
+                self._logger.debug("bconは開いていないため会話を送りません")
+                return False
+            return bool(self._write_frame(frame, row_note, False, begin, end, ser))
 
     def _current_baud(self) -> int | None:
         """現在のbaud率。取れなければNone（落とさない）。"""
@@ -1236,26 +1294,37 @@ class BconTransport(Transport):
 
             unsub = self.subscribe_rx(_on_pong)
             try:
-                try:
-                    sent_seq = self._take_seq()
-                    frame = frame_build(T_PING, b"", sent_seq)
-                except Exception as e:
-                    self._logger.warning(f"bconのPING組立に失敗: {e!r}")
-                    return None
-                with self._lock:
-                    ser = self.ser
-                    begin = self._on_write_begin
-                    end = self._on_write_end
-                if ser is None:
-                    return None
-                matched["seq"] = sent_seq
-                matched["t0"] = time.perf_counter()
-                self._write_frame(frame, "bcon:PING", False, begin, end, ser)
+                # PINGも採番→組立→書込を1単位で包む（逆転防止）。
+                with self._write_lock:
+                    try:
+                        sent_seq = self._take_seq()
+                        frame = frame_build(T_PING, b"", sent_seq)
+                    except Exception as e:
+                        self._logger.warning(f"bconのPING組立に失敗: {e!r}")
+                        return None
+                    with self._lock:
+                        ser = self.ser
+                        begin = self._on_write_begin
+                        end = self._on_write_end
+                    if ser is None:
+                        return None
+                    matched["seq"] = sent_seq
+                    matched["t0"] = time.perf_counter()
+                    write_began = time.perf_counter()
+                    self._write_frame(frame, "bcon:PING", False, begin, end, ser)
+                    write_ms = (time.perf_counter() - write_began) * 1000.0
                 if done.wait(limit):
                     try:
                         rtt = float(matched.get("rtt", 0.0))
                     except (TypeError, ValueError):
                         return None
+                    try:
+                        match_ms = max(0.0, rtt * 1000.0 - write_ms)
+                        print(
+                            f"PING内訳: 書込{write_ms:.1f}ms・応答待ち{match_ms:.1f}ms"
+                        )
+                    except Exception:
+                        pass
                     try:
                         with self._lock:
                             self._live_rtt_ms = rtt * 1000.0
@@ -1296,6 +1365,14 @@ class BconTransport(Transport):
         try:
             with self._lock:
                 return bytes(self._last_player_info)
+        except Exception:
+            return b""
+
+    def last_rumble(self) -> bytes:
+        """直近RUMBLE payloadの写し。未受信は空。例外は投げない。"""
+        try:
+            with self._lock:
+                return bytes(self._last_rumble)
         except Exception:
             return b""
 
@@ -1699,3 +1776,234 @@ class BconTransport(Transport):
         except Exception as e:
             self._logger.debug(f"set_wired_modeで例外: {e!r}", exc_info=True)
             return False
+
+    def set_emulate_mode(self, role: int, timeout: float = 1.0) -> bool:
+        """コントローラ種別(EMULATE_MODE)を切り替える。失敗はFalse＋可視log。
+
+        role は 0=Pro Controller・1=Joy-Con (L)・2=Joy-Con (R)。
+        切替はFlash保存・約500ms後自発再起動する。再起動中のSTATE送出
+        は止め、復帰後に再HELLOからやり直すこと。例外は投げない。
+        """
+        try:
+            try:
+                role_value = int(role)
+            except (TypeError, ValueError):
+                role_value = -1
+            if role_value not in (0, 1, 2):
+                msg = f"bconの種別切替は0-2で指定してください: {role!r}"
+                print(msg)
+                self._logger.warning(msg)
+                return False
+            try:
+                limit = float(timeout)
+            except (TypeError, ValueError):
+                limit = 1.0
+            if math.isnan(limit):
+                limit = 1.0
+            elif math.isinf(limit):
+                limit = 5.0
+            else:
+                limit = max(0.1, min(limit, 5.0))
+            if self.ser is None:
+                msg = "bconが開いていないため種別切替しません。"
+                print(msg)
+                self._logger.warning(msg)
+                return False
+            if not self.rx_pump_running():
+                try:
+                    if not self.start_rx_pump() or not self.rx_pump_running():
+                        msg = "bconの受信ポンプが動かないため種別切替しません。"
+                        print(msg)
+                        self._logger.warning(msg)
+                        return False
+                except Exception:
+                    msg = "bconの受信ポンプ起動に失敗したため種別切替しません。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+            found: dict[str, Any] = {}
+            done = threading.Event()
+            entry = ((T_STATUS,), done, found)
+            with self._rx_lock:
+                self._rx_waiters.append(entry)
+            try:
+                ok = self._send_session_frame(
+                    T_EMULATE_MODE,
+                    bytes([role_value]),
+                    "bcon:EMULATE_MODE",
+                )
+                if not ok:
+                    msg = "bconの種別切替送出に失敗しました。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+                if not done.wait(limit):
+                    msg = f"bconの種別切替応答が来ませんでした({limit:.1f}s)。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+            finally:
+                with self._rx_lock:
+                    if entry in self._rx_waiters:
+                        self._rx_waiters.remove(entry)
+            name = EMULATE_ROLE_NAMES[role_value]
+            note = (
+                f"bconを{name}へ切替えました。Flash保存・約500ms後自発再起動"
+                "します。再起動中のSTATE送出は止め、復帰後に再HELLOから"
+                "やり直してください。"
+            )
+            print(note)
+            self._logger.warning(note)
+            return True
+        except Exception as e:
+            self._logger.debug(f"set_emulate_modeで例外: {e!r}", exc_info=True)
+            return False
+
+    def request_bootsel(self, timeout: float = 1.0) -> bool:
+        """BOOTSEL突入を要求する。失敗はFalse＋可視log。
+
+        T_BOOTSEL＋BOOTSEL_MAGICを1発で送り、旧レートのままSTATUS-ACK
+        を待つ。baud切替・_tx_hold操作・再起動側の処理はしない（Pico側が
+        約500ms後に自発再起動する）。再起動中のSTATE送出は止め、復帰後に
+        再HELLOからやり直すこと。例外は投げない。
+        """
+        try:
+            try:
+                limit = float(timeout)
+            except (TypeError, ValueError):
+                limit = 1.0
+            if math.isnan(limit):
+                limit = 1.0
+            elif math.isinf(limit):
+                limit = 5.0
+            else:
+                limit = max(0.1, min(limit, 5.0))
+            if self.ser is None:
+                msg = "bconが開いていないためBOOTSEL要求しません。"
+                print(msg)
+                self._logger.warning(msg)
+                return False
+            if not self.rx_pump_running():
+                try:
+                    if not self.start_rx_pump() or not self.rx_pump_running():
+                        msg = "bconの受信ポンプが動かないためBOOTSEL要求しません。"
+                        print(msg)
+                        self._logger.warning(msg)
+                        return False
+                except Exception:
+                    msg = "bconの受信ポンプ起動に失敗したためBOOTSEL要求しません。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+            found: dict[str, Any] = {}
+            done = threading.Event()
+            entry = ((T_STATUS,), done, found)
+            with self._rx_lock:
+                self._rx_waiters.append(entry)
+            try:
+                ok = self._send_session_frame(
+                    T_BOOTSEL,
+                    bytes([BOOTSEL_MAGIC]),
+                    "bcon:BOOTSEL",
+                )
+                if not ok:
+                    msg = "bconのBOOTSEL要求送出に失敗しました。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+                if not done.wait(limit):
+                    msg = f"bconのBOOTSEL応答が来ませんでした({limit:.1f}s)。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+            finally:
+                with self._rx_lock:
+                    if entry in self._rx_waiters:
+                        self._rx_waiters.remove(entry)
+            self._logger.info(
+                "bconへBOOTSEL突入を要求しました。約500ms後自発再起動"
+                "します。再起動中のSTATE送出は止め、復帰後に再HELLOから"
+                "やり直してください。"
+            )
+            return True
+        except Exception as e:
+            self._logger.debug(f"request_bootselで例外: {e!r}", exc_info=True)
+            return False
+
+    def send_config(self, type_: int, payload: bytes) -> bool:
+        """CONFIG系を1発で送る。送出の成否を返す。
+
+        利用者画面（BconSetup）や別プロセス側の共通口。会話の
+        応答待ちは呼び側が行う。例外は投げない。
+        """
+        try:
+            kind = int(type_) & 0xFF
+            body = bytes(payload)
+        except (TypeError, ValueError):
+            return False
+        return bool(self._send_session_frame(kind, body, f"bcon:0x{kind:02X}"))
+
+    def send_beacon(self, timeout: float = 2.0) -> dict[str, int] | None:
+        """BEACON_STARTを送り直後のSTATUS写しを返す。失敗・無応答はNone。
+
+        戻りのerrcodeは 0x00=受付（再生開始）・0x11=未保存・
+        0x10=有線中拒否（0x10+(TYPE&0x0F)のCONFIG拒否域）。
+        利用者スクリプト（WakeSwitch2）から叩く公開口。例外は投げない。
+        """
+        try:
+            try:
+                limit = float(timeout)
+            except (TypeError, ValueError):
+                limit = 2.0
+            if math.isnan(limit):
+                limit = 2.0
+            elif math.isinf(limit):
+                limit = 5.0
+            else:
+                limit = max(0.1, min(limit, 5.0))
+            if self.ser is None:
+                msg = "bconが開いていないためBEACONを送りません。"
+                print(msg)
+                self._logger.warning(msg)
+                return None
+            if not self.rx_pump_running():
+                try:
+                    if not self.start_rx_pump() or not self.rx_pump_running():
+                        msg = "bconの受信ポンプが動かないためBEACONを送りません。"
+                        print(msg)
+                        self._logger.warning(msg)
+                        return None
+                except Exception:
+                    msg = "bconの受信ポンプ起動に失敗したためBEACONを送りません。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return None
+            found: dict[str, Any] = {}
+            done = threading.Event()
+            entry = ((T_STATUS,), done, found)
+            with self._rx_lock:
+                self._rx_waiters.append(entry)
+            try:
+                ok = self._send_session_frame(
+                    T_BEACON_START,
+                    b"",
+                    "bcon:BEACON_START",
+                )
+                if not ok:
+                    msg = "bconのBEACON送出に失敗しました。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return None
+                if not done.wait(limit):
+                    msg = f"bconのBEACON応答が来ませんでした({limit:.1f}s)。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return None
+                return self.last_status()
+            finally:
+                with self._rx_lock:
+                    if entry in self._rx_waiters:
+                        self._rx_waiters.remove(entry)
+        except Exception as e:
+            self._logger.debug(f"send_beaconで例外: {e!r}", exc_info=True)
+            return None

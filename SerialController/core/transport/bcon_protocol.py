@@ -3,7 +3,7 @@
 """bcon_protocol.py - bconバイナリの組立と受信（純粋層）。
 
 Pico側 `src/proto/protocol.[hc]` のPC側写し。BTstack・TinyUSB・
-tkinterに依存しない。仕様は `C:\\pico-bcon\\spec\\protocol_v3.md` が正。
+tkinterに依存しない。仕様は `C:\\PokeCon\\Switch-bcon\\spec\\protocol_v3.md` が正。
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ T_KEY_DELETE = 0x33
 T_WIRED_MODE = 0x34
 T_STATUS_REQ = 0x35
 T_BAUD_SET = 0x36
+T_BOOTSEL = 0x37
+T_EMULATE_MODE = 0x38
 
 RESULT_OK = 0x00
 RESULT_DOWNGRADED = 0x01
@@ -49,6 +51,9 @@ BAUD_TABLE: dict[int, int] = {
     4: 2000000,
 }
 DEFAULT_BAUD_INDEX = 3
+
+# BOOTSEL突入の合言葉。T_BOOTSELのpayload 1Bがこの値のときのみ有効。
+BOOTSEL_MAGIC = 0x5A
 
 _CRC_TABLE: list[int] = []
 for _i in range(256):
@@ -85,6 +90,8 @@ def proto_expected_len(type_: int) -> int:
         T_WIRED_MODE: 1,
         T_STATUS_REQ: 0,
         T_BAUD_SET: 1,
+        T_BOOTSEL: 1,
+        T_EMULATE_MODE: 1,
     }
     return table.get(type_, -1)
 

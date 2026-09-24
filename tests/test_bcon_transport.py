@@ -4,8 +4,10 @@
 def test_bcon_registers_and_opens_gracefully():
     from core.transport import create_transport, list_transports, resolve_transport_name
 
-    assert "bcon" in list_transports()
-    assert resolve_transport_name("bcon") == "bcon"
+    assert "switch-bcon" in list_transports()
+    assert "pico_uart" not in list_transports()
+    assert resolve_transport_name("switch-bcon") == "switch-bcon"
+    assert resolve_transport_name("bcon") == "switch-bcon"
     made = create_transport("bcon")
     assert made.name == "bcon"
     assert made.open(0, "", "not-a-number") is False

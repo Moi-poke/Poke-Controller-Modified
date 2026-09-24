@@ -24,6 +24,11 @@ def _make_scripted_ser(feed_delay: float = 0.001):
             time.sleep(feed_delay)
             return b""
 
+        @property
+        def in_waiting(self) -> int:
+            with self._lock:
+                return sum(len(c) for c in self._chunks)
+
         def feed(self, data: bytes) -> None:
             with self._lock:
                 self._chunks.append(bytes(data))
@@ -795,6 +800,110 @@ def test_bcon_set_wired_mode_notes_reboot():
         assert made.set_wired_mode(True, timeout=2.0) is True
         assert any(
             len(f) >= 2 and f[0] == 0xAB and f[1] == T_WIRED_MODE for f in ser.written
+        )
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_emulate_mode_constant():
+    from core.transport import T_EMULATE_MODE
+    from core.transport.bcon_protocol import (
+        T_EMULATE_MODE as RAW,
+        proto_expected_len as expected_len,
+    )
+
+    assert T_EMULATE_MODE == 0x38
+    assert RAW == 0x38
+    assert expected_len(T_EMULATE_MODE) == 1
+
+
+def test_bcon_send_beacon_returns_status():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import T_BEACON_START, T_STATUS, frame_build
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 3 and frame[0] == 0xAB and frame[1] == T_BEACON_START:
+                    status = bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                    ser.feed(frame_build(T_STATUS, status, 0x52))
+                    return
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        status = made.send_beacon(timeout=2.0)
+        assert status is not None
+        assert status["errcode"] == 0
+        assert any(
+            len(f) >= 3 and f[0] == 0xAB and f[1] == T_BEACON_START and f[2] == 0x00
+            for f in ser.written
+        )
+    finally:
+        stop.set()
+        worker.join(1.0)
+        made.stop_rx_pump()
+
+
+def test_bcon_send_beacon_without_ser_is_none():
+    from core.transport import create_transport
+
+    made = create_transport("bcon")
+    assert made.send_beacon(timeout=0.2) is None
+
+
+def test_bcon_set_emulate_mode_rejects_bad_role():
+    from core.transport import create_transport
+
+    made = create_transport("bcon")
+    assert made.set_emulate_mode(3, timeout=0.2) is False
+    assert made.set_emulate_mode(-1, timeout=0.2) is False
+    assert made.set_emulate_mode("x", timeout=0.2) is False
+
+
+def test_bcon_set_emulate_mode_notes_reboot():
+    from core.transport import create_transport
+    from core.transport.bcon_protocol import T_EMULATE_MODE, T_STATUS, frame_build
+
+    made = create_transport("bcon")
+    ser = _make_scripted_ser()
+    made.ser = ser
+    made.start_rx_pump()
+    stop = threading.Event()
+
+    def _responder() -> None:
+        seen = 0
+        while not stop.is_set():
+            with ser._lock:
+                pending = list(ser.written)
+            for frame in pending[seen:]:
+                seen += 1
+                if len(frame) >= 2 and frame[0] == 0xAB and frame[1] == T_EMULATE_MODE:
+                    status = bytes([0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                    ser.feed(frame_build(T_STATUS, status, 0x51))
+                    return
+            time.sleep(0.002)
+
+    worker = threading.Thread(target=_responder, daemon=True)
+    worker.start()
+    try:
+        assert made.set_emulate_mode(1, timeout=2.0) is True
+        assert any(
+            len(f) >= 4 and f[0] == 0xAB and f[1] == T_EMULATE_MODE and f[3] == 0x01
+            for f in ser.written
         )
     finally:
         stop.set()
