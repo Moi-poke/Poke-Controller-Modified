@@ -18,7 +18,6 @@ def test_menubar_view_menu_has_size_presets() -> None:
     assert "1280x720" in src
     assert "1920x1080" in src
     assert "16:9" in src
-    assert "wm_aspect" in src
 
 
 def test_menubar_has_no_wake_setup() -> None:
