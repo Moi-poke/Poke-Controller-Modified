@@ -55,6 +55,136 @@ def _sub_target_cadence(configured_fps: int) -> support.CadenceResult:
     )
 
 
+def _paced_entries(interval_ns: int, event_count: int) -> tuple[int, ...]:
+    """Evenly spaced in-window events, the first exactly on the window start."""
+    return tuple(_START_NS + index * interval_ns for index in range(event_count))
+
+
+def _real_five_hz_entries() -> tuple[int, ...]:
+    """The 49 in-window dispatch entries of the confirmed 5 Hz production run.
+
+    Forty-eight entries at the nominal 200 ms period, then the last entry at the
+    observed window edge: 48 in-window intervals spanning 9.6000774 s.
+    """
+    return _paced_entries(200_000_000, 48) + (_START_NS + 9_600_077_400,)
+
+
+def _mean_hz_semantics() -> Any:
+    """The shared constant naming the estimator behind ``CadenceResult.mean_hz``."""
+    return getattr(support, "MEAN_HZ_SEMANTICS", None)
+
+
+def _native_production_report(
+    tmp_path: Path,
+    *,
+    configured_fps: int,
+    measurement_s: float,
+    entries_ns: tuple[int, ...],
+    blit_skipped_no_new_frame: int = 0,
+) -> dict[str, Any]:
+    """Summarize a deterministic event stream through the real report builder."""
+    records = [
+        SimpleNamespace(dispatch_enter_ns=stamp, sequence=index)
+        for index, stamp in enumerate(entries_ns, start=1)
+    ]
+    camera_summary: dict[str, int | bool | str] = {
+        "camera_read_count": len(entries_ns),
+        "camera_frame_present_count": len(entries_ns),
+        "camera_none_count": 0,
+        "camera_read_error_count": 0,
+        "camera_unique_sequence_count": len(entries_ns),
+        "camera_duplicate_sequence_count": 0,
+        "camera_sequence_regression_count": 0,
+        "camera_last_sequence": len(entries_ns),
+        "post_teardown_camera_read_count": 0,
+        "camera_thread_claim": "not_applicable_synthetic_source",
+    }
+    thread_ids: dict[str, int | str | None] = {
+        "schema_version": 1,
+        "main": 1,
+        "window_owner": 1,
+        "preview_worker": 0,
+        "camera_source": 2,
+        "camera_thread": None,
+        "camera_thread_claim": "not_applicable_synthetic_source",
+    }
+    pins = {
+        relative: support.FilePin(relative, True, 0, "0" * 64)
+        for relative in support.SOURCE_PIN_PATHS
+    }
+    harness: Any = SimpleNamespace(
+        source=SimpleNamespace(
+            camera_summary=lambda: camera_summary,
+            camera_records=lambda: (),
+        ),
+        instrumentation=SimpleNamespace(
+            dispatch_records=records,
+            pastes=[
+                SimpleNamespace(paste_enter_ns=stamp, sequence=index)
+                for index, stamp in enumerate(entries_ns, start=1)
+            ],
+            dispatch_entries=lambda: entries_ns,
+            paste_entries=lambda: entries_ns,
+        ),
+        area=object(),
+        clock=object(),
+        clock_mode="high_resolution",
+        dispatch_oracle="PreviewClock WNDPROC to CaptureArea entry",
+        start_pins=pins,
+        end_pins=pins,
+        start_snapshot={},
+        end_snapshot={},
+        end_accounting={
+            "worker_tick_published_count": len(entries_ns),
+            "pending_tick_superseded_count": 0,
+            "main_dispatch_count": len(entries_ns),
+            "stale_tick_dropped_count": 0,
+            "pending_tick_present_at_window_end": 0,
+            "latest_only_accounting_ok": True,
+            "period_skipped_count": 0,
+            "blit_skipped_no_new_frame": blit_skipped_no_new_frame,
+        },
+        health_rows=[],
+        thread_ids_payload=lambda: thread_ids,
+    )
+    config = support.E2EConfig(
+        phase=support.RunPhase.PRODUCTION,
+        run_class=support.RunClass.NATIVE_PRODUCTION,
+        configured_fps=configured_fps,
+        diagnostic_rate_hz=None,
+        warmup_s=0.0,
+        measurement_s=measurement_s,
+        evidence_dir=tmp_path,
+        source_hz=180,
+        child_mode=support.ChildMode.CHILD,
+        test_id="test_native_production_records_performance_reference",
+        watchdog_timeout_s=10.0,
+    )
+    teardown = {
+        "stop_result": "stopped",
+        "root_destroyed_after_stop": True,
+        "preview_worker_alive": False,
+        "synthetic_source_alive": False,
+        "pending_after_ids": [],
+        "post_teardown_camera_read_count": 0,
+        "source_stopped": True,
+        "instrumentation_closed": True,
+        "window_class_destroyed": True,
+        "window_class_unregistered": True,
+    }
+
+    # When: the real report builder summarizes the deterministic stream.
+    report, _artifacts = support._build_report(
+        config,
+        harness,
+        support.Window(_START_NS, _START_NS + int(measurement_s * _ONE_SECOND_NS)),
+        teardown,
+        (),
+    )
+
+    return report
+
+
 def test_run_classes_are_exact() -> None:
     assert tuple(member.value for member in support.RunClass) == (
         "native_production",
@@ -100,9 +230,9 @@ def test_fixed_window_uses_half_open_nominal_boundaries() -> None:
         configured_measurement_s=1.0,
     )
 
-    # Then: only the start entry counts and the mean uses the configured duration.
+    # Then: only the start entry counts, and one event forms no interval rate.
     assert summary.count == 1
-    assert summary.mean_hz == 1.0
+    assert summary.mean_hz == 0.0
     assert summary.p1_hz == 0.0
 
 
@@ -113,16 +243,17 @@ def test_fixed_window_counts_3600_entries_over_60_seconds() -> None:
     )
 
     # When: the configured 60-second window is summarized.
-    summary = support.summarize_cadence(
+    summary: Any = support.summarize_cadence(
         entries,
         measurement_start_ns=_START_NS,
         nominal_window_end_ns=_START_NS + 60 * _ONE_SECOND_NS,
         configured_measurement_s=60.0,
     )
 
-    # Then: the hand-derived fixed-window mean is exactly 60 Hz.
+    # Then: 3,599 in-window intervals over their own span are 60 Hz to float.
     assert summary.count == 3_600
-    assert summary.mean_hz == 60.0
+    assert summary.observed_span_ns == 59_983_333_333
+    assert summary.mean_hz == pytest.approx(60.0, rel=1e-9)
     assert summary.p1_hz == pytest.approx(59.9999988, rel=1e-12)
 
 
@@ -732,7 +863,8 @@ def test_native_production_report_records_both_skip_diagnostics(
     # Then: both skip diagnostics and the suppressed-interval measure are kept.
     assert report["period_skipped_count"] == 0
     assert report["blit_skipped_no_new_frame"] == 3
-    assert report["suppressed_blit_interval_count"] == 2
+    # Four in-window events against a five-event nominal second: one is missing.
+    assert report["suppressed_blit_interval_count"] == 1
 
     # Then: the sub-target performance numbers are recorded without gating.
     assert report["dispatch_summary"]["mean_hz"] == 4.0
@@ -1273,3 +1405,451 @@ def test_native_and_legacy_dispatch_targets_are_selected_once() -> None:
         "capture",
         "legacy CaptureArea.after callback entry",
     )
+
+
+# R1: mean_hz is the endpoint-derived rate, not count / nominal_window.
+
+
+def test_summary_mean_is_the_endpoint_rate_of_a_regular_stream() -> None:
+    # Given: five events at exactly the 200 ms period of a 5 Hz target.
+    entries = _paced_entries(200_000_000, 5)
+
+    # When: the 10-second nominal window is summarized.
+    summary: Any = support.summarize_cadence(
+        entries,
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: four intervals over their own 800 ms span are exactly 5 Hz, not 0.5.
+    assert summary.count == 5
+    assert summary.mean_hz == 5.0
+    assert summary.mean_hz != pytest.approx(5 / 10.0, rel=1e-9)
+    assert summary.observed_span_ns == 800_000_000
+
+
+def test_summary_mean_is_the_endpoint_rate_of_the_real_five_hz_run() -> None:
+    # Given: the 49 in-window entries of the confirmed 5 Hz production run.
+    summary: Any = support.summarize_cadence(
+        _real_five_hz_entries(),
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: 48 intervals over 9.6000774 s is 4.99996 Hz, not the nominal 4.9 Hz.
+    assert summary.count == 49
+    assert summary.mean_hz == pytest.approx(4.99996, rel=1e-6)
+    assert summary.mean_hz != pytest.approx(49 / 10.0, rel=1e-9)
+    assert summary.observed_span_ns == 9_600_077_400
+
+
+def test_summary_mean_ignores_nominal_window_time_the_stream_never_ran() -> None:
+    # Given: a 5 Hz stream that only starts 6.0 s into a 10-second window.
+    entries = _paced_entries(200_000_000, 50)[30:]
+
+    # When: the window that mostly predates the stream is summarized.
+    summary: Any = support.summarize_cadence(
+        entries,
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: the 19 intervals over 3.8 s are 5 Hz, never the nominal 2.0 Hz.
+    assert summary.count == 20
+    assert summary.mean_hz == 5.0
+    assert summary.mean_hz != pytest.approx(20 / 10.0, rel=1e-9)
+    assert summary.observed_span_ns == 3_800_000_000
+
+
+@pytest.mark.parametrize(
+    ("event_count", "interval_ns", "measurement_s"),
+    (
+        (49, 200_000_000, 10.0),
+        (90, 33_333_333, 3.5),
+        (3_601, 16_666_666, 60.0),
+    ),
+)
+def test_summary_mean_is_unbiased_for_a_window_that_is_not_a_stream_multiple(
+    event_count: int,
+    interval_ns: int,
+    measurement_s: float,
+) -> None:
+    # Given: an evenly paced stream spanning far less than the nominal window.
+    entries = _paced_entries(interval_ns, event_count)
+
+    # When: the nominal window is summarized.
+    summary: Any = support.summarize_cadence(
+        entries,
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + int(measurement_s * _ONE_SECOND_NS),
+        configured_measurement_s=measurement_s,
+    )
+
+    # Then: the rate is exactly 1/interval, never event_count / measurement_s.
+    assert summary.count == event_count
+    assert summary.mean_hz == pytest.approx(_ONE_SECOND_NS / interval_ns, rel=1e-12)
+    assert summary.mean_hz != pytest.approx(event_count / measurement_s, rel=1e-6)
+
+
+def test_summary_mean_is_zero_for_a_single_in_window_event() -> None:
+    # Given: one in-window event, which cannot form an adjacent pair.
+    summary: Any = support.summarize_cadence(
+        (_START_NS,),
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: no interval means no endpoint span, so there is no rate to report.
+    assert summary.count == 1
+    assert summary.mean_hz == 0.0
+    assert summary.interval_count == 0
+    assert summary.observed_span_ns == 0
+    assert summary.p1_hz == 0.0
+
+
+def test_summary_mean_is_zero_for_an_empty_stream() -> None:
+    # Given: no in-window events at all.
+    summary: Any = support.summarize_cadence(
+        (),
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: the empty stream is reported as a zero rate, not a crash or a guess.
+    assert summary.count == 0
+    assert summary.mean_hz == 0.0
+    assert summary.interval_count == 0
+    assert summary.observed_span_ns == 0
+    assert summary.p1_hz == 0.0
+
+
+# R2: the report records which estimator produced mean_hz.
+
+
+def test_report_records_the_endpoint_estimator_behind_mean_hz(
+    tmp_path: Path,
+) -> None:
+    # Given: a perfectly paced native production run.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=_paced_entries(200_000_000, 50),
+    )
+
+    # Then: the summary names the endpoint estimator instead of leaving it implicit.
+    dispatch_summary = report["dispatch_summary"]
+    assert dispatch_summary["mean_hz_semantics"] == _mean_hz_semantics()
+    assert "endpoint" in str(_mean_hz_semantics()).lower()
+    assert report["paste_summary"]["mean_hz_semantics"] == _mean_hz_semantics()
+
+
+# R3: a zero-tolerance floor records a boundary artefact honestly.
+
+
+def test_real_five_hz_run_records_out_of_reference_without_relaxing_the_floor(
+    tmp_path: Path,
+) -> None:
+    # Given: the 49-entry 5 Hz run whose endpoint rate is 4.99996 Hz.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=_real_five_hz_entries(),
+    )
+
+    # Then: the run is provably on target and still reads out of reference.
+    assert report["dispatch_summary"]["mean_hz"] == pytest.approx(4.99996, rel=1e-6)
+    assert report["performance_reference"]["within_reference"] is False
+
+    # Then: the floor keeps zero tolerance and the recorded miss gates nothing.
+    assert report["target_mean_min_hz"] == 5.0
+    assert report["test_passed"] is True
+    assert report["accepted"] is True
+
+
+def test_zero_tolerance_floor_still_rejects_a_genuinely_slow_stream(
+    tmp_path: Path,
+) -> None:
+    # Given: a 4.0 Hz stream measured over 60 s against a 5 Hz target.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=60.0,
+        entries_ns=_paced_entries(250_000_000, 240),
+    )
+
+    # Then: a 1.0 Hz shortfall is a real regression, not a boundary artefact.
+    assert report["dispatch_summary"]["mean_hz"] == 4.0
+    assert report["performance_reference"]["within_reference"] is False
+    assert report["target_mean_min_hz"] == 5.0
+
+
+def test_zero_tolerance_floor_still_rejects_a_stream_above_the_cap(
+    tmp_path: Path,
+) -> None:
+    # Given: a 5.208 Hz stream over 10 s against a 5 Hz target and 5.1 Hz cap.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=_paced_entries(192_000_000, 52),
+    )
+
+    # Then: the upper bound stays configured_fps + cap_tolerance_hz, unchanged.
+    assert report["dispatch_summary"]["mean_hz"] > report["target_mean_max_hz"]
+    assert report["performance_reference"]["within_reference"] is False
+    assert report["target_mean_min_hz"] == 5.0
+
+
+# R4: suppressed_blit_interval_count counts events, not adjacent pairs.
+
+
+def test_suppressed_interval_count_is_zero_for_a_perfectly_paced_run(
+    tmp_path: Path,
+) -> None:
+    # Given: 50 in-window events in a 5 Hz / 10 s window, the nominal total.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=_paced_entries(200_000_000, 50),
+    )
+
+    # Then: nothing was suppressed; 49 adjacent pairs is not one lost event.
+    assert report["dispatch_summary"]["count"] == 50
+    assert report["suppressed_blit_interval_count"] == 0
+
+
+def test_suppressed_interval_count_reports_the_single_lost_event(
+    tmp_path: Path,
+) -> None:
+    # Given: 49 in-window events in a 5 Hz / 10 s window, one event short.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=_real_five_hz_entries(),
+    )
+
+    # Then: exactly one nominal dispatch produced no in-window event.
+    assert report["dispatch_summary"]["count"] == 49
+    assert report["suppressed_blit_interval_count"] == 1
+
+
+def test_suppressed_interval_count_clamps_at_zero_when_events_exceed_nominal(
+    tmp_path: Path,
+) -> None:
+    # Given: 52 in-window events against a 50-event nominal window.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=_paced_entries(192_000_000, 52),
+    )
+
+    # Then: the counter is clamped and never reported as negative.
+    assert report["dispatch_summary"]["count"] == 52
+    assert report["suppressed_blit_interval_count"] == 0
+
+
+# R5: the two counters cannot contradict each other.
+
+
+def test_no_suppressed_intervals_are_reported_when_no_dispatch_lacked_a_frame(
+    tmp_path: Path,
+) -> None:
+    # Given: a perfectly paced, in-reference run where no blit lacked a frame.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=_paced_entries(200_000_000, 50),
+        blit_skipped_no_new_frame=0,
+    )
+
+    # Then: the interval stream cannot report a suppression the blit path denies.
+    assert report["performance_reference"]["within_reference"] is True
+    assert report["blit_skipped_no_new_frame"] == 0
+    assert report["suppressed_blit_interval_count"] == 0
+
+
+# A1: N in-window events always yield exactly N-1 adjacent intervals.
+
+
+@pytest.mark.parametrize("event_count", (0, 1, 2, 3, 5, 50))
+def test_in_window_events_always_yield_exactly_one_fewer_interval(
+    event_count: int,
+) -> None:
+    # Given: event_count evenly paced in-window events at a 5 Hz period.
+    entries = _paced_entries(200_000_000, event_count)
+
+    # When: the 10-second nominal window is summarized.
+    summary: Any = support.summarize_cadence(
+        entries,
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: the interval count is max(0, N - 1), never N and never N - 2.
+    assert summary.count == event_count
+    assert summary.interval_count == max(0, event_count - 1)
+
+
+# A3: the direct event count is required; len(intervals) + 1 is not it.
+
+
+@pytest.mark.parametrize(
+    ("event_count", "reconstruction_holds"),
+    (
+        (0, False),
+        (1, True),
+        (2, True),
+        (3, True),
+        (5, True),
+        (50, True),
+    ),
+)
+def test_interval_count_plus_one_reconstructs_the_event_count_except_when_empty(
+    event_count: int,
+    reconstruction_holds: bool,
+) -> None:
+    # Given: event_count evenly paced in-window events.
+    entries = _paced_entries(200_000_000, event_count)
+
+    # When: the 10-second nominal window is summarized.
+    summary: Any = support.summarize_cadence(
+        entries,
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: the reconstruction holds for every non-empty stream and fails at N=0.
+    assert summary.count == event_count
+    assert (summary.interval_count + 1 == summary.count) is reconstruction_holds
+
+
+def test_pre_window_events_do_not_break_the_interval_count_relation() -> None:
+    # Given: two events before the window, then three in-window events.
+    entries = (
+        _START_NS - 400_000_000,
+        _START_NS - 200_000_000,
+        *_paced_entries(200_000_000, 3),
+    )
+
+    # When: a window whose first in-window event is the third overall is summarized.
+    summary: Any = support.summarize_cadence(
+        entries,
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + 10 * _ONE_SECOND_NS,
+        configured_measurement_s=10.0,
+    )
+
+    # Then: excluded events contribute no interval, so the relation still holds.
+    assert summary.count == 3
+    assert summary.interval_count == 2
+    assert summary.interval_count + 1 == summary.count
+
+
+def test_empty_dispatch_stream_reports_every_nominal_dispatch_as_suppressed(
+    tmp_path: Path,
+) -> None:
+    # Given: a 5 Hz / 10 s window in which no dispatch was ever entered.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=(),
+    )
+
+    # Then: 0 of 50 nominal dispatches arrived; len(intervals) + 1 would say 49.
+    assert report["dispatch_summary"]["count"] == 0
+    assert report["dispatch_summary"]["interval_count"] == 0
+    assert report["suppressed_blit_interval_count"] == 50
+
+
+# A4: regression pins per production rate, window deliberately not a period multiple.
+
+
+@pytest.mark.parametrize(
+    ("configured_fps", "interval_ns", "event_count", "measurement_s"),
+    (
+        (5, 200_000_000, 30, 6.93),
+        (30, 33_333_333, 100, 3.71),
+        (60, 16_666_666, 400, 6.93),
+    ),
+)
+def test_endpoint_rate_is_exact_at_each_production_rate_on_a_partial_window(
+    configured_fps: int,
+    interval_ns: int,
+    event_count: int,
+    measurement_s: float,
+) -> None:
+    # Given: a perfectly regular stream that covers only part of the window.
+    entries = _paced_entries(interval_ns, event_count)
+
+    # When: a window that is not a multiple of the stream period is summarized.
+    summary: Any = support.summarize_cadence(
+        entries,
+        measurement_start_ns=_START_NS,
+        nominal_window_end_ns=_START_NS + int(measurement_s * _ONE_SECOND_NS),
+        configured_measurement_s=measurement_s,
+    )
+
+    # Then: the rate is the stream rate, never event_count / measurement_s.
+    assert summary.count == event_count
+    assert summary.mean_hz == pytest.approx(_ONE_SECOND_NS / interval_ns, rel=1e-12)
+    assert summary.mean_hz == pytest.approx(float(configured_fps), rel=1e-7)
+    assert summary.mean_hz != pytest.approx(event_count / measurement_s, rel=1e-6)
+
+
+# A5: the recorded numbers separate a boundary artefact from a real shortfall.
+
+
+@pytest.mark.parametrize(
+    (
+        "entries_ns",
+        "expected_count",
+        "expected_mean_hz",
+        "expected_suppressed",
+        "expected_within_reference",
+    ),
+    (
+        (_paced_entries(200_000_000, 50), 50, 5.0, 0, True),
+        (_real_five_hz_entries(), 49, 4.99996, 1, False),
+        (_paced_entries(250_000_000, 40), 40, 4.0, 10, False),
+    ),
+)
+def test_recorded_boundary_shortfall_is_distinguishable_from_a_real_shortfall(
+    tmp_path: Path,
+    entries_ns: tuple[int, ...],
+    expected_count: int,
+    expected_mean_hz: float,
+    expected_suppressed: int,
+    expected_within_reference: bool,
+) -> None:
+    # Given: a complete run, a run one event short, and a 20% slow run.
+    report = _native_production_report(
+        tmp_path,
+        configured_fps=5,
+        measurement_s=10.0,
+        entries_ns=entries_ns,
+    )
+
+    # Then: the three are distinguishable in the recorded numbers alone.
+    assert report["dispatch_summary"]["count"] == expected_count
+    assert report["dispatch_summary"]["mean_hz"] == pytest.approx(
+        expected_mean_hz, rel=1e-6
+    )
+    assert report["suppressed_blit_interval_count"] == expected_suppressed
+    assert report["performance_reference"]["within_reference"] is (
+        expected_within_reference
+    )
+    assert report["target_mean_min_hz"] == 5.0

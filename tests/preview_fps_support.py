@@ -39,6 +39,10 @@ DIAGNOSTIC_RATES_HZ: Final[tuple[float, ...]] = (60.01, 60.03, 60.06)
 GAP_THRESHOLD_NS: Final[int] = 25_000_000
 REPORT_SCHEMA_VERSION: Final[int] = 3
 CAP_TOLERANCE_SEMANTICS: Final[str] = "finite_window_boundary_not_rate_relaxation"
+MEAN_HZ_SEMANTICS: Final[str] = (
+    "endpoint_derived: observed first-to-last in-window span divided by the "
+    "adjacent in-window interval count, not the nominal measurement window"
+)
 SOURCE_PIN_PATHS: Final[tuple[str, ...]] = (
     "SerialController/ui/preview_clock.py",
     "SerialController/GuiAssets.py",
@@ -239,6 +243,11 @@ class CadenceResult:
     count: int
     mean_hz: float
     p1_hz: float
+    # Observed alongside ``count`` so the N-events-give-N-1-intervals relation is
+    # falsifiable by an independent quantity rather than by inverting mean_hz.
+    interval_count: int = 0
+    observed_span_ns: int = 0
+    mean_hz_semantics: str = MEAN_HZ_SEMANTICS
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,12 +663,16 @@ def summarize_cadence(
         rank = max(1, math.ceil(0.01 * len(intervals)))
         frequencies = sorted(NS_PER_S / (right - left) for left, right in intervals)
         p1_hz = frequencies[rank - 1]
-    mean_hz = (
-        count * NS_PER_S / (configured_measurement_s * NS_PER_S)
-        if configured_measurement_s > 0.0
-        else 0.0
+    interval_count = len(intervals)
+    observed_span_ns = intervals[-1][1] - intervals[0][0] if intervals else 0
+    mean_hz = interval_count * NS_PER_S / observed_span_ns if observed_span_ns else 0.0
+    return CadenceResult(
+        count=count,
+        mean_hz=mean_hz,
+        p1_hz=p1_hz,
+        interval_count=interval_count,
+        observed_span_ns=observed_span_ns,
     )
-    return CadenceResult(count=count, mean_hz=mean_hz, p1_hz=p1_hz)
 
 
 def normal_teardown_evidence_ok(
@@ -2163,10 +2176,11 @@ def _build_report(
         "blit_skipped_no_new_frame": decision.blit_skipped_no_new_frame,
         # Derived from the dispatch interval stream, deliberately independent of
         # blit_skipped_no_new_frame so the two remain separate measurements.
+        # N in-window events always yield exactly N-1 adjacent pairs, so the
+        # event count is the only denominator that reports a lost dispatch.
         "suppressed_blit_interval_count": max(
             0,
-            round(config.configured_fps * config.measurement_s)
-            - len(dispatch_interval_rows),
+            round(config.configured_fps * config.measurement_s) - dispatch.count,
         ),
         "worker_tick_published_count": accounting["worker_tick_published_count"],
         "pending_tick_superseded_count": accounting["pending_tick_superseded_count"],
