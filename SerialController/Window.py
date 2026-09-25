@@ -135,7 +135,7 @@ class PokeControllerApp(
         # ここで測り直す（早すぎると小さな値で無意味になる）。
         self._apply_content_minsize()
         # 最小寸法の確定後に、このセッション内の16:9固定を開始する。
-        self._window_aspect_lock = WindowGeometry.WindowAspectLock(self.root)
+        self._init_window_aspect_lock()
 
     # ------------------------------------------------------------------
     # 状態
@@ -471,7 +471,7 @@ class PokeControllerApp(
                 pass
         self._display_after_id = None
         self._sash_after_id = None
-        self._window_aspect_lock.cleanup()
+        self._cleanup_window_aspect_lock()
         # 子窓（Wake設定・キーコンフィグ等）を先に閉じる。開きっぱなしの
         # まま destroy へ進むと、after 予約が破棄途中の窓を触る。
         try:
@@ -597,9 +597,17 @@ class PokeControllerApp(
         """前回のウィンドウ位置とサイズを復元する。"""
         WindowGeometry.restoreGeometry(self.root, self.settings)
 
-    def set_window_aspect_lock(self, enabled: bool) -> None:
-        """メインウィンドウの16:9固定をセッション内で切り替える."""
-        self._window_aspect_lock.set_enabled(enabled)
+    def _init_window_aspect_lock(self) -> None:
+        """このappが所有する16:9ポリシーを実Tkへ結線する."""
+        self._window_aspect_lock = WindowGeometry.WindowAspectLock(self.root)
+
+    def _cleanup_window_aspect_lock(self) -> None:
+        """app終了時に16:9ポリシーの予約を解除する."""
+        self._window_aspect_lock.cleanup()
+
+    def set_window_aspect_lock(self, enabled: bool) -> bool:
+        """16:9固定を切り替え、設定後の実効状態を返す."""
+        return self._window_aspect_lock.set_enabled(enabled)
 
     def _on_setting_changed(self, *event: Any) -> None:
         """GUI の設定が変わったら即座に書き出す。

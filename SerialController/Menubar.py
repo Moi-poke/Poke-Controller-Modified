@@ -210,10 +210,14 @@ class PokeController_Menubar(tk.Menu):
             return
         logger.info(f"画面サイズを{int(width)}x{int(height)}にしました。")
 
-    def lockAspect(self, lock: bool) -> None:
-        """16:9 の縦横比固定を入/切する."""
-        self.app.set_window_aspect_lock(lock)
-        logger.info(f"縦横比の固定を{'有効' if lock else '解除'}にしました。")
+    def lockAspect(self, lock: bool) -> bool:
+        """16:9 の縦横比固定を入/切し、実効状態を返す."""
+        effective = self.app.set_window_aspect_lock(lock)
+        if lock and effective:
+            logger.info("縦横比の固定を有効にしました。")
+        elif not lock:
+            logger.info("縦横比の固定を解除しました。")
+        return effective
 
     def OpenBconSetup(self) -> None:
         logger.debug("Open BconSetup window")

@@ -80,6 +80,19 @@ def aspect_surface(
         _reset_root(real_tk_root)
 
 
+@pytest.fixture
+def aspect_app(real_tk_root: tk.Tk) -> Iterator[PokeControllerApp]:
+    """実Tkだけでappのポリシー所有者を作る."""
+    app = PokeControllerApp.__new__(PokeControllerApp)
+    app.root = real_tk_root
+    app._init_window_aspect_lock()
+    try:
+        yield app
+    finally:
+        app._cleanup_window_aspect_lock()
+        _reset_root(real_tk_root)
+
+
 def _invoke_menu_item(menu: tk.Menu, label: str) -> None:
     """表示メニューから実際のcommandを呼ぶ."""
     end = menu.index("end")
@@ -92,6 +105,17 @@ def _invoke_menu_item(menu: tk.Menu, label: str) -> None:
             menu.invoke(index)
             return
     raise AssertionError(f"メニュー項目が見つかりません: {label}")
+
+
+def _enter_non_normal_state(root: tk.Tk, requested: str) -> None:
+    if requested == "withdrawn":
+        root.withdraw()
+    else:
+        root.state(requested)
+    _drain(root)
+    actual = root.state()
+    if actual != requested:
+        pytest.skip(f"Tk状態{requested}を設定できません: actual={actual}")
 
 
 def _assert_exact_16_9(root: tk.Tk) -> None:
@@ -114,6 +138,24 @@ def test_enable_snaps_real_window_to_nearest_16_9(
     _drain(root)
 
     _assert_exact_16_9(root)
+
+
+def test_cleanup_cancels_pending_configure_callback(
+    aspect_surface: tuple[tk.Tk, PokeController_Menubar],
+) -> None:
+    """Given: pending Configure、When: 再固定とcleanup、Then: Tcl callbackが残らない."""
+    root, menu = aspect_surface
+    _invoke_menu_item(menu.menu_view, LOCK_LABEL)
+    _drain(root)
+    root.event_generate("<Configure>", when="now")
+    policy = menu.app._window_aspect_lock
+    pending_id = policy._after_id
+    assert pending_id is not None
+
+    _invoke_menu_item(menu.menu_view, LOCK_LABEL)
+    policy.cleanup()
+
+    assert pending_id not in root.tk.call("after", "info")
 
 
 def test_lock_normalizes_later_programmatic_resize(
@@ -156,6 +198,43 @@ def test_unlock_allows_non_16_9_resize(
     assert (root.winfo_width(), root.winfo_height()) == (1500, 800)
 
 
+@pytest.mark.parametrize("requested_state", ("zoomed", "iconic", "withdrawn"))
+def test_non_normal_state_is_ignored_until_normal_restore(
+    aspect_surface: tuple[tk.Tk, PokeController_Menubar],
+    requested_state: str,
+) -> None:
+    """Given: 固定中、When: 非normal状態、Then: 状態を保持しnormal復帰で正規化."""
+    root, menu = aspect_surface
+    _invoke_menu_item(menu.menu_view, LOCK_LABEL)
+    _drain(root)
+    _enter_non_normal_state(root, requested_state)
+    root.geometry("1500x800")
+    _drain(root)
+    assert root.state() == requested_state
+    assert menu.app._window_aspect_lock.enabled
+
+    root.state("normal")
+    root.deiconify()
+    _drain(root)
+    _assert_exact_16_9(root)
+
+
+def test_poke_controller_app_owns_and_cleans_real_policy(
+    aspect_app: PokeControllerApp,
+) -> None:
+    """Given: hardware未起動のapp、When: policy生成とcleanup、Then: 実Tkを監視停止."""
+    root = aspect_app.root
+    assert isinstance(aspect_app._window_aspect_lock, WindowGeometry.WindowAspectLock)
+    assert aspect_app.set_window_aspect_lock(True) is True
+    _drain(root)
+    _assert_exact_16_9(root)
+
+    aspect_app._cleanup_window_aspect_lock()
+    root.geometry("1500x800")
+    _drain(root)
+    assert (root.winfo_width(), root.winfo_height()) == (1500, 800)
+
+
 def test_impossible_bounds_leave_lock_disabled_without_recursion(
     aspect_surface: tuple[tk.Tk, PokeController_Menubar],
 ) -> None:
@@ -165,8 +244,8 @@ def test_impossible_bounds_leave_lock_disabled_without_recursion(
     root.maxsize(1200, 1200)
     root.geometry("1000x1000")
     _drain(root)
-    warnings: list[str] = []
-    sink_id = logger.add(warnings.append, level="WARNING", format="{message}")
+    logs: list[str] = []
+    sink_id = logger.add(logs.append, level="INFO", format="{message}")
 
     try:
         _invoke_menu_item(menu.menu_view, LOCK_LABEL)
@@ -174,7 +253,8 @@ def test_impossible_bounds_leave_lock_disabled_without_recursion(
     finally:
         logger.remove(sink_id)
 
-    assert warnings
+    assert any("16:9" in message for message in logs)
+    assert not any("縦横比の固定を有効にしました" in message for message in logs)
     root.geometry("1100x1100")
     _drain(root)
     assert (root.winfo_width(), root.winfo_height()) == (1100, 1100)
