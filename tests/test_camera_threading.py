@@ -240,10 +240,10 @@ def test_latest_frame_seq_monotonic() -> None:
     q = LatestFrame()
     assert hasattr(q, "seq"), "LatestFrame.seq がありません"
     s0 = int(q.seq)
-    q.put(np.zeros((2, 2, 3), dtype=np.uint8))
+    q.put(np.zeros((2, 2, 3), dtype=np.uint8), time.perf_counter_ns())
     s1 = int(q.seq)
     assert s1 > s0
-    q.put(np.zeros((2, 2, 3), dtype=np.uint8))
+    q.put(np.zeros((2, 2, 3), dtype=np.uint8), time.perf_counter_ns())
     assert int(q.seq) > s1
     # clear をまたいで使い回さない（単調増加で無効化）
     q.clear()
@@ -268,7 +268,7 @@ def test_prepare_src_caches_on_same_seq(monkeypatch: Any) -> None:
 
     lf = LatestFrame()
     frame = np.zeros((8, 8, 3), dtype=np.uint8)
-    lf.put(frame)
+    lf.put(frame, time.perf_counter_ns())
 
     class _SeqCam:
         def readFrame(self, copy: bool = False) -> Any:
@@ -292,7 +292,7 @@ def test_prepare_src_caches_on_same_seq(monkeypatch: Any) -> None:
     )
     assert np.array_equal(a, b)
     # 新 frame → 再計算する
-    lf.put(np.full((8, 8, 3), 7, dtype=np.uint8))
+    lf.put(np.full((8, 8, 3), 7, dtype=np.uint8), time.perf_counter_ns())
     mix._prepareSrc(None, True)
     assert calls["cvt"] > n1, "新 frame で再計算されていません"
 
@@ -304,7 +304,7 @@ def test_match_cache_skips_redundant_match(monkeypatch: Any) -> None:
     from core.CommandVision import VisionMixin
 
     lf = LatestFrame()
-    lf.put(np.zeros((16, 16, 3), dtype=np.uint8))
+    lf.put(np.zeros((16, 16, 3), dtype=np.uint8), time.perf_counter_ns())
 
     class _SeqCam:
         def readFrame(self, copy: bool = False) -> Any:
@@ -336,7 +336,7 @@ def test_match_cache_skips_redundant_match(monkeypatch: Any) -> None:
     assert first >= 1
     mix._matchOnce("dummy.png", 0.7, True, None, None)
     assert n["match"] == first, "同じ seq で matchTemplate が再実行されています"
-    lf.put(np.full((16, 16, 3), 3, dtype=np.uint8))
+    lf.put(np.full((16, 16, 3), 3, dtype=np.uint8), time.perf_counter_ns())
     mix._matchOnce("dummy.png", 0.7, True, None, None)
     assert n["match"] > first, "新 frame で再計算されていません"
 
@@ -386,7 +386,7 @@ def test_vision_reuses_thread_local_scratch() -> None:
     from core.CommandVision import VisionMixin
 
     lf1 = LatestFrame()
-    lf1.put(np.zeros((8, 8, 3), dtype=np.uint8))
+    lf1.put(np.zeros((8, 8, 3), dtype=np.uint8), time.perf_counter_ns())
 
     class _SeqCam:
         def readFrame(self, copy: bool = False) -> Any:
@@ -412,7 +412,7 @@ def test_vision_reuses_thread_local_scratch() -> None:
         "retain は copy を返すこと（scratch の共有は不可）"
     )
     # 非 retain は scratch 再利用（同じ object または shares_memory）
-    lf1.put(np.full((8, 8, 3), 9, dtype=np.uint8))
+    lf1.put(np.full((8, 8, 3), 9, dtype=np.uint8), time.perf_counter_ns())
     c = mix._prepareSrc(None, True)
     # 少なくとも crash せず再利用できる
     assert c.shape == (8, 8)
@@ -429,7 +429,7 @@ def _make_seq_mix(frame_value: int = 0):  # type: ignore[no-untyped-def]
     from core.CommandVision import VisionMixin
 
     lf = LatestFrame()
-    lf.put(np.full((8, 8, 3), frame_value, dtype=np.uint8))
+    lf.put(np.full((8, 8, 3), frame_value, dtype=np.uint8), time.perf_counter_ns())
 
     class _SeqCam:
         def readFrame(self, copy: bool = False) -> Any:

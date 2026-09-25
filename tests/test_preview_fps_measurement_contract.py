@@ -3,15 +3,20 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import threading
 import tkinter as tk
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Protocol, cast
 
+import numpy as np
 import preview_fps_support as support
 import pytest
+from core import Camera as CamMod
+from core.Camera import Camera, LatestFrame
 
 _ONE_SECOND_NS = 1_000_000_000
 _START_NS = _ONE_SECOND_NS
@@ -1853,3 +1858,330 @@ def test_recorded_boundary_shortfall_is_distinguishable_from_a_real_shortfall(
         expected_within_reference
     )
     assert report["target_mean_min_hz"] == 5.0
+
+
+# T2: the capture mailbox carries t_capture_ns / t_ready_ns with the frame.
+
+_STAMP_STEP_NS = 1_000_000
+_CLOCK_LATTICE_NS = 1_000_000_000
+
+
+class _Snapshot(Protocol):
+    """The one-generation publication state Task 2 demands."""
+
+    frame: np.ndarray | None
+    seq: int
+    t_capture_ns: int
+    t_ready_ns: int
+
+
+def _read_snapshot(mailbox: Any) -> _Snapshot:
+    """Read the new accessor through ``Any`` (absent, so RED until Task 2)."""
+    return cast(_Snapshot, mailbox.get_with_timing())
+
+
+def _publish(mailbox: Any, frame: np.ndarray | None, t_capture_ns: int) -> None:
+    """The new put contract: the caller supplies capture, put takes ready."""
+    mailbox.put(frame, t_capture_ns)
+
+
+class _SteppingClock:
+    """A ``perf_counter_ns`` that only ever advances by a fixed step."""
+
+    def __init__(self, base_ns: int) -> None:
+        self._base_ns = base_ns
+        self._ticks = 0
+
+    @property
+    def base_ns(self) -> int:
+        return self._base_ns
+
+    def __call__(self) -> int:
+        self._ticks += 1
+        return self._base_ns + self._ticks * _STAMP_STEP_NS
+
+
+def _on_clock(clock: _SteppingClock, value: int) -> bool:
+    """Whether a value lies on this clock's lattice (rejects the others)."""
+    return value >= clock.base_ns and (value - clock.base_ns) % _STAMP_STEP_NS == 0
+
+
+class _ScriptedCapture:
+    """A ``cv2.VideoCapture`` double whose ``read()`` allocates every call.
+
+    Mirrors the real contract (no ``dst=``, so a fresh array per call), which is
+    the whole reason the single-slot mailbox cannot tear. Once the scripted
+    number of reads is spent it raises the stop event, so ``Camera._update``
+    still puts that last frame before the loop exits.
+    """
+
+    def __init__(
+        self,
+        frame_count: int,
+        *,
+        clock: Callable[[], int],
+        fill: Callable[[int], int] | None = None,
+    ) -> None:
+        self._frame_count = frame_count
+        self._clock = clock
+        self._fill = fill if fill is not None else (lambda index: index)
+        self._stop: threading.Event | None = None
+        self.frames: list[np.ndarray] = []
+        self.read_return_ns: list[int] = []
+
+    def arm(self, stop_event: threading.Event) -> None:
+        """Hold the stop event that ends one loop iteration."""
+        self._stop = stop_event
+
+    def read(self) -> tuple[bool, np.ndarray]:
+        index = len(self.frames)
+        frame = np.full((4, 4, 3), self._fill(index), dtype=np.uint8)
+        self.frames.append(frame)
+        self.read_return_ns.append(self._clock())
+        if index + 1 >= self._frame_count:
+            assert self._stop is not None
+            self._stop.set()
+        return True, frame
+
+
+def _run_capture_loop_once(camera: Camera, capture: _ScriptedCapture) -> None:
+    """Run one iteration of the real loop inline: no thread, no waiting."""
+    stop_event = threading.Event()
+    capture.arm(stop_event)
+    camera._update(stop_event, camera._generation, capture)
+
+
+def test_capture_mailbox_publishes_frame_seq_and_both_timestamps_atomically() -> None:
+    # Given: an empty capture mailbox.
+    mailbox = LatestFrame()
+    frame = np.full((4, 4, 3), 5, dtype=np.uint8)
+
+    # When: the producer publishes one frame with its capture instant.
+    _publish(mailbox, frame, 1_000_000_000)
+
+    # Then: one snapshot carries the frame, its generation and both stamps.
+    published = _read_snapshot(mailbox)
+    assert published.frame is frame
+    assert published.seq == 1
+    assert published.t_capture_ns == 1_000_000_000
+    assert published.t_ready_ns >= published.t_capture_ns
+
+    # When: the mailbox is cleared to invalidate every seq-keyed cache.
+    mailbox.clear()
+
+    # Then: the frame is gone, the generation advanced, no stamp survives.
+    cleared = _read_snapshot(mailbox)
+    assert cleared.frame is None
+    assert cleared.seq == 2
+    assert cleared.t_capture_ns == 0
+    assert cleared.t_ready_ns == 0
+
+
+def test_frozen_read_accessors_keep_their_arity_and_gain_a_separate_name() -> None:
+    # Given: a camera that has not published anything yet.
+    camera = Camera(fps=0)
+
+    # Then: the frozen public accessors keep their exact parameter lists.
+    assert list(inspect.signature(Camera.readFrame).parameters) == ["self", "copy"]
+    assert list(inspect.signature(Camera.readFrameWithSeq).parameters) == [
+        "self",
+        "copy",
+    ]
+
+    # When: a frozen accessor is read.
+    frame, seq = camera.readFrameWithSeq()
+
+    # Then: it still answers with exactly two values, positionally and by keyword.
+    assert frame is None
+    assert seq == 0
+    assert camera.readFrame() is None
+    assert camera.readFrameWithSeq(copy=True) == (None, 0)
+
+    # Then: the timing accessor is a new, separately named entry point.
+    assert hasattr(Camera, "readFrameWithTiming")
+
+
+def test_put_none_leaves_the_published_snapshot_untouched() -> None:
+    # Given: one published generation.
+    mailbox = LatestFrame()
+    frame = np.full((4, 4, 3), 3, dtype=np.uint8)
+    _publish(mailbox, frame, 500_000_000)
+    before = _read_snapshot(mailbox)
+
+    # When: a failed capture read publishes None.
+    _publish(mailbox, None, 600_000_000)
+
+    # Then: frame, generation and both stamps all survive the failed read.
+    after = _read_snapshot(mailbox)
+    assert after.frame is frame
+    assert after.seq == before.seq
+    assert after.t_capture_ns == before.t_capture_ns
+    assert after.t_ready_ns == before.t_ready_ns
+
+
+def test_capture_loop_stamps_capture_at_read_return_and_ready_at_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a stepping perf_counter_ns and a capture that publishes one frame.
+    clock = _SteppingClock(base_ns=4_000_000_000 * _CLOCK_LATTICE_NS)
+    monkeypatch.setattr(CamMod.time, "perf_counter_ns", clock)
+    camera = Camera(fps=0)
+    capture = _ScriptedCapture(1, clock=clock)
+
+    # When: one iteration of the real capture loop publishes it.
+    _run_capture_loop_once(camera, capture)
+
+    # Then: t_capture_ns is the first clock read after read() returned, and
+    #       t_ready_ns is the very next read, taken at publication inside put.
+    published = _read_snapshot(camera.frame_queue)
+    read_return_ns = capture.read_return_ns[0]
+    assert published.t_capture_ns == read_return_ns + _STAMP_STEP_NS
+    assert published.t_ready_ns == published.t_capture_ns + _STAMP_STEP_NS
+    assert published.t_ready_ns >= published.t_capture_ns
+    assert published.t_capture_ns <= published.t_ready_ns <= clock()
+
+
+def test_consumer_computes_ready_minus_capture_as_exact_int_nanoseconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a producer capture stamp deliberately off the clock lattice, so a
+    #        round-trip or rescale of the published value would be visible.
+    clock = _SteppingClock(base_ns=2_000_000_000 * _CLOCK_LATTICE_NS)
+    monkeypatch.setattr(CamMod.time, "perf_counter_ns", clock)
+    mailbox = LatestFrame()
+    producer_capture_ns = 4_000_000_000_000_123
+
+    # When: the frame is published and a consumer reads the snapshot.
+    _publish(mailbox, np.full((4, 4, 3), 9, dtype=np.uint8), producer_capture_ns)
+    published = _read_snapshot(mailbox)
+
+    # Then: the producer's integer passes through unrounded, the ready stamp is
+    #       a verbatim clock read, and the consumer gets a non-negative int.
+    assert published.t_capture_ns == producer_capture_ns
+    assert type(published.t_capture_ns) is int
+    assert type(published.t_ready_ns) is int
+    assert _on_clock(clock, published.t_ready_ns)
+    latency_ns = published.t_ready_ns - published.t_capture_ns
+    assert type(latency_ns) is int
+    assert latency_ns >= 0
+
+
+def test_snapshot_survives_a_generation_change_without_pairing_stamps() -> None:
+    # Given: generation 1 published and snapshotted.
+    mailbox = LatestFrame()
+    first = np.full((4, 4, 3), 1, dtype=np.uint8)
+    second = np.full((4, 4, 3), 2, dtype=np.uint8)
+    _publish(mailbox, first, 1_000_000_000)
+    generation_one = _read_snapshot(mailbox)
+
+    # When: generation 2 is published and snapshotted.
+    _publish(mailbox, second, 2_000_000_000)
+    generation_two = _read_snapshot(mailbox)
+
+    # Then: the held generation is still frame 1 with frame 1's own stamps.
+    assert generation_one.frame is first
+    assert generation_one.seq == 1
+    assert generation_one.t_capture_ns == 1_000_000_000
+
+    # Then: the new generation carries its own frame and its own stamps, so a
+    #       seq-keyed cache cannot pair frame N with frame N+1's timestamps.
+    assert generation_two.frame is second
+    assert generation_two.seq == 2
+    assert generation_two.t_capture_ns == 2_000_000_000
+    assert generation_two.t_capture_ns != generation_one.t_capture_ns
+    assert generation_two.t_ready_ns >= generation_two.t_capture_ns
+
+
+def test_capture_loop_never_mutates_an_already_published_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a stepped clock and one generation already published and held.
+    clock = _SteppingClock(base_ns=1_000_000_000 * _CLOCK_LATTICE_NS)
+    monkeypatch.setattr(CamMod.time, "perf_counter_ns", clock)
+    camera = Camera(fps=0)
+    capture = _ScriptedCapture(1, clock=clock, fill=lambda index: index)
+    _run_capture_loop_once(camera, capture)
+    held = _read_snapshot(camera.frame_queue)
+
+    # When: two further generations are published through the real loop.
+    _run_capture_loop_once(camera, capture)
+    _run_capture_loop_once(camera, capture)
+    latest = _read_snapshot(camera.frame_queue)
+
+    # Then: the held generation still shows generation 1's bytes and stamps, so
+    #       no producer path writes into an array that was already published.
+    held_frame = held.frame
+    latest_frame = latest.frame
+    assert held_frame is not None
+    assert latest_frame is not None
+    assert held.seq == 1
+    assert int(held_frame[0, 0, 0]) == 0
+    assert held.t_capture_ns < latest.t_capture_ns
+    assert latest.seq == 3
+    assert int(latest_frame[0, 0, 0]) == 2
+    assert held_frame is capture.frames[0]
+    assert latest_frame is capture.frames[2]
+    assert not np.shares_memory(held_frame, latest_frame)
+
+
+def test_capture_mailbox_swaps_the_frame_reference_instead_of_copying() -> None:
+    # Given: two freshly allocated arrays, as read() without dst= produces.
+    mailbox = LatestFrame()
+    first = np.full((4, 4, 3), 1, dtype=np.uint8)
+    second = np.full((4, 4, 3), 2, dtype=np.uint8)
+
+    # When: the first generation is published.
+    _publish(mailbox, first, 1_000_000_000)
+    after_first = _read_snapshot(mailbox)
+
+    # Then: put stored the caller's array by reference, never a copy into a
+    #       shared slot, and two reads hand back that very same object.
+    #       （第2世代を公開する「前」に読む。単一スロットは公開ごとに
+    #        差し替わるので、この観測点を後ろに回すと第2世代と矛盾する。）
+    assert after_first.frame is first
+    assert mailbox.get() is first
+    assert mailbox.get() is mailbox.get()
+    assert int(after_first.frame[0, 0, 0]) == 1
+
+    # When: the second generation supersedes the slot.
+    _publish(mailbox, second, 2_000_000_000)
+    after_second = _read_snapshot(mailbox)
+
+    # Then: the single slot supersedes, so no FACE_COUNT ring face keeps
+    #       generation 1 alive and no ring face is handed out in its place.
+    assert after_second.frame is second
+    assert after_second.seq == 2
+    assert int(after_second.frame[0, 0, 0]) == 2
+    assert after_first.frame is not after_second.frame
+    assert not np.shares_memory(after_first.frame, after_second.frame)
+
+
+def test_capture_mailbox_and_harness_share_the_perf_counter_ns_clock_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: four candidate clocks, each on its own disjoint integer lattice.
+    native = _SteppingClock(base_ns=9_000_000_000 * _CLOCK_LATTICE_NS)
+    foreign_clocks = (
+        _SteppingClock(base_ns=native.base_ns + 1),
+        _SteppingClock(base_ns=native.base_ns + 2),
+        _SteppingClock(base_ns=native.base_ns + 3),
+    )
+    monkeypatch.setattr(CamMod.time, "perf_counter_ns", native)
+    monkeypatch.setattr(CamMod.time, "perf_counter", foreign_clocks[0])
+    monkeypatch.setattr(CamMod.time, "time_ns", foreign_clocks[1])
+    monkeypatch.setattr(CamMod.time, "monotonic_ns", foreign_clocks[2])
+    camera = Camera(fps=0)
+    capture = _ScriptedCapture(1, clock=native)
+    source = support.SyntheticFrameSource()
+
+    # When: the real capture loop publishes, and the harness source is read.
+    _run_capture_loop_once(camera, capture)
+    source.readFrameWithSeq()
+    published = _read_snapshot(camera.frame_queue)
+    harness_stamp = source.camera_records()[0].perf_counter_ns
+
+    # Then: both stamps and the harness's own stamp come from perf_counter_ns,
+    #       the one clock the two sides share, and from no other clock.
+    for value in (published.t_capture_ns, published.t_ready_ns, harness_stamp):
+        assert _on_clock(native, value)
+        assert not any(_on_clock(foreign, value) for foreign in foreign_clocks)

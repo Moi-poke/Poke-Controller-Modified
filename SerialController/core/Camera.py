@@ -17,6 +17,7 @@ import os
 import threading
 import time
 import traceback
+from dataclasses import dataclass
 from multiprocessing import Value, shared_memory
 from multiprocessing.sharedctypes import Synchronized
 from typing import Any
@@ -186,6 +187,23 @@ def save_capture(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class FrameSnapshot:
+    """1 世代分の公開状態。mailbox の lock を掴んだまま撮る。
+
+    frame と seq、両スタンプを1つの immutable に束ねることで、消費者が
+    フレームと別世代のスタンプを対にする事故を型で防ぐ。
+
+    eq=False は必須。ndarray を包む dataclass 既定の __eq__ はタプル比較を
+    して bool() を呼ぶため、要素数2つ以上の配列だと ValueError になる。
+    """
+
+    frame: np.ndarray | None
+    seq: int
+    t_capture_ns: int
+    t_ready_ns: int
+
+
 class LatestFrame:
     """最新の1枚だけを保持する箱。
 
@@ -197,42 +215,69 @@ class LatestFrame:
     （_prepareSrc / _drawFrame / wait 系）は (seq, 条件) を鍵に
     結果を使い回し、同じ seq では再計算しない。clear をまたいで
     当ててはならないため、clear でも seq を進めて無効化する。
+
+    公開状態は FrameSnapshot 1個で持ち、差し替えのたびに作り直す。
+    get / get_with_seq / get_with_timing が同じ 1 個を参照するので、
+    読み取り口彼此が食い違うことがない。
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._frame: np.ndarray | None = None
-        self._seq = 0
+        self._snapshot: FrameSnapshot = FrameSnapshot(None, 0, 0, 0)
 
     @property
     def seq(self) -> int:
         """現在の世代番号。put / clear で単調に増える。"""
         with self._lock:
-            return self._seq
+            return self._snapshot.seq
 
-    def put(self, frame: np.ndarray | None) -> None:
-        """最新フレームを差し替える。None では上書きしない。"""
+    def put(self, frame: np.ndarray | None, t_capture_ns: int) -> None:
+        """最新フレームを差し替える。None では上書きしない。
+
+        t_capture_ns は取得スレッドが read() から戻った直後に測った
+        瞬間（perf_counter_ns の整数 ns）。公開より前なので呼び出し側の
+        責任で渡す。t_ready_ns は公開の瞬間をここで測る（lock 内）ので、
+        「読めた瞬間」ではなく「読めた状態になった瞬間」を表す。
+        """
         if frame is None:
             return
         with self._lock:
-            self._frame = frame
-            self._seq += 1
+            # 参照の差し替えだけ。既に公開済みの配列へ書き込まない。
+            self._snapshot = FrameSnapshot(
+                frame,
+                self._snapshot.seq + 1,
+                t_capture_ns,
+                time.perf_counter_ns(),
+            )
 
     def get(self) -> np.ndarray | None:
         """最新フレームを返す。まだ1枚も来ていなければ None。"""
         with self._lock:
-            return self._frame
+            return self._snapshot.frame
 
     def get_with_seq(self) -> tuple[np.ndarray | None, int]:
         """最新フレームと世代番号を原子的に返す。cache の鍵用。"""
         with self._lock:
-            return self._frame, self._seq
+            snapshot = self._snapshot
+            return snapshot.frame, snapshot.seq
+
+    def get_with_timing(self) -> FrameSnapshot:
+        """最新フレーム・世代番号・両スタンプを原子的に返す。
+
+        1 回の lock 取得で全部を読むので、フレームだけ新しい／スタンプ
+        だけ古いという取り違えが起きない。
+        """
+        with self._lock:
+            return self._snapshot
 
     def clear(self) -> None:
-        """中身を捨て、seq を進めて既存 cache を無効化する。"""
+        """中身を捨て、seq を進めて既存 cache を無効化する。
+
+        スタンプは 0 のままにする。0 は「時刻の記録が無い」の印で、
+        ここで測ると clear 後の 0 を実測値と区別できなくなる。
+        """
         with self._lock:
-            self._frame = None
-            self._seq += 1
+            self._snapshot = FrameSnapshot(None, self._snapshot.seq + 1, 0, 0)
 
 
 # 旧名との互換（外部から CustomQueue を import している箇所があるため）
@@ -423,6 +468,24 @@ class Camera:
             return None, seq
         return (frame.copy() if copy else frame, seq)
 
+    def readFrameWithTiming(
+        self, copy: bool = False
+    ) -> tuple[np.ndarray | None, int, int, int]:
+        """最新フレーム・世代番号・取得/公開スタンプを原子的に返す。
+
+        readFrameWithSeq は凍結面なので 2 値のまま据え置く。時刻が要る
+        呼び出しだけがこの別名を使う。copy=True でもスタンプは
+        コピー元の公開時刻のままで、測り直さない。
+        """
+        snapshot = self.frame_queue.get_with_timing()
+        frame = snapshot.frame
+        return (
+            frame.copy() if copy and frame is not None else frame,
+            snapshot.seq,
+            snapshot.t_capture_ns,
+            snapshot.t_ready_ns,
+        )
+
     def frame_seq(self) -> int:
         """現在の世代番号。LatestFrame.seq の読み替え。"""
         return int(self.frame_queue.seq)
@@ -512,6 +575,11 @@ class Camera:
                 stop_event.set()
                 break
 
+            # 取得の瞬間。公開より前なので、ここで測って put へ渡す。
+            # 将来 resize をこのスレッドへ移しても、read 直後のこの値が
+            # そのまま「撮った瞬間」のままになる。
+            t_capture_ns = time.perf_counter_ns()
+
             read_time = time.perf_counter() - started
             if read_avg <= 0.0:
                 read_avg = read_time
@@ -543,7 +611,7 @@ class Camera:
                     break
                 continue
 
-            self.frame_queue.put(frame)
+            self.frame_queue.put(frame, t_capture_ns)
             with self._stat_lock:
                 if self._stat_began_at is None:
                     self._stat_began_at = started
