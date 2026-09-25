@@ -217,8 +217,8 @@ def flushQueue(q: queue.Queue, area: tk.Text, autoscroll: bool = True) -> None:
 
     update_idletasks() は呼ばない。次の after で待ちに入れば tkinter
     が自然に描くので不要で、映像描画の after と重なると描画が二重に
-    走る。see("end") もスクロール計算が乗るため、末尾を見ているときだけ
-    呼ぶ（過去ログを遡っている最中に勝手に飛ばされるのも防げる）。
+    走る。自動スクロールフラグ（autoscroll）が有効なら、書き込み後に
+    see("end") で末尾へ追従する。無効時は現在の表示位置を保つ。
     """
     lines: list[str] = []
     while len(lines) < FLUSH_MAX_LINES:
@@ -234,16 +234,13 @@ def flushQueue(q: queue.Queue, area: tk.Text, autoscroll: bool = True) -> None:
     if not lines and not dropped:
         return
 
-    # 末尾を見ているか、書き換える前に判定する
-    at_bottom = area.yview()[1] >= 0.999
-
     area.configure(state="normal")
     if dropped:
         area.insert("end", f"... {dropped} 行省略 ...\n")
     if lines:
         area.insert("end", "".join(lines))
     trim(area)
-    if at_bottom and autoscroll:
+    if autoscroll:
         area.see("end")
     area.configure(state="disabled")
 
