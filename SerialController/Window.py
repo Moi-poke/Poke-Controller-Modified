@@ -134,6 +134,8 @@ class PokeControllerApp(
         # _build_ui 時点では canvas が最終寸法になっていないため、
         # ここで測り直す（早すぎると小さな値で無意味になる）。
         self._apply_content_minsize()
+        # 最小寸法の確定後に、このセッション内の16:9固定を開始する。
+        self._window_aspect_lock = WindowGeometry.WindowAspectLock(self.root)
 
     # ------------------------------------------------------------------
     # 状態
@@ -469,6 +471,7 @@ class PokeControllerApp(
                 pass
         self._display_after_id = None
         self._sash_after_id = None
+        self._window_aspect_lock.cleanup()
         # 子窓（Wake設定・キーコンフィグ等）を先に閉じる。開きっぱなしの
         # まま destroy へ進むと、after 予約が破棄途中の窓を触る。
         try:
@@ -593,6 +596,10 @@ class PokeControllerApp(
     def _restore_geometry(self) -> None:
         """前回のウィンドウ位置とサイズを復元する。"""
         WindowGeometry.restoreGeometry(self.root, self.settings)
+
+    def set_window_aspect_lock(self, enabled: bool) -> None:
+        """メインウィンドウの16:9固定をセッション内で切り替える."""
+        self._window_aspect_lock.set_enabled(enabled)
 
     def _on_setting_changed(self, *event: Any) -> None:
         """GUI の設定が変わったら即座に書き出す。

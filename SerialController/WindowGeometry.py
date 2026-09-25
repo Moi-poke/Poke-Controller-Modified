@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import re
 import tkinter as tk
-from typing import Any
+from collections.abc import Callable
+from typing import Any, Final
 
 from loguru import logger
 
@@ -31,6 +32,128 @@ SASH_DEFAULT = 0.6
 
 # 位置の復元を許す余白。タイトルバーが掴める程度は画面内に残すこと。
 SCREEN_MARGIN = 100
+
+ASPECT_RATIO_WIDTH: Final[int] = 16
+ASPECT_RATIO_HEIGHT: Final[int] = 9
+
+
+class WindowAspectLock:
+    """通常状態のウィンドウを16:9の整数サイズへ戻すセッション限りのポリシー."""
+
+    def __init__(
+        self,
+        root: tk.Tk,
+        on_warning: Callable[[str], None] | None = None,
+    ) -> None:
+        self._root = root
+        self._on_warning = on_warning
+        self._enabled = False
+        self._after_id: str | None = None
+        self._binding_id: str | None = root.bind(
+            "<Configure>", self._on_configure, add="+"
+        )
+
+    @property
+    def enabled(self) -> bool:
+        """現在の固定状態返す."""
+        return self._enabled
+
+    def set_enabled(self, enabled: bool) -> None:
+        """固定をセッション内で切り替える."""
+        if not enabled:
+            self._enabled = False
+            self._cancel_pending()
+            return
+        self._enabled = True
+        if self._root.state() != "normal":
+            return
+        self._normalize()
+
+    def cleanup(self) -> None:
+        """Configure の予約とバインドを片付ける."""
+        self._enabled = False
+        self._cancel_pending()
+        if self._binding_id is None:
+            return
+        try:
+            self._root.unbind("<Configure>", self._binding_id)
+        except tk.TclError:
+            logger.debug("Failed to remove the window aspect Configure handler")
+        self._binding_id = None
+
+    def _on_configure(self, _event: tk.Event[tk.Misc]) -> None:
+        if not self._enabled or self._root.state() != "normal":
+            return
+        if self._after_id is not None:
+            return
+        self._after_id = self._root.after_idle(self._normalize)
+
+    def _normalize(self) -> None:
+        self._after_id = None
+        if not self._enabled or self._root.state() != "normal":
+            return
+        try:
+            width = self._root.winfo_width()
+            height = self._root.winfo_height()
+            min_size = self._root.wm_minsize()
+            max_size = self._root.wm_maxsize()
+        except tk.TclError:
+            self._disable_with_warning("ウィンドウ寸法を読み取れませんでした")
+            return
+
+        target = self._target_size(width, min_size, max_size)
+        if target is None:
+            self._disable_with_warning("16:9に固定できるウィンドウ寸法がありません")
+            return
+        target_width, target_height = target
+        if (width, height) == (target_width, target_height):
+            return
+        try:
+            self._root.geometry(f"{target_width}x{target_height}")
+        except tk.TclError:
+            self._disable_with_warning("16:9のウィンドウ寸法へ変更できませんでした")
+
+    def _cancel_pending(self) -> None:
+        if self._after_id is None:
+            return
+        try:
+            self._root.after_cancel(self._after_id)
+        except tk.TclError:
+            logger.debug("Failed to cancel the window aspect Configure handler")
+        self._after_id = None
+
+    def _disable_with_warning(self, message: str) -> None:
+        self._enabled = False
+        if self._on_warning is None:
+            logger.warning(message)
+            return
+        self._on_warning(message)
+
+    @staticmethod
+    def _target_size(
+        width: int,
+        min_size: tuple[int, int],
+        max_size: tuple[int, int],
+    ) -> tuple[int, int] | None:
+        min_width, min_height = min_size
+        max_width, max_height = max_size
+        min_k = max(
+            1,
+            (max(1, min_width) + ASPECT_RATIO_WIDTH - 1) // ASPECT_RATIO_WIDTH,
+            (max(1, min_height) + ASPECT_RATIO_HEIGHT - 1) // ASPECT_RATIO_HEIGHT,
+        )
+        max_k = min(
+            max_width // ASPECT_RATIO_WIDTH,
+            max_height // ASPECT_RATIO_HEIGHT,
+        )
+        if max_k < min_k:
+            return None
+        desired_k = max(
+            1,
+            (max(1, width) + ASPECT_RATIO_WIDTH // 2) // ASPECT_RATIO_WIDTH,
+        )
+        k = min(max(desired_k, min_k), max_k)
+        return ASPECT_RATIO_WIDTH * k, ASPECT_RATIO_HEIGHT * k
 
 
 def clampRatio(ratio: float) -> float:

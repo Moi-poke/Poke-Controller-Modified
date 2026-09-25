@@ -211,16 +211,8 @@ class PokeController_Menubar(tk.Menu):
         logger.info(f"画面サイズを{int(width)}x{int(height)}にしました。")
 
     def lockAspect(self, lock: bool) -> None:
-        """16:9 の縦横比固定を入/切する。失敗は警告のみ。"""
-        root: Any = self.root
-        try:
-            if lock:
-                root.wm_aspect(16, 9, 16, 9)
-            else:
-                root.wm_aspect("", "", "", "")
-        except Exception as e:
-            logger.warning(f"縦横比の切替に失敗しました: {e!r}")
-            return
+        """16:9 の縦横比固定を入/切する."""
+        self.app.set_window_aspect_lock(lock)
         logger.info(f"縦横比の固定を{'有効' if lock else '解除'}にしました。")
 
     def OpenBconSetup(self) -> None:
