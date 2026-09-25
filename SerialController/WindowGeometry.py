@@ -112,7 +112,13 @@ class WindowAspectLock:
             return
         try:
             self._root.geometry(f"{target_width}x{target_height}")
+            self._root.update_idletasks()
+            actual_width = self._root.winfo_width()
+            actual_height = self._root.winfo_height()
         except tk.TclError:
+            self._disable_with_warning("16:9のウィンドウ寸法へ変更できませんでした")
+            return
+        if (actual_width, actual_height) != (target_width, target_height):
             self._disable_with_warning("16:9のウィンドウ寸法へ変更できませんでした")
 
     def _cancel_pending(self) -> None:
