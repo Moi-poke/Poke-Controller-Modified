@@ -58,16 +58,18 @@ class WindowAspectLock:
         """現在の固定状態返す."""
         return self._enabled
 
-    def set_enabled(self, enabled: bool) -> None:
-        """固定をセッション内で切り替える."""
+    def set_enabled(self, enabled: bool) -> bool:
+        """固定をセッション内で切り替え、実効状態を返す."""
         if not enabled:
             self._enabled = False
             self._cancel_pending()
-            return
+            return False
+        self._cancel_pending()
         self._enabled = True
         if self._root.state() != "normal":
-            return
+            return True
         self._normalize()
+        return self._enabled
 
     def cleanup(self) -> None:
         """Configure の予約とバインドを片付ける."""
