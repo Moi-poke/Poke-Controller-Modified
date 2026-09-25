@@ -38,6 +38,7 @@ from ui.audio_panel import AudioPanelMixin
 from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
 from ui.log_panel import LogPanelMixin
+from ui.preview_clock import StopResult
 from ui.serial_panel import SerialPanelMixin
 
 NAME = "Poke-Controller"
@@ -201,6 +202,9 @@ class PokeControllerApp(
         # 記録の失敗で実行は壊さない（runner・service 側で握る）。
         self.runner.set_diag(self.serial, self.profile)
         self._closing = False
+        self._exit_requested = False
+        self._exit_phase = "idle"
+        self._exit_retry_after_id: str | None = None
         # カメラ開きの直列化錠と発行番号。起動時は裏スレッドで開き、
         # Reload は表で開く。両方が同時に走ると DirectShow の open が
         # 食い違うため錠で直列化し、番号で古い結果を捨てる。
@@ -442,21 +446,20 @@ class PokeControllerApp(
             return
 
         self._closing = True
+        self._exit_requested = True
+        self._exit_phase = "stopping_preview"
         self.runner.notify_closing()
-        # after の ID は「登録したウィジェット」に紐づく。別の
-        # ウィジェットで after_cancel しても取り消せず、予約は生き残る。
-        # display_text は logArea.after で、_restore_sash は root.after で
-        # 登録しているので、取り消しも同じ相手へ頼む。取り消し漏れが
-        # あると destroy の最中に発火し、破棄途中のウィジェットを触って
-        # TclError（can't delete Tcl command）になる。
-        # 停止の見張りの予約は runner が持つのでそちらで消す。
+        self._cancel_exit_afters()
+        self._continue_exit()
+
+    def _cancel_exit_afters(self) -> None:
+        # after の ID は登録したウィジェットに紐づくため、同じ所有者へ
+        # after_cancel する。停止の見張りとランプ巡回もここで片付ける。
         self.runner.cancel_watch()
-        # LED・振動の巡回予約も同じ相手(root)へ頼んで消す。残すと
-        # destroyの最中に発火し、破棄途中のCanvasを触ってTclErrorになる。
         try:
             self._cancel_player_lamp_patrol()
-        except Exception as e:
-            logger.warning(f"ランプ巡回の停止で例外: {e}")
+        except Exception as exc:
+            logger.warning(f"ランプ巡回の停止で例外: {exc}")
         for widget, after_id in (
             (self.logArea, self._display_after_id),
             (self.root, self._sash_after_id),
@@ -469,71 +472,80 @@ class PokeControllerApp(
                 pass
         self._display_after_id = None
         self._sash_after_id = None
-        # 子窓（Wake設定・キーコンフィグ等）を先に閉じる。開きっぱなしの
-        # まま destroy へ進むと、after 予約が破棄途中の窓を触る。
-        try:
-            if self.menu is not None:
-                self.menu.closeAll()
-        except Exception as e:
-            logger.warning(f"子窓を閉じるときに例外: {e}")
-        self.runner.shutdown(self.ser)
 
+    def _continue_exit(self) -> None:
+        if not self._exit_requested:
+            return
+        if self._exit_phase == "stopping_preview":
+            self._exit_retry_after_id = None
+            result = self._stop_preview_for_exit()
+            if result is not StopResult.STOPPED:
+                self._exit_phase = "stopping_preview"
+                self._exit_retry_after_id = self.root.after(50, self._continue_exit)
+                return
+            self._exit_phase = "preview_stopped"
+
+        if self._exit_phase != "preview_stopped":
+            return
+
+        self._exit_phase = "stopping_services"
+        if self.menu is not None:
+            try:
+                self.menu.closeAll()
+            except Exception as exc:
+                logger.warning(f"子窓を閉じるときに例外: {exc}")
+        self.runner.shutdown(self.ser)
         self.serial.stop_keyboard()
         self.closingController()
-        # 映像の描画ループをここで止める。CaptureArea のマウス操作
-        # （LStick / RStick Mouse）は self.ser へ書くため、シリアルを
-        # 閉じる前に「送る側」を止めておく。Unbind だけでは capture()
-        # の周回自体は生き続け、閉じた口を持ったまま回ることになる。
-        # 逆順にすると「閉じた先へ書きに行く」経路が残る。
-        if self.preview is not None:
-            try:
-                self.preview.UnbindLeftClick()
-                self.preview.UnbindRightClick()
-            except Exception as e:
-                logger.warning(f"マウス操作の解除で例外: {e}")
-            try:
-                self.preview.stopCapture()
-            except Exception as e:
-                logger.warning(f"映像の停止で例外: {e}")
-
         if self.serial.shutdown():
             print("Serial disconnected")
+        self._save_exit_settings_and_stats()
+        if self.camera is not None:
+            self.camera.destroy()
+        self._stop_audio()
+        cv2.destroyAllWindows()
+        sys.stdout = sys.__stdout__
+        logger.debug("Stop Poke Controller")
+        self._exit_phase = "root_destroyed"
+        self.root.destroy()
 
-        # ウィンドウを壊す前に位置とサイズを控える（destroy 後は取れない）。
-        # 仕切り位置もここで控える。drag 解放時には書いているが、最後に
-        # 動かしたまま閉じた場合に備える。保存の失敗で終了を止めない。
+    def _stop_preview_for_exit(self) -> StopResult:
+        preview = self.preview
+        if preview is None:
+            return StopResult.STOPPED
+        for unbind in (preview.UnbindLeftClick, preview.UnbindRightClick):
+            try:
+                unbind()
+            except Exception as exc:
+                logger.warning(f"マウス操作の解除で例外: {exc}")
+        try:
+            return preview.stopCapture()
+        except Exception as exc:
+            logger.warning(f"映像の停止で例外: {exc}")
+            return StopResult.PENDING
+
+    def _save_exit_settings_and_stats(self) -> None:
         try:
             WindowGeometry.rememberSash(self.log_pane, self.settings)
-        except Exception as e:
-            logger.warning(f"仕切り位置の保存に失敗しました: {e}")
+        except Exception as exc:
+            logger.warning(f"仕切り位置の保存に失敗しました: {exc}")
         self._remember_geometry()
         try:
             self._save_settings()
-        except Exception as e:
-            logger.warning(f"終了時の設定保存に失敗しました: {e}")
-        # 使用履歴も同じ場所で書き出す。実行のたびに書きに行かない代わり、
-        # ここを通らないと記録が残らないので、設定の保存と並べておく。
+        except Exception as exc:
+            logger.warning(f"終了時の設定保存に失敗しました: {exc}")
         if self.runner.stats_dirty:
             CommandStats.save(self.command_stats, self.profile)
 
-        # 映像を止めたあとで解放する。順序を逆にすると解放済みメモリを読む
-        if self.camera is not None:
-            self.camera.destroy()
+    def _stop_audio(self) -> None:
         try:
             self._stop_meter()
-        except Exception as e:
-            logger.warning(f"音声メーターの停止で例外: {e}")
+        except Exception as exc:
+            logger.warning(f"音声メーターの停止で例外: {exc}")
         try:
             self.audio_service.shutdown()
-        except Exception as e:
-            logger.warning(f"音声の停止で例外: {e}")
-        cv2.destroyAllWindows()
-
-        # 標準出力を元に戻さないと、破棄済みウィジェットへ書きに行くことがある
-        sys.stdout = sys.__stdout__
-
-        logger.debug("Stop Poke Controller")
-        self.root.destroy()
+        except Exception as exc:
+            logger.warning(f"音声の停止で例外: {exc}")
 
     def _save_settings(self) -> None:
         """GUI の現在値をすべて設定ファイルへ書き出す。

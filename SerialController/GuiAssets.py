@@ -20,8 +20,9 @@ import traceback
 from collections import deque
 from collections.abc import Callable
 from tkinter.scrolledtext import ScrolledText
-from typing import Any
+from typing import Any, Final
 
+import WindowUtils
 import cv2
 import numpy as np
 
@@ -31,6 +32,7 @@ from Commands.Keys import Button, Hat
 from Commands.PythonCommandBase import PythonCommand
 from PIL import Image, ImageTk
 from loguru import logger
+from ui import preview_clock
 
 isTakeLog = False
 # True にするとスティック操作の軌跡を log/ に CSV で書き出す。
@@ -70,6 +72,19 @@ _ser_opened_clock: Callable[[], float] = time.monotonic
 # 送り先ごとの opened 判定。id(ser) -> (ser 本体, 開いているか, 時刻)。
 # 本体も添えるのは id 使い回し（別物が同じ id を取る）の取り違え防止。
 _SER_OPENED_CACHE: dict[int, tuple[Any, bool, float]] = {}
+_INVALID_PREVIEW_FPS_MESSAGE: Final[str] = "FPS must be one of 5, 15, 30, 45, 60"
+
+
+def _validated_preview_fps(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError(_INVALID_PREVIEW_FPS_MESSAGE)
+    try:
+        fps = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(_INVALID_PREVIEW_FPS_MESSAGE) from exc
+    if fps not in WindowUtils.FPS_VALUES:
+        raise ValueError(_INVALID_PREVIEW_FPS_MESSAGE)
+    return fps
 
 
 class CaptureAreaProxy:
@@ -292,7 +307,21 @@ class CaptureArea(tk.Canvas):
         self._lrec = _StickRecorder("L") if take_log else None
         self._rrec = _StickRecorder("R") if take_log else None
 
-        self.setFps(fps)
+        self._configured_fps = _validated_preview_fps(fps)
+        self.next_frames = 1000.0 / self._configured_fps
+        self._preview_clock: preview_clock.PreviewClock | None = None
+        self._camera_observation: dict[str, int] = {
+            "camera_read_count": 0,
+            "camera_frame_present_count": 0,
+            "camera_none_count": 0,
+            "camera_read_error_count": 0,
+            "camera_unique_sequence_count": 0,
+            "camera_duplicate_sequence_count": 0,
+            "camera_sequence_regression_count": 0,
+            "camera_last_sequence": 0,
+            "post_teardown_camera_read_count": 0,
+        }
+        self._preview_stop_requested = False
 
         self.bind("<Control-ButtonPress-1>", self.mouseCtrlLeftPress)
         self.bind("<Control-ButtonRelease-1>", self.mouseCtrlLeftRelease)
@@ -300,9 +329,8 @@ class CaptureArea(tk.Canvas):
         self.bind("<Control-Shift-Button1-Motion>", self.MotionRangeSS)
         self.bind("<Control-Shift-ButtonRelease-1>", self.ReleaseRangeSS)
 
-        # 描画ループの制御用。stopCapture() で after を確実に止める
+        # 描画ループの制御用。stopCapture() で clock を確実に止める
         self._capturing = False
-        self._after_id: str | None = None
         # 表示実測（getStats で読むたびに区切り直す）
         self._stat_shown = 0
         self._stat_began_at: float | None = None
@@ -357,41 +385,45 @@ class CaptureArea(tk.Canvas):
 
     def startCapture(self) -> None:
         """描画ループを開始する。"""
+        if self._capturing:
+            return
         self._capturing = True
-        self.capture()
+        self._preview_stop_requested = False
+        self._preview_clock = preview_clock.PreviewClock(
+            self.winfo_toplevel(),
+            self._dispatch_tick,
+            self._configured_fps,
+            IDLE_INTERVAL_MS,
+        )
+        self._preview_clock.start()
 
-    def stopCapture(self) -> None:
-        """描画ループを止める。camera.destroy() より先に必ず呼ぶ。
-
-        止めずに破棄すると、解放済みのカメラ/共有メモリへ readFrame() が
-        走ってクラッシュする。枠消去の予約（_rect_after_id）もここで
-        消す。残すと destroy の最中に発火し、破棄途中の Canvas を触って
-        TclError になる。
-        """
+    def stopCapture(self) -> preview_clock.StopResult:
+        """描画ループを止め、clock の停止結果を返す。"""
         self._capturing = False
-        for name in ("_after_id", "_rect_after_id", "_select_after_id"):
+        self._preview_stop_requested = True
+        for name in ("_rect_after_id", "_select_after_id"):
             after_id = getattr(self, name, None)
-            if after_id is None:
-                continue
-            try:
-                self.after_cancel(after_id)
-            except Exception:
-                # 破棄途中の after_cancel は TclError になることがある。
-                # 止めることが目的なので、例外は握って進む。
-                pass
-            setattr(self, name, None)
+            if after_id is not None:
+                setattr(self, name, None)
+                try:
+                    self.after_cancel(after_id)
+                except (tk.TclError, ValueError):
+                    continue
+        if self._preview_clock is None:
+            return preview_clock.StopResult.STOPPED
+        result = self._preview_clock.stop()
+        if result is preview_clock.StopResult.STOPPED:
+            self._preview_clock = None
+        return result
 
     def capture(self) -> None:
-        """1フレーム描画し、次回を予約する。例外が出ても止まらないようにする。
+        """旧入口から1 tick だけ同期実行する。"""
+        self._dispatch_tick()
 
-        次回の予約は「処理が終わってから interval 待つ」のではなく、
-        「このフレームの開始時刻から interval 経過した時点」を狙う。
-        前者だと実処理時間の分だけ毎フレーム遅れが積み上がり、
-        30fps 指定でも 30fps に届かず、実機からどんどん遅延していく。
-        """
-        if not self._capturing:
-            return
-
+    def _dispatch_tick(self) -> preview_clock.DispatchResult:
+        """1フレームを同期処理し、次回の予約は行わない。"""
+        if not self._capturing or self._preview_stop_requested:
+            return preview_clock.DispatchResult(schedule="idle")
         started = time.perf_counter()
         showing = True
         try:
@@ -399,9 +431,9 @@ class CaptureArea(tk.Canvas):
             if showing:
                 frame, seq = self._readLatest()
                 self._drawFrame(frame, seq)
+                self._stat_shown += 1
                 if self._stat_began_at is None:
                     self._stat_began_at = started
-                self._stat_shown += 1
                 draw_ms = (time.perf_counter() - started) * 1000.0
                 if self._stat_draw_ms <= 0.0:
                     self._stat_draw_ms = draw_ms
@@ -409,35 +441,14 @@ class CaptureArea(tk.Canvas):
                     self._stat_draw_ms = self._stat_draw_ms * 0.9 + draw_ms * 0.1
                 if draw_ms > self._stat_draw_max_ms:
                     self._stat_draw_max_ms = draw_ms
-        except Exception as e:
-            logger.error(f"capture failed: {e}")
-        finally:
-            if self._capturing:
-                self._after_id = self.after(
-                    self._next_delay(started, showing), self.capture
-                )
-
-    def _next_delay(self, started: float, showing: bool = True) -> int:
-        """フレーム開始時刻を基準に、次フレームまでの待ち時間(ms)を求める。
-
-        「映像を表示しない」あいだは描く物が無いので 1/fps では回さず、
-        IDLE_INTERVAL_MS まで間隔を空ける（60fps 指定なら毎秒60回だった
-        空回りが5回になる）。表示へ戻せば次の1回で通常周期に復帰する。
-
-        遅れているときに下限1ms で詰めると、遅いフレームほど高頻度に
-        capture() が積まれてイベントループが飽和し、後追いで悪化する。
-        interval を超えた分は「1フレーム捨てて次の周期へ合わせる」形
-        （残り = interval - 経過 % interval）にする。映像は間引かれるが
-        GUI の応答は保たれ、平均周期も維持される。
-        """
-        if not showing:
-            return IDLE_INTERVAL_MS
-
-        interval = self.next_frames
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if elapsed_ms < interval:
-            return max(1, int(round(interval - elapsed_ms)))
-        return max(1, int(round(interval - (elapsed_ms % interval))))
+            return preview_clock.DispatchResult(
+                schedule="active" if showing else "idle"
+            )
+        except Exception as exc:
+            logger.error(f"capture failed: {exc}")
+            return preview_clock.DispatchResult(
+                schedule="active" if showing else "idle"
+            )
 
     def _allocBuffers(self) -> None:
         """描画の作業バッファを確保する（表示サイズ変更時に作り直す）。"""
@@ -480,29 +491,68 @@ class CaptureArea(tk.Canvas):
         self._last_frame_seq = None
 
     def _readLatest(self) -> tuple[Any, int | None]:
-        """最新フレームと世代番号を返す。seq 不明のカメラでは None。
+        """最新フレームと世代番号を1回だけ読み、観測値を更新する。"""
+        if self._preview_stop_requested:
+            self._camera_observation["post_teardown_camera_read_count"] += 1
+            return None, None
 
-        描画 tick 用。seq が同じ間は _drawFrame が再変換を省く。
-        """
-        cam = self.camera
-        read_seq = getattr(cam, "readFrameWithSeq", None)
+        self._camera_observation["camera_read_count"] += 1
+        frame: Any = None
+        sequence: int | None = None
+        primary_error = False
+        fallback_error = False
+        read_seq = getattr(self.camera, "readFrameWithSeq", None)
         if callable(read_seq):
             try:
-                frame, seq = read_seq()
-                return frame, int(seq)
+                frame, sequence = read_seq()
+                sequence = int(sequence)
             except Exception:
-                pass
-        try:
-            frame = cam.readFrame()
-        except Exception:
-            return None, None
-        seq_getter = getattr(cam, "frame_seq", None)
-        if callable(seq_getter):
+                primary_error = True
+
+        if not callable(read_seq) or primary_error:
             try:
-                return frame, int(seq_getter())
+                frame = self.camera.readFrame()
             except Exception:
-                pass
-        return frame, None
+                fallback_error = True
+
+        if primary_error or fallback_error:
+            self._camera_observation["camera_read_error_count"] += 1
+
+        if fallback_error:
+            return None, None
+        if sequence is None:
+            sequence_getter = getattr(self.camera, "frame_seq", None)
+            if callable(sequence_getter):
+                try:
+                    sequence = int(sequence_getter())
+                except Exception:
+                    sequence = None
+        if frame is None:
+            self._camera_observation["camera_none_count"] += 1
+        else:
+            self._camera_observation["camera_frame_present_count"] += 1
+
+        if sequence is not None:
+            last_sequence = int(self._camera_observation["camera_last_sequence"])
+            if sequence == last_sequence:
+                self._camera_observation["camera_duplicate_sequence_count"] += 1
+            elif sequence < last_sequence:
+                self._camera_observation["camera_sequence_regression_count"] += 1
+            else:
+                self._camera_observation["camera_unique_sequence_count"] += 1
+            self._camera_observation["camera_last_sequence"] = max(
+                last_sequence, sequence
+            )
+        return frame, sequence
+
+    def _preview_evidence_snapshot(
+        self,
+    ) -> dict[str, int | str | bool | dict[str, int | str | bool]]:
+        clock = self._preview_clock
+        return {
+            **self._camera_observation,
+            "clock_health": dict(clock.health_snapshot()) if clock is not None else {},
+        }
 
     def _drawFrame(self, frame: Any, seq: int | None = None) -> None:
         """BGR フレームを Canvas へ反映する。
@@ -613,18 +663,14 @@ class CaptureArea(tk.Canvas):
         }
 
     def setFps(self, fps: Any) -> None:
-        """描画間隔を設定する。
-
-        interval は float (ms) で保持する。int(1000/fps) で切り捨てると
-        30fps→33ms(=30.3fps) のように端数が失われ、そのぶん実機とずれる。
-        実際の待ち時間は _next_delay() が経過時間を差し引いて毎回丸める。
-
-        なお Windows のタイマー分解能は約 15.6ms のため、after(16) 相当の
-        60fps 指定では1フレームごとの揺れは避けられない。フレーム開始基準に
-        することで「揺れても平均周期は保たれる」状態にしている。
-        """
-        fps_value = max(1, int(fps))
+        """描画 FPS を変更し、clock がある場合は再アンカーする。"""
+        fps_value = _validated_preview_fps(fps)
+        if fps_value == self._configured_fps:
+            return
+        self._configured_fps = fps_value
         self.next_frames = 1000.0 / fps_value
+        if self._preview_clock is not None:
+            self._preview_clock.set_fps(fps_value)
         logger.info(f"FPS set to {fps_value} (interval {self.next_frames:.1f} ms)")
 
     def setShowsize(self, show_height: int, show_width: int) -> None:
