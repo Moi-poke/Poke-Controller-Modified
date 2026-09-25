@@ -108,14 +108,16 @@ def _invoke_menu_item(menu: tk.Menu, label: str) -> None:
 
 
 def _enter_non_normal_state(root: tk.Tk, requested: str) -> None:
-    if requested == "withdrawn":
-        root.withdraw()
-    else:
-        root.state(requested)
+    try:
+        if requested == "withdrawn":
+            root.withdraw()
+        else:
+            root.state(requested)
+    except tk.TclError as exc:
+        raise AssertionError(f"Tk状態{requested}の設定に失敗しました: {exc}") from exc
     _drain(root)
     actual = root.state()
-    if actual != requested:
-        pytest.skip(f"Tk状態{requested}を設定できません: actual={actual}")
+    assert actual == requested, f"Tk状態{requested}を設定できません: actual={actual}"
 
 
 def _assert_exact_16_9(root: tk.Tk) -> None:
@@ -208,10 +210,32 @@ def test_non_normal_state_is_ignored_until_normal_restore(
     _invoke_menu_item(menu.menu_view, LOCK_LABEL)
     _drain(root)
     _enter_non_normal_state(root, requested_state)
-    root.geometry("1500x800")
+    policy = menu.app._window_aspect_lock
+    entry_geometry = root.geometry()
+    entry_size = (root.winfo_width(), root.winfo_height())
+    callbacks_before = set(root.tk.call("after", "info"))
+    requested_geometry = "1500x800"
+    requested_size = (1500, 800)
+
+    root.geometry(requested_geometry)
+    root.event_generate("<Configure>", when="now")
+    assert policy._after_id is None
+    assert set(root.tk.call("after", "info")) == callbacks_before
     _drain(root)
-    assert root.state() == requested_state
-    assert menu.app._window_aspect_lock.enabled
+
+    current_geometry = root.geometry()
+    current_size = (root.winfo_width(), root.winfo_height())
+    assert current_geometry == entry_geometry or current_geometry.startswith(
+        requested_geometry
+    ), (
+        f"{requested_state}: requested={requested_geometry}, "
+        f"entry={entry_geometry}, current={current_geometry}"
+    )
+    assert current_size in {entry_size, requested_size}, (
+        f"{requested_state}: entry={entry_size}, current={current_size}"
+    )
+    assert policy._after_id is None
+    assert set(root.tk.call("after", "info")) == callbacks_before
 
     root.state("normal")
     root.deiconify()
