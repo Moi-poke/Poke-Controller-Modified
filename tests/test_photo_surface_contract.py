@@ -182,6 +182,10 @@ class _RecordingCanvas:
         #: up yet only queues the map, so a canvas built during app
         #: construction is not on screen until the mainloop runs.
         self.mapped = False
+        #: What ``winfo_viewable`` reports. True when the canvas is mapped AND
+        #: no ancestor is minimized. A test sets this independently of
+        #: ``mapped`` so the viewable-vs-ismapped distinction is testable.
+        self.viewable = False
 
     def pack(self, **kwargs: Any) -> None:
         self.pack_calls.append(kwargs)
@@ -215,7 +219,7 @@ class _RecordingCanvas:
         return self.mapped
 
     def winfo_viewable(self) -> bool:
-        return self.mapped
+        return self.mapped and self.viewable
 
     def itemconfig(self, item: Any, **kwargs: Any) -> None:
         self.itemconfig_calls.append((item, kwargs))
@@ -912,6 +916,7 @@ def test_self_test_on_a_mapped_canvas_reports_the_box_it_is_showing(
     # Given: an attached surface whose canvas Tk has put on screen.
     attached = _attach(monkeypatch)
     attached.canvas.mapped = True
+    attached.canvas.viewable = True
 
     # When: the self-test is asked what the user can see.
     result = attached.surface.self_test()
@@ -942,6 +947,7 @@ def test_self_test_reports_nothing_visible_when_the_canvas_is_not_on_screen(
     # as during app construction, or mapped into a box with no room in it.
     attached = _attach(monkeypatch)
     attached.canvas.mapped = mapped
+    attached.canvas.viewable = mapped
     attached.canvas.winfo_size = box
 
     # When: the self-test is asked.
@@ -953,6 +959,26 @@ def test_self_test_reports_nothing_visible_when_the_canvas_is_not_on_screen(
     assert result.outcome == outcome, result.outcome
     assert result.fully_occluded is True
     assert result.clip_box == clip_box, result.clip_box
+
+
+def test_self_test_reports_not_mapped_when_mapped_but_not_viewable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an attached surface whose canvas is mapped but whose ancestor is
+    # minimized. winfo_ismapped() is True; winfo_viewable() is False.
+    attached = _attach(monkeypatch)
+    attached.canvas.mapped = True
+    attached.canvas.viewable = False
+    attached.canvas.winfo_size = ATTACHED_SIZE
+
+    # When: the self-test is asked.
+    result = attached.surface.self_test()
+
+    # Then: the outcome is not_mapped, not visible. If the implementation used
+    # winfo_ismapped() instead of winfo_viewable(), this would return visible.
+    assert result.outcome == "not_mapped", result.outcome
+    assert result.fully_occluded is True
+    assert result.clip_box == (0, 0, 0, 0), result.clip_box
 
 
 # ===========================================================================

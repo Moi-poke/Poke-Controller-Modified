@@ -39,6 +39,7 @@ _FORWARDABLE_KINDS: Final[tuple[str, ...]] = (
     "Motion",
     "MouseWheel",
     "Key",
+    "KeyRelease",
 )
 
 
@@ -48,19 +49,27 @@ def _is_forwardable(sequence: str) -> bool:
     部分文字列照合（``kind in sequence``）では ``<Keymap>`` が ``Key`` に
     一致してしまう。``-`` で分割したトークンが許可表のいずれかと完全一致する
     ときだけ転送する。
+
+    仮想イベント（``<<...>>``）は ``strip("<>")`` すると先頭の ``<`` が
+    残り、型名が壊れる。仮想イベントは転送しない。
     """
+    if sequence.startswith("<<"):
+        return False
     tokens = sequence.strip("<>").split("-")
     return any(token in _FORWARDABLE_KINDS for token in tokens)
 
 
 @dataclass(frozen=True, slots=True)
 class SelfTestResult:
-    """起動時 1 回の自己検査の結果。形は ``core.gdi_surface`` の同名と同じ。
+    """起動時 1 回の自己検査の結果。
 
     ``fully_occluded`` は「プレビューの 1 ピクセルも画面に出ていない」を意味する。
     ``not_run``（未接続）では判定不能なので ``None`` を返す。core 側から import
     しないのは、非 Windows で動くこの面が Win32 モジュールを巻き込まないため
     （``GuiAssets.py:305`` が遅延 import と同じ理由でそうしている）。
+
+    GDI 面の ``SelfTestResult`` とは値域が違う。GDI 側は ``covered`` を持つが、
+    この面は DC が無いためオクルージョンを測れず、``visible`` で終わる。
     """
 
     outcome: Literal["not_run", "not_mapped", "empty_box", "visible"]
@@ -144,10 +153,18 @@ class PhotoImageSurface:
         host の bindtag には無いので、出し直してもこの束縛へ戻らない。
         ``when="now"`` は順序を保つためで、既定の ``tail`` だと press と
         続く motion の琶くれが起きる。
+
+        ``MouseWheel`` は ``delta``、``Key`` は ``keysym`` を引き継ぐ。
+        これらを渡さないと、ホイールが効かず、キーの判別ができない。
         """
 
         def _reemit(event: Any) -> None:
-            self._host.event_generate(sequence, x=event.x, y=event.y, when="now")
+            kwargs: dict[str, Any] = {"x": event.x, "y": event.y, "when": "now"}
+            if hasattr(event, "delta"):
+                kwargs["delta"] = event.delta
+            if hasattr(event, "keysym"):
+                kwargs["keysym"] = event.keysym
+            self._host.event_generate(sequence, **kwargs)
 
         return _reemit
 

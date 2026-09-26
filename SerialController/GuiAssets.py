@@ -443,13 +443,35 @@ class CaptureArea(tk.Frame):
         # 無いと最初の geo 指定以降がそのままになる。
         self._surface: PreviewRenderer = _create_preview_surface(self, renderer)
         self._surface.attach(int(self.winfo_id()), self.show_size)
-        # 自己検査の前にウィンドウが画面に出るのを待つ。not_mapped は
-        # mainloop が回るまで解消しないので、待たずに検査すると真の退行と
-        # 環境要因を区別できない。
-        self.wait_visibility()
-        # GdiSurface は attach() の中で自己検査済みになる。その verdict を
-        # ここで残さないと「覆われているか」の verdict が起動直後の記録にない。
-        # mac/Linux の PhotoImageSurface には自己検査が無いので 無ければ None。
+        self._schedule_selftest()
+        self.bind("<Configure>", self._onConfigure)
+
+    _SELFTEST_POLL_MS: Final[int] = 50
+    _SELFTEST_TIMEOUT_S: Final[float] = 2.0
+
+    def _schedule_selftest(self) -> None:
+        """自己検査を遅延実行する。
+
+        ``wait_visibility()`` はイベントループを内側で回し続けるため、
+        withdraw されたウィンドウや表示のないセッションで永久に止まる。
+        代わりに ``after()`` でポーリングし、上限時間を過ぎたら
+        ``not_mapped`` として記録する。
+        """
+        self._selftest_deadline = time.monotonic() + self._SELFTEST_TIMEOUT_S
+        self._poll_selftest()
+
+    def _poll_selftest(self) -> None:
+        if not hasattr(self, "_surface"):
+            return
+        if self.winfo_viewable():
+            self._run_selftest()
+            return
+        if time.monotonic() > self._selftest_deadline:
+            self._run_selftest()
+            return
+        self.after(self._SELFTEST_POLL_MS, self._poll_selftest)
+
+    def _run_selftest(self) -> None:
         probe: Any = self._surface
         self.surface_selftest = (
             probe.self_test() if hasattr(probe, "self_test") else None
@@ -458,7 +480,6 @@ class CaptureArea(tk.Frame):
             "プレビュー面の自己検査 outcome={}",
             getattr(self.surface_selftest, "outcome", "not_supported"),
         )
-        self.bind("<Configure>", self._onConfigure)
 
     @property
     def overlay(self) -> OverlayState:

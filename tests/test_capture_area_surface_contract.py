@@ -1066,34 +1066,38 @@ def test_attach_surfaces_the_surface_self_test_outcome() -> None:
     # alternative to a live instance.
     init = class_method(_capture_area_node(), "__init__")
     calls = call_attr_names(init)
-    assigned = assigned_attribute_names(init)
     attach_line = _call_line_of(init, "attach")
-    self_test_line = _call_line_of(init, "self_test")
+    selftest_line = _call_line_of(init, "_schedule_selftest")
 
     # Then: (c1) attach reads the self test, and reads it after the attach that
     # creates the child HWND. GdiSurface runs the self test inside attach
     # (gdi_surface.py:698), so a read placed before it can only ever observe the
     # "not_run" default the surface is constructed with.
-    assert self_test_line is not None, (
-        "(c1) UNMET: __init__ never calls self_test() on the surface, so the "
-        "startup self test's outcome is unobservable from the widget -- a run "
-        f"whose child window is covered or clipped says nothing. __init__ calls "
-        f"{sorted(calls)}."
+    assert selftest_line is not None, (
+        "(c1) UNMET: __init__ never schedules the self test on the surface, so "
+        "the startup self test's outcome is unobservable from the widget -- a "
+        f"run whose child window is covered or clipped says nothing. __init__ "
+        f"calls {sorted(calls)}."
     )
-    assert attach_line is not None and self_test_line > attach_line, (
-        "(c1) UNMET: self_test() is read at line "
-        f"{self_test_line} but attach() is at line {attach_line}. attach creates "
-        "the child HWND and runs the self test, so reading it earlier only ever "
-        "sees the 'not_run' default."
+    assert attach_line is not None and selftest_line > attach_line, (
+        "(c1) UNMET: _schedule_selftest() is called at line "
+        f"{selftest_line} but attach() is at line {attach_line}. attach creates "
+        "the child HWND and runs the self test, so scheduling it earlier only "
+        "ever sees the 'not_run' default."
     )
 
     # Then: (c2) and the outcome is neither logged nor kept, which makes the
     # read pointless: GdiSurface's own warning (gdi_surface.py:929) is the only
     # trace, and it exists only for the failing branch.
-    assert "logger" in calls or any("selftest" in name.lower() for name in assigned), (
+    run_selftest = class_method(_capture_area_node(), "_run_selftest")
+    run_calls = call_attr_names(run_selftest)
+    run_assigned = assigned_attribute_names(run_selftest)
+    assert "logger" in run_calls or any(
+        "selftest" in name.lower() for name in run_assigned
+    ), (
         "(c2) UNMET: the self_test() outcome is read and then thrown away. It "
-        "must be logged or kept on the instance; __init__ calls "
-        f"{sorted(calls)} and assigns {sorted(assigned)}."
+        "must be logged or kept on the instance; _run_selftest() calls "
+        f"{sorted(run_calls)} and assigns {sorted(run_assigned)}."
     )
 
 
