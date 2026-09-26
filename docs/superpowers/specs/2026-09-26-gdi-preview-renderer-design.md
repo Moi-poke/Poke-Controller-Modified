@@ -1,4 +1,4 @@
-# GDI Preview Renderer — 1280x720 固定入力前提の最小構成
+# GDI Preview Renderer 窶・1280x720 蝗ｺ螳壼・蜉帛燕謠舌・譛蟆乗ｧ区・
 
 Status: design for review, not yet implemented.
 Supersedes the `StretchDIBits` + Tk-Canvas-overlay shape of the 60 Hz plan.
@@ -12,8 +12,8 @@ Two facts, both established by execution on this machine, not by reasoning.
    not make the child transparent. So a GDI child holding the video cannot sit
    behind a Tk Canvas that draws the stick / `SelectArea` / `ImgRect` overlay.
 2. Tk 8.6 rejects `-background ""` on a Canvas (`unknown color name ""`), so the
-   Canvas cannot be made see-through. The alternative — blitting into the
-   Canvas's own HWND — works, but `cv.coords()` repaints the item's old bounding
+   Canvas cannot be made see-through. The alternative 窶・blitting into the
+   Canvas's own HWND 窶・works, but `cv.coords()` repaints the item's old bounding
    box **from the canvas background**, erasing the video. Measured: after
    `cv.coords()` the vacated box read `(204,204,204)`, the canvas background.
    That is `_moveKnob` at `GuiAssets.py:997` and `ImgRect` at `:1232-1233`,
@@ -24,9 +24,9 @@ by the renderer rather than by Tk. This is the user's decision.
 
 ## 1. Operating assumption
 
-`capture_size == (1280, 720)` is fixed. Every automation feature — image
+`capture_size == (1280, 720)` is fixed. Every automation feature 窶・image
 recognition, coordinate readout, range selection, click position, `ReleaseRangeSS`,
-the record features — works in the 1280x720 capture coordinate system.
+the record features 窶・works in the 1280x720 capture coordinate system.
 
 640x360, 1920x1080 and any other size are deferred. The design does not
 generalise for them. `CoordinateMapper` exists so the coordinate systems are
@@ -44,9 +44,9 @@ cross-session comparison proved unreliable (see the caveat at the end).
 | stage | median | p99 | max |
 |---|---|---|---|
 | `cv2.cvtColor(frame, BGR2BGRA, dst=back)` | 0.0860 ms | 0.2255 | 0.4399 |
-| GDI shapes (2 `Ellipse` + 2 `Rectangle`) | 0.0167 ms | — | — |
-| `BitBlt` 1:1 `SRCCOPY` to the child window DC | 0.3273 ms | — | — |
-| `GetDC` + `ReleaseDC` x2 | 0.0236 ms | — | — |
+| GDI shapes (2 `Ellipse` + 2 `Rectangle`) | 0.0167 ms | 窶・| 窶・|
+| `BitBlt` 1:1 `SRCCOPY` to the child window DC | 0.3273 ms | 窶・| 窶・|
+| `GetDC` + `ReleaseDC` x2 | 0.0236 ms | 窶・| 窶・|
 | **full tick** | **0.4536 ms** | **1.0444** | **1.1616** |
 
 **2.7% of the 16.667 ms budget.** Budget split: blit 72%, fill 19%, DC 5%,
@@ -79,7 +79,7 @@ it on both counts, and the 24bpp variant loses at *neither* stage in its favour:
 So the back buffer matches the **destination**, not the source. `bpp` is read
 once at attach from the child window DC and clamped to {16, 24, 32}; it is a
 display property, so hardcoding it is not safe in general. Query the **window**
-DC — `GetDeviceCaps` on a memory DC is unreliable on this machine and returned
+DC 窶・`GetDeviceCaps` on a memory DC is unreliable on this machine and returned
 `BITSPIXEL = 0`.
 
 A 32bpp row is always `w * 4`, so the stride is unconditionally tight and the
@@ -91,7 +91,7 @@ A 32bpp row is always `w * 4`, so the stride is unconditionally tight and the
 |---|---|
 | **`cv2.cvtColor(frame, BGR2BGRA, dst=back)`** | **0.0851** |
 | `back[:, :, :3] = frame` | 2.9217 |
-| `np.copyto(back[:, :, :3], frame)` | ~2.9–3.0 |
+| `np.copyto(back[:, :, :3], frame)` | ~2.9窶・.0 |
 | `np.copyto(back.reshape(-1,4)[:, :3], ...)` | 3.1525 |
 | alpha prefilled once, then the strided write | 3.2014 |
 | `np.concatenate(..., out=back)` | 4.0042 |
@@ -100,8 +100,8 @@ The best numpy arm is **37.6x slower** than `cvtColor`. `np.dstack` has no
 `out=`; `np.copyto` will not auto-pad a missing trailing channel. No numpy path
 is competitive, so OpenCV stays in this path deliberately.
 
-`cvtColor` with `dst=` writes in place — the base pointer is unchanged and
-`back[:, :, :3] == frame` elementwise — and is **8.2x cheaper** than the
+`cvtColor` with `dst=` writes in place 窶・the base pointer is unchanged and
+`back[:, :, :3] == frame` elementwise 窶・and is **8.2x cheaper** than the
 allocating form, which is disqualified outright. The design requires no per-frame
 allocation.
 
@@ -123,7 +123,7 @@ former is broken on this machine and the latter is superseded by the back buffer
 
 ### Measurement caveat
 
-The arm-level tick numbers were bimodal — arms A and B swung 3–5x between passes
+The arm-level tick numbers were bimodal 窶・arms A and B swung 3窶・x between passes
 while the isolated sub-timings stayed stable to within 0.9%. Whatever causes it
 acts on the `BitBlt`-to-the-window step. **Do not trust a single arm-level tick
 in any future measurement of this renderer; measure the stages.** The decision
@@ -134,7 +134,7 @@ above rests on the isolated sub-timings for that reason.
 `cvtColor` into `dst=` requires a C-contiguous source, and the live path hands the
 renderer raw `VideoCapture.read()` output whose stride at 1280x720 has not been
 verified on this machine. The assertion is `frame.flags.c_contiguous` (equivalently
-`strides == (w * 3, 3, 1)`) — **not** `strides[0] >= w * 3`, which every
+`strides == (w * 3, 3, 1)`) 窶・**not** `strides[0] >= w * 3`, which every
 C-contiguous array satisfies and which therefore proves nothing.
 
 ## 4. Architecture
@@ -163,7 +163,7 @@ The worker never touches GDI and never enters Tk. The main thread only blits.
 
 ## 5. A. Renderer interface
 
-`SerialController/core/preview_renderer.py` — tkinter-free, so it satisfies
+`SerialController/core/preview_renderer.py` 窶・tkinter-free, so it satisfies
 `task bounds` for `core/`.
 
 ```python
@@ -191,7 +191,7 @@ and the blit independently, which is the `t_blit` metric split the plan requires
 Both return a `RenderResult` rather than raising: a failed present must never
 take down the Tk mainloop.
 
-### Overlay state — logical, not graphical
+### Overlay state 窶・logical, not graphical
 
 Canvas items are abolished. The overlay is data; the renderer draws it.
 
@@ -199,11 +199,9 @@ Canvas items are abolished. The overlay is data; the renderer draws it.
 @dataclass(frozen=True, slots=True)
 class StickState:
     active: bool = False
-    center_x: int = 0        # 外周円の中心。押下中も動かない（GuiAssets.py:978-982）
-    center_y: int = 0
+    center_x: int = 0        # 螟門捉蜀・・荳ｭ蠢・よ款荳倶ｸｭ繧ょ虚縺九↑縺・ｼ・uiAssets.py:978-982・・    center_y: int = 0
     radius: int = 0
-    knob_x: int = 0          # ノブの中心。ドラッグで動く（:997）
-    knob_y: int = 0
+    knob_x: int = 0          # 繝弱ヶ縺ｮ荳ｭ蠢・ゅラ繝ｩ繝・げ縺ｧ蜍輔￥・・997・・    knob_y: int = 0
 
 @dataclass(frozen=True, slots=True)
 class RectState:
@@ -215,9 +213,7 @@ class RectState:
 
 @dataclass(frozen=True, slots=True)
 class ImgRectState:
-    outer: RectState = RectState()   # 4px 白。capture 座標 +1.0 補正済み（:1218）
-    inner: RectState = RectState()   # 2px 認識色。補正なし（:1221）
-    visible: bool = False
+    outer: RectState = RectState()   # 4px 逋ｽ縲Ｄapture 蠎ｧ讓・+1.0 陬懈ｭ｣貂医∩・・1218・・    inner: RectState = RectState()   # 2px 隱崎ｭ倩牡縲り｣懈ｭ｣縺ｪ縺暦ｼ・1221・・    visible: bool = False
 
 @dataclass(frozen=True, slots=True)
 class ImgRectState:
@@ -229,11 +225,11 @@ class ImgRectState:
 
 `ImgRectState` carries two rectangles because the current code draws two
 (`:1224-1229`): a 4.5 px white outer border and a 2.5 px recognition-coloured
-inner border, and they are **not** the same rectangle — the outer is computed
+inner border, and they are **not** the same rectangle 窶・the outer is computed
 with a `+1.0` capture-pixel expansion (`:1218`) and the inner without (`:1221`).
 Collapsing them to one rectangle would silently drop the white border.
 
-`color` lives on the overlay state rather than on the surface because §5's thesis
+`color` lives on the overlay state rather than on the surface because ﾂｧ5's thesis
 is "the overlay is data; the renderer draws it". A surface-level colour setter
 would be hidden mutable state the caller must remember before every compose, and
 the Protocol's `compose(frame, overlay)` signature carries no other channel for
@@ -242,7 +238,7 @@ still constructs positionally.
 
 **Tk and Win32 disagree on colour encoding.** Tk's internal form is
 `0x00RRGGBB`; Win32 `COLORREF` is `0x00BBGGRR`. Every colour crossing from the
-current Tk code into a pen or brush is converted at the boundary — this is a real
+current Tk code into a pen or brush is converted at the boundary 窶・this is a real
 bug surface, not a formality, and it is why `color` is specified as a `COLORREF`
 rather than as a Tk colour name.
 
@@ -310,13 +306,13 @@ change.
 
 Shape drawing is not a cost concern: 2 `Ellipse` + 2 `Rectangle` measured
 0.0167 ms on the 32bpp buffer, about 4% of the tick. The shipped shape set is
-larger — 4 ellipses and 3 rectangles for a full overlay, and the knob is filled
-rather than hollow — so the real figure is somewhat above 0.0167 ms, still
+larger 窶・4 ellipses and 3 rectangles for a full overlay, and the knob is filled
+rather than hollow 窶・so the real figure is somewhat above 0.0167 ms, still
 negligible against the 16.667 ms budget.
 
 ## 6. B. Child HWND and video present
 
-`SerialController/core/gdi_surface.py` — tkinter-free; it receives the parent
+`SerialController/core/gdi_surface.py` 窶・tkinter-free; it receives the parent
 HWND as an `int`, so it needs no Tk import and can live in `core/`.
 
 State it owns for its whole life:
@@ -346,7 +342,7 @@ Creation, in order:
    receiving mouse input. The probe confirmed painting is unaffected.
 4. `CreateDIBSection` for 32bpp top-down, `CreateCompatibleDC`,
    `SelectObject` the HBITMAP into it, and wrap `ppvBits` as
-   `np.ctypeslib.as_array(...)` → `reshape(h, w, 4)`. Query `bpp` from
+   `np.ctypeslib.as_array(...)` 竊・`reshape(h, w, 4)`. Query `bpp` from
    `GetDeviceCaps(GetDC(child), BITSPIXEL)` first, per section 3.
 5. `SetWindowPos(child, HWND_TOP, 0, 0, w, h, SWP_SHOWWINDOW)`.
 
@@ -361,14 +357,14 @@ virtualised and the 1:1 check breaks silently.
 integer pair. The present path compares it against `frame.shape[1::-1]`. On
 mismatch the frame is **discarded and counted** (`detail="dimension_mismatch"`);
 it is never scaled. Under the fixed assumption this cannot happen, which is the
-point — the check exists so a future size change fails loudly instead of
+point 窶・the check exists so a future size change fails loudly instead of
 producing a stretched or torn image.
 
 **Windows declarations that must not be got wrong.** The probe found handles on
 this box are sometimes above 32 bits and sometimes not, so a missing `argtypes`
 fails *intermittently* and survives a smoke test. One run returned
-`HBITMAP=0xFFFFFFFFBD051BBE`, whose bits 63..32 are all ones — indistinguishable
-from a sign-extended 32-bit handle — while the next run returned `0x6C053A7E`.
+`HBITMAP=0xFFFFFFFFBD051BBE`, whose bits 63..32 are all ones 窶・indistinguishable
+from a sign-extended 32-bit handle 窶・while the next run returned `0x6C053A7E`.
 **Both `argtypes` and `restype` are mandatory on every call**, not just
 `restype`:
 
@@ -428,7 +424,7 @@ destination pixels, draws nothing, and still returns 1 with
 Three consequences the self-test must absorb:
 
 - **Read the child DC, never the screen DC.** For a foreign occluder the screen
-  still shows the previous frame, so a screen readback is a false negative — the
+  still shows the previous frame, so a screen readback is a false negative 窶・the
   user sees a *frozen* picture, not a wrong one, which is the harder failure to
   notice.
 - `CLR_INVALID` is indistinguishable from "`GetPixel` unsupported" and needs its
@@ -498,8 +494,7 @@ are never silently conflated again.
 currently computes `camera.capture_size / show_size` and is correct only because
 no runtime resize exists. The day one does, it returns 2.0 where it must return
 1.0, which corrupts the `ReleaseRangeSS` crop (`:781-789`), the logged capture
-coordinates (`:743`, `:768`) and the `mouseCtrlLeftPress` pixel probe (`:825`) —
-all silently, because the existing `frame.shape` clamp keeps the probe in bounds
+coordinates (`:743`, `:768`) and the `mouseCtrlLeftPress` pixel probe (`:825`) 窶・all silently, because the existing `frame.shape` clamp keeps the probe in bounds
 and it then reports the **wrong pixel**. Under the fixed assumption the current
 code is already correct; the mapper makes that a property rather than a
 coincidence.
@@ -523,7 +518,7 @@ Report and artifact renames, all in `tests/preview_fps_support.py`:
 | `DispatchRecord.paste_observed` | `.present_observed` |
 
 `REQUIRED_REPORT_FIELDS` and `REQUIRED_EVIDENCE_FILES` are updated, and
-`REQUIRED_EVIDENCE_FILES` order is load-bearing — the manifest-order assertion
+`REQUIRED_EVIDENCE_FILES` order is load-bearing 窶・the manifest-order assertion
 compares against the tuple literally.
 
 `SerialController/core/Camera.py` is added to `SOURCE_PIN_PATHS`, since Task 2
@@ -551,12 +546,12 @@ Order, on the GUI thread, reverse of construction, inserted as a new
 `"surface_released"` phase between `preview_stopped` (`Window.py:486`) and
 `stopping_services` (`:491`):
 
-1. `stopCapture()` returns `StopResult.STOPPED` — the only point at which no
+1. `stopCapture()` returns `StopResult.STOPPED` 窶・the only point at which no
    further `_dispatch_one_tick` can run.
 2. Drop the frame reference. `lpvBits` points into the frame array; nothing after
    this may compose. This must precede `DestroyWindow`.
 3. `DestroyWindow(child)`.
-4. `DeleteDC(mem_dc)`. A DIB section dies with its DC — calling `DeleteObject`
+4. `DeleteDC(mem_dc)`. A DIB section dies with its DC 窶・calling `DeleteObject`
    on the HBITMAP as well is a double free. Then delete the pens and the brush.
 5. **Do not** `UnregisterClassW`. The class is registered once per process and
    the surface can be recreated on camera reopen, so unregistering would make the
@@ -585,14 +580,76 @@ Steps A-C carry no `CaptureArea` risk. D is the real refactor and is deliberatel
 separated from the GDI work: the `PhotoImageSurface` fallback keeps the protocol
 honest until GDI is proven.
 
-## 13. Open items
+## 13. Real-machine reference
+
+Recorded on the development machine, Windows 11 23H2 build 22631.6199, Tk 8.6.12,
+150% DPI, 1280x720, configured 60 fps, 180 Hz synthetic source, camera
+substituted by `SyntheticFrameSource` so the numbers isolate the present path.
+
+**Formal run**, 10 s warmup and a 60 s measurement window, which yields 3600
+presents and so exceeds the 3000-frame requirement:
+
+```
+present : n=3600  mean=59.9998 Hz  p1=57.8235 Hz  span=59.9836 s
+dispatch: n=3600  mean=59.9997 Hz  p1=58.0131 Hz  span=59.9836 s
+period_skipped_count 0   blit_skipped_no_new_frame 0   suppressed_blit_interval_count 0
+functional_accepted True   status passed   within_reference False
+```
+
+**Four 10 s runs** agree closely, so the mean is not a lucky sample:
+
+| run | present mean | present p1 | dispatch p1 |
+|---|---|---|---|
+| smoke | 60.0012 | 57.967 | 58.205 |
+| soak 1 | 60.003 | 57.827 | 58.012 |
+| soak 2 | 60.001 | 57.720 | 58.095 |
+| soak 3 | 60.000 | 57.881 | 58.047 |
+| formal 60 s | 59.9998 | 57.824 | 58.013 |
+
+**What this establishes.**
+
+- The mean is on target to within 0.0002 Hz over 3600 frames, which is the
+  headline: the pacer, the mailbox and the blit together sustain 60 fps at
+  1280x720.
+- **The blit is essentially free.** Present mean sits 0.0001 Hz from dispatch
+  mean, so the 0.45 ms present costs nothing measurable against the dispatch
+  cadence. That is the design's whole claim, now measured rather than predicted.
+- Every skip counter is zero across all five runs: the pacer is never late by a
+  whole period, no dispatch ever found an empty mailbox, and no nominal dispatch
+  went missing.
+- Three soak runs produced no fatal. This matters because the previous
+  `0xC0000409` crash was traced to ctypes callback re-entry and this design puts
+  a foreign HWND inside the Tk mainloop for the first time.
+
+**What remains.** `p1` is 57.82 Hz against a 59.0 floor, and the decomposition
+says the blit is not the cause: dispatch `p1` is 58.01 on the same run, so the
+present path contributes about 0.19 Hz of the 1.19 Hz shortfall and the dispatch
+path carries the rest. Since cadence is a recorded reference and not a gate, the
+run is green 窶・but the `p1` gap is real and belongs to the dispatch path, which
+this task did not change. Chasing it means instrumenting `_dispatch_tick` and the
+`after_idle` hop rather than the renderer.
+
+**Teardown**, verified on the gated teardown run with the new
+`surface_released` phase in place:
+
+```
+pending_teardown_proven true    root_alive_while_pending true
+root_destroyed_after_stop true window_class_destroyed true
+window_class_unregistered true  preview_worker_alive false
+pending_after_ids []           post_teardown_camera_read_count 0
+```
+
+The new phase did not regress the existing proof: it runs after the stop proof
+and before the root is destroyed, and the GDI surface releases cleanly inside it.
+
+## 14. Open items
 
 ### Carried out of steps A-C
 
 - **The COLORREF byte-order conversion has no test.** The self-test sentinel is
   `0x0000FF00`, chosen because its high and low bytes are equal, which makes the
   round trip byte-order agnostic. So the self test proves "the child DC is
-  readable and shows our pixels" and proves nothing about the conversion — and
+  readable and shows our pixels" and proves nothing about the conversion 窶・and
   that conversion is exactly the surface where Tk's `0x00RRGGBB` and Win32's
   `0x00BBGGRR` disagree. The recording double has the same blind spot: its
   `get_pixel` reconstructs Tk's order. **A follow-up assertion is required
@@ -635,9 +692,8 @@ honest until GDI is proven.
   no demonstrated-transparent positive control, so "alpha is ignored" is
   *consistent with* the measurement, not proven by it.
 - 640x360 and 1920x1080 are out of scope by decision. When they are revisited,
-  the camera-side output-size plumbing does not exist yet — `Camera.capture_size`
-  is written only in `__init__` and read only by `_configure_capture` at open —
-  and a producer-side resize must allocate fresh, never `dst=`, or it breaks the
+  the camera-side output-size plumbing does not exist yet 窶・`Camera.capture_size`
+  is written only in `__init__` and read only by `_configure_capture` at open 窶・  and a producer-side resize must allocate fresh, never `dst=`, or it breaks the
   tear-free invariant committed in `f11b40a`. `SHOW_SIZE_VALUES` still offers
   1920x1080, so until that work lands the renderer must keep the 1:1 discard
   rather than attempt a scale.
