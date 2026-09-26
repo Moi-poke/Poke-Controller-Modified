@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 import cv2
 import numpy as np
+from core.Camera import CAPTURE_SIZE
 from core.preview_renderer import (
     ImgRectState,
     OverlayState,
@@ -613,8 +614,11 @@ class GdiSurface:
         self._memory_dc = 0
         self._back: np.ndarray[tuple[int, ...], np.dtype[np.uint8]] | None = None
         self._size = (0, 0)
+        self._rebuilding = False
         self._pending_frame = False
         self._self_test = SelfTestResult("not_run", False, (0, 0, 0, 0))
+        self.frames_discarded_dimension_mismatch = 0
+        self._logged_failures: set[str] = set()
         self._ring_pens: dict[int, int] = {}
         self._knob_brushes: dict[int, int] = {}
         self._guide_pen = 0
@@ -631,7 +635,7 @@ class GdiSurface:
 
     def attach(self, parent_hwnd: int, size: tuple[int, int]) -> None:
         global _CLASS_REGISTERED
-        width, height = size
+        width, height = int(size[0]), int(size[1])
         # 画面座標が 150% DPI で仮想化されると 1:1 判断が静かに壊れる。
         self._api.set_process_dpi_aware()
         if not _CLASS_REGISTERED:
@@ -652,50 +656,105 @@ class GdiSurface:
             height=height,
             style=_WS_CHILD | _WS_VISIBLE | _WS_CLIPSIBLINGS,
         )
+        if child == 0:
+            # GetDC(0) は画面 DC を返すので NULL のまま進むと画面 DC 相手に
+            # 3.7MB の DIB と memory DC を作上げて終わる。release() は _child
+            # が 0 で返るので、片付ける者が誰も居ない。
+            logger.warning(
+                "プレビュー子窓を作れない error={}", self._api.get_last_error()
+            )
+            print("プレビュー子窓を作れません。映像は表示されません。")
+            return
         # 125Hz の Tk bind() がマウスを受け続けるよう子窓は入力を取らない。
         self._api.enable_window(child, False)
-        window_dc = self._api.get_dc(child)
-        if window_dc == 0:
-            logger.warning(
-                "プレビュー子窓の DC を取れない hwnd={} error={}",
-                child,
-                self._api.get_last_error(),
-            )
-            return
-        try:
-            # GetDeviceCaps はメモリ DC だと 0 を返すので子窓の DC で問う。
-            reported = self._api.get_device_caps(window_dc, _BITSPIXEL)
-        finally:
-            self._api.release_dc(child, window_dc)
-        bit_count = (
-            reported if reported in _SUPPORTED_BIT_DEPTHS else _SUPPORTED_BIT_DEPTHS[-1]
-        )
-        info = DibInfo(
-            bi_width=width,
-            bi_height=-height,
-            bi_bit_count=bit_count,
-            bi_compression=_BI_RGB,
-        )
-        section = self._api.create_dib_section(info)
-        if section.hbitmap == 0 or section.bits_address == 0:
-            # ここで諦めておかないと NULL を 3.7MB ぶん展開して落ちる。
-            logger.warning(
-                "プレビュー用 DIB を作れない {}x{} {}bpp error={}",
-                width,
-                height,
-                bit_count,
-                self._api.get_last_error(),
-            )
-            return
-        memory_dc = self._api.create_compatible_dc(window_dc)
-        self._api.select_object(memory_dc, section.hbitmap)
         self._child = child
-        self._memory_dc = memory_dc
-        self._size = (width, height)
-        self._back = self._wrap_bits(section, info)
+        if not self._build_back_buffer(width, height):
+            # 作り損ねた窓は残さない。残しても release() で片付くだけだが、
+            # 面が「窓だけ在って絵を持たない」中途半端な状態になるのを避ける。
+            self._api.destroy_window(child)
+            self._child = 0
+            return
         self._place(width, height)
         self._build_static_objects()
         self._run_self_test()
+
+    def _build_back_buffer(self, width: int, height: int) -> bool:
+        """DIB と memory DC を作り直し、所有サイズと配列を更新する。
+
+        子窓の DC は GetDeviceCaps と CreateCompatibleDC の両方に要る。解放
+        済みの DC で CreateCompatibleDC すると NULL が返り（実測 error=6）、
+        memory DC を持たない面が以降 1 枚も描かなくなる。だから DC を持って
+        いる区間の内で両方を済ませ、解放は finally で 1 回だけにする。
+
+        新しい memory DC が取れてから古い方を捨てるので、resize が失敗しても
+        旧面のまま映像を出し続けられる。
+        """
+        window_dc = self._api.get_dc(self._child)
+        if window_dc == 0:
+            logger.warning(
+                "プレビュー子窓の DC を取れない hwnd={} error={}",
+                self._child,
+                self._api.get_last_error(),
+            )
+            # ここで preview は以後ずっと空のままだ。warnings だけだとファイル
+            # ログに残るので、利用者が画面から原因を追えない。
+            print("プレビュー子窓の DC を取れません。映像は表示されません。")
+            return False
+        try:
+            # GetDeviceCaps はメモリ DC だと 0 を返すので子窓の DC で問う。
+            reported = self._api.get_device_caps(window_dc, _BITSPIXEL)
+            bit_count = (
+                reported
+                if reported in _SUPPORTED_BIT_DEPTHS
+                else _SUPPORTED_BIT_DEPTHS[-1]
+            )
+            info = DibInfo(
+                bi_width=width,
+                bi_height=-height,
+                bi_bit_count=bit_count,
+                bi_compression=_BI_RGB,
+            )
+            section = self._api.create_dib_section(info)
+            if section.hbitmap == 0 or section.bits_address == 0:
+                # ここで諦めておかないと NULL を 3.7MB ぶん展開して落ちる。
+                logger.warning(
+                    "プレビュー用 DIB を作れない {}x{} {}bpp error={}",
+                    width,
+                    height,
+                    bit_count,
+                    self._api.get_last_error(),
+                )
+                print("プレビュー用 DIB を作れません。映像は表示されません。")
+                return False
+            memory_dc = self._api.create_compatible_dc(window_dc)
+            if memory_dc == 0:
+                # DIB section は memory DC へ選択されると DC と共に死ぬので
+                # ここでは DeleteObject しない（下の解放は，那样すれば二重
+                # 解放になる）。選択前に落ちたので HBITMAP だけが宙に浮き、
+                # release() も触らない。放置すると GDI ハンドルが 1 つ
+                # 永久に減らないのでここで返す前に解放する。
+                self._api.delete_object(section.hbitmap)
+                logger.warning(
+                    "プレビュー用 memory DC を作れない {}x{} error={}",
+                    width,
+                    height,
+                    self._api.get_last_error(),
+                )
+                print("プレビュー用メモリ DC を作れません。映像は表示されません。")
+                return False
+            self._api.select_object(memory_dc, section.hbitmap)
+        finally:
+            self._api.release_dc(self._child, window_dc)
+        # lpvBits はこの配列を指すので DC より先に落とす。DIB section は DC と
+        # 共に死ぬので HBITMAP には DeleteObject しない（二重解放になる）。
+        self._back = None
+        if self._memory_dc:
+            self._api.delete_dc(self._memory_dc)
+        self._memory_dc = memory_dc
+        self._size = (width, height)
+        self._back = self._wrap_bits(section, info)
+        self._pending_frame = False
+        return True
 
     def client_size(self) -> tuple[int, int]:
         if self._child == 0:
@@ -704,26 +763,89 @@ class GdiSurface:
         return (int(right - left), int(bottom - top))
 
     def resize(self, size: tuple[int, int]) -> None:
-        if self._child == 0:
+        """受け皿を新しい大きさに作り直す。子窓・DIB・memory DC を作り直す。
+
+        かつては子窓の SetWindowPos だけで、受け皿の大きさは attach の時の
+        ままだった。親が伸びると受け皿と映像の大きさが食い違い、以降 1 枚も
+        合成できない状態が続いた。
+        """
+        if self._child == 0 or self._rebuilding:
             return
-        self._place(size[0], size[1])
+        width, height = int(size[0]), int(size[1])
+        # Tk は geom が決まる前に 1x1 の <Configure> を送ってくる。1 ピクセルの
+        # 受け皿を作っても絵は出ないので、大きさが決まるまで待つ（前の箱を
+        # そのまま使い、窓も動かさない）。
+        if width <= 1 or height <= 1 or (width, height) == self._size:
+            return
+        self._rebuilding = True
+        try:
+            # 窓を先に動かしてから作り直す。作り直しに失敗しても、窓は新しい
+            # 箱で受け皿は旧のままなので映像は出し続けられる。
+            self._place(width, height)
+            if self._build_back_buffer(width, height):
+                self._run_self_test()
+        finally:
+            self._rebuilding = False
 
     def compose(self, frame: np.ndarray, overlay: OverlayState) -> RenderResult:
         started = time.perf_counter_ns()
         if self._child == 0 or self._back is None:
+            self._note_failure(
+                "no_hwnd", "プレビュー面が未接続で合成できない stage=compose"
+            )
             return RenderResult(False, time.perf_counter_ns() - started, "no_hwnd")
         # strides[0] >= w*3 は C-contiguous でも常に成り立つので証拠にならない。
         if not frame.flags.c_contiguous:
+            self._note_failure(
+                "frame_not_contiguous",
+                "プレビュー合成は連続した BGR を要求する stage=compose",
+            )
             return RenderResult(
                 False, time.perf_counter_ns() - started, "frame_not_contiguous"
             )
-        # ここで止めないと 640x360 の frame が 1280x720 のバッファへ範囲外書き
-        # 込む。縮小も拡大もせず捨てる。
-        if frame.shape[1::-1] != self.client_size():
+        back = self._back
+        frame_size = frame.shape[1::-1]
+        # ここで止めないと 640x360 の frame が 1280x720 のバッファへ範囲外書
+        # き込む。縮小も拡大もせず捨てる。判定の相手は受け皿でも client で
+        # もなく、カメラが返す映像の解像度（CAPTURE_SIZE）である。受け皿や
+        # client を相手にすると、親や設定の表示サイズが変わった途端に 1 枚も
+        # 合成できなくなる。表示サイズがカメラへ渡る経路は無いので、1280x720
+        # の映像が 640x360 の枠に入るのは正常で、これは切り取りになる。
+        if frame_size != CAPTURE_SIZE:
+            self.frames_discarded_dimension_mismatch += 1
+            self._note_failure(
+                "dimension_mismatch",
+                "プレビューは 1:1 しか描かないので捨てた {}x{} のまま capture={} "
+                "owned={} client={} frames_discarded_dimension_mismatch={}",
+                frame_size[0],
+                frame_size[1],
+                CAPTURE_SIZE,
+                self._size,
+                self.client_size(),
+                self.frames_discarded_dimension_mismatch,
+            )
             return RenderResult(
                 False, time.perf_counter_ns() - started, "dimension_mismatch"
             )
-        cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA, dst=self._back)
+        if frame_size == self._size:
+            cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA, dst=back)
+        else:
+            # 受け皿が映像より大きい時は余白（左上 1:1 のまま映像、
+            # 残りは DIB のままの黒）、小さい時は切れる。換算しないので映像が
+            # 引き伸ばされることはなく、伸び縮みしても絵が消えない。
+            self._note_failure(
+                "letterboxed",
+                "受け皿 {} が映像 {} と大きさ違いなので 1:1 の範囲だけ描く "
+                "stage=compose",
+                self._size,
+                CAPTURE_SIZE,
+            )
+            height = min(frame.shape[0], self._size[1])
+            width = min(frame.shape[1], self._size[0])
+            target = back[:height, :width]
+            np.copyto(target[:, :, :3], frame[:height, :width])
+            if target.shape[2] > 3:
+                target[:, :, 3] = 0xFF
         self._draw_overlay(overlay)
         self._pending_frame = True
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
@@ -731,11 +853,17 @@ class GdiSurface:
     def present(self) -> RenderResult:
         started = time.perf_counter_ns()
         if self._child == 0 or self._memory_dc == 0:
+            self._note_failure(
+                "no_hwnd", "プレビュー面が未接続で提示できない stage=present"
+            )
             return RenderResult(False, time.perf_counter_ns() - started, "no_hwnd")
         if not self._pending_frame:
             return RenderResult(False, time.perf_counter_ns() - started, "no_frame")
         child_dc = self._api.get_dc(self._child)
         if child_dc == 0:
+            self._note_failure(
+                "getdc_failed", "子窓の DC を取れず提示できない stage=present"
+            )
             return RenderResult(False, time.perf_counter_ns() - started, "getdc_failed")
         width, height = self._size
         try:
@@ -746,10 +874,23 @@ class GdiSurface:
             self._api.release_dc(self._child, child_dc)
         self._pending_frame = False
         if not copied:
+            self._note_failure(
+                "bitblt_failed",
+                "BitBlt が失敗して 1 枚も出ていない {}x{} stage=present",
+                width,
+                height,
+            )
             return RenderResult(
                 False, time.perf_counter_ns() - started, "bitblt_failed"
             )
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
+
+    def _note_failure(self, detail: str, template: str, *args: Any) -> None:
+        """同じ reason のログは 1 度だけ出す。回数は各カウンタが持つ。"""
+        if detail in self._logged_failures:
+            return
+        self._logged_failures.add(detail)
+        logger.warning(template, *args)
 
     def release(self) -> None:
         if self._child == 0:
@@ -760,6 +901,7 @@ class GdiSurface:
         child, memory_dc = self._child, self._memory_dc
         self._child = 0
         self._memory_dc = 0
+        self._size = (0, 0)
         self._api.destroy_window(child)
         # DIB section は DC と共に死ぬ。HBITMAP にも DeleteObject すると二重解放。
         self._api.delete_dc(memory_dc)

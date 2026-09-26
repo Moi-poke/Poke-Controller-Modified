@@ -40,6 +40,7 @@ from core.preview_renderer import (
     OverlayState,
     PreviewRenderer,
     RectState,
+    RenderResult,
     StickState,
 )
 from loguru import logger
@@ -68,6 +69,13 @@ STICK_SEND_MAG_STEP = 0.25  # これ以上倒し量が変われば間隔を無�
 MOTION_MIN_INTERVAL = 0.008
 IDLE_INTERVAL_MS = 200  # 映像を表示しないあいだの描画ループ周期(ms)
 LOG_DIR = "log"
+
+# 1:1 の大きさ判断で捨てられたフレームの計数名。設計 10.F が名指しで
+# 決めている綴りなので、証拠側で別の綴りにしない。
+DISCARD_COUNTER = "frames_discarded_dimension_mismatch"
+# compose() の detail がこれなら 1:1 判断に落ちた。present() の no_frame は
+# 同じフレームの結果なので、この 1 つだけ数える。
+_DIMENSION_MISMATCH = "dimension_mismatch"
 
 # live_sender が isOpened を再照会するまでの猶予(秒)。
 # マウス Motion は 8ms 間引き後も約125Hzで届き、そのたび isOpened を
@@ -351,7 +359,11 @@ class CaptureArea(tk.Frame):
             "camera_sequence_regression_count": 0,
             "camera_last_sequence": 0,
             "post_teardown_camera_read_count": 0,
+            DISCARD_COUNTER: 0,
         }
+        # 同じ detail のログは 1 度だけ出す。60fps で毎フレーム warn すると
+        # ログが溶けて何も読めなくなる。継続した回数は上の計数が持つ。
+        self._logged_render_failures: set[str] = set()
         self._preview_stop_requested = False
 
         self.bind("<Control-ButtonPress-1>", self.mouseCtrlLeftPress)
@@ -402,6 +414,17 @@ class CaptureArea(tk.Frame):
         # 無いと最初の geo 指定以降がそのままになる。
         self._surface: PreviewRenderer = _create_preview_surface(self)
         self._surface.attach(int(self.winfo_id()), self.show_size)
+        # GdiSurface は attach() の中で自己検査済みになる。その verdict を
+        # ここで残さないと「覆われているか」の verdict が起動直後の記録にない。
+        # mac/Linux の PhotoImageSurface には自己検査が無いので 無ければ None。
+        probe: Any = self._surface
+        self.surface_selftest = (
+            probe.self_test() if hasattr(probe, "self_test") else None
+        )
+        logger.info(
+            "プレビュー面の自己検査 outcome={}",
+            getattr(self.surface_selftest, "outcome", "not_supported"),
+        )
         self.bind("<Configure>", self._onConfigure)
 
     @property
@@ -432,8 +455,18 @@ class CaptureArea(tk.Frame):
         return cv2.resize(img, self.show_size, interpolation=cv2.INTER_AREA)
 
     def _onConfigure(self, event: Any) -> None:
-        """Frame の大きさの変化を子窓へ伝える（設計 8節）。"""
-        self._surface.resize((int(event.width), int(event.height)))
+        """Frame の大きさの変化を受け皿へ伝える（設計 8節）。
+
+        Frame が表示サイズより小さいときは表示サイズを下限にする。子は 1:1
+        でしか描けないので、Frame に押し縮められて映像が 1 ピクセルも出ない
+        ことがある。余白は映像が 1:1 で入らない差分として残る。
+        """
+        self._surface.resize(
+            (
+                max(int(event.width), self.show_width),
+                max(int(event.height), self.show_height),
+            )
+        )
 
     def startCapture(self) -> None:
         """描画ループを開始する。"""
@@ -482,10 +515,10 @@ class CaptureArea(tk.Frame):
             showing = bool(self.is_show_var.get())
             if showing:
                 frame, seq = self._readLatest()
-                self._drawFrame(frame, seq)
-                self._stat_shown += 1
-                if self._stat_began_at is None:
-                    self._stat_began_at = started
+                if self._drawFrame(frame, seq):
+                    self._stat_shown += 1
+                    if self._stat_began_at is None:
+                        self._stat_began_at = started
                 draw_ms = (time.perf_counter() - started) * 1000.0
                 if self._stat_draw_ms <= 0.0:
                     self._stat_draw_ms = draw_ms
@@ -605,8 +638,11 @@ class CaptureArea(tk.Frame):
             "clock_health": dict(clock.health_snapshot()) if clock is not None else {},
         }
 
-    def _drawFrame(self, frame: Any, seq: int | None = None) -> None:
+    def _drawFrame(self, frame: Any, seq: int | None = None) -> bool:
         """BGR フレームを描画面へ合成してから提示する。
+
+        返り値は 1 枚が実際に画面へ出たかどうか。描こうとした数では
+        なく出た数を数えるので、合成も提示も落ちた tick は 0 になる。
 
         同じ seq では合成・提示を省く。5〜10fps の機器では描画 tick より
         frame が変わらないことが多く、無駄な変換が数倍に膨らむ。
@@ -618,16 +654,22 @@ class CaptureArea(tk.Frame):
         """
         last_seq = getattr(self, "_last_frame_seq", None)
         if seq is not None and seq == last_seq:
-            return
+            return False
         if frame is None:
-            self._showDisabled()
-            if seq is not None:
+            shown = self._showDisabled()
+            if shown and seq is not None:
                 self._last_frame_seq = seq
-            return
-        self._surface.compose(self._prepared(frame), self.overlay)
-        self._surface.present()
-        if seq is not None:
+            return shown
+        composed = self._surface.compose(self._prepared(frame), self.overlay)
+        # 合成が落ちても提示は呼ぶ。1 tick 1 回の提示という現状を保ち、
+        # どちらの reason で落ちたかを両方観測できるようにする。
+        presented = self._surface.present()
+        shown = self._note_render(composed, presented)
+        # 提示が成功を返しても合成が落ちていれば画出していない。出たときだけ
+        # 进入済みにする。
+        if seq is not None and shown:
             self._last_frame_seq = seq
+        return shown
 
     def _prepared(self, frame: Any) -> Any:
         """表示する BGR フレーム。処理が要らなければ入力そのもの。"""
@@ -660,10 +702,41 @@ class CaptureArea(tk.Frame):
             work = self._filter_buf
         return work
 
-    def _showDisabled(self) -> None:
-        """停止中の画像を描く。"""
-        self._surface.compose(self._disabled, OverlayState())
-        self._surface.present()
+    def _showDisabled(self) -> bool:
+        """停止中の画像を描く。1 枚出せたかを返す。"""
+        composed = self._surface.compose(self._disabled, OverlayState())
+        presented = self._surface.present()
+        return self._note_render(composed, presented)
+
+    def _note_render(
+        self, composed: RenderResult | None, presented: RenderResult | None
+    ) -> bool:
+        """合成・提示の落ちを数え、同じ reason のログは 1 度だけ出し、成否を返す。
+
+        RenderResult を返さない合成・提示は成否の証拠が無いので成功とみなす。
+        """
+        # __new__ だけで組んだインスタンスは __init__ を経由しないので getattr で開く。
+        logged: set[str] | None = getattr(self, "_logged_render_failures", None)
+        if logged is None:
+            logged = self._logged_render_failures = set()
+        for stage, result in (("compose", composed), ("present", presented)):
+            if result is None or result.ok:
+                continue
+            if stage == "compose" and result.detail == _DIMENSION_MISMATCH:
+                self._camera_observation[DISCARD_COUNTER] = (
+                    self._camera_observation.get(DISCARD_COUNTER, 0) + 1
+                )
+            if result.detail in logged:
+                continue
+            logged.add(result.detail)
+            logger.warning(
+                "プレビュー描画に失敗 stage={} detail={} {}={}",
+                stage,
+                result.detail,
+                DISCARD_COUNTER,
+                self._camera_observation.get(DISCARD_COUNTER, 0),
+            )
+        return all(result is None or result.ok for result in (composed, presented))
 
     def getStats(self) -> dict[str, float]:
         """表示実測を返す。呼ぶたびに区切り直す（期間fps方式）。
@@ -700,7 +773,8 @@ class CaptureArea(tk.Frame):
         logger.info(f"FPS set to {fps_value} (interval {self.next_frames:.1f} ms)")
 
     def setShowsize(self, show_height: int, show_width: int) -> None:
-        """表示サイズを変更する。作業バッファと子窓を作り直す。"""
+        """表示サイズを変更する。作業バッファを作り直し、受け皿を新しい
+        表示サイズに追従させる（子窓そのものは作り直さない）。"""
         self.show_width = int(show_width)
         self.show_height = int(show_height)
         self.show_size = (self.show_width, self.show_height)

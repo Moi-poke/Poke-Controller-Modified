@@ -35,10 +35,14 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 from gdi_present_doubles import (
     CANVAS_ITEM_API,
     FILTER_LOWER,
@@ -49,6 +53,7 @@ from gdi_present_doubles import (
     SHOW_HEIGHT,
     SHOW_WIDTH,
     PointerEvent,
+    StubCamera,
     bare_capture_area,
     bgr_frame,
     filter_probe_frame,
@@ -752,6 +757,640 @@ def test_window_exit_releases_the_surface_between_preview_and_services() -> None
     assert max(release_positions) < min(destroy_positions)
 
 
+# ===========================================================================
+# H. A failed render must be observable
+# ===========================================================================
+#
+# ``GuiAssets.py:627-628`` calls ``self._surface.compose(...)`` and
+# ``self._surface.present()`` and discards both ``RenderResult``s.
+# ``_dispatch_tick`` then counts the tick in ``_stat_shown`` whatever the
+# outcome (``GuiAssets.py:486``), and nothing in the tree calls
+# ``surface.self_test()`` -- ``GdiSurface`` runs it inside ``attach``
+# (``gdi_surface.py:698``) and only writes to the file log when it *fails*
+# (``gdi_surface.py:929``). A run where every single blit is refused therefore
+# reports healthy fps, draws nothing, and logs nothing, which is the reported
+# symptom: "preview shows no video".
+#
+# The design already mandates the counter these tests name
+# (``design.md:358,508``); it was never implemented. Each test below is RED for
+# its own reason and says which sub-assertion is unmet, so the fix is told what
+# is missing rather than merely that something is.
+
+
+#: The counter the design mandates for a frame refused by the 1:1 check
+#: (``design.md:508``). Named here, not invented here: the design is the SSOT
+#: for what the field is called.
+DISCARD_COUNTER = "frames_discarded_dimension_mismatch"
+
+
+class _RefusingSurface:
+    """A local ``PreviewRenderer`` double that refuses every render.
+
+    The shared ``RecordingSurface`` always returns ``ok=True``
+    (``gdi_present_doubles.py:180``), so a contract about a *failed* render
+    cannot be expressed with it. Mutating the shared double is not an option
+    either: two other contract modules build on it, and a class-level default
+    that returns ``ok=False`` would silently invalidate their "presented"
+    assertions. So the double is local to this module.
+
+    The two failure details are the pair a real size mismatch produces:
+    ``GdiSurface.compose`` returns ``dimension_mismatch`` *without* setting
+    ``_pending_frame`` (``gdi_surface.py:722``), so the ``present()`` that
+    follows finds nothing staged and returns ``no_frame``
+    (``gdi_surface.py:735``). Modelling that exactly is what makes the symptom
+    reproducible: every tick issues both calls, neither puts a pixel on screen.
+    """
+
+    def __init__(self, detail: str = "dimension_mismatch") -> None:
+        self.detail = detail
+        self.calls: list[str] = []
+        self.composes: list[tuple[Any, Any]] = []
+        self.results: list[tuple[str, Any]] = []
+        self.attach_calls: list[tuple[int, tuple[int, int]]] = []
+        self.resizes: list[tuple[int, int]] = []
+        self.releases = 0
+        self._client_size = (0, 0)
+
+    def attach(self, parent_hwnd: int, size: tuple[int, int]) -> None:
+        self.calls.append("attach")
+        self.attach_calls.append((parent_hwnd, (size[0], size[1])))
+
+    def resize(self, size: tuple[int, int]) -> None:
+        self.calls.append("resize")
+        self.resizes.append((size[0], size[1]))
+
+    def compose(self, frame: Any, overlay: Any) -> Any:
+        from core import preview_renderer
+
+        self.calls.append("compose")
+        self.composes.append((frame, overlay))
+        result = preview_renderer.RenderResult(
+            ok=False, elapsed_ns=0, detail=self.detail
+        )
+        self.results.append(("compose", result))
+        return result
+
+    def present(self) -> Any:
+        from core import preview_renderer
+
+        self.calls.append("present")
+        result = preview_renderer.RenderResult(
+            ok=False, elapsed_ns=0, detail="no_frame"
+        )
+        self.results.append(("present", result))
+        return result
+
+    def release(self) -> None:
+        self.calls.append("release")
+        self.releases += 1
+
+    def client_size(self) -> tuple[int, int]:
+        return self._client_size
+
+    # -- test-only inspection --------------------------------------------
+    def successful_presents(self) -> int:
+        return sum(
+            1 for name, result in self.results if name == "present" and result.ok
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _RefusingBare:
+    """A bare area plus the double installed in place of its surface."""
+
+    area: Any
+    surface: _RefusingSurface
+    camera: Any
+
+
+def _failing_bare(detail: str = "dimension_mismatch") -> _RefusingBare:
+    """A bare area whose installed surface refuses every render.
+
+    The refusing surface is handed back beside the area rather than written into
+    ``BareArea.surface``: that field is typed as the shared ``RecordingSurface``,
+    so overwriting it with a different double is a lie the type checker is right
+    to reject -- and the area's own ``_surface`` is what production reads anyway.
+    """
+    bare = bare_capture_area()
+    surface = _RefusingSurface(detail)
+    bare.area._surface = surface
+    _seed_runtime_state(bare.area)
+    return _RefusingBare(area=bare.area, surface=surface, camera=bare.camera)
+
+
+def _seed_runtime_state(area: Any) -> None:
+    """Open a fresh ``getStats()`` period and seed the camera observation dict.
+
+    ``bare_capture_area()`` seeds the present-path state; both of these are
+    ``__init__``-only state (``GuiAssets.py:344-354`` and ``:366-371``), so a
+    headless ``__new__``-built area has to be given them before ``_dispatch_tick``
+    can run at all. The keys are spelled out rather than derived from the parsed
+    ``__init__``: if one were ever dropped upstream, ``_readLatest`` would raise
+    and ``_dispatch_tick`` would swallow it (``GuiAssets.py:499``), so the
+    preconditions in the tests below -- which count the calls that did reach the
+    surface -- are what make that drift loud instead of silent.
+    """
+    area._stat_shown = 0
+    area._stat_began_at = None
+    area._stat_draw_ms = 0.0
+    area._stat_draw_max_ms = 0.0
+    area._camera_observation = {
+        "camera_read_count": 0,
+        "camera_frame_present_count": 0,
+        "camera_none_count": 0,
+        "camera_read_error_count": 0,
+        "camera_unique_sequence_count": 0,
+        "camera_duplicate_sequence_count": 0,
+        "camera_sequence_regression_count": 0,
+        "camera_last_sequence": 0,
+        "post_teardown_camera_read_count": 0,
+    }
+
+
+@contextmanager
+def _captured_log() -> Iterator[list[str]]:
+    """Collect INFO-and-above loguru messages, then detach the sink.
+
+    ``record["message"]`` rather than ``str(message)``: the string form carries a
+    timestamp and a ``module:function:line`` prefix, and the fix under test is
+    about a specific detail string surviving into the log.
+    """
+    from loguru import logger
+
+    messages: list[str] = []
+    handler = logger.add(
+        lambda message: messages.append(str(message.record["message"])), level="INFO"
+    )
+    try:
+        yield messages
+    finally:
+        logger.remove(handler)
+
+
+def _failure_counter(area: Any, name: str) -> int | None:
+    """``area``'s counter called ``name``, or None when it exposes no such count.
+
+    The design names the counter; it does not say where the count is kept, so a
+    plain instance attribute and a one-level mapping both satisfy it. These
+    tests pin the count, not the container. Booleans are rejected on purpose:
+    ``isinstance(True, int)`` is true in Python and a flag is not a count.
+    """
+    direct = getattr(area, name, None)
+    if isinstance(direct, int) and not isinstance(direct, bool):
+        return direct
+    for value in vars(area).values():
+        if not isinstance(value, dict):
+            continue
+        nested = value.get(name)
+        if isinstance(nested, int) and not isinstance(nested, bool):
+            return nested
+    return None
+
+
+def _call_line_of(node: ast.AST, attr: str) -> int | None:
+    """The source line of the first ``x.attr(...)`` call, or None when absent."""
+    lines = [
+        child.lineno
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and child.func.attr == attr
+    ]
+    return min(lines) if lines else None
+
+
+def _drive_ticks(area: Any, camera: Any, ticks: int) -> None:
+    """Run ``_dispatch_tick`` ``ticks`` times, each with a fresh sequence.
+
+    Distinct sequence numbers are mandatory: ``_drawFrame`` skips a repeated
+    ``seq`` (``GuiAssets.py:620``), so a reused sequence would measure the
+    dedup path instead of the present path.
+    """
+    for index in range(1, ticks + 1):
+        camera.frame = bgr_frame()
+        camera.sequence = index
+        getattr(area, "_dispatch_tick")()
+
+
+def test_a_refused_compose_is_counted_and_its_detail_is_logged() -> None:
+    # Given: a bare area whose surface refuses every render with the detail the
+    # 1:1 check produces.
+    failing = _failing_bare()
+    area, surface = failing.area, failing.surface
+    frame = bgr_frame()
+
+    # When: one frame is drawn.
+    with _captured_log() as messages:
+        getattr(area, "_drawFrame")(frame, 1)
+
+    # Then: the fixture really did refuse the frame, so the assertions below
+    # cannot pass because the double accidentally succeeded.
+    assert surface.calls == ["compose", "present"], surface.calls
+    assert surface.results[0][1].ok is False
+    assert surface.results[0][1].detail == "dimension_mismatch"
+
+    # Then: (a1) the refusal is counted. The design mandates
+    # frames_discarded_dimension_mismatch (design.md:508) precisely so a size
+    # mismatch cannot pass silently, and today _drawFrame drops both
+    # RenderResults on the floor.
+    counter = _failure_counter(area, DISCARD_COUNTER)
+    assert counter == 1, (
+        "(a1) UNMET: compose() returned ok=False detail='dimension_mismatch' but "
+        f"CaptureArea recorded no failure count. The design mandates {DISCARD_COUNTER!r} "
+        f"(design.md:508); counter value is {counter!r} and the area exposes no such "
+        f"counter among {sorted(vars(area))}."
+    )
+
+    # Then: (a2) and the detail reaches the log, because a counter nobody reads
+    # and a healthy fps is the same invisible failure with extra bookkeeping.
+    assert any("dimension_mismatch" in message for message in messages), (
+        "(a2) UNMET: the frame was discarded with detail='dimension_mismatch' and "
+        f"nothing was logged. Captured messages: {messages!r}."
+    )
+
+
+def test_the_shown_statistic_counts_successful_presents_not_attempted_ones() -> None:
+    ticks = 5
+
+    # Given: a control run against the shared all-ok surface, so the failing run
+    # below cannot report fps 0.0 merely because the statistic is dead.
+    control = bare_capture_area()
+    _seed_runtime_state(control.area)
+    _drive_ticks(control.area, control.camera, ticks)
+    control_stats = control.area.getStats()
+    assert control.surface.presents == ticks, control.surface.names
+    assert control_stats["fps"] > 0.0, (
+        "control UNMET: a run of "
+        f"{ticks} successful presents reported {control_stats!r}, so the "
+        "measurement path is broken and the assertion below proves nothing"
+    )
+
+    # When: the same number of ticks against a surface that refuses everything.
+    failing = _failing_bare()
+    area, surface = failing.area, failing.surface
+    with _captured_log() as messages:
+        _drive_ticks(area, failing.camera, ticks)
+
+    # Then: every tick really reached the present path and none of them landed,
+    # which is what makes a reported fps above zero a lie rather than noise.
+    assert surface.calls == ["compose", "present"] * ticks, surface.calls
+    assert surface.successful_presents() == 0, surface.results
+    assert all(not result.ok for _name, result in surface.results), surface.results
+
+    # Then: (b) the reported statistic counts successful presents, so a run that
+    # blitted nothing reports fps 0. _dispatch_tick increments _stat_shown
+    # unconditionally (GuiAssets.py:486), which is why "no video" and "healthy
+    # fps" are the same observation today.
+    stats = area.getStats()
+    assert stats["fps"] == 0.0, (
+        "(b) UNMET: a run of "
+        f"{ticks} ticks with 0 successful blits reported {stats!r}. The shown "
+        "statistic counts attempted presents, so a preview that drew nothing "
+        f"still looks healthy. Captured messages: {messages!r}."
+    )
+
+
+def test_attach_surfaces_the_surface_self_test_outcome() -> None:
+    # Given: the real __init__ source. A real tk.Frame cannot be constructed
+    # without a display and __init__ is the only place attach() is called, so
+    # this contract is read from the parsed file -- the module's stated
+    # alternative to a live instance.
+    init = class_method(_capture_area_node(), "__init__")
+    calls = call_attr_names(init)
+    assigned = assigned_attribute_names(init)
+    attach_line = _call_line_of(init, "attach")
+    self_test_line = _call_line_of(init, "self_test")
+
+    # Then: (c1) attach reads the self test, and reads it after the attach that
+    # creates the child HWND. GdiSurface runs the self test inside attach
+    # (gdi_surface.py:698), so a read placed before it can only ever observe the
+    # "not_run" default the surface is constructed with.
+    assert self_test_line is not None, (
+        "(c1) UNMET: __init__ never calls self_test() on the surface, so the "
+        "startup self test's outcome is unobservable from the widget -- a run "
+        f"whose child window is covered or clipped says nothing. __init__ calls "
+        f"{sorted(calls)}."
+    )
+    assert attach_line is not None and self_test_line > attach_line, (
+        "(c1) UNMET: self_test() is read at line "
+        f"{self_test_line} but attach() is at line {attach_line}. attach creates "
+        "the child HWND and runs the self test, so reading it earlier only ever "
+        "sees the 'not_run' default."
+    )
+
+    # Then: (c2) and the outcome is neither logged nor kept, which makes the
+    # read pointless: GdiSurface's own warning (gdi_surface.py:929) is the only
+    # trace, and it exists only for the failing branch.
+    assert "logger" in calls or any("selftest" in name.lower() for name in assigned), (
+        "(c2) UNMET: the self_test() outcome is read and then thrown away. It "
+        "must be logged or kept on the instance; __init__ calls "
+        f"{sorted(calls)} and assigns {sorted(assigned)}."
+    )
+
+
+# ===========================================================================
+# I. A None frame has to reach the screen, as a presented disabled image
+# ===========================================================================
+#
+# ``_drawFrame`` routes ``frame=None`` to ``_showDisabled``
+# (``GuiAssets.py:622-626``), and ``_showDisabled`` does compose and present
+# (``GuiAssets.py:665-666``). So on paper the missing-frame case is handled, and
+# the test at :376 agrees -- it proves the *routing* and stops there. Three
+# things a user would call a bug are still unproved:
+#
+# 1. Nothing observes the composed buffer, so "it presented the disabled image"
+#    is an assumption about three lines nobody asserts. The routing test can
+#    only say "not None", which is equally true of a stale buffer.
+# 2. The same-seq skip at ``GuiAssets.py:619-621`` runs *before* the None check,
+#    and a real source hands out a **frozen** generation number when it dies:
+#    ``CameraQueue.readFrameWithSeq`` returns ``(None, seq)`` with the unchanged
+#    ``seq`` once the shared memory is gone (``core/Camera.py:1011-1018``). A
+#    capture process that dies after frame 7 therefore offers ``(None, 7)``
+#    forever, ``7`` is exactly the sequence the last healthy tick stored, and
+#    the disabled image is never composited: the preview freezes on the last
+#    live frame with nothing on screen saying the camera is gone.
+# 3. The cause is unnamed. ``dimension_mismatch`` is a *size* diagnosis, and a
+#    frame that does not exist cannot be one, so a missing frame has to be
+#    attributable in its own right or a dead camera and a resized window are
+#    the same observation -- section H's "no video, looks healthy" failure.
+
+
+def _names_the_missing_frame(messages: list[str]) -> bool:
+    """Whether some captured line attributes the disabled image to a missing frame.
+
+    Deliberately generous about wording: ``design.md:508`` mandates counters for
+    ``frames_composed`` and ``frames_discarded_dimension_mismatch`` and says
+    nothing about how a missing frame is worded, so pinning a phrase would pin
+    an invention. What is pinned is that the cause is *attributed*: the line
+    talks about the absent frame, the camera or the source, and it is not the
+    dimension-mismatch detail relabelled. A line naming none of the three
+    cannot tell an operator which of the two causes to go looking for.
+    """
+    for message in messages:
+        lowered = message.lower()
+        if "dimension_mismatch" in lowered:
+            continue
+        if any(word in lowered for word in ("frame", "camera", "source")):
+            return True
+    return False
+
+
+class _RaisingCamera:
+    """A source whose every read raises, as a closed capture does.
+
+    Local to this module for the same reason ``_RefusingSurface`` is: the shared
+    ``StubCamera`` always returns, so a contract about a *failing* source cannot
+    be expressed with it, and mutating the shared double is not an option. Its
+    generation number stays put, matching the real shape -- the shared-memory
+    ``seq`` is a counter the worker bumps, so a source that stops delivering
+    keeps handing out the last value it reached.
+    """
+
+    def __init__(self, frozen_sequence: int, capture_size: tuple[int, int]) -> None:
+        self.sequence = frozen_sequence
+        self.capture_size = capture_size
+        self.reads = 0
+
+    def _fail(self) -> Any:
+        self.reads += 1
+        raise OSError("capture is closed")
+
+    def readFrame(self, copy: bool = False) -> Any:
+        return self._fail()
+
+    def readFrameWithSeq(self, copy: bool = False) -> tuple[Any, int]:
+        return self._fail()
+
+    def frame_seq(self) -> int:
+        return self.sequence
+
+    def saveCapture(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def test_a_none_frame_composes_and_presents_the_disabled_image() -> None:
+    # Given: a bare area whose source is in the state a never-opened or
+    # already-torn-down capture reports. StubCamera.frame defaults to None, so
+    # the shared double *is* a None-delivering source with no special case.
+    bare = bare_capture_area()
+    _seed_runtime_state(bare.area)
+    assert bare.camera.frame is None, (
+        "the fixture is not a None-delivering source; StubCamera.frame must "
+        f"default to None but is {bare.camera.frame!r}"
+    )
+    disabled = bare.area._disabled
+    assert disabled.any(), "the disabled buffer is blank; nothing was loaded"
+
+    # When: one tick runs against that source, with the sequence advancing so
+    # the same-seq skip is not the subject here. The mid-run failure owns that
+    # interaction, because it is where the skip actually bites.
+    bare.camera.sequence = 5
+    with _captured_log() as messages:
+        result = getattr(bare.area, "_dispatch_tick")()
+
+    # Then: (a1) the tick composes and then presents -- one present, in that
+    # order. PASSES TODAY: _showDisabled already does both (GuiAssets.py:665-666).
+    # Kept as the guard for T6, because a fix that makes the None path cheaper
+    # (skip the compose, cache the buffer, fold it into the dedup) must not
+    # quietly stop putting the image on the screen.
+    assert bare.surface.names == ["compose", "present"], (
+        f"(a1) UNMET: a None frame produced the present-path calls "
+        f"{bare.surface.names}; the disabled image has to be composited and "
+        "presented, in that order."
+    )
+    assert bare.surface.presents == 1, (
+        f"(a1) UNMET: the surface was presented {bare.surface.presents} time(s) "
+        "for a single None-frame tick; expected exactly 1."
+    )
+
+    # Then: (a2) and what it presented IS the disabled image, not merely some
+    # non-None buffer. The routing test at :376 can only rule out None; this
+    # names which image. PASSES TODAY: _showDisabled composes self._disabled
+    # (GuiAssets.py:665). Kept as the guard, because a fix that hands compose a
+    # stale work buffer would satisfy (a1) and every test that exists today.
+    composed = bare.surface.composed_frames()[0]
+    assert composed is not None and np.array_equal(composed, disabled), (
+        "(a2) UNMET: the buffer presented for a None frame is not the area's "
+        f"disabled image. presented shape "
+        f"{None if composed is None else composed.shape} vs disabled "
+        f"{disabled.shape}."
+    )
+
+    # Then: (a3) and no exception escaped the tick -- read from the return value
+    # and the log rather than from the absence of a traceback. _dispatch_tick
+    # catches Exception and reports it as "capture failed"
+    # (GuiAssets.py:499-500), so a disabled path implemented by raising leaves
+    # the *last live frame* on screen, which looks exactly like success and is
+    # the same observable (a2) exists to rule out.
+    # PASSES TODAY: _showDisabled raises nothing. Kept as the guard.
+    from ui import preview_clock
+
+    assert isinstance(result, preview_clock.DispatchResult), (
+        f"(a3) UNMET: _dispatch_tick returned {result!r} instead of a "
+        "DispatchResult, so the tick did not complete normally."
+    )
+    swallowed = [message for message in messages if "capture failed" in message]
+    assert not swallowed, (
+        "(a3) UNMET: the None-frame tick was implemented by raising and having "
+        f"_dispatch_tick swallow it: {swallowed!r}. The screen then keeps "
+        "showing the previous frame rather than the disabled image."
+    )
+
+    # Then: (a4) the cause is attributed, and attributed as itself. A frame that
+    # does not exist is not a size mismatch, so the two must stay separable or
+    # a dead camera and a resized window are the same observation.
+    # PASSES TODAY: _readLatest bumps camera_none_count (GuiAssets.py:581-582)
+    # and compositing a correctly-sized disabled image raises no size mismatch
+    # at all. Kept so a fix that folds the two causes into one count fails
+    # loudly instead of quietly.
+    observation = bare.area._camera_observation
+    assert observation["camera_none_count"] == 1, (
+        f"(a4) UNMET: the missing frame was not attributed at the read layer. "
+        f"camera_none_count is {observation['camera_none_count']!r} of "
+        f"{observation!r}."
+    )
+    assert not _failure_counter(bare.area, DISCARD_COUNTER), (
+        f"(a4) UNMET: a frame that does not exist was also counted as "
+        f"{DISCARD_COUNTER}; a missing source and a size mismatch are different "
+        "faults and must not share a count."
+    )
+
+    # Then: (a4b) and the attribution reaches the log. RED today: nothing in the
+    # None-frame path logs at all, so the only way to learn the camera stopped
+    # is to have been watching the screen when it did. This is section H's "a
+    # counter nobody reads" one level up -- the count exists (above), but an
+    # operator gets nothing without the evidence file.
+    assert _names_the_missing_frame(messages), (
+        "(a4b) UNMET: a None frame composited and presented the disabled image "
+        "and nothing named the cause, so the capture dying mid-run and the "
+        f"window being resized are the same observation. Captured messages: "
+        f"{messages!r}."
+    )
+
+
+def test_a_mid_run_source_failure_shows_the_disabled_image() -> None:
+    # Given: a bare area on a live source -- the state a working capture card
+    # is in -- and the disabled image it has to fall back to.
+    bare = bare_capture_area()
+    _seed_runtime_state(bare.area)
+    disabled = bare.area._disabled
+    live = bgr_frame()
+
+    # When: the source is healthy and delivers frame 7.
+    bare.camera.frame = live
+    bare.camera.sequence = 7
+    getattr(bare.area, "_dispatch_tick")()
+
+    # Then: live video really is on the screen, so the transition below is a
+    # change of what is presented rather than a no-op that would pass anyway.
+    assert bare.surface.presents == 1, (
+        f"(b0) UNMET: the healthy tick did not present: {bare.surface.names}"
+    )
+    assert bare.surface.composed_frames()[0] is live, (
+        "(b0) UNMET: the healthy tick did not present the source frame, so the "
+        "transition assertions below would be measuring nothing."
+    )
+    live_presents = bare.surface.presents
+
+    # When: the source dies mid-run. The shape is taken from the real reader
+    # rather than invented: CameraQueue.readFrameWithSeq returns (None, seq)
+    # with the *unchanged* generation number once the shared memory is gone
+    # (core/Camera.py:1011-1018), so a capture process that dies after frame 7
+    # keeps offering 7 forever while offering no frame at all.
+    bare.camera.frame = None
+    with _captured_log() as messages:
+        getattr(bare.area, "_dispatch_tick")()
+
+    # Then: (b1) the disabled image is composited and presented, so the frozen
+    # live frame is replaced by one that says the camera stopped.
+    # RED today: the same-seq skip at GuiAssets.py:619-621 returns before the
+    # None check at :622, and 7 is precisely the sequence the healthy tick
+    # stored, so the second tick composes nothing at all.
+    assert bare.surface.presents > live_presents, (
+        f"(b1) UNMET: the source delivered (None, 7) right after a healthy frame "
+        f"7 and the surface was presented {bare.surface.presents} time(s) in "
+        "total. The same-seq skip at GuiAssets.py:620 runs before the None check "
+        "at :622, so the preview keeps showing the last live frame forever and "
+        f"the disabled image is never composited. Captured messages: {messages!r}."
+    )
+    after_failure = bare.surface.composed_frames()[live_presents:]
+    assert after_failure and np.array_equal(after_failure[0], disabled), (
+        "(b1) UNMET: the buffer presented after the failure is not the disabled "
+        f"image: {None if not after_failure else after_failure[0].shape} vs "
+        f"{disabled.shape}."
+    )
+
+
+def test_a_raising_source_falls_back_to_the_disabled_image_and_recovers() -> None:
+    # Given: a live source, driven one healthy tick so there is something on the
+    # screen to be displaced.
+    bare = bare_capture_area()
+    _seed_runtime_state(bare.area)
+    disabled = bare.area._disabled
+    live = bgr_frame()
+    bare.camera.frame = live
+    bare.camera.sequence = 3
+    getattr(bare.area, "_dispatch_tick")()
+    assert bare.surface.composed_frames()[0] is live, (
+        "(b2) UNMET: the healthy tick did not present the source frame, so the "
+        "fallback and recovery assertions below would be measuring nothing."
+    )
+    live_presents = bare.surface.presents
+
+    # When: the source starts raising from both read paths, which is what the
+    # thread-backed Camera does once the capture is closed. The stand-in is
+    # swapped onto the area rather than mutating StubCamera, which keeps the
+    # healthy control above describing a source that works.
+    bare.area.camera = _RaisingCamera(
+        frozen_sequence=3, capture_size=bare.camera.capture_size
+    )
+    getattr(bare.area, "_dispatch_tick")()
+
+    # Then: (b2) the disabled image is presented. PASSES TODAY: _readLatest
+    # turns the failure into (None, None) (GuiAssets.py:563-573), and a None seq
+    # bypasses the same-seq skip at :620 -- which is exactly why the frozen-seq
+    # source above is the harder case. Kept as the guard: the fallback has to
+    # hold for the raising source too, not only for the quiet one.
+    assert bare.area._camera_observation["camera_read_error_count"] == 1, (
+        "(b2) UNMET: the raising source was not recorded as a read failure. "
+        f"observation is {bare.area._camera_observation!r}."
+    )
+    assert bare.surface.presents == live_presents + 1, (
+        f"(b2) UNMET: after the source began raising, the surface was presented "
+        f"{bare.surface.presents} time(s) in total; expected "
+        f"{live_presents + 1}. The disabled image must reach the screen."
+    )
+    after_failure = bare.surface.composed_frames()[live_presents:]
+    assert after_failure and np.array_equal(after_failure[0], disabled), (
+        "(b2) UNMET: the buffer presented after the source began raising is not "
+        f"the disabled image: {None if not after_failure else after_failure[0].shape}"
+        f" vs {disabled.shape}."
+    )
+
+    # When: the source comes back and publishes a new generation.
+    recovered = bgr_frame()
+    bare.area.camera = StubCamera(
+        capture_size=bare.camera.capture_size, frame=recovered, sequence=4
+    )
+    getattr(bare.area, "_dispatch_tick")()
+
+    # Then: (b3) live video is presented again, so the fallback is not sticky.
+    # PASSES TODAY: 4 differs from the stored 3, so the dedup does not apply.
+    # Kept as the guard for the fix of (b1), where the dedup key is exactly what
+    # gets touched: a fix that pins _last_frame_seq to the failed generation
+    # would satisfy (b1) and strand the preview on the disabled image forever.
+    tail = bare.surface.composed_frames()[live_presents + 1 :]
+    assert tail and tail[0] is recovered, (
+        f"(b3) UNMET: after the source recovered, what is presented is still the "
+        f"disabled image. tail shapes: "
+        f"{[None if frame is None else frame.shape for frame in tail]}."
+    )
+    assert not np.array_equal(tail[0], disabled), (
+        "(b3) UNMET: recovery composited the disabled image again; the source "
+        "published a real frame and that frame has to reach the screen."
+    )
+
+
 def _teardown_markers(node: ast.AST) -> list[tuple[str, str]]:
     """``[(kind, value)]`` for phase assignments, ``release()`` and ``destroy()``.
 
@@ -773,3 +1412,57 @@ def _teardown_markers(node: ast.AST) -> list[tuple[str, str]]:
         if child.func.attr in {"release", "destroy"}:
             marked.append((child.lineno, child.func.attr, dotted_name(child.func)))
     return [(kind, value) for _line, kind, value in sorted(marked)]
+
+
+# ===========================================================================
+# J. The non-Windows backend obeys the same size rule
+# ===========================================================================
+
+
+def test_photo_surface_paints_the_capture_frame_into_a_smaller_show_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the fallback surface at the shipped show size, with ImageTk and
+    # the Canvas stubbed out, because a real PhotoImage needs a Tk root and
+    # this backend is otherwise unreachable without a display.
+    import ui.photo_surface as module
+    from core import preview_renderer
+
+    built: list[Any] = []
+
+    class _PhotoImage:
+        def __init__(self, image: Any) -> None:
+            built.append(image)
+
+    class _Canvas:
+        def itemconfig(self, _item: Any, **_kwargs: Any) -> None:
+            return None
+
+        def delete(self, _tag: str) -> None:
+            return None
+
+    monkeypatch.setattr(module.ImageTk, "PhotoImage", _PhotoImage)
+    area = module.PhotoImageSurface(host=None)
+    show_size = (640, 360)
+    area.resize(show_size)
+    area._canvas = _Canvas()
+    area._image_id = "image"
+    frame = bgr_frame(1280, 720)
+    assert frame.shape == (720, 1280, 3) and frame.flags.c_contiguous is True
+
+    # When: a live 1280x720 capture frame is composited and presented.
+    composed = area.compose(frame, preview_renderer.OverlayState())
+    presented = area.present()
+
+    # Then: both succeed, so <Configure> cannot be what blanks this backend
+    # either. It refused the live frame for exactly as long as the GDI surface
+    # did, because it compared the frame against the show size instead of the
+    # capture size the camera actually produces.
+    assert (composed.ok, presented.ok) == (True, True)
+    assert (composed.detail, presented.detail) == ("ok", "ok")
+
+    # Then: and the frame was drawn 1:1 into the top-left of the show size,
+    # never scaled, so both backends show the same picture.
+    image = built[-1]
+    assert image.size == show_size
+    assert np.array_equal(np.asarray(image)[:, :, ::-1], frame[:360, :640])

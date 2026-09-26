@@ -16,6 +16,7 @@ from typing import Any, Final
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
+from core.Camera import CAPTURE_SIZE
 from core.preview_renderer import TK_COLORREF, OverlayState, RenderResult
 
 # The reverse of the single authored table, derived rather than written out
@@ -63,14 +64,31 @@ class PhotoImageSurface:
         started = time.perf_counter_ns()
         if self._canvas is None:
             return RenderResult(False, time.perf_counter_ns() - started, "no_hwnd")
-        if frame.shape[1::-1] != self._size:
-            # 縮小も拡大もしない。GDI 面と同じく寸法不一致は捨てる。
+        frame_size = frame.shape[1::-1]
+        # 判定の相手は _size でもなく canvas でもなく、カメラが返す映像の解像度
+        # （CAPTURE_SIZE）である。GDI 面の core/gdi_surface.py と同じ規則。
+        # _size を相手にすると、<Configure> で表示サイズが変わった途端に
+        # 生きているフレームを 1 枚も描かなくなる。
+        # 縮小も拡大もしない。寸法が違えば捨てる。
+        if frame_size != CAPTURE_SIZE:
             return RenderResult(
                 False, time.perf_counter_ns() - started, "dimension_mismatch"
             )
-        self._photo = ImageTk.PhotoImage(
-            Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        )
+        if frame_size == self._size:
+            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        else:
+            # 受け皿が映像と違う大きさなら 1:1 の範囲だけ描く。大きい時は
+            # 残りを黒で埋め、小さい時は切る。換算しないので GDI 面と同じ絵になる。
+            height = min(frame.shape[0], self._size[1])
+            width = min(frame.shape[1], self._size[0])
+            image = Image.new("RGB", self._size)
+            image.paste(
+                Image.fromarray(
+                    cv2.cvtColor(frame[:height, :width], cv2.COLOR_BGR2RGB)
+                ),
+                (0, 0),
+            )
+        self._photo = ImageTk.PhotoImage(image)
         self._overlay = overlay
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
 

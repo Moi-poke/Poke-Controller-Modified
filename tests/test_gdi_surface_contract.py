@@ -248,6 +248,8 @@ class RecordingGdiApi:
         get_dc_results: list[int] | None = None,
         get_pixel_results: list[int] | None = None,
         register_class_results: list[int] | None = None,
+        create_window_results: list[int] | None = None,
+        compatible_dc_results: list[int] | None = None,
         null_present_dc: bool = False,
     ) -> None:
         self.bits_pixel = bits_pixel
@@ -256,6 +258,8 @@ class RecordingGdiApi:
         self.get_dc_results = list(get_dc_results or [])
         self.get_pixel_results = list(get_pixel_results or [])
         self.register_class_results = list(register_class_results or [])
+        self.create_window_results = list(create_window_results or [])
+        self.compatible_dc_results = list(compatible_dc_results or [])
         self.null_present_dc = null_present_dc
         self.last_error = 0
         # Ordered logs: names for order assertions, name+args for interleaving.
@@ -294,6 +298,10 @@ class RecordingGdiApi:
         self._clip_box = clip_box
         self._client_rect = (0, 0, client_size[0], client_size[1])
         self._dc_by_hwnd: dict[int, int] = {}
+        # Handles currently held from a GetDC. Win32 hands out an invalid DC
+        # once it is released, which is what the memory-DC contract below
+        # depends on, so validity is state rather than a value.
+        self._held_dcs: set[int] = set()
         self._window_hwnds: list[int] = []
         self._memory_dc = 0
         self._blocks: list[Any] = []
@@ -340,6 +348,8 @@ class RecordingGdiApi:
             height,
             style,
         )
+        if self.create_window_results:
+            hwnd = self.create_window_results.pop(0)
         self.create_window_calls.append(
             CreateWindowRecord(
                 class_name=class_name,
@@ -373,11 +383,13 @@ class RecordingGdiApi:
         if hdc is None:
             hdc = self._new_handle()
             self._dc_by_hwnd[hwnd] = hdc
+        self._held_dcs.add(hdc)
         return hdc
 
     def release_dc(self, hwnd: int, hdc: int) -> int:
         self._record("release_dc", hwnd, hdc)
         self.release_dc_calls.append((hwnd, hdc))
+        self._held_dcs.discard(hdc)
         return 1
 
     def get_device_caps(self, hdc: int, index: int) -> int:
@@ -420,6 +432,14 @@ class RecordingGdiApi:
     def create_compatible_dc(self, hdc: int) -> int:
         self._record("create_compatible_dc", hdc)
         self.compatible_dc_calls.append(hdc)
+        if hdc not in self._held_dcs:
+            # GetDC していない DC、または ReleaseDC 済みの DC は Win32 で
+            # CreateCompatibleDC が NULL を返す（実測 last_error=6）。これを
+            # モデル化しないと、解放後の DC を再使う欠陥が二重で緑になる。
+            self.last_error = 6
+            return 0
+        if self.compatible_dc_results:
+            return self.compatible_dc_results.pop(0)
         self._memory_dc = self._new_handle()
         return self._memory_dc
 
@@ -1358,6 +1378,85 @@ def test_odd_width_frame_is_discarded_rather_than_crashing() -> None:
     assert surface.client_size() == _SIZE
 
 
+def test_frame_is_accepted_after_a_stretched_resize_keeps_preview_alive() -> None:
+    # Given: an attached 1280x720 surface and the 1280x720 frame the capture
+    # board keeps producing, whatever the preview window is doing.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+    surface = _attached(api, module)
+    blits_before = len(api.presented_blits())
+
+    # When: the frame is delivered to the untouched attach-size surface.
+    control = surface.compose(_frame(720, 1280), _empty_overlay())
+    control_shown = surface.present()
+    control_blits = len(api.presented_blits()) - blits_before
+
+    # Then: it shows, so the resize below is the only variable left.
+    assert (control.ok, control_shown.ok) == (True, True)
+    assert control.detail == "ok"
+    assert control_blits == 1
+
+    # When: the parent stretches the child to 1600x900 -- aspect preserving, the
+    # shape a user gets by making the window bigger -- and reports it.
+    stretched = (1600, 900)
+    api.set_client_rect(stretched)
+    surface.resize(stretched)
+    assert surface.client_size() == stretched
+    blits_after = len(api.presented_blits())
+
+    # When: the very same 1280x720 frame arrives again, unchanged.
+    composed = surface.compose(_frame(720, 1280), _empty_overlay())
+    presented = surface.present()
+    new_blits = len(api.presented_blits()) - blits_after
+
+    # Then: it is accepted and shown, so stretching the window cannot be what
+    # blanks the preview -- the DIB has to follow the client box rather than
+    # staying pinned to the size it was attached with.
+    assert composed.ok is True, (
+        f"stretched resize discarded a live frame: detail={composed.detail!r} "
+        f"new_blits={new_blits}"
+    )
+    assert composed.detail == "ok"
+    assert presented.ok is True
+    assert new_blits == 1
+    blits = api.presented_blits()
+    assert (blits[-1].width, blits[-1].height) == stretched
+
+
+def test_frame_is_accepted_after_an_aspect_distorting_resize() -> None:
+    # Given: the same surface whose client box was distorted to 1274x718, the
+    # two-pixels-smaller box a window manager border leaves behind. 16:9 is not
+    # preserved and no whole-pixel scale factor exists, so neither is a rounding
+    # detail that may be waved away.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+    surface = _attached(api, module)
+    control = surface.compose(_frame(720, 1280), _empty_overlay())
+    assert (control.ok, surface.present().ok) == (True, True)
+    distorted = (1274, 718)
+    api.set_client_rect(distorted)
+    surface.resize(distorted)
+    assert surface.client_size() == distorted
+    blits_after = len(api.presented_blits())
+
+    # When: the unchanged 1280x720 source frame is composited into that box.
+    composed = surface.compose(_frame(720, 1280), _empty_overlay())
+    presented = surface.present()
+    new_blits = len(api.presented_blits()) - blits_after
+
+    # Then: it composes instead of reporting the size invariant, and presents
+    # across the whole new client area.
+    assert composed.ok is True, (
+        f"distorting resize discarded a live frame: detail={composed.detail!r} "
+        f"new_blits={new_blits}"
+    )
+    assert composed.detail == "ok"
+    assert presented.ok is True
+    assert new_blits == 1
+    blits = api.presented_blits()
+    assert (blits[-1].width, blits[-1].height) == distorted
+
+
 def test_compose_issues_no_window_dc_and_no_blit() -> None:
     # Given: an attached surface with the attach-time calls already recorded.
     module = _fresh_surface_module()
@@ -1486,6 +1585,123 @@ def test_null_child_dc_at_attach_never_raises() -> None:
     composed = surface.compose(_frame(720, 1280), _empty_overlay())
     assert composed.ok is False
     assert isinstance(composed.elapsed_ns, int)
+
+
+def test_attach_ends_with_a_memory_dc_the_surface_can_paint_through() -> None:
+    # Given: a fresh double and the surface module with an unset class guard.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+
+    # When: a 1280x720 child is attached.
+    surface = module.GdiSurface(api=api)
+    surface.attach(_PARENT_HWND, _SIZE)
+
+    # Then: a memory DC exists, and it is the one the DIB is selected into.
+    # CreateCompatibleDC is issued from a window DC that is still held:
+    # ReleaseDC 済みの DC で呼ぶと NULL が返り、以降 _memory_dc == 0 のまま
+    # present が毎回 no_hwnd を返し、1 枚も描かれないまま動く。
+    assert api.memory_dc != 0
+    assert (api.memory_dc, api.bitmap_handle) in api.select_object_calls
+    compatible_at = next(
+        index
+        for index, (name, _args) in enumerate(api.log)
+        if name == "create_compatible_dc"
+    )
+    assert [args for name, args in api.log[:compatible_at] if name == "release_dc"] == (
+        []
+    ), "the window DC was released before the memory DC was created from it"
+
+    # Then: the startup self test ran, which it cannot do without a memory DC.
+    assert surface.self_test().outcome == "sentinel_matched"
+
+    # Then: and a composed frame actually reaches the child window DC.
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    assert surface.present().ok is True
+    assert api.presented_blits()[-1].src_dc == api.memory_dc
+
+
+def test_a_smaller_show_size_still_paints_the_fixed_capture_frame() -> None:
+    # Given: the show size the app ships with (config.py's default, and what
+    # the menu's Reset picks) and the camera's fixed capture size, which is
+    # what the frames actually are. Nothing hands the show size to the camera,
+    # so the two differ from the first frame onwards.
+    module = _fresh_surface_module()
+    show_size = (640, 360)
+    api = RecordingGdiApi(client_size=show_size)
+    surface = _attached(api, module, show_size)
+
+    # When: a live 1280x720 capture frame is composited (core.Camera's
+    # CAPTURE_SIZE, fixed at camera construction and never resized after).
+    composed = surface.compose(_frame(720, 1280), _empty_overlay())
+    presented = surface.present()
+
+    # Then: it is accepted and blitted, so a small preview box cannot be what
+    # blanks the preview. Sizing the expectation from the attach box instead
+    # rejects every frame forever, which is indistinguishable from a dead
+    # camera in the log.
+    assert composed.ok is True, f"detail={composed.detail!r}"
+    assert composed.detail == "ok"
+    assert presented.ok is True
+    blits = api.presented_blits()
+    assert blits and (blits[-1].width, blits[-1].height) == show_size
+
+    # Then: and the frame was drawn 1:1 into the top-left of the box, so the
+    # picture is never scaled: only the part that fits was copied.
+    drawn = api.dib_bgra()[:, :, :3]
+    assert np.array_equal(drawn, _frame(720, 1280)[:360, :640])
+    assert api.dib_bgra().shape == (360, 640, 4)
+
+
+def test_a_failed_memory_dc_frees_the_dib_it_had_already_created() -> None:
+    # Given: a double whose CreateCompatibleDC fails, as a GDI handle
+    # exhaustion or a driver refusal makes it.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi(compatible_dc_results=[0])
+
+    # When: a child is attached.
+    surface = module.GdiSurface(api=api)
+    surface.attach(_PARENT_HWND, _SIZE)
+
+    # Then: the DIB was built before the DC, so it exists and has to be freed
+    # by hand. It never entered a memory DC, so nothing else will ever own it:
+    # "a DIB section dies with its DC" does not apply, and a GDI handle would
+    # survive every release.
+    assert len(api.dib_sections) == 1
+    orphan = api.dib_sections[0].hbitmap
+    assert orphan in api.delete_object_calls
+
+    # Then: and the handle ledger balances -- every GDI object the surface
+    # created was deleted, so a failed attach leaks nothing at all.
+    assert set(api.created_object_handles()) == set(api.delete_object_calls)
+
+    # Then: the child window went away with it, and the surface is not attached.
+    assert api.destroy_window_calls == [api.child_hwnd]
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).detail == "no_hwnd"
+
+
+def test_a_refused_child_window_creation_owns_no_gdi_resource() -> None:
+    # Given: a double whose CreateWindowExW returns NULL, as a foreign parent
+    # HWND or an exhausted desktop makes it.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi(create_window_results=[0])
+
+    # When: a child is attached anyway.
+    surface = module.GdiSurface(api=api)
+    surface.attach(_PARENT_HWND, _SIZE)
+
+    # Then: no DC is taken at all. GetDC(0) hands out the SCREEN DC, so
+    # proceeding past a NULL hwnd silently builds against the screen.
+    assert api.get_dc_calls == []
+
+    # Then: and neither the 3.7MB DIB nor a memory DC exists to be orphaned,
+    # because release() early-returns on a zero child and nobody would free
+    # them.
+    assert api.dib_headers == []
+    assert api.compatible_dc_calls == []
+
+    # Then: and the surface refuses to pretend rather than reporting a frame
+    # it never drew.
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).detail == "no_hwnd"
 
 
 def test_empty_overlay_issues_no_shape_calls() -> None:
