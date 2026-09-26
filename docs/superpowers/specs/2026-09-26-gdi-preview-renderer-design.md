@@ -621,13 +621,44 @@ functional_accepted True   status passed   within_reference False
   `0xC0000409` crash was traced to ctypes callback re-entry and this design puts
   a foreign HWND inside the Tk mainloop for the first time.
 
-**What remains.** `p1` is 57.82 Hz against a 59.0 floor, and the decomposition
-says the blit is not the cause: dispatch `p1` is 58.01 on the same run, so the
-present path contributes about 0.19 Hz of the 1.19 Hz shortfall and the dispatch
-path carries the rest. Since cadence is a recorded reference and not a gate, the
-run is green 窶・but the `p1` gap is real and belongs to the dispatch path, which
-this task did not change. Chasing it means instrumenting `_dispatch_tick` and the
-`after_idle` hop rather than the renderer.
+**What the `p1` gap is, measured.** The earlier reading of this number was that
+the dispatch path carried a real shortfall worth chasing. The interval
+distribution says otherwise, and the reference-only decision was adopted on the
+strength of that reading, so it is worth recording what the data shows.
+
+Recomputing `p1` from the retained rows reproduces the report exactly
+(present 57.8235, dispatch 58.0131), so the rows can be trusted. Over the 3600
+intervals:
+
+| | dispatch | present |
+|---|---|---|
+| intervals over 16.667 ms | 45.90% | 46.62% |
+| excess above nominal | 376.33 ms | 392.75 ms |
+| credit from shorter intervals | 376.07 ms | 392.52 ms |
+| **net phase error over 60 s** | **0.25 ms** | **0.23 ms** |
+| worst single gap | 18.71 ms | 18.86 ms |
+| intervals under 15.000 ms | 1 | 1 |
+
+Three things follow. The worst gap is **2.2 ms** past nominal, not a
+multi-millisecond preemption spike, so no single stall is responsible. The top
+ten worst intervals hold only 29.4% of the excess above the `p1` threshold, so
+the shortfall is broad jitter rather than a few stalls. And the excess is paid
+back almost exactly, leaving 0.25 ms of net phase error across sixty seconds:
+`sum(interval)` is 59.983589 s against a nominal 59.983335 s.
+
+So `p1` is the operating system's timer jitter, rendered one-for-one by a pacer
+holding phase to a quarter of a millisecond. There is no defect here to fix.
+Raising `p1` would require decoupling the deadline from wall-clock, which drifts
+against the display, or accepting frames late, which adds latency -- both worse
+than the number they would improve. The renderer is not implicated either:
+present and dispatch differ by 0.19 Hz at `p1` and 0.15 ms at the worst gap.
+
+One measurement note. `mean_hz` is `count / sum(interval)`, which reproduces
+59.999744 against the report to six decimals. The arithmetic mean of the
+per-interval rates is 60.015612 and `(n-1) / observed span` is 59.983073, and
+neither matches. That is the endpoint statistic Task 1 specified, and it is what
+distinguishes it from the old nominal-divisor definition behind the 4.9 Hz
+reading.
 
 **Teardown**, verified on the gated teardown run with the new
 `surface_released` phase in place:
