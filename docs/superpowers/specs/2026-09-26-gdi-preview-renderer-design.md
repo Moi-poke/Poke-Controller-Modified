@@ -767,3 +767,85 @@ and before the root is destroyed, and the GDI surface releases cleanly inside it
   compose into the back buffer unchanged.
 - A non-`nt` box runs `PhotoImageSurface` and cannot hit 60 fps. That is a
   platform limit, not a regression.
+
+### Deferred to a hardware pass
+
+The 250 pure-LOC ceiling is not met by three files, and this section records why
+the split was declined rather than quietly left undone. Measured, not estimated:
+
+| file | pure LOC |
+|---|---|
+| `SerialController/core/gdi_surface.py` | 755 |
+| `SerialController/core/Camera.py` | 831 |
+| `SerialController/GuiAssets.py` | 1320 |
+
+The one extraction that is genuinely clean -- the overlay drawing helpers and
+the self-test, 121 pure LOC together -- would leave `gdi_surface.py` at roughly
+600 pure. It would not approach 250, so it does not buy the thing the ceiling is
+for. What remains after it is the ctypes binding table (~170 lines of
+`argtypes`/`restype` declarations) and the Win32 resource-release protocol:
+create window, create DIB, select, draw, release, in that order.
+
+Splitting those fragments the release protocol across modules, and the release
+order is precisely what the teardown E2E exists to prove. Trading a verifiable
+ordering for a line count is the wrong direction, so the ceiling yields to
+cohesion here.
+
+This is pre-existing debt: all three files were already over the ceiling before
+this work. It is a separate hardware-validated pass, not a follow-up to this
+one, and the entry criterion is a machine where the preview can be exercised
+end to end while the files are being moved -- which is the same prerequisite the
+real-camera run below is waiting on.
+
+### Synthetic and real-camera evidence are not interchangeable
+
+Every 60 Hz number in section 13 comes from `SyntheticFrameSource`, which
+supplies frames from a thread at a fixed 180 Hz. The mean of 59.9995 Hz over
+3600 frames is a statement about the pacer, the mailbox and the blit. It is not a
+statement about any capture device, and must never be reported as one.
+
+What is actually known from a physical device, taken from the app's own log on
+a Live Gamer EXTREME 3 at `camera_id=0`:
+
+```
+16:15:16,253  _configure_capture  Capture: 1280x720 YUY2 60.0fps
+16:15:16,254  WARNING             MJPG not applied (actual 'YUY2')
+16:15:22,096  _update             Camera read: avg 0.5 ms, slow 1/300 (interval 16.7 ms)
+```
+
+So the board grants 1280x720 at 60.0 fps in **YUY2**, and the measured supply
+interval of 16.7 ms is 60 fps. The MJPG refusal is a driver-level refusal, not a
+consequence of the request order: `_configure_capture` already sets FOURCC
+first, and `capture-device.json` records the order that reached the hardware as
+`[6, 3, 4, 5, 38]` with `CAP_PROP_FOURCC` leading. Reordering it cannot help. And
+because YUY2 at 1280x720 is roughly 147 MB/s over USB3, the bandwidth argument
+that motivates MJPG in `Camera.py` does not bite on this board.
+
+Two corrections this work owes the record:
+
+- **The earlier `capture-device.json` measured the wrong physical device.** It
+  reported `fourcc: "YUY2"` at 60.00024 fps, which is the NVIDIA Broadcast
+  virtual camera, not the Elgato. OpenCV's DSHOW index order does not match the
+  DirectShow enumeration order the app uses for `camera_id`, so index 0 in one is
+  not index 0 in the other. The artifact records `device_index` but no device
+  *name*, which is a real gap for a record whose purpose is cross-run
+  comparability.
+- **The harness cannot currently express a real-camera run at all.**
+  `physical_camera_evidence` and `physical_unique_frame_claim` are literal
+  `False` in three places in `preview_fps_support.py`, and `load_config` rejects
+  any `source_hz` but 180. A real source bolted onto the existing harness would
+  therefore still report itself as synthetic. Those two fields have to become
+  derived from the source before any real-camera number is trustworthy.
+
+The DirectShow media-type enumeration the brief asked for could not be produced
+on this machine: the bundled DirectShowLib-2005 exposes `FilterGraph` as a stub
+carrying only `CreateObjRef`, `DsDevice` has no `BindToObject`, and
+`DeviceInformation` is absent, so no code path reaches `IStreamConfig`. The grant
+readback above is the substitute, and it tests what the driver grants rather than
+what it advertises.
+
+Still unmeasured on a physical device, and therefore not claimed anywhere above:
+`present` mean and p1 through the GDI path, `blit_skipped_no_new_frame`,
+`period_skipped_count`, the new/duplicate frame counts, and any beat between the
+capture clock and the pacer. Those need the device held exclusively, which it was
+not.

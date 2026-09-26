@@ -1566,13 +1566,21 @@ class RealCaptureHarness:
         self._preview_clock_module = None
         self._original_factory = None
 
+    def _make_source(self) -> Any:
+        # The single place a source is chosen. Synthetic by default; a subclass
+        # that measures a physical board overrides this and nothing else, so the
+        # Tk root, the area, the instrumentation, the clock and the report are
+        # the identical machinery for both. A second construction site would let
+        # the two runs diverge silently, so there must only ever be one.
+        return SyntheticFrameSource(self.config.source_hz)
+
     def start(self) -> None:
         import tkinter as tk
 
         from GuiAssets import CaptureArea
 
         self._install_factory_patch()
-        self.source = SyntheticFrameSource(self.config.source_hz)
+        self.source = self._make_source()
         self.root = tk.Tk()
         self.root.title("PokeCon preview FPS E2E")
         self.root.geometry("1280x720+0+0")
@@ -2273,8 +2281,17 @@ def _build_report(
         "source_pins_unchanged": pins_unchanged,
         "source_pins_complete": pins_complete,
         "artifact_manifest_path": ARTIFACT_MANIFEST_FILE,
-        "physical_camera_evidence": False,
-        "physical_unique_frame_claim": False,
+        # Read off the source, never written as a literal. Both sources declare
+        # these as class attributes -- False for the synthetic one, True for a
+        # physical one -- so a real run cannot report itself as synthetic and a
+        # synthetic run cannot claim a board. A literal here would make the two
+        # runs indistinguishable no matter what the source measured.
+        "physical_camera_evidence": bool(
+            getattr(harness.source, "physical_camera_evidence", False)
+        ),
+        "physical_unique_frame_claim": bool(
+            getattr(harness.source, "physical_unique_frame_claim", False)
+        ),
         "compositor_or_scanout_proof": False,
         "status": status,
         "teardown": dict(teardown),
@@ -2717,7 +2734,16 @@ def _run_teardown_probe(
 def _run_measurement(
     config: E2EConfig,
     writer: EvidenceWriter,
+    *,
+    harness_factory: Callable[[E2EConfig], RealCaptureHarness] | None = None,
 ) -> dict[str, Any]:
+    # ``harness_factory`` lets a caller that measures a physical board reuse this
+    # driver verbatim -- the Tk root, the area, the clock, the teardown, the
+    # failure path and the artifact layout -- while swapping only the source.
+    # The default is today's behaviour, so every existing call site is untouched.
+    # A second driver would drift from this one, which is why the seam is an
+    # injected factory rather than a copied body.
+    make_harness = harness_factory or RealCaptureHarness
     match config.phase:
         case RunPhase.TEARDOWN:
             return _run_teardown_probe(config, writer)
@@ -2727,7 +2753,7 @@ def _run_measurement(
             assert_never(unreachable)
     import tkinter as tk
 
-    harness = RealCaptureHarness(config)
+    harness = make_harness(config)
     teardown: dict[str, Any]
     try:
         harness.start()
