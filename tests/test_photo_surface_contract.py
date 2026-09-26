@@ -1129,13 +1129,64 @@ def test_the_canvas_takes_the_hosts_pointer_bindings_and_nothing_else(
     # when the host's own box moves, and it is what calls resize
     # (GuiAssets.py:481), so forwarding it would hand the surface its own size
     # changes back and re-enter the resize this file already guards.
-    assert set(attached.canvas.bindings) == set(
+    assert set(attached.canvas.bindings) - {"<Destroy>"} == set(
         POINTER_SEQUENCES + MODIFIER_SEQUENCES
     ), (
         f"the canvas is bound to {sorted(attached.canvas.bindings)}; it must "
         "mirror the host's pointer bindings and exclude the events Tk raises on "
         "the host itself, <Configure> among them"
     )
+    assert "<Destroy>" in attached.canvas.bindings, (
+        "the surface no longer watches its own canvas destruction, so a "
+        "destroyed canvas raises TclError instead of taking the no_hwnd path"
+    )
+
+
+def test_structural_and_hover_events_are_never_forwarded_to_the_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a host that binds pointer sequences plus structural, hover and
+    # focus ones a real app may carry.
+    host = _HostFrame()
+    for sequence in (
+        *POINTER_SEQUENCES,
+        "<Enter>",
+        "<Leave>",
+        "<FocusIn>",
+        "<FocusOut>",
+        "<Expose>",
+        "<Map>",
+    ):
+        host.bind(sequence, lambda event: None)
+    attached = _attach(monkeypatch, host=host)
+
+    # When/Then: only the pointer family reaches the canvas. An exclusion list
+    # can only name what its author remembered; an allowlist cannot forward
+    # what it never names, so a future <Enter> handler stays on the host.
+    assert set(attached.canvas.bindings) - {"<Destroy>"} == set(POINTER_SEQUENCES), (
+        f"the canvas is bound to {sorted(attached.canvas.bindings)}"
+    )
+
+
+def test_canvas_destroy_releases_the_surface_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an attached surface.
+    attached = _attach(monkeypatch)
+    surface = attached.surface
+
+    # When: Tk destroys the canvas out from under the surface.
+    destroy = attached.canvas.bindings.get("<Destroy>")
+    assert destroy is not None, (
+        "the canvas has no <Destroy> binding, so a destroyed canvas keeps "
+        "answering itemconfig/config with TclError instead of no_hwnd"
+    )
+    destroy(_PointerEvent(0, 0))
+
+    # Then: present/resize take the unattached path instead of raising.
+    assert surface.present().detail == "no_hwnd"
+    surface.resize((800, 600))
+    assert surface.client_size() == (0, 0)
 
 
 def test_a_binding_the_app_never_uses_is_forwarded_too(

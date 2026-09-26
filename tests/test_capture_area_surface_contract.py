@@ -1445,7 +1445,13 @@ def test_photo_surface_paints_the_capture_frame_into_a_smaller_show_size(
 
     class _Canvas:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.bindings: dict[str, Any] = {}
             return None
+
+        def bind(self, sequence: str, func: Any = None, add: Any = None) -> str:
+            if func is not None:
+                self.bindings[sequence] = func
+            return sequence
 
         def pack(self, **kwargs: Any) -> None:
             return None

@@ -291,6 +291,11 @@ def _create_preview_surface(host: Any, renderer: str = "auto") -> PreviewRendere
         name = "auto"
     if name == "auto":
         name = "gdi" if os.name == "nt" else "photo"
+    if name == "gdi" and os.name != "nt":
+        # GDI が無い環境で構築を試みない。CtypesGdiApi の OSError 捕捉は
+        # 実行時の最終防衛として残すが、通常経路ではここで寄せる。
+        logger.warning("この環境に GDI は無いため photo を使います")
+        name = "photo"
 
     surface: PreviewRenderer | None = None
     if name == "gdi":

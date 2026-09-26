@@ -326,3 +326,25 @@ def test_capture_area_forwards_its_renderer_argument_to_the_factory() -> None:
         "__init__ does not forward its renderer argument to the factory; it passes "
         f"{ast.unparse(call)!r}"
     )
+
+
+def test_non_windows_gdi_maps_to_photo_without_constructing_gdi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a process reporting a platform with no GDI, and a GDI surface
+    # class that explodes if touched: mapping must happen by platform check,
+    # not by attempting construction and catching the refusal.
+    module = _gui_assets()
+
+    def _forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("GdiSurface must not be constructed off-Windows")
+
+    monkeypatch.setattr(module, "GdiSurface", _forbidden)
+    with _pretending(monkeypatch, POSIX):
+        assert os.name != WINDOWS, "the platform pre-condition is not in effect"
+
+        # When: "gdi" is asked for by name on that platform.
+        surface = _create(_Host(), "gdi")
+
+    # Then: the Canvas implementation, reached without constructing GDI.
+    assert _backend_of(surface) == PHOTO_BACKEND

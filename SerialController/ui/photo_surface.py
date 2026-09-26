@@ -30,14 +30,10 @@ _NAME_BY_COLORREF: Final[dict[int, str]] = {
     colorref: name for name, colorref in TK_COLORREF.items()
 }
 
-#: host の束縛のうち、Tk が host 自身に擎ち上げるもの。Canvas が受け取った
-#: 事人ではない事象なので、出し直すと handler が意図しない理由で走る。
-#: 特に ``<Configure>`` は host の箱が動いたとき Tk が擎ち上げ、それが
-#: ``resize`` を呼ぶ（``GuiAssets.py:481``）ので、返すと表面が自分の大きさを
-#: 自分で受け取って resize へ再入する。
-_HOST_RAISED: Final[frozenset[str]] = frozenset(
-    {"<Configure>", "<Map>", "<Unmap>", "<Destroy>", "<Visibility>"}
-)
+#: host の束縛のうち Canvas へ転送してよい種類。ポインタとキーだけであり、
+#: Tk が host 自身に擎げる構造・hover・focus 系は名指ししない。除外表は
+#: 書いた者が覚えている物しか載らないが、許可表は載せない物を運ばない。
+_FORWARDABLE_KINDS: Final[tuple[str, ...]] = ("Button", "Motion", "MouseWheel", "Key")
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,9 +90,20 @@ class PhotoImageSurface:
         self._canvas = canvas
         self._canvas.pack(fill=tk.BOTH, expand=True)
         self._image_id = self._canvas.create_image(0, 0, anchor=tk.NW)
+        # Canvas が破棄されたら Tk 側は TclError を投げるだけになる。破棄を
+        # 検出して _canvas を離すことで、以降の present/resize は未接続経路
+        # （no_hwnd）に落ち、例外は漏れない。
+        self._canvas.bind("<Destroy>", self._on_canvas_destroy, add="+")
         self._forward_host_binds()
         self._pending_frame = False
         self.resize(size)
+
+    def _on_canvas_destroy(self, event: Any) -> None:
+        """Canvas 破棄を検出して _canvas を離す。未接続経路へ落とすため。"""
+        _ = event
+        self._canvas = None
+        self._image_id = None
+        self._pending_frame = False
 
     def _forward_host_binds(self) -> None:
         """Canvas 上のポインタ操作を host の束縛へ、同じ名前で届け直す。
@@ -109,8 +116,9 @@ class PhotoImageSurface:
         あとから host 側で足した束縛もここを直さずに届く。
         """
         for sequence in self._host.bind():
-            if sequence not in _HOST_RAISED:
-                self._canvas.bind(sequence, self._reemitter(sequence), add="+")
+            if not any(kind in sequence for kind in _FORWARDABLE_KINDS):
+                continue
+            self._canvas.bind(sequence, self._reemitter(sequence), add="+")
 
     def _reemitter(self, sequence: str) -> Callable[[Any], None]:
         """``sequence`` を host へ同じ座標で出し直す束縛を作る。
