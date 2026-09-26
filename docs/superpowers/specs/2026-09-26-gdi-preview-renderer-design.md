@@ -587,16 +587,45 @@ honest until GDI is proven.
 
 ## 13. Open items
 
-- **Bit depth is queried, not hardcoded.** The design ships the 32bpp branch, but
-  the back buffer format is a property of the display, so `bpp` is read from
-  `GetDeviceCaps(GetDC(child), BITSPIXEL)` at attach and clamped to {16, 24, 32}.
+### Carried out of steps A-C
+
+- **The COLORREF byte-order conversion has no test.** The self-test sentinel is
+  `0x0000FF00`, chosen because its high and low bytes are equal, which makes the
+  round trip byte-order agnostic. So the self test proves "the child DC is
+  readable and shows our pixels" and proves nothing about the conversion — and
+  that conversion is exactly the surface where Tk's `0x00RRGGBB` and Win32's
+  `0x00BBGGRR` disagree. The recording double has the same blind spot: its
+  `get_pixel` reconstructs Tk's order. **A follow-up assertion is required
+  against `CtypesGdiApi`, not the double.** This is the highest-priority gap.
+- **The guide rectangle is probably one pixel too wide on the left and top.**
+  Section 5's extent convention says only `right+1` / `bottom+1`, but the
+  `SelectArea` row and the test both specify `x0-1, y0-1, x1+1, y1+1`. The
+  current Tk code builds the box as `min, min, max+1, max+1`, so the `-1` is
+  probably wrong. Resolve in step E, where the range selector moves.
+- **`gdi_surface.py` is 714 pure LOC**, over the project's 250 ceiling, because
+  the 26-method api Protocol plus its ctypes implementation is roughly half of
+  it. Split into `gdi_surface.py` and `win32_gdi_api.py` before it grows further.
+- **Only the 32bpp branch is specified**, but `attach` is exercised at 16 and 24
+  bpp because the bit depth is clamped to {16, 24, 32}. The 16/24bpp view and
+  fill paths are unspecified. Either specify them or narrow the clamp.
+- **`hInstance` is a sentinel, not a pass-through.** The api has no
+  `get_module_handle`, so `instance=0` means "resolve `GetModuleHandleW(None)`
+  yourself" inside `CtypesGdiApi`. MSDN requires the handle, so this is correct
+  but the parameter does not mean what its name suggests.
+- **`present` checks `no_frame` before taking the DC**, which deviates from the
+  prose ordering but avoids a pointless `GetDC`/`ReleaseDC` pair at 60 Hz.
+  Deliberate; recorded so it is not mistaken for an oversight.
+
+### Still open from earlier sections
+
+- **The bit depth is queried, not hardcoded.** The design ships the 32bpp branch,
+  but the back buffer format is a property of the display, so `bpp` is read from
+  `GetDeviceCaps(GetDC(child), BITSPIXEL)` at attach.
 - **The stride of a real 1280x720 capture frame is unverified.** A camera was
   present during one probe, but the design-size reconfigure (MJPG + 1280x720)
   raised a `cv2.Mat` assertion on that run, so only a 640x480 frame was measured
-  (`strides=(1920,3,1)`, C-contiguous). The shared-memory face is
-  `(720,1280,3) strides=(3840,3,1)`, which is consistent, but the live path hands
-  the renderer raw `read()` output. Hence the runtime `c_contiguous` assertion in
-  section 3 rather than a one-time check.
+  (`strides=(1920,3,1)`, C-contiguous). Hence the runtime `c_contiguous`
+  assertion in section 3 rather than a one-time check.
 - **The arm-level tick measurements are bimodal** and the cause is unexplained;
   it acts on the `BitBlt`-to-the-window step. Stage-level measurement is the only
   trustworthy method for this renderer.
@@ -604,8 +633,7 @@ honest until GDI is proven.
   `0xFF` every frame and `WS_EX_LAYERED` is clear on the child, so alpha should be
   ignored; forcing it to `0x00` did not make the window vanish. But the probe had
   no demonstrated-transparent positive control, so "alpha is ignored" is
-  *consistent with* the measurement, not proven by it. Nothing needs forcing on
-  this path.
+  *consistent with* the measurement, not proven by it.
 - 640x360 and 1920x1080 are out of scope by decision. When they are revisited,
   the camera-side output-size plumbing does not exist yet — `Camera.capture_size`
   is written only in `__init__` and read only by `_configure_capture` at open —
@@ -614,7 +642,6 @@ honest until GDI is proven.
   1920x1080, so until that work lands the renderer must keep the 1:1 discard
   rather than attempt a scale.
 - `preview_filter.apply_filter` and `apply_correction` both return BGR, so they
-  compose into the back buffer unchanged. With no filter and no correction the
-  DIB is filled straight from the incoming frame by `cvtColor` alone.
+  compose into the back buffer unchanged.
 - A non-`nt` box runs `PhotoImageSurface` and cannot hit 60 fps. That is a
   platform limit, not a regression.
