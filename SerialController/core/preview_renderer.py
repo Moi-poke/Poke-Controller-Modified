@@ -8,9 +8,29 @@ Tk も Win32 も知らないので core/ の境界内に置ける。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 import numpy as np
+
+#: Tk の色名 → Win32 ``COLORREF`` (``0x00BBGGRR``)。
+#:
+#: Tk 内部形は ``0x00RRGGBB``、Win32 ``COLORREF`` は ``0x00BBGGRR`` で、
+#: **バイト位置が逆**。Tk の値をそのまま pen や brush へ渡すと赤と青が
+#: 入れ替わる（``"blue"`` が赤になる）。変換は必ずこの境界で一度行う。
+#:
+#: ``"blue"`` が ``0x00FF0000`` に見えるのはこの反転の帰結であって誤りでは
+#: ない。認識経路が渡す名前は ``"blue"`` と ``"red"`` の2つだけ
+#: （``core/CommandVision.py``）だが、範囲枠とスティックの色もここを通す。
+TK_COLORREF: Final[dict[str, int]] = {
+    "black": 0x00000000,
+    "white": 0x00FFFFFF,
+    "red": 0x000000FF,
+    "green": 0x0000FF00,
+    "blue": 0x00FF0000,
+    "yellow": 0x0000FFFF,
+    "cyan": 0x00FFFF00,
+    "magenta": 0x00FF00FF,
+}
 
 
 @dataclass(frozen=True, slots=True)

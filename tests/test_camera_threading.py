@@ -12,6 +12,33 @@ from typing import Any
 
 import cv2
 import numpy as np
+from core.preview_renderer import ImgRectState, RectState, StickState
+
+
+class _RecordingSurface:
+    """PreviewRenderer の6メソッドを持つだけの替身。Tk も GDI も触らない。"""
+
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    def attach(self, parent_hwnd: int, size: tuple[int, int]) -> None:
+        self.names.append("attach")
+
+    def resize(self, size: tuple[int, int]) -> None:
+        self.names.append("resize")
+
+    def compose(self, frame: Any, overlay: Any) -> Any:
+        self.names.append("compose")
+
+    def present(self) -> Any:
+        self.names.append("present")
+
+    def release(self) -> None:
+        self.names.append("release")
+
+    def client_size(self) -> tuple[int, int]:
+        return (0, 0)
+
 
 # ---------------------------------------------------------------------------
 # 1. reopen で旧スレッドが蘇らない（generation / per-thread Event）
@@ -351,29 +378,27 @@ def test_gui_draw_skips_same_seq() -> None:
     area.show_height = 4
     area.show_size = (4, 4)
     area._allocBuffers()
-    # _convert を数える
-    n = {"conv": 0}
-    orig = CaptureArea._convert
-
-    def _count(self: Any, frame: Any) -> None:
-        n["conv"] += 1
-        return orig(self, frame)
-
-    area._convert = _count.__get__(area, CaptureArea)  # type: ignore[attr-defined]
-    # photo/itemconfig を無効化（Tk なし）
-    area._photo = type("P", (), {"paste": lambda self, im: None})()
-    area.im = object()
-    area.im_ = None
-    area.itemconfig = lambda *a, **k: None  # type: ignore[attr-defined]
+    # 提示面（描画面）とオーバーレイだけを差す。Tk も GDI も触らない。
+    area._surface = _RecordingSurface()
+    area._stick_left = StickState()
+    area._stick_right = StickState()
+    area._guide = RectState()
+    area._img_rect = ImgRectState()
+    area._filter_enabled = False
+    area._correction_active = False
 
     frame = _np.zeros((4, 4, 3), dtype=_np.uint8)
+    # 毎フレームの費用は _convert ではなく合成と提示に現れる。
+    # 変換が要らない経路では _convert は呼ばれないので、数えるのは合成。
     area._drawFrame(frame, seq=7)  # type: ignore[call-arg]
-    first = n["conv"]
+    first = area._surface.names.count("compose")
     assert first == 1
     area._drawFrame(frame, seq=7)  # type: ignore[call-arg]
-    assert n["conv"] == first, "同じ seq で再変換されています"
+    assert area._surface.names.count("compose") == first, (
+        "同じ seq で再描画されています"
+    )
     area._drawFrame(frame, seq=8)  # type: ignore[call-arg]
-    assert n["conv"] > first, "新 seq で再描画されていません"
+    assert area._surface.names.count("compose") > first, "新 seq で再描画されていません"
 
 
 # ---------------------------------------------------------------------------

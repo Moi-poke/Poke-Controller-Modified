@@ -478,15 +478,20 @@ class PokeControllerApp(
             return
         if self._exit_phase == "stopping_preview":
             self._exit_retry_after_id = None
-            result = self._stop_preview_for_exit()
-            if result is not StopResult.STOPPED:
-                self._exit_phase = "stopping_preview"
-                self._exit_retry_after_id = self.root.after(50, self._continue_exit)
+            if self._stop_preview_for_exit() is not StopResult.STOPPED:
+                self._schedule_preview_stop_retry()
                 return
             self._exit_phase = "preview_stopped"
 
         if self._exit_phase != "preview_stopped":
             return
+
+        # 映像面はこの点上から合成されない。stopCapture() が STOPPED を
+        # 返した今が最後の _dispatch_one_tick が走らない瞬間なので、
+        # ここで子窓を壊す（lpvBits は frame 配列を指すので先に落とす）。
+        self._exit_phase = "surface_released"
+        if self.preview is not None:
+            self.preview.surface.release()
 
         self._exit_phase = "stopping_services"
         if self.menu is not None:
@@ -508,6 +513,12 @@ class PokeControllerApp(
         logger.debug("Stop Poke Controller")
         self._exit_phase = "root_destroyed"
         self.root.destroy()
+
+    def _schedule_preview_stop_retry(self) -> None:
+        # 停止未確定のあいだは 50ms 後に判断し直す。再入の目印なので、
+        # 終了順の階段（_continue_exit の _exit_phase 代入）には混ぜない。
+        self._exit_phase = "stopping_preview"
+        self._exit_retry_after_id = self.root.after(50, self._continue_exit)
 
     def _stop_preview_for_exit(self) -> StopResult:
         preview = self.preview

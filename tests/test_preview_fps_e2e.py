@@ -347,13 +347,22 @@ def test_real_harness_instruments_clock_created_by_start_capture(
                 "running": True,
             }
 
-    class FakePhoto:
-        def paste(self, *_args: Any, **_kwargs: Any) -> None:
+    class FakeSurface:
+        def compose(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def present(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def release(self) -> None:
+            return None
+
+        def resize(self, *_args: Any, **_kwargs: Any) -> None:
             return None
 
     class FakeArea:
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-            self._photo = FakePhoto()
+            self._surface = FakeSurface()
             self._preview_clock: FakeClock | None = None
             self.start_capture_calls = 0
             self._capturing = False
@@ -621,7 +630,7 @@ def test_five_hz_warmup_records_show_false_transition(tmp_path: Path) -> None:
             self.callbacks.append(callback)
             return f"after-{len(self.callbacks)}"
 
-    class FakeInstrumentation(support.PasteInstrumentation):
+    class FakeInstrumentation(support.PresentInstrumentation):
         def __init__(self) -> None:
             self.callback_schedules: list[support.CallbackSchedule] = []
 
@@ -678,7 +687,7 @@ def test_five_hz_idle_warmup_progresses_without_area_after_records(
             self.callbacks.append((delay_ms, callback))
             return f"after-{len(self.callbacks)}"
 
-    class FakeInstrumentation(support.PasteInstrumentation):
+    class FakeInstrumentation(support.PresentInstrumentation):
         def __init__(self) -> None:
             self.callback_schedules: list[support.CallbackSchedule] = []
 
@@ -725,13 +734,22 @@ def test_five_hz_idle_warmup_progresses_without_area_after_records(
 
 
 def test_native_dispatch_instrumentation_is_installed_before_clock_binding() -> None:
-    class FakePhoto:
-        def paste(self, *_args: Any, **_kwargs: Any) -> None:
+    class FakeSurface:
+        def compose(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def present(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def release(self) -> None:
+            return None
+
+        def resize(self, *_args: Any, **_kwargs: Any) -> None:
             return None
 
     class FakeArea:
         def __init__(self) -> None:
-            self._photo = FakePhoto()
+            self._surface = FakeSurface()
             self._preview_clock = None
             self.bound_dispatch: Any = None
 
@@ -749,7 +767,7 @@ def test_native_dispatch_instrumentation_is_installed_before_clock_binding() -> 
 
     area = FakeArea()
     original_dispatch = area._dispatch_tick
-    instrumentation = support.PasteInstrumentation(
+    instrumentation = support.PresentInstrumentation(
         area,
         configured_fps=60,
         dispatch_target="_dispatch_tick",
@@ -797,6 +815,7 @@ def test_exit_waits_for_preview_stop_before_any_service_teardown(
         "unbind_left",
         "unbind_right",
         "preview_stopped",
+        "surface_released",
         "child_windows_closed",
         "runner_shutdown",
         "keyboard_stop",

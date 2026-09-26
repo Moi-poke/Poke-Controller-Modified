@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """GuiAssets.py - Poke-Controller Modified の GUI 部品.
 
-CaptureArea    : カメラ映像を描画する Canvas。マウスでのスティック操作も担う。
+CaptureArea    : カメラ映像を描画する Frame。マウスでのスティック操作も担う。
+_PhotoImageSurface : 非 Windows 用の描画面（Canvas + PhotoImage）。
 ControllerGUI  : Switch コントローラを模した簡易操作ウィンドウ。
 MouseStick     : マウス操作をコマンドとして扱うための最小の PythonCommand。
 MyScrolledText : flush を持つ ScrolledText（標準出力のリダイレクト先用）。
@@ -19,6 +20,7 @@ import tkinter as tk
 import traceback
 from collections import deque
 from collections.abc import Callable
+from dataclasses import replace
 from tkinter.scrolledtext import ScrolledText
 from typing import Any, Final
 
@@ -30,7 +32,15 @@ import numpy as np
 #   ボタンと十字キーの種類を直接使う（UnitCommand を経由しない）。
 from Commands.Keys import Button, Hat
 from Commands.PythonCommandBase import PythonCommand
-from PIL import Image, ImageTk
+from core.gdi_surface import GdiSurface
+from core.preview_renderer import (
+    TK_COLORREF,
+    ImgRectState,
+    OverlayState,
+    PreviewRenderer,
+    RectState,
+    StickState,
+)
 from loguru import logger
 from ui import preview_clock
 
@@ -255,11 +265,26 @@ class MouseStick(PythonCommand):
         self.keys.inputEnd(buttons)
 
 
-class CaptureArea(tk.Canvas):
-    """カメラ映像を表示し、マウスでスティック操作を行う Canvas.
+def _create_preview_surface(host: Any) -> PreviewRenderer:
+    """描画面を作る。Windows は GDI 子窓、それ以外は Canvas 実装。
 
-    描画は PhotoImage を1枚だけ作って paste で中身を差し替える。
-    毎フレーム PhotoImage を作り直すと GC で周期的にカクつくため。
+    mac/Linux には GDI が無いので、同じプロトコルを PhotoImage 実装で
+    満たす。プラットフォーム要件であって一般化ではない（設計 8節）。
+    """
+    if os.name == "nt":
+        return GdiSurface()
+    from ui.photo_surface import PhotoImageSurface
+
+    return PhotoImageSurface(host)
+
+
+class CaptureArea(tk.Frame):
+    """カメラ映像を表示し、マウスでスティック操作を行うウィジェット.
+
+    映像は GDI の子 HWND が持ち、スティック・範囲枠・認識枠は同じ面の
+    renderer が描く。Tk の Canvas 項目は廃止した（設計 0節・8節）。子窓は
+    親の絵より常に上に合成されて Canvas を透かせず、``coords()`` は移動
+    させる項目の古い箱を背景色で塗り直すので映像を消してしまう。
     """
 
     def __init__(
@@ -274,7 +299,12 @@ class CaptureArea(tk.Canvas):
         take_stick_log: bool | None = None,
     ) -> None:
         super().__init__(
-            master, borderwidth=0, cursor="tcross", width=show_width, height=show_height
+            master,
+            borderwidth=0,
+            highlightthickness=0,
+            cursor="tcross",
+            width=show_width,
+            height=show_height,
         )
         self.master: Any = master
         self.camera = camera
@@ -345,14 +375,12 @@ class CaptureArea(tk.Canvas):
         # Motion 処理の最終時刻（片側ごと）。洪水時はここで間引く
         self._motion_last: dict = {}
 
-        # 画像認識の枠は1組だけ作って使い回す
-        self._rect_created = False
+        # 画像認識の枠は1組だけ使って使い回す
         self._rect_after_id: str | None = None
-        # 直近に描いた世代。同じ seq の再変換・再貼付を省く。
+        # 直近に描いた世代。同じ seq の再合成・再提示を省く。
         self._last_frame_seq: int | None = None
 
         # 描画の作業バッファ（毎フレームの確保を避ける）
-        self._allocBuffers()
         self._filter_enabled = False
         self._filter_lower = [0, 0, 0]
         self._filter_upper = [179, 255, 255]
@@ -361,27 +389,50 @@ class CaptureArea(tk.Canvas):
         self._correction: dict | None = None
         self._correction_active = False
 
-        # 映像用の PhotoImage は1枚だけ作って使い回す
-        self._photo = ImageTk.PhotoImage(Image.new("RGB", self.show_size))
-        self.disabled_tk = self._loadDisabledImage()
-        self.im = self.disabled_tk
-        self.im_ = self.create_image(0, 0, image=self.disabled_tk, anchor=tk.NW)
+        # オーバーレイは Tk の項目ではなくデータ。renderer が読むだけ。
+        self._stick_left = StickState()
+        self._stick_right = StickState()
+        self._guide = RectState()
+        self._img_rect = ImgRectState()
+        self._allocBuffers()
+
+        # 映像面。子窓は Frame の HWND に作る（設計 6節）。Windows は
+        # 親を動かすときに子を動かすが大きさは変えないので、<Configure> が
+        # 無いと最初の geo 指定以降がそのままになる。
+        self._surface: PreviewRenderer = _create_preview_surface(self)
+        self._surface.attach(int(self.winfo_id()), self.show_size)
+        self.bind("<Configure>", self._onConfigure)
+
+    @property
+    def overlay(self) -> OverlayState:
+        """この瞬間のオーバーレイ。不変値なので描画が途中状態を見ない。"""
+        return OverlayState(
+            left_stick=self._stick_left,
+            right_stick=self._stick_right,
+            guide=self._guide,
+            img_rect=self._img_rect,
+        )
+
+    @property
+    def surface(self) -> PreviewRenderer:
+        """描画面。終了処理から release() されるための公開口。"""
+        return self._surface
 
     # ------------------------------------------------------------------
     # 映像描画
     # ------------------------------------------------------------------
-    def _loadDisabledImage(self) -> ImageTk.PhotoImage:
-        """カメラ停止中に出す画像。読めなければ黒画像で代用する。"""
+    def _loadDisabledImage(self) -> np.ndarray:
+        """カメラ停止中に出す画像（BGR）。読めなければ黒画像で代用する。"""
         # imread のスタブは ndarray 固定だが、実機では読めないと None が返る。
-        img: Any = cv2.imread(DISABLED_IMAGE_PATH, cv2.IMREAD_GRAYSCALE)
+        img: Any = cv2.imread(DISABLED_IMAGE_PATH, cv2.IMREAD_COLOR)
         if img is None:
             logger.warning(f"disabled image not found: {DISABLED_IMAGE_PATH}")
-            pil = Image.new("L", self.show_size)
-        else:
-            pil = Image.fromarray(
-                cv2.resize(img, self.show_size, interpolation=cv2.INTER_AREA)
-            )
-        return ImageTk.PhotoImage(pil)
+            return np.zeros((self.show_height, self.show_width, 3), np.uint8)
+        return cv2.resize(img, self.show_size, interpolation=cv2.INTER_AREA)
+
+    def _onConfigure(self, event: Any) -> None:
+        """Frame の大きさの変化を子窓へ伝える（設計 8節）。"""
+        self._surface.resize((int(event.width), int(event.height)))
 
     def startCapture(self) -> None:
         """描画ループを開始する。"""
@@ -451,12 +502,11 @@ class CaptureArea(tk.Canvas):
             )
 
     def _allocBuffers(self) -> None:
-        """描画の作業バッファを確保する（表示サイズ変更時に作り直す）。"""
+        """描画の作業バッファと停止中画像を確保する（表示サイズ変更時に作り直す）。"""
         h, w = self.show_height, self.show_width
-        self._resize_buf = np.empty((h, w, 3), np.uint8)
-        self._rgb_buf = np.empty((h, w, 3), np.uint8)
         self._filter_buf = np.empty((h, w, 3), np.uint8)
         self._correct_buf = np.empty((h, w, 3), np.uint8)
+        self._disabled = self._loadDisabledImage()
 
     def setPreviewFilter(
         self,
@@ -555,16 +605,15 @@ class CaptureArea(tk.Canvas):
         }
 
     def _drawFrame(self, frame: Any, seq: int | None = None) -> None:
-        """BGR フレームを Canvas へ反映する。
+        """BGR フレームを描画面へ合成してから提示する。
 
-        resize / cvtColor は dst を指定して確保済みバッファへ書く。
-        毎フレーム新しい配列を作ると 640x360 で約1.4MB/フレーム
-        （30fps なら 42MB/s）になり、GC が周期的に走ってカクつく。
-        PhotoImage を1枚使い回している対策と理由は同じ。
+        同じ seq では合成・提示を省く。5〜10fps の機器では描画 tick より
+        frame が変わらないことが多く、無駄な変換が数倍に膨らむ。
+        clear() で seq が進むため旧絵を使い回さない。
 
-        同じ seq では再変換・再貼付を省く。5〜10fps の機器では描画
-        tick より frame が変わらないことが多く、無駄な convert が
-        数倍に膨らむ。clear() で seq が進むため旧絵を使い回さない。
+        フィルタも補正も有効でなければ _convert を経由せず、受け取った
+        frame をそのまま renderer へ渡す。毎フレームの確保がゼロになる
+        経路で、設計の前提そのものでもある。
         """
         last_seq = getattr(self, "_last_frame_seq", None)
         if seq is not None and seq == last_seq:
@@ -574,70 +623,46 @@ class CaptureArea(tk.Canvas):
             if seq is not None:
                 self._last_frame_seq = seq
             return
-        self._convert(frame)
-        # frombuffer は fromarray と違い配列を複製しない
-        self._photo.paste(
-            Image.frombuffer("RGB", self.show_size, self._rgb_buf, "raw", "RGB", 0, 1)
-        )
-        if self.im is not self._photo:
-            self.im = self._photo
-            self.itemconfig(self.im_, image=self._photo)
+        self._surface.compose(self._prepared(frame), self.overlay)
+        self._surface.present()
         if seq is not None:
             self._last_frame_seq = seq
 
-    def _convert(self, frame: Any) -> None:
-        """BGR フレームを表示用 RGB バッファへ変換する（Tk を触らない）。
+    def _prepared(self, frame: Any) -> Any:
+        """表示する BGR フレーム。処理が要らなければ入力そのもの。"""
+        if not self._filter_enabled and not self._correction_active:
+            return frame
+        return self._convert(frame)
 
-        サイズが一致するときは縮小を省いて直接色変換する。720p 表示では
-        ただでさえ 16.7ms 予算が厳しく、意味の無い INTER_AREA 一発分
-        （数ms）がカクつきに直結するため。サイズが違うときは従来どおり
-        先に縮小してから色変換する（変換対象が減って軽い）。
+    def _convert(self, frame: Any) -> np.ndarray:
+        """補正と抽出を順に適用した BGR を作業バッファへ作る。
+
+        縮小も BGR→RGB 変換もしない。縮小はカメラ側へ移り、色順は DIB が
+        BGR をそのまま取るので不要になった。補正→抽出の順は従来どおり。
         """
-        if frame.shape[1] == self.show_width and frame.shape[0] == self.show_height:
-            src = frame
-        else:
-            cv2.resize(
-                frame,
-                self.show_size,
-                dst=self._resize_buf,
-                interpolation=cv2.INTER_AREA,
-            )
-            src = self._resize_buf
-        use_filter = getattr(self, "_filter_enabled", False)
-        use_correct = getattr(self, "_correction_active", False)
-        if use_filter or use_correct:
-            from core import preview_filter as _pf
+        from core import preview_filter as _pf
 
-            work = src
-            if use_correct:
-                np.copyto(
-                    self._correct_buf,
-                    _pf.apply_correction(src, self._correction),
-                )
-                work = self._correct_buf
-            if use_filter:
-                np.copyto(
-                    self._filter_buf,
-                    _pf.apply_filter(
-                        work,
-                        self._filter_lower,
-                        self._filter_upper,
-                        self._filter_mode,
-                    ),
-                )
-                work = self._filter_buf
-            cv2.cvtColor(work, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
-            return
-        if src is frame:
-            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
-            return
-        cv2.cvtColor(src, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
+        work = frame
+        if self._correction_active:
+            np.copyto(self._correct_buf, _pf.apply_correction(work, self._correction))
+            work = self._correct_buf
+        if self._filter_enabled:
+            np.copyto(
+                self._filter_buf,
+                _pf.apply_filter(
+                    work,
+                    self._filter_lower,
+                    self._filter_upper,
+                    self._filter_mode,
+                ),
+            )
+            work = self._filter_buf
+        return work
 
     def _showDisabled(self) -> None:
-        """停止中の画像に切り替える（既に表示中なら何もしない）。"""
-        if self.im is not self.disabled_tk:
-            self.im = self.disabled_tk
-            self.itemconfig(self.im_, image=self.disabled_tk)
+        """停止中の画像を描く。"""
+        self._surface.compose(self._disabled, OverlayState())
+        self._surface.present()
 
     def getStats(self) -> dict[str, float]:
         """表示実測を返す。呼ぶたびに区切り直す（期間fps方式）。
@@ -674,17 +699,13 @@ class CaptureArea(tk.Canvas):
         logger.info(f"FPS set to {fps_value} (interval {self.next_frames:.1f} ms)")
 
     def setShowsize(self, show_height: int, show_width: int) -> None:
-        """表示サイズを変更する。PhotoImage も作り直す。"""
+        """表示サイズを変更する。作業バッファと子窓を作り直す。"""
         self.show_width = int(show_width)
         self.show_height = int(show_height)
         self.show_size = (self.show_width, self.show_height)
         self.config(width=self.show_width, height=self.show_height)
-
         self._allocBuffers()
-        self._photo = ImageTk.PhotoImage(Image.new("RGB", self.show_size))
-        self.disabled_tk = self._loadDisabledImage()
-        self.im = self.disabled_tk
-        self.itemconfig(self.im_, image=self.disabled_tk)
+        self._surface.resize(self.show_size)
         logger.info(f"Show size set to {self.show_width} x {self.show_height}")
 
     def saveCapture(self) -> None:
@@ -729,14 +750,12 @@ class CaptureArea(tk.Canvas):
             self.UnbindRightClick()
 
         self.min_x, self.min_y = event.x, event.y
-        self.delete("SelectArea")
-        self.create_rectangle(
-            self.min_x,
-            self.min_y,
-            self.min_x + 1,
-            self.min_y + 1,
-            outline="red",
-            tags="SelectArea",
+        self._guide = RectState(
+            x0=self.min_x,
+            y0=self.min_y,
+            x1=self.min_x + 1,
+            y1=self.min_y + 1,
+            visible=True,
         )
 
         ratio_x, ratio_y = self._captureRatio()
@@ -758,9 +777,8 @@ class CaptureArea(tk.Canvas):
         """ドラッグ中の選択枠を追従させる。"""
         self.max_x = min(self.show_width, max(0, event.x))
         self.max_y = min(self.show_height, max(0, event.y))
-        self.coords(
-            "SelectArea", self.min_x, self.min_y, self.max_x + 1, self.max_y + 1
-        )
+        # 端は包含端で持ち、renderer 側で GDI の +1 補正をする。
+        self._guide = replace(self._guide, x1=self.max_x + 1, y1=self.max_y + 1)
 
     def ReleaseRangeSS(self, event: Any) -> None:
         """選択範囲を切り出して保存する。"""
@@ -789,7 +807,7 @@ class CaptureArea(tk.Canvas):
         )
 
         # after には呼び出し可能オブジェクトを渡す（直接呼ぶと即時実行になる）
-        # 予約 ID は控えておく。終了時に残っていると破棄途中の Canvas を
+        # 予約 ID は控えておく。終了時に残っていると破棄途中の Frame を
         # 触るため、stopCapture で取り消す。
         try:
             if self._select_after_id is not None:
@@ -797,7 +815,7 @@ class CaptureArea(tk.Canvas):
         except Exception:
             pass
         try:
-            self._select_after_id = self.after(250, lambda: self.delete("SelectArea"))
+            self._select_after_id = self.after(250, self._clearGuide)
         except Exception:
             self._select_after_id = None
 
@@ -805,6 +823,10 @@ class CaptureArea(tk.Canvas):
             self.BindLeftClick()
         if self.master.is_use_right_stick_mouse.get():
             self.BindRightClick()
+
+    def _clearGuide(self) -> None:
+        """範囲選択枠を消す。"""
+        self._guide = RectState()
 
     # ------------------------------------------------------------------
     # 色取得 (Ctrl+左クリック)
@@ -975,26 +997,52 @@ class CaptureArea(tk.Canvas):
             return
         ser.writeRow("3 8 80 80 80 80", is_show=False)
 
-    def _drawStick(self, x: int, y: int, color: str, tag: str) -> None:
-        """スティックの外周円とノブを描く。"""
-        r = self.radius
-        k = r // 10
-        self.create_oval(x - r, y - r, x + r, y + r, outline=color, tags=tag)
-        self.create_oval(x - k, y - k, x + k, y + k, fill=color, tags=tag + "2")
+    def _armStick(self, side: str, x: int, y: int) -> None:
+        """押下。外周円の中心は操作点に留め、ノブも同じ位置に置く。"""
+        state = StickState(
+            active=True, center_x=x, center_y=y, radius=self.radius, knob_x=x, knob_y=y
+        )
+        if side == "L":
+            self._stick_left = state
+        else:
+            self._stick_right = state
 
-    def _moveKnob(
-        self, event: Any, x_init: int, y_init: int, angle: float, mag: float, tag: str
+    def _dragStick(
+        self, side: str, event: Any, x_init: int, y_init: int, angle: float, mag: float
     ) -> None:
-        """ノブを移動する。振り切っているときは円周上に貼り付ける。"""
-        k = self.radius // 10
+        """ノブを移動する。振り切っているときは外周円の外へ貼り付ける。
+
+        外周円の中心は動かさない。押した位置がそのまま円の中心で、
+        何回ドラッグしても動かない（設計 5節）。
+
+        振り切りの位置は拍下位置から d = radius + radius//11 の冁周上。
+        画面の y は下向きなので、sin だけ符号を反転する。GDI は整数しか
+        取れないので round する（半徑は最大 0.5px ずれるが、
+        端数分は表現できない）。
+        """
         if mag >= 1:
             d = self.radius + self.radius // 11
             rad = math.radians(angle)
-            cx = x_init + d * math.cos(rad)
-            cy = y_init - d * math.sin(rad)
+            knob_x = round(x_init + d * math.cos(rad))
+            knob_y = round(y_init - d * math.sin(rad))
         else:
-            cx, cy = event.x, event.y
-        self.coords(tag, cx - k, cy - k, cx + k, cy + k)
+            knob_x, knob_y = int(event.x), int(event.y)
+        if side == "L":
+            current = self._stick_left
+        else:
+            current = self._stick_right
+        state = replace(current, knob_x=knob_x, knob_y=knob_y)
+        if side == "L":
+            self._stick_left = state
+        else:
+            self._stick_right = state
+
+    def _releaseStick(self, side: str) -> None:
+        """離した。外周円とノブを消したのと同じ状態へ戻す。"""
+        if side == "L":
+            self._stick_left = StickState()
+        else:
+            self._stick_right = StickState()
 
     def _pressing(
         self,
@@ -1005,7 +1053,6 @@ class CaptureArea(tk.Canvas):
         prev_angle: float | None,
         prev_mag: float | None,
         rec: _StickRecorder | None,
-        tag: str,
     ) -> tuple[float | None, float | None]:
         """ドラッグ中の共通処理。今回の角度と倒し量を返す。
 
@@ -1027,7 +1074,7 @@ class CaptureArea(tk.Canvas):
         if rec is not None and prev_angle is not None and prev_mag is not None:
             rec.add(angle, mag)
 
-        self._moveKnob(event, x_init, y_init, angle, mag, tag)
+        self._dragStick(side, event, x_init, y_init, angle, mag)
         return angle, mag
 
     def _shouldSend(
@@ -1103,7 +1150,7 @@ class CaptureArea(tk.Canvas):
             self.UnbindRightClick()
         self.config(cursor="dot")
         self.lx_init, self.ly_init = event.x, event.y
-        self._drawStick(self.lx_init, self.ly_init, "cyan", "lcircle")
+        self._armStick("L", self.lx_init, self.ly_init)
         self._langle = None
         self._lmag = None
         if self._lrec is not None:
@@ -1119,7 +1166,6 @@ class CaptureArea(tk.Canvas):
             self._langle,
             self._lmag,
             self._lrec,
-            "lcircle2",
         )
 
     def mouseLeftRelease(self, ser: Any = None) -> None:
@@ -1132,8 +1178,7 @@ class CaptureArea(tk.Canvas):
         flush = getattr(self.ser, "flushPending", None)
         if callable(flush):
             flush()
-        self.delete("lcircle")
-        self.delete("lcircle2")
+        self._releaseStick("L")
         if self.master.is_use_right_stick_mouse.get():
             self.BindRightClick()
         if self._lrec is not None:
@@ -1150,7 +1195,7 @@ class CaptureArea(tk.Canvas):
             self.UnbindLeftClick()
         self.config(cursor="dot")
         self.rx_init, self.ry_init = event.x, event.y
-        self._drawStick(self.rx_init, self.ry_init, "red", "rcircle")
+        self._armStick("R", self.rx_init, self.ry_init)
         self._rangle = None
         self._rmag = None
         if self._rrec is not None:
@@ -1166,7 +1211,6 @@ class CaptureArea(tk.Canvas):
             self._rangle,
             self._rmag,
             self._rrec,
-            "rcircle2",
         )
 
     def mouseRightRelease(self, ser: Any = None) -> None:
@@ -1179,8 +1223,7 @@ class CaptureArea(tk.Canvas):
         flush = getattr(self.ser, "flushPending", None)
         if callable(flush):
             flush()
-        self.delete("rcircle")
-        self.delete("rcircle2")
+        self._releaseStick("R")
         if self.master.is_use_left_stick_mouse.get():
             self.BindLeftClick()
         if self._rrec is not None:
@@ -1189,12 +1232,6 @@ class CaptureArea(tk.Canvas):
     # ------------------------------------------------------------------
     # 画像認識の枠表示
     # ------------------------------------------------------------------
-    # 画像認識の枠は固定タグ1組だけを作り、以後は位置と色を更新する。
-    # 呼び出しのたびにユニークな tag で作ると、判定をループで回した分
-    # だけキャンバスアイテムが積み上がり Canvas の再描画が線形に重くなる。
-    RECT_TAG_OUTER = "ImgRectOuter"
-    RECT_TAG_INNER = "ImgRectInner"
-
     def ImgRect(
         self,
         x1: float,
@@ -1207,43 +1244,41 @@ class CaptureArea(tk.Canvas):
     ) -> None:
         """キャプチャ座標で指定された矩形を表示座標に直して描く。
 
-        tag は後方互換のため受け取るが、枠は固定タグ1組を使い回すので
+        tag は後方互換のため受け取るが、枠は1組だけを使い回すので
         参照しない。消去の予約も after_cancel で前回分を取り消してから
         入れ直すため、予約が積み上がることはない。
+
+        外面だけ capture 座標を 1.0 拡がっている（従来の 4.5px 白い枠）。
+        内面は補正なし。1つにまとめると白い枠が黙って消える。
         """
         ratio_x, ratio_y = self._showRatio()
-        outer = (
-            (x1 - 1.0) * ratio_x,
-            (y1 - 1.0) * ratio_y,
-            (x2 + 1.0) * ratio_x,
-            (y2 + 1.0) * ratio_y,
+        self._img_rect = ImgRectState(
+            outer=RectState(
+                x0=round((x1 - 1.0) * ratio_x),
+                y0=round((y1 - 1.0) * ratio_y),
+                x1=round((x2 + 1.0) * ratio_x),
+                y1=round((y2 + 1.0) * ratio_y),
+            ),
+            inner=RectState(
+                x0=round(x1 * ratio_x),
+                y0=round(y1 * ratio_y),
+                x1=round(x2 * ratio_x),
+                y1=round(y2 * ratio_y),
+            ),
+            visible=True,
+            # 未知の名前は白に落とす。Tk なら unknown color name で例外に
+            # なっていたが、この経路は CaptureAreaProxy が debug で握り
+            # 潰すので、枠が出ない보다白で描くほうが取りこぼしが無い。
+            color=TK_COLORREF.get(outline, TK_COLORREF["white"]),
         )
-        inner = (x1 * ratio_x, y1 * ratio_y, x2 * ratio_x, y2 * ratio_y)
-
-        if not self._rect_created:
-            self.create_rectangle(
-                *outer, width=4.5, outline="white", tags=self.RECT_TAG_OUTER
-            )
-            self.create_rectangle(
-                *inner, width=2.5, outline=outline, tags=self.RECT_TAG_INNER
-            )
-            self._rect_created = True
-        else:
-            self.coords(self.RECT_TAG_OUTER, *outer)
-            self.coords(self.RECT_TAG_INNER, *inner)
-            self.itemconfig(self.RECT_TAG_OUTER, state="normal")
-            self.itemconfig(self.RECT_TAG_INNER, state="normal", outline=outline)
-
         if self._rect_after_id is not None:
             self.after_cancel(self._rect_after_id)
         self._rect_after_id = self.after(ms, self.deleteImageRect)
 
     def deleteImageRect(self, tag: str = "") -> None:
-        """ImgRect で描いた枠を隠す（アイテムは消さずに使い回す）。"""
+        """ImgRect で描いた枠を隠す（状態は残すので同じ枠を使い回せる）。"""
         self._rect_after_id = None
-        if self._rect_created:
-            self.itemconfig(self.RECT_TAG_OUTER, state="hidden")
-            self.itemconfig(self.RECT_TAG_INNER, state="hidden")
+        self._img_rect = replace(self._img_rect, visible=False)
 
     # ------------------------------------------------------------------
     # バインド管理

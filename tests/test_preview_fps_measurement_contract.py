@@ -124,12 +124,12 @@ def _native_production_report(
         ),
         instrumentation=SimpleNamespace(
             dispatch_records=records,
-            pastes=[
-                SimpleNamespace(paste_enter_ns=stamp, sequence=index)
+            presents=[
+                SimpleNamespace(present_enter_ns=stamp, sequence=index)
                 for index, stamp in enumerate(entries_ns, start=1)
             ],
             dispatch_entries=lambda: entries_ns,
-            paste_entries=lambda: entries_ns,
+            present_entries=lambda: entries_ns,
         ),
         area=object(),
         clock=object(),
@@ -344,20 +344,20 @@ def test_dispatch_record_exposes_required_mutable_fields() -> None:
         generation=3,
         configured_fps=60,
         schedule="unknown",
-        paste_observed=False,
+        present_observed=False,
     )
 
-    # When: dispatch completion and paste correlation are recorded.
+    # When: dispatch completion and present correlation are recorded.
     record.schedule = "active"
     record.dispatch_exit_ns = 200
-    record.paste_observed = True
+    record.present_observed = True
 
     # Then: the mutable evidence record retains the production inputs.
     assert record.dispatch_id == 7
     assert record.dispatch_exit_ns == 200
     assert record.configured_fps == 60
     assert record.schedule == "active"
-    assert record.paste_observed is True
+    assert record.present_observed is True
 
 
 def test_production_fps_values_are_exact() -> None:
@@ -394,7 +394,7 @@ def test_native_production_decision_publishes_performance_reference_per_breach(
         clock_mode="high_resolution",
         contract=contract,
         dispatch=passing,
-        paste=passing,
+        present=passing,
         measurement_overshoot_ok=True,
         functional_ok=True,
         evidence_ok=True,
@@ -415,7 +415,7 @@ def test_native_production_decision_publishes_performance_reference_per_breach(
     )
 
     # When: either stream independently breaches the mean, P1, or cap bound.
-    for dispatch, paste in (
+    for dispatch, present in (
         (below_mean, passing),
         (passing, below_mean),
         (below_p1, passing),
@@ -428,7 +428,7 @@ def test_native_production_decision_publishes_performance_reference_per_breach(
             clock_mode="high_resolution",
             contract=contract,
             dispatch=dispatch,
-            paste=paste,
+            present=present,
             measurement_overshoot_ok=True,
             functional_ok=True,
             evidence_ok=True,
@@ -520,7 +520,7 @@ def test_real_harness_close_reports_post_stop_facts(tmp_path: Path) -> None:
         def camera_summary(self) -> dict[str, int | bool | str]:
             return {"post_teardown_camera_read_count": 0}
 
-    class FakeInstrumentation(support.PasteInstrumentation):
+    class FakeInstrumentation(support.PresentInstrumentation):
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             return None
 
@@ -567,15 +567,15 @@ def test_fallback_report_does_not_require_native_window_cleanup(
             SimpleNamespace(dispatch_enter_ns=1_100_000_000, sequence=1),
             SimpleNamespace(dispatch_enter_ns=1_200_000_000, sequence=2),
         ]
-        pastes = [
-            SimpleNamespace(paste_enter_ns=1_100_000_000, sequence=1),
-            SimpleNamespace(paste_enter_ns=1_200_000_000, sequence=2),
+        presents = [
+            SimpleNamespace(present_enter_ns=1_100_000_000, sequence=1),
+            SimpleNamespace(present_enter_ns=1_200_000_000, sequence=2),
         ]
 
         def dispatch_entries(self) -> tuple[int, ...]:
             return (1_100_000_000, 1_200_000_000)
 
-        def paste_entries(self) -> tuple[int, ...]:
+        def present_entries(self) -> tuple[int, ...]:
             return (1_100_000_000, 1_200_000_000)
 
     camera_summary = {
@@ -674,7 +674,7 @@ def test_native_production_after_mode_is_functional_but_not_accepted() -> None:
         clock_mode="after",
         contract=contract,
         dispatch=passing,
-        paste=passing,
+        present=passing,
         measurement_overshoot_ok=True,
         functional_ok=True,
         evidence_ok=True,
@@ -696,7 +696,7 @@ def test_native_production_decision_publishes_performance_reference() -> None:
         clock_mode="high_resolution",
         contract=support.cadence_contract(5),
         dispatch=low,
-        paste=low,
+        present=low,
         measurement_overshoot_ok=True,
         functional_ok=True,
         evidence_ok=True,
@@ -719,7 +719,7 @@ def test_native_production_decision_exposes_both_skip_counters_separately() -> N
         clock_mode="high_resolution",
         contract=support.cadence_contract(5),
         dispatch=low,
-        paste=low,
+        present=low,
         measurement_overshoot_ok=True,
         functional_ok=True,
         evidence_ok=True,
@@ -743,7 +743,7 @@ def test_native_production_acceptance_does_not_gate_on_sub_target_cadence() -> N
         clock_mode="high_resolution",
         contract=support.cadence_contract(5),
         dispatch=low,
-        paste=low,
+        present=low,
         measurement_overshoot_ok=True,
         functional_ok=True,
         evidence_ok=True,
@@ -765,17 +765,17 @@ def test_native_production_report_records_both_skip_diagnostics(
             SimpleNamespace(dispatch_enter_ns=1_500_000_000, sequence=3),
             SimpleNamespace(dispatch_enter_ns=1_750_000_000, sequence=4),
         ]
-        pastes = [
-            SimpleNamespace(paste_enter_ns=1_000_000_000, sequence=1),
-            SimpleNamespace(paste_enter_ns=1_250_000_000, sequence=2),
-            SimpleNamespace(paste_enter_ns=1_500_000_000, sequence=3),
-            SimpleNamespace(paste_enter_ns=1_750_000_000, sequence=4),
+        presents = [
+            SimpleNamespace(present_enter_ns=1_000_000_000, sequence=1),
+            SimpleNamespace(present_enter_ns=1_250_000_000, sequence=2),
+            SimpleNamespace(present_enter_ns=1_500_000_000, sequence=3),
+            SimpleNamespace(present_enter_ns=1_750_000_000, sequence=4),
         ]
 
         def dispatch_entries(self) -> tuple[int, ...]:
             return (1_000_000_000, 1_250_000_000, 1_500_000_000, 1_750_000_000)
 
-        def paste_entries(self) -> tuple[int, ...]:
+        def present_entries(self) -> tuple[int, ...]:
             return (1_000_000_000, 1_250_000_000, 1_500_000_000, 1_750_000_000)
 
     camera_summary = {
@@ -933,6 +933,7 @@ def test_source_pins_include_production_and_evidence_files() -> None:
         "SerialController/ui/preview_clock.py",
         "SerialController/GuiAssets.py",
         "SerialController/Window.py",
+        "SerialController/core/Camera.py",
         "SerialController/ui/camera_panel.py",
         "SerialController/config.py",
         "SerialController/WindowUtils.py",
@@ -1205,7 +1206,7 @@ def test_failure_report_has_schema_and_compares_actual_source_pins(
         "measurement_overshoot_limit_ns",
         "measurement_overshoot_ok",
         "dispatch_summary",
-        "paste_summary",
+        "present_summary",
         "production_accepted",
         "functional_accepted",
         "test_passed",
@@ -1219,7 +1220,7 @@ def test_failure_report_has_schema_and_compares_actual_source_pins(
         "wake_reason_counts",
         "gap_threshold_ns",
         "dispatch_gaps",
-        "paste_gaps",
+        "present_gaps",
         "worker_tick_gaps",
         "control_wake_gaps",
         "thread_ids",
@@ -1551,7 +1552,7 @@ def test_report_records_the_endpoint_estimator_behind_mean_hz(
     dispatch_summary = report["dispatch_summary"]
     assert dispatch_summary["mean_hz_semantics"] == _mean_hz_semantics()
     assert "endpoint" in str(_mean_hz_semantics()).lower()
-    assert report["paste_summary"]["mean_hz_semantics"] == _mean_hz_semantics()
+    assert report["present_summary"]["mean_hz_semantics"] == _mean_hz_semantics()
 
 
 # R3: a zero-tolerance floor records a boundary artefact honestly.

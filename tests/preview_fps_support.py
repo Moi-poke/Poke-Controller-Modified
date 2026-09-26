@@ -47,6 +47,7 @@ SOURCE_PIN_PATHS: Final[tuple[str, ...]] = (
     "SerialController/ui/preview_clock.py",
     "SerialController/GuiAssets.py",
     "SerialController/Window.py",
+    "SerialController/core/Camera.py",
     "SerialController/ui/camera_panel.py",
     "SerialController/config.py",
     "SerialController/WindowUtils.py",
@@ -60,7 +61,7 @@ REQUIRED_EVIDENCE_FILES: Final[tuple[str, ...]] = (
     "report.json",
     "wakes.jsonl",
     "clock_pairs.jsonl",
-    "intervals.jsonl",
+    "present_intervals.jsonl",
     "dispatch_intervals.jsonl",
     "camera_reads.jsonl",
     "health.jsonl",
@@ -87,7 +88,7 @@ REQUIRED_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         "measurement_overshoot_limit_ns",
         "measurement_overshoot_ok",
         "dispatch_summary",
-        "paste_summary",
+        "present_summary",
         "production_accepted",
         "functional_accepted",
         "test_passed",
@@ -105,7 +106,7 @@ REQUIRED_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         "wake_reason_counts",
         "gap_threshold_ns",
         "dispatch_gaps",
-        "paste_gaps",
+        "present_gaps",
         "worker_tick_gaps",
         "control_wake_gaps",
         "camera_read_count",
@@ -186,7 +187,7 @@ class DispatchRecord:
     generation: int
     configured_fps: int
     schedule: str
-    paste_observed: bool
+    present_observed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,10 +203,13 @@ class CameraReadRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class PasteRecord:
-    paste_enter_ns: int
-    paste_exit_ns: int
-    call_duration_ns: int
+class PresentRecord:
+    present_enter_ns: int
+    present_exit_ns: int
+    present_duration_ns: int
+    # compose と present を別々に包むのは、合成時間と blit 時間を
+    # 独立して測れるようにするため（設計 5節）。
+    compose_duration_ns: int
     sequence: int | None
     dispatch_id: int | None
 
@@ -323,9 +327,14 @@ def make_fake_exit_app(
             self.destroy_calls += 1
             events.append("root_destroy")
 
+    class FakeSurface:
+        def release(self) -> None:
+            events.append("surface_released")
+
     class FakePreview:
         def __init__(self) -> None:
             self.results = deque(stop_results)
+            self.surface = FakeSurface()
 
         def UnbindLeftClick(self) -> None:
             events.append("unbind_left")
@@ -729,7 +738,7 @@ def decide_acceptance(
     clock_mode: str,
     contract: CadenceContract,
     dispatch: CadenceResult,
-    paste: CadenceResult,
+    present: CadenceResult,
     measurement_overshoot_ok: bool,
     functional_ok: bool,
     evidence_ok: bool,
@@ -758,7 +767,7 @@ def decide_acceptance(
                 <= result.mean_hz
                 <= contract.target_mean_max_hz
                 and result.p1_hz >= contract.target_p1_min_hz
-                for result in (dispatch, paste)
+                for result in (dispatch, present)
             )
             native_clock = clock_mode == "high_resolution"
             return AcceptanceDecision(
@@ -1051,7 +1060,7 @@ class EvidenceWriter:
         for name in (
             "wakes.jsonl",
             "clock_pairs.jsonl",
-            "intervals.jsonl",
+            "present_intervals.jsonl",
             "dispatch_intervals.jsonl",
             "camera_reads.jsonl",
         ):
@@ -1202,6 +1211,23 @@ class SyntheticFrameSource:
             )
             return self._frame, sequence
 
+    def readFrameWithTiming(
+        self, copy: bool = False
+    ) -> tuple[np.ndarray | None, int, int, int]:
+        # core.Camera と同じ 4 つ組。提示経路の入力はここを通る。
+        if copy:
+            raise AssertionError("synthetic source is immutable")
+        with self._lock:
+            sequence = self._seq
+            self._record_read_locked(
+                sequence,
+                frame_present=True,
+                error=None,
+            )
+            t_capture_ns = time.perf_counter_ns()
+            t_ready_ns = time.perf_counter_ns()
+            return self._frame, sequence, t_capture_ns, t_ready_ns
+
     def frame_seq(self) -> int:
         with self._lock:
             return self._seq
@@ -1227,7 +1253,7 @@ class SyntheticFrameSource:
         }
 
 
-class PasteInstrumentation:
+class PresentInstrumentation:
     def __init__(
         self,
         area: Any,
@@ -1236,7 +1262,7 @@ class PasteInstrumentation:
     ) -> None:
         self.area = area
         self.configured_fps = configured_fps
-        self.photo = area._photo
+        self.surface = area._surface
         self.target_name, self.dispatch_oracle = select_dispatch_target(
             area,
             dispatch_target,
@@ -1244,22 +1270,26 @@ class PasteInstrumentation:
         self.original_dispatch = getattr(area, self.target_name)
         self.original_after = area.after
         self.original_draw = area._drawFrame
-        self.original_paste = self.photo.paste
+        self.original_compose = self.surface.compose
+        self.original_present = self.surface.present
         self.target_had_instance_value = self.target_name in vars(area)
         self.target_instance_value = vars(area).get(self.target_name)
         self.after_had_instance_value = "after" in vars(area)
         self.after_instance_value = vars(area).get("after")
         self.draw_had_instance_value = "_drawFrame" in vars(area)
         self.draw_instance_value = vars(area).get("_drawFrame")
-        self.paste_had_instance_value = "paste" in vars(self.photo)
-        self.paste_instance_value = vars(self.photo).get("paste")
+        self.compose_had_instance_value = "compose" in vars(self.surface)
+        self.compose_instance_value = vars(self.surface).get("compose")
+        self.present_had_instance_value = "present" in vars(self.surface)
+        self.present_instance_value = vars(self.surface).get("present")
         self.dispatch_records: list[DispatchRecord] = []
-        self.pastes: list[PasteRecord] = []
+        self.presents: list[PresentRecord] = []
         self.draws: list[DrawRecord] = []
         self.callback_schedules: list[CallbackSchedule] = []
         self._active_dispatch: DispatchRecord | None = None
         self._active_draw: DrawRecord | None = None
         self._last_draw_sequence: int | None = None
+        self._compose_duration_ns = 0
         self._next_dispatch_id = 0
         self._closed = False
         self._dispatch_result_type: Any = None
@@ -1289,7 +1319,7 @@ class PasteInstrumentation:
                 generation=int(health.get("generation", 0)),
                 configured_fps=int(health.get("configured_fps", self.configured_fps)),
                 schedule="unknown",
-                paste_observed=False,
+                present_observed=False,
             )
             self._next_dispatch_id += 1
             previous = self._active_dispatch
@@ -1353,21 +1383,29 @@ class PasteInstrumentation:
                 )
                 self._active_draw = previous
 
-        def paste_wrapper(*args: Any, **kwargs: Any) -> Any:
+        def compose_wrapper(*args: Any, **kwargs: Any) -> Any:
+            enter_ns = time.perf_counter_ns()
+            try:
+                return self.original_compose(*args, **kwargs)
+            finally:
+                self._compose_duration_ns = time.perf_counter_ns() - enter_ns
+
+        def present_wrapper(*args: Any, **kwargs: Any) -> Any:
             enter_ns = time.perf_counter_ns()
             active_dispatch = self._active_dispatch
             active_draw = self._active_draw
             try:
-                return self.original_paste(*args, **kwargs)
+                return self.original_present(*args, **kwargs)
             finally:
                 exit_ns = time.perf_counter_ns()
                 if active_dispatch is not None:
-                    active_dispatch.paste_observed = True
-                self.pastes.append(
-                    PasteRecord(
-                        paste_enter_ns=enter_ns,
-                        paste_exit_ns=exit_ns,
-                        call_duration_ns=exit_ns - enter_ns,
+                    active_dispatch.present_observed = True
+                self.presents.append(
+                    PresentRecord(
+                        present_enter_ns=enter_ns,
+                        present_exit_ns=exit_ns,
+                        present_duration_ns=exit_ns - enter_ns,
+                        compose_duration_ns=self._compose_duration_ns,
                         sequence=active_draw.sequence if active_draw else None,
                         dispatch_id=(
                             active_dispatch.dispatch_id if active_dispatch else None
@@ -1378,7 +1416,8 @@ class PasteInstrumentation:
         setattr(self.area, self.target_name, dispatch_wrapper)
         self.area.after = after_wrapper
         self.area._drawFrame = draw_wrapper
-        self.photo.paste = paste_wrapper
+        self.surface.compose = compose_wrapper
+        self.surface.present = present_wrapper
 
     @staticmethod
     def _restore_instance(target: Any, name: str, had_value: bool, value: Any) -> None:
@@ -1412,18 +1451,24 @@ class PasteInstrumentation:
             self.draw_instance_value,
         )
         self._restore_instance(
-            self.photo,
-            "paste",
-            self.paste_had_instance_value,
-            self.paste_instance_value,
+            self.surface,
+            "compose",
+            self.compose_had_instance_value,
+            self.compose_instance_value,
+        )
+        self._restore_instance(
+            self.surface,
+            "present",
+            self.present_had_instance_value,
+            self.present_instance_value,
         )
         self._closed = True
 
     def dispatch_entries(self) -> tuple[int, ...]:
         return tuple(record.dispatch_enter_ns for record in self.dispatch_records)
 
-    def paste_entries(self) -> tuple[int, ...]:
-        return tuple(record.paste_enter_ns for record in self.pastes)
+    def present_entries(self) -> tuple[int, ...]:
+        return tuple(record.present_enter_ns for record in self.presents)
 
 
 class RealCaptureHarness:
@@ -1432,7 +1477,7 @@ class RealCaptureHarness:
         self.root: Any | None = None
         self.source: SyntheticFrameSource | None = None
         self.area: Any | None = None
-        self.instrumentation: PasteInstrumentation | None = None
+        self.instrumentation: PresentInstrumentation | None = None
         self.is_show: Any | None = None
         self.clock: Any | None = None
         self.clock_mode = "after"
@@ -1539,7 +1584,7 @@ class RealCaptureHarness:
             if self.config.run_class is RunClass.FALLBACK_FUNCTIONAL
             else "_dispatch_tick"
         )
-        self.instrumentation = PasteInstrumentation(
+        self.instrumentation = PresentInstrumentation(
             self.area,
             configured_fps=self.config.configured_fps,
             dispatch_target=dispatch_target,
@@ -2015,15 +2060,15 @@ def _build_report(
     contract = cadence_contract(config.configured_fps)
     nominal_end_ns = window.start_ns + int(config.measurement_s * NS_PER_S)
     dispatch_entries = instrumentation.dispatch_entries()
-    paste_entries = instrumentation.paste_entries()
+    present_entries = instrumentation.present_entries()
     dispatch = summarize_cadence(
         dispatch_entries,
         measurement_start_ns=window.start_ns,
         nominal_window_end_ns=nominal_end_ns,
         configured_measurement_s=config.measurement_s,
     )
-    paste = summarize_cadence(
-        paste_entries,
+    present = summarize_cadence(
+        present_entries,
         measurement_start_ns=window.start_ns,
         nominal_window_end_ns=nominal_end_ns,
         configured_measurement_s=config.measurement_s,
@@ -2039,8 +2084,8 @@ def _build_report(
         window.start_ns,
         nominal_end_ns,
     )
-    paste_interval_rows = _interval_rows(
-        paste_entries,
+    present_interval_rows = _interval_rows(
+        present_entries,
         window.start_ns,
         nominal_end_ns,
     )
@@ -2048,8 +2093,8 @@ def _build_report(
         record.dispatch_enter_ns: record.sequence
         for record in instrumentation.dispatch_records
     }
-    paste_sequence_by_entry = {
-        record.paste_enter_ns: record.sequence for record in instrumentation.pastes
+    present_sequence_by_entry = {
+        record.present_enter_ns: record.sequence for record in instrumentation.presents
     }
     dispatch_gaps = _cadence_gap_rows(
         dispatch_entries,
@@ -2058,12 +2103,12 @@ def _build_report(
         window_end_ns=nominal_end_ns,
         sequence_by_entry_ns=dispatch_sequence_by_entry,
     )
-    paste_gaps = _cadence_gap_rows(
-        paste_entries,
-        stream="paste",
+    present_gaps = _cadence_gap_rows(
+        present_entries,
+        stream="present",
         window_start_ns=window.start_ns,
         window_end_ns=nominal_end_ns,
-        sequence_by_entry_ns=paste_sequence_by_entry,
+        sequence_by_entry_ns=present_sequence_by_entry,
     )
     worker_tick_gaps = _qpc_gap_rows(
         evidence_rows,
@@ -2123,7 +2168,13 @@ def _build_report(
     non_accounting_evidence_ok = bool(
         pins_unchanged and pins_complete and thread_ids_valid(thread_ids)
     )
-    evidence_ok = evidence_gate_passes(
+    # 提示が1度も観測されない計測は cadence が黙って 0 になり、実行の
+    # 証拠としては壊れている。ここでは性能基準（performance_reference）
+    # ではなく機能判定に落とす。cadence_passed には入れないので、
+    # 基準未満でも素直な実行は通る。
+    evidence_ok = bool(
+        present.count >= 2 or config.run_class is not RunClass.NATIVE_PRODUCTION
+    ) and evidence_gate_passes(
         config.run_class.value,
         functional_ok=functional_ok,
         non_accounting_evidence_ok=non_accounting_evidence_ok,
@@ -2134,7 +2185,7 @@ def _build_report(
         clock_mode=harness.clock_mode,
         contract=contract,
         dispatch=dispatch,
-        paste=paste,
+        present=present,
         measurement_overshoot_ok=overshoot_ok,
         functional_ok=functional_ok,
         evidence_ok=evidence_ok,
@@ -2166,7 +2217,7 @@ def _build_report(
         "measurement_overshoot_limit_ns": overshoot_limit_ns,
         "measurement_overshoot_ok": overshoot_ok,
         "dispatch_summary": asdict(dispatch),
-        "paste_summary": asdict(paste),
+        "present_summary": asdict(present),
         "production_accepted": decision.production_accepted,
         "functional_accepted": decision.functional_accepted,
         "test_passed": decision.test_passed,
@@ -2193,7 +2244,7 @@ def _build_report(
         "wake_reason_counts": wake_reason_counts,
         "gap_threshold_ns": GAP_THRESHOLD_NS,
         "dispatch_gaps": dispatch_gaps,
-        "paste_gaps": paste_gaps,
+        "present_gaps": present_gaps,
         "worker_tick_gaps": worker_tick_gaps,
         "control_wake_gaps": control_wake_gaps,
         **camera,
@@ -2213,7 +2264,7 @@ def _build_report(
     artifacts: dict[str, Any] = {
         "wakes": wake_rows,
         "clock_pairs": clock_pairs,
-        "intervals": paste_interval_rows,
+        "present_intervals": present_interval_rows,
         "dispatch_intervals": dispatch_interval_rows,
         "camera_reads": [asdict(row) for row in harness.source.camera_records()],
         "health": [*harness.health_rows, *health_callbacks],
@@ -2237,7 +2288,7 @@ def _write_artifacts(
 ) -> None:
     writer.write_jsonl("wakes.jsonl", artifacts["wakes"])
     writer.write_jsonl("clock_pairs.jsonl", artifacts["clock_pairs"])
-    writer.write_jsonl("intervals.jsonl", artifacts["intervals"])
+    writer.write_jsonl("present_intervals.jsonl", artifacts["present_intervals"])
     writer.write_jsonl("dispatch_intervals.jsonl", artifacts["dispatch_intervals"])
     writer.write_jsonl("camera_reads.jsonl", artifacts["camera_reads"])
     writer.write_jsonl("health.jsonl", artifacts["health"])
@@ -2366,7 +2417,7 @@ def _write_teardown_result(
         "measurement_overshoot_limit_ns": 0,
         "measurement_overshoot_ok": False,
         "dispatch_summary": asdict(CadenceResult(0, 0.0, 0.0)),
-        "paste_summary": asdict(CadenceResult(0, 0.0, 0.0)),
+        "present_summary": asdict(CadenceResult(0, 0.0, 0.0)),
         "production_accepted": False,
         "functional_accepted": functional_ok,
         "test_passed": evidence_ok,
@@ -2384,7 +2435,7 @@ def _write_teardown_result(
         "wake_reason_counts": {},
         "gap_threshold_ns": GAP_THRESHOLD_NS,
         "dispatch_gaps": [],
-        "paste_gaps": [],
+        "present_gaps": [],
         "worker_tick_gaps": [],
         "control_wake_gaps": [],
         "thread_ids": dict(thread_ids),
@@ -2411,7 +2462,7 @@ def _write_teardown_result(
         {
             "wakes": [],
             "clock_pairs": [],
-            "intervals": [],
+            "present_intervals": [],
             "dispatch_intervals": [],
             "camera_reads": camera_rows,
             "health": [dict(health)],
@@ -2727,7 +2778,7 @@ def _run_measurement(
             {
                 "wakes": [],
                 "clock_pairs": [],
-                "intervals": [],
+                "present_intervals": [],
                 "dispatch_intervals": [],
                 "camera_reads": [],
                 "health": [],
@@ -3044,7 +3095,7 @@ def _minimal_failure_report(
         )[1],
         "measurement_overshoot_ok": False,
         "dispatch_summary": asdict(CadenceResult(0, 0.0, 0.0)),
-        "paste_summary": asdict(CadenceResult(0, 0.0, 0.0)),
+        "present_summary": asdict(CadenceResult(0, 0.0, 0.0)),
         "production_accepted": False,
         "functional_accepted": False,
         "test_passed": False,
@@ -3062,7 +3113,7 @@ def _minimal_failure_report(
         "wake_reason_counts": {},
         "gap_threshold_ns": GAP_THRESHOLD_NS,
         "dispatch_gaps": [],
-        "paste_gaps": [],
+        "present_gaps": [],
         "worker_tick_gaps": [],
         "control_wake_gaps": [],
         **camera,
@@ -3146,7 +3197,7 @@ def _ensure_parent_artifacts(
     for name in (
         "wakes.jsonl",
         "clock_pairs.jsonl",
-        "intervals.jsonl",
+        "present_intervals.jsonl",
         "dispatch_intervals.jsonl",
         "camera_reads.jsonl",
         "health.jsonl",
