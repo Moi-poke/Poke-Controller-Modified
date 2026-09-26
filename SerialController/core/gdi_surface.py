@@ -316,7 +316,7 @@ class CtypesGdiApi:
         self._release_dc.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         self._release_dc.restype = ctypes.c_int
 
-        self._get_device_caps = user32.GetDeviceCaps
+        self._get_device_caps = gdi32.GetDeviceCaps
         self._get_device_caps.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self._get_device_caps.restype = ctypes.c_int
 
@@ -433,6 +433,13 @@ class CtypesGdiApi:
         # Python のウィンドウプロシージャは作らない。2 つ目の trampoline は
         # 以前のクラッシュ 0xC0000409 の形として追跡済み（7節）。
         self._def_window_proc = user32.DefWindowProcW
+        self._def_window_proc.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_size_t,
+            ctypes.c_ssize_t,
+        ]
+        self._def_window_proc.restype = ctypes.c_ssize_t
         self._module_handle = _as_handle(self._get_module_handle(None))
 
     def set_process_dpi_aware(self) -> bool:

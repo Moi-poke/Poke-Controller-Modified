@@ -23,6 +23,7 @@ import ast
 import ctypes
 import dataclasses
 import importlib
+import os
 import typing
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -2005,3 +2006,64 @@ def test_self_test_distinguishes_a_wrong_colour_readback_from_an_occluder() -> N
     assert result.outcome == "wrong_color"
     assert result.fully_occluded is False
     assert api.clip_box_calls == []
+
+
+def _library_of(handle_name: str) -> Any:
+    return {
+        "user32": ctypes.WinDLL("user32", use_last_error=True),
+        "gdi32": ctypes.WinDLL("gdi32", use_last_error=True),
+        "kernel32": ctypes.WinDLL("kernel32", use_last_error=True),
+    }[handle_name]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 symbol lookup is Windows-only")
+def test_every_win32_symbol_resolves_against_the_library_it_is_read_from() -> None:
+    # Given: every library-qualified symbol the real api reads, found by
+    #       walking the module rather than by trusting the constructor.
+    module = _surface_module()
+    source = Path(str(module.__file__)).read_text(encoding="utf-8")
+    reads = sorted(
+        {
+            f"{node.value.id}.{node.attr}"
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"user32", "gdi32", "kernel32"}
+        }
+    )
+
+    # Then: each resolves on the library it is read from. A wrong-library read
+    #       raises AttributeError on first use and nothing else: the recording
+    #       double implements the names, so it cannot see this at all, and the
+    #       cost of finding it by hand was a full gated E2E cycle.
+    assert reads, "no library-qualified Win32 reads found; the AST walk is broken"
+    missing = [
+        qualified
+        for qualified in reads
+        if not hasattr(
+            _library_of(qualified.split(".", 1)[0]), qualified.split(".", 1)[1]
+        )
+    ]
+    assert not missing, f"read from a library that does not export them: {missing}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 symbol lookup is Windows-only")
+def test_the_real_apis_every_symbol_declares_argtypes_and_restype() -> None:
+    # Given: the real ctypes api rather than the recording double.
+    module = _surface_module()
+
+    # When: it is constructed, which resolves every symbol by name.
+    api = module.CtypesGdiApi()
+
+    # Then: each resolved function declares both. A missing argtypes is the
+    #       documented intermittent-failure hazard: GDI handles on this machine
+    #       are sometimes above 32 bits and sometimes not, so the truncation
+    #       passes a smoke test and fails in the field.
+    functions = {
+        name: value
+        for name, value in vars(api).items()
+        if hasattr(value, "argtypes") and hasattr(value, "restype")
+    }
+    assert len(functions) >= 20, f"only {len(functions)} symbols resolved"
+    undeclared = [name for name, fn in functions.items() if fn.argtypes is None]
+    assert not undeclared, f"no argtypes declared: {sorted(undeclared)}"
