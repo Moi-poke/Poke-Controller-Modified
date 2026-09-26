@@ -32,6 +32,7 @@ import numpy as np
 #   ボタンと十字キーの種類を直接使う（UnitCommand を経由しない）。
 from Commands.Keys import Button, Hat
 from Commands.PythonCommandBase import PythonCommand
+from core.coordinates import CoordinateMapper
 from core.gdi_surface import GdiSurface
 from core.preview_renderer import (
     TK_COLORREF,
@@ -715,27 +716,29 @@ class CaptureArea(tk.Frame):
     # ------------------------------------------------------------------
     # 座標変換
     # ------------------------------------------------------------------
-    def _captureRatio(self) -> tuple[float, float]:
-        """表示座標 → キャプチャ座標 の倍率を返す。
+    def _mapper(self, frame: Any = None) -> CoordinateMapper:
+        """キャプチャ座標と表示座標の変換層を組み立てる。
 
-        カメラ未接続時は capture_size が 0 になることがあり、
-        そのまま割るとゼロ除算で落ちる。倍率1（等倍）で返して
-        座標変換だけは成立させ、描画や保存の呼び出しを止めない。
+        ``frame`` は、これから添字で切り出すフレームそのもの。渡された
+        ときは必ずその形から capture_size を取る。カメラに要求した大きさを
+        引き算すると、要求と実際が食い違うフレームを掴んだときに範囲内に
+        収まったまま別の画素を返してしまい、どこにも例外が出ない。
+
+        ``frame`` が無いのは、その呼び出し側がフレームを一切扱わない
+        ときだけ（枠を描くだけの経路）。配列に手を伸ばさないので、
+        切り出す先が無いと分かるこの場合は camera の申告した名目サイズで
+        よい。未接続カメラが 0 を申告してきても、その結果は読み込みも
+        保存も起きない座標に落ちるだけ。
         """
-        return self._ratio(self.camera.capture_size, self.show_size)
-
-    def _showRatio(self) -> tuple[float, float]:
-        """キャプチャ座標 → 表示座標 の倍率を返す（_captureRatio の逆）。"""
-        return self._ratio(self.show_size, self.camera.capture_size)
-
-    @staticmethod
-    def _ratio(numer: Any, denom: Any) -> tuple[float, float]:
-        """要素ごとに割り算する。0 で割りそうなときは 1.0 を返す。"""
-
-        def one(a: float, b: float) -> float:
-            return float(a) / float(b) if b else 1.0
-
-        return one(numer[0], denom[0]), one(numer[1], denom[1])
+        capture_size = (
+            self.camera.capture_size
+            if frame is None
+            else (int(frame.shape[1]), int(frame.shape[0]))
+        )
+        return CoordinateMapper(
+            capture_size=capture_size,
+            display_size=self.show_size,
+        )
 
     # ------------------------------------------------------------------
     # 範囲スクリーンショット (Ctrl+Shift+ドラッグ)
@@ -758,13 +761,13 @@ class CaptureArea(tk.Frame):
             visible=True,
         )
 
-        ratio_x, ratio_y = self._captureRatio()
+        capture_x, capture_y = self._mapper(self.ss).to_capture(self.min_x, self.min_y)
         logger.info(
             "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
                 self.min_x,
                 self.min_y,
-                int(self.min_x * ratio_x),
-                int(self.min_y * ratio_y),
+                capture_x,
+                capture_y,
             )
         )
 
@@ -782,13 +785,14 @@ class CaptureArea(tk.Frame):
 
     def ReleaseRangeSS(self, event: Any) -> None:
         """選択範囲を切り出して保存する。"""
-        ratio_x, ratio_y = self._captureRatio()
+        mapper = self._mapper(self.ss)
+        release_x, release_y = mapper.to_capture(self.max_x, self.max_y)
         logger.info(
             "Mouse up: Show ({}, {}) / Capture ({}, {})".format(
                 self.max_x,
                 self.max_y,
-                int(self.max_x * ratio_x),
-                int(self.max_y * ratio_y),
+                release_x,
+                release_y,
             )
         )
         if self.min_x > self.max_x:
@@ -796,14 +800,11 @@ class CaptureArea(tk.Frame):
         if self.min_y > self.max_y:
             self.min_y, self.max_y = self.max_y, self.min_y
 
+        crop_x0, crop_y0 = mapper.to_capture(self.min_x, self.min_y)
+        crop_x1, crop_y1 = mapper.to_capture(self.max_x, self.max_y)
         self.camera.saveCapture(
             crop=1,
-            crop_ax=[
-                int(self.min_x * ratio_x),
-                int(self.min_y * ratio_y),
-                int(self.max_x * ratio_x),
-                int(self.max_y * ratio_y),
-            ],
+            crop_ax=[crop_x0, crop_y0, crop_x1, crop_y1],
         )
 
         # after には呼び出し可能オブジェクトを渡す（直接呼ぶと即時実行になる）
@@ -843,9 +844,10 @@ class CaptureArea(tk.Frame):
         # 1画素の色を見るためだけに 1280x720 全体を BGR→RGB, RGB→HSV と
         # 2回変換すると約5.5MB を走査することになり、クリックのたびに
         # 数十ms 止まる。先に座標を求め、その 1x1 だけを変換する。
-        ratio_x, ratio_y = self._captureRatio()
-        px = min(max(int(event.x * ratio_x), 0), frame.shape[1] - 1)
-        py = min(max(int(event.y * ratio_y), 0), frame.shape[0] - 1)
+        # 変換層は切り出すフレームそのものから組むので、倍率（表示面 ÷
+        # フレーム幅）と上限（フレーム幅 − 1）が別の大きさに由来する
+        # ことが起こらない。
+        px, py = self._mapper(frame).to_capture(event.x, event.y, clamp=True)
         pixel = frame[py : py + 1, px : px + 1]
         rgb = cv2.cvtColor(pixel, cv2.COLOR_BGR2RGB)
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
@@ -1251,20 +1253,18 @@ class CaptureArea(tk.Frame):
         外面だけ capture 座標を 1.0 拡がっている（従来の 4.5px 白い枠）。
         内面は補正なし。1つにまとめると白い枠が黙って消える。
         """
-        ratio_x, ratio_y = self._showRatio()
+        # 認識矩形は float で届く。変換層は整数の画素番号を前提とするので、
+        # 外面は 1px 拡げたキャプチャ座標まで含めてここで整数に落とす。
+        # 倍率の丸めは層側に一本化するので、ここでは矩形を画素番号に
+        # することだけを行う。
+        mapper = self._mapper()
+        outer_x0, outer_y0 = mapper.to_display(round(x1 - 1.0), round(y1 - 1.0))
+        outer_x1, outer_y1 = mapper.to_display(round(x2 + 1.0), round(y2 + 1.0))
+        inner_x0, inner_y0 = mapper.to_display(round(x1), round(y1))
+        inner_x1, inner_y1 = mapper.to_display(round(x2), round(y2))
         self._img_rect = ImgRectState(
-            outer=RectState(
-                x0=round((x1 - 1.0) * ratio_x),
-                y0=round((y1 - 1.0) * ratio_y),
-                x1=round((x2 + 1.0) * ratio_x),
-                y1=round((y2 + 1.0) * ratio_y),
-            ),
-            inner=RectState(
-                x0=round(x1 * ratio_x),
-                y0=round(y1 * ratio_y),
-                x1=round(x2 * ratio_x),
-                y1=round(y2 * ratio_y),
-            ),
+            outer=RectState(x0=outer_x0, y0=outer_y0, x1=outer_x1, y1=outer_y1),
+            inner=RectState(x0=inner_x0, y0=inner_y0, x1=inner_x1, y1=inner_y1),
             visible=True,
             # 未知の名前は白に落とす。Tk なら unknown color name で例外に
             # なっていたが、この経路は CaptureAreaProxy が debug で握り
