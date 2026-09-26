@@ -118,6 +118,7 @@ REQUIRED_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         "camera_sequence_regression_count",
         "camera_last_sequence",
         "post_teardown_camera_read_count",
+        "capture_device",
         "thread_ids",
         "source_pins_unchanged",
         "source_pins_complete",
@@ -128,6 +129,25 @@ REQUIRED_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
     }
 )
 ARTIFACT_MANIFEST_FILE: Final[str] = "artifact_hashes.json"
+# 実機デバイスの読み戻し表（report.json の capture_device 1個に収まる）。
+# 物理ボードが無い実行では全計測値を None にする。0 を書くと「0x0・0fps・
+# 読めない FOURCC の壊れたボード」と同じ形になり、実測していないのに実測を
+# 主張できてしまう。None はドライバが出せない値。主張の有無は claim が担う
+# （camera_thread_claim と同じ書き方）。
+SYNTHETIC_CAPTURE_DEVICE: Final[dict[str, Any]] = {
+    "claim": "not_applicable_synthetic_source",
+    "requested_width": None,
+    "requested_height": None,
+    "requested_fps": None,
+    "actual_width": None,
+    "actual_height": None,
+    "actual_fps": None,
+    "fourcc": None,
+    "fourcc_readable": False,
+    "size_not_applied": False,
+    "fourcc_not_mjpg": False,
+    "fps_not_applied": False,
+}
 CLAIM_TOKEN_ENV: Final[str] = "POKECON_FPS_CLAIM_TOKEN"
 PARENT_HANDOFF_FILE: Final[str] = "parent-handoff.json"
 CHILD_OWNER_FILE: Final[str] = "child-owner.json"
@@ -1236,7 +1256,7 @@ class SyntheticFrameSource:
         with self._lock:
             return tuple(self._reads)
 
-    def camera_summary(self) -> dict[str, int | bool | str]:
+    def camera_summary(self) -> dict[str, Any]:
         rows = self.camera_records()
         sequences = [row.sequence for row in rows]
         return {
@@ -1250,6 +1270,7 @@ class SyntheticFrameSource:
             "camera_last_sequence": sequences[-1] if sequences else 0,
             "post_teardown_camera_read_count": sum(row.post_teardown for row in rows),
             "camera_thread_claim": "not_applicable_synthetic_source",
+            "capture_device": dict(SYNTHETIC_CAPTURE_DEVICE),
         }
 
 
@@ -2346,7 +2367,7 @@ def _clock_worker_alive(clock: Any) -> bool:
     )
 
 
-def _zero_camera_evidence() -> dict[str, int | bool | str]:
+def _zero_camera_evidence() -> dict[str, Any]:
     return {
         "camera_read_count": 0,
         "camera_frame_present_count": 0,
@@ -2358,6 +2379,7 @@ def _zero_camera_evidence() -> dict[str, int | bool | str]:
         "camera_last_sequence": 0,
         "post_teardown_camera_read_count": 0,
         "camera_thread_claim": "not_applicable_synthetic_source",
+        "capture_device": dict(SYNTHETIC_CAPTURE_DEVICE),
     }
 
 

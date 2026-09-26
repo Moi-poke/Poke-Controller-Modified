@@ -58,7 +58,33 @@ def frame_shape(capture_size: tuple = CAPTURE_SIZE) -> tuple:
     return (int(capture_size[1]), int(capture_size[0]), 3)
 
 
-def _configure_capture(camera: Any, capture_size: tuple, fps: int = 0) -> None:
+@dataclass(frozen=True, slots=True)
+class CaptureDeviceReadback:
+    """要求した設定と、デバイスが実際に許可した設定の対。
+
+    MJPG を指定しても set() は効かずに False を返すだけで、YUY2 のまま
+    実測 5〜10fps で頭打ちになることがある。実測値だけを残すと要求と
+    取り違えられるため、要求側と実測側を別フィールドで持つ。不一致3本は
+    既存の warning と同じ式から作り、データとログが二度物語にならない
+    ようにする。
+    """
+
+    requested_width: int
+    requested_height: int
+    requested_fps: int
+    actual_width: int
+    actual_height: int
+    actual_fps: float
+    fourcc: str
+    fourcc_readable: bool
+    size_not_applied: bool
+    fourcc_not_mjpg: bool
+    fps_not_applied: bool
+
+
+def _configure_capture(
+    camera: Any, capture_size: tuple, fps: int = 0
+) -> CaptureDeviceReadback:
     """解像度・FOURCC・FPS を設定し、実際に効いたか読み戻して確認する。
 
     FOURCC を指定しないと CAP_DSHOW の既定は YUY2（非圧縮）になる。
@@ -66,7 +92,14 @@ def _configure_capture(camera: Any, capture_size: tuple, fps: int = 0) -> None:
     実測 5〜10fps で頭打ちになるキャプチャボードが多い。MJPG を
     「最初に」指定するのが要点で、後から変えると解像度が既定へ戻る
     ドライバがある。
+
+    読み戻しの結果は CaptureDeviceReadback として返す。ログだけでは履歴
+    に残らないため、警告を見逃した呼び出し側にも後から渡せるようにする。
     """
+    requested_w = int(capture_size[0])
+    requested_h = int(capture_size[1])
+    requested_fps = int(fps) if int(fps) > 0 else 0
+
     # VideoWriter_fourcc は実行時に存在するが、opencv のスタブに無い。
     camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))  # type: ignore[attr-defined]
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, capture_size[0])
@@ -81,21 +114,51 @@ def _configure_capture(camera: Any, capture_size: tuple, fps: int = 0) -> None:
     actual_h = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
     actual_fps = float(camera.get(cv2.CAP_PROP_FPS))
     code = int(camera.get(cv2.CAP_PROP_FOURCC))
-    fourcc = "".join(chr((code >> (8 * i)) & 0xFF) for i in range(4))
+    # FOURCC はリトルエンディアンの4バイト。0 や負値、印字できない
+    # バイトは「読めない」なので、復号した文字列をそのまま公開しない。
+    # 4つのNUL文字は "MJPG" と違うので、MJPG への拒絶ではなく「読めなかった」
+    # と誤読される。読めたかどうかで両者を区別する。
+    raw = tuple((code >> (8 * i)) & 0xFF for i in range(4))
+    fourcc_readable = code > 0 and all(0x20 <= byte <= 0x7E for byte in raw)
+    fourcc = "".join(chr(byte) for byte in raw) if fourcc_readable else "unreadable"
 
-    logger.debug(f"Capture: {actual_w}x{actual_h} {fourcc} {actual_fps:.1f}fps")
-    if (actual_w, actual_h) != (int(capture_size[0]), int(capture_size[1])):
+    readback = CaptureDeviceReadback(
+        requested_width=requested_w,
+        requested_height=requested_h,
+        requested_fps=requested_fps,
+        actual_width=actual_w,
+        actual_height=actual_h,
+        actual_fps=actual_fps,
+        fourcc=fourcc,
+        fourcc_readable=fourcc_readable,
+        # 以下3本は既存 warning と同一の式。別実装にしない。
+        size_not_applied=(actual_w, actual_h) != (requested_w, requested_h),
+        fourcc_not_mjpg=fourcc != "MJPG",
+        fps_not_applied=(
+            requested_fps > 0 and 0 < actual_fps and actual_fps + 1.0 < requested_fps
+        ),
+    )
+
+    logger.debug(
+        f"Capture: {readback.actual_width}x{readback.actual_height} "
+        f"{readback.fourcc} {readback.actual_fps:.1f}fps"
+    )
+    if readback.size_not_applied:
         logger.warning(
-            f"Capture size {capture_size[0]}x{capture_size[1]} not applied "
-            f"(actual {actual_w}x{actual_h})"
+            f"Capture size {readback.requested_width}x{readback.requested_height} "
+            f"not applied (actual {readback.actual_width}x{readback.actual_height})"
         )
-    if fourcc != "MJPG":
+    if readback.fourcc_not_mjpg:
         logger.warning(
-            f"MJPG not applied (actual {fourcc!r}). "
+            f"MJPG not applied (actual {readback.fourcc!r}). "
             "帯域が不足し fps が頭打ちになる可能性がある"
         )
-    if fps and int(fps) > 0 and 0 < actual_fps and actual_fps + 1.0 < int(fps):
-        logger.warning(f"FPS {int(fps)} not applied (actual {actual_fps:.1f})")
+    if readback.fps_not_applied:
+        logger.warning(
+            f"FPS {readback.requested_fps} not applied "
+            f"(actual {readback.actual_fps:.1f})"
+        )
+    return readback
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +370,8 @@ class Camera:
         self._lock = threading.Lock()
         self._stat_lock = threading.Lock()
         self._error: str | None = None
+        # 直近の openCamera が実測した設定。開くまでは None のまま。
+        self._capture_readback: CaptureDeviceReadback | None = None
         # 供給実測（getStats で読むたびに区切り直す）。
         self._stat_puts = 0
         self._stat_began_at: float | None = None
@@ -338,7 +403,8 @@ class Camera:
             camera.release()
             return False
 
-        _configure_capture(camera, self.capture_size, self.fps)
+        # 実測値を設定後に残す。警告を見逃した側にも後から渡せる。
+        self._capture_readback = _configure_capture(camera, self.capture_size, self.fps)
 
         with self._lock:
             self.camera = camera
@@ -361,6 +427,15 @@ class Camera:
     def getError(self) -> str | None:
         """取得スレッドが異常終了した理由。正常なら None。"""
         return self._error
+
+    def getCaptureDeviceReadback(self) -> CaptureDeviceReadback | None:
+        """直近の成功した openCamera が実測した設定。開く前は None。
+
+        ドライバが黙って MJPG を拒んだとき、警告を見逃しても実測値を
+        後から確認できる。0 で埋めた記録を返すと「0x0 で 0fps のデバイス」
+        と読めてしまうので、開く前には None のままにする。
+        """
+        return self._capture_readback
 
     def getStats(self) -> dict[str, float]:
         """供給実測を返す。呼ぶたびに区切り直す（期間fps方式）。
