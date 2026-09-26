@@ -26,6 +26,11 @@ from loguru import logger
 # 通常は 1 回で通る。待つのは裏スレッドであり GUI は止めない。
 _OPENED_HANDOFF_TIMEOUT_S = 10.0
 _OPENED_HANDOFF_RETRY_S = 0.05
+# openCamera() が錠を待つ上限。裏の CameraOpener が握ったままなのは、
+# 開けない機器への cv2.VideoCapture() が driver の中で止まっている場合。
+# 無限に待つと GUI スレッドが駐車して起動時フリーズに見えるため上限を置く。
+# 実測の正規 open は約 3 秒なので余裕を持たせている。
+_CAMERA_OPEN_LOCK_TIMEOUT_S = 10.0
 
 
 class CameraLabelframe(ttk.Labelframe):
@@ -440,6 +445,25 @@ class CameraPanelMixin:
         self.preview.ApplyLStickMouse()
         self.preview.ApplyRStickMouse()
 
+    def _acquire_open_lock(self) -> bool:
+        """カメラ open の錠を有限待ちで取る。取れなければ False。
+
+        裏の CameraOpener が握ったまま返さないのは、開けない機器への
+        cv2.VideoCapture() が driver の中で止まっている場合。この meth は
+        GUI スレッドから呼ばれるため無限待ちは駐車＝フリーズに見える。
+        取れなくても裏は続行し、終われば after 経由の結果は seq 世代で
+        捨てられるので、ここで断るのは安全。
+        """
+        if self._camera_open_lock.acquire(timeout=_CAMERA_OPEN_LOCK_TIMEOUT_S):
+            return True
+        message = (
+            "カメラを開く処理が使用中です。別の open が終わるまで待ってから "
+            "Reload をもう一度押してください"
+        )
+        print(message)
+        logger.warning(message)
+        return False
+
     def openCamera(self) -> bool:
         """選択中のカメラへ切り替え、成功時だけ True を返す。
 
@@ -453,14 +477,22 @@ class CameraPanelMixin:
         except (tk.TclError, ValueError):
             return False
         if self.camera_dic is not None and self.camera_dic.get(cam_id) == "Disable":
-            with self._camera_open_lock:
+            if not self._acquire_open_lock():
+                return False
+            try:
                 self.camera.destroy()
+            finally:
+                self._camera_open_lock.release()
             print("カメラを無効にしました")
             logger.info("Camera is disabled")
             return True
         self._camera_open_seq = int(getattr(self, "_camera_open_seq", 0)) + 1
-        with self._camera_open_lock:
+        if not self._acquire_open_lock():
+            return False
+        try:
             opened = self.camera.openCamera(cam_id)
+        finally:
+            self._camera_open_lock.release()
         if opened:
             return True
         message = f"Camera ID {cam_id} cannot open."
