@@ -646,14 +646,16 @@ and before the root is destroyed, and the GDI surface releases cleanly inside it
 
 ### Carried out of steps A-C
 
-- **The COLORREF byte-order conversion has no test.** The self-test sentinel is
-  `0x0000FF00`, chosen because its high and low bytes are equal, which makes the
-  round trip byte-order agnostic. So the self test proves "the child DC is
-  readable and shows our pixels" and proves nothing about the conversion 窶・and
-  that conversion is exactly the surface where Tk's `0x00RRGGBB` and Win32's
-  `0x00BBGGRR` disagree. The recording double has the same blind spot: its
-  `get_pixel` reconstructs Tk's order. **A follow-up assertion is required
-  against `CtypesGdiApi`, not the double.** This is the highest-priority gap.
+- **RESOLVED — the COLORREF byte-order conversion is now tested.** The self test
+  sentinel is deliberately byte-order agnostic, but `tests/test_preview_colorref.py`
+  pins the conversion against the **real** shipped converters in `gdi_surface`,
+  not the recording double whose `get_pixel` reconstructs Tk's order. A
+  passthrough implementation fails five of its twelve cases, including one that
+  asserts the failure mode directly: that a passthrough puts red in the DIB's
+  blue slot, which a user would see as a red recognition box. The table now
+  lives once in `core.preview_renderer.py` beside the field it feeds, and
+  `photo_surface` derives its reverse lookup from it at import, so the two
+  directions cannot disagree.
 - **The guide rectangle is probably one pixel too wide on the left and top.**
   Section 5's extent convention says only `right+1` / `bottom+1`, but the
   `SelectArea` row and the test both specify `x0-1, y0-1, x1+1, y1+1`. The
@@ -672,6 +674,25 @@ and before the root is destroyed, and the GDI surface releases cleanly inside it
 - **`present` checks `no_frame` before taking the DC**, which deviates from the
   prose ordering but avoids a pointless `GetDC`/`ReleaseDC` pair at 60 Hz.
   Deliberate; recorded so it is not mistaken for an oversight.
+
+### Carried out of the coordinate layer
+
+- **`ImgRect`'s box edges will shrink once the scale stops being 1.0.**
+  `CoordinateMapper` truncates toward zero in both directions, so a detection
+  box edge that lands on a fractional display coordinate is quantised down
+  rather than to nearest. At the fixed operating assumption the two rules
+  coincide, so nothing changes today and no test pins the difference. A
+  camera-side resize is what makes it appear.
+- **`ReleaseRangeSS` still truncates all four crop corners.** A crop box has
+  inclusive lower *and* upper edges, so outward rounding — `floor` below, `ceil`
+  above — is the correct operation, and it is a **different operation from a
+  point transform** and cannot be the same method. Left byte-identical through
+  the port; the seam is now a single named call rather than arithmetic spread
+  across a call site, which is the improvement this release can make without
+  changing behaviour.
+- **`GuiAssets.py` is 1685 lines** and well past the 250 pure-LOC ceiling. It
+  was already over before this work. Restructuring it collides with the four
+  behavioural guards, so it wants its own hardware-validated pass.
 
 ### Still open from earlier sections
 
