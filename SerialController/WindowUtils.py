@@ -30,6 +30,7 @@ OPEN_DIR_ICON_PATH = os.path.join(APP_DIR, "assets", "icons8-OpenDir-16.png")
 FPS_VALUES = [60, 45, 30, 15, 5]
 BAUD_RATE_VALUES = [9600, 4800, 19200, 38400, 57600, 115200]
 SHOW_SIZE_VALUES = ["640x360", "1280x720", "1920x1080"]
+RENDERER_VALUES = ["auto", "gdi", "photo"]
 COM_PORT_NOT_FOUND = "(ポートが見つかりません)"
 
 

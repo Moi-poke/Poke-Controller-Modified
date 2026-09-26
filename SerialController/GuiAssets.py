@@ -274,17 +274,40 @@ class MouseStick(PythonCommand):
         self.keys.inputEnd(buttons)
 
 
-def _create_preview_surface(host: Any) -> PreviewRenderer:
-    """描画面を作る。Windows は GDI 子窓、それ以外は Canvas 実装。
+def _create_preview_surface(host: Any, renderer: str = "auto") -> PreviewRenderer:
+    """指定の描画方式で面を作る。既定は Windows なら GDI 子窓、それ以外は Canvas 実装。
 
     mac/Linux には GDI が無いので、同じプロトコルを PhotoImage 実装で
     満たす。プラットフォーム要件であって一般化ではない（設計 8節）。
-    """
-    if os.name == "nt":
-        return GdiSurface()
-    from ui.photo_surface import PhotoImageSurface
 
-    return PhotoImageSurface(host)
+    ``renderer`` は WindowUtils.RENDERER_VALUES の名前。表に無い値は推測で
+    解釈せず、警告してこのプラットフォームの既定へ戻す（利用者が設定を
+    書き間違えただけなので、起動を落とさない）。
+    """
+    if renderer in WindowUtils.RENDERER_VALUES:
+        name = renderer
+    else:
+        logger.warning("描画方式 '{}' は候補に無いため 'auto' として扱います", renderer)
+        name = "auto"
+    if name == "auto":
+        name = "gdi" if os.name == "nt" else "photo"
+
+    surface: PreviewRenderer | None = None
+    if name == "gdi":
+        try:
+            surface = GdiSurface()
+        except OSError as error:
+            # 名前で指定しても、この環境には GDI が無いことがある
+            # （CtypesGdiApi が OSError を上げる）。ここで落とすと
+            # mac/Linux の起動が壊れるので、必ず代替へ落とす。
+            logger.warning("GDI の面を作れないため Canvas 実装に落とします: {}", error)
+    if surface is None:
+        from ui.photo_surface import PhotoImageSurface
+
+        surface = PhotoImageSurface(host)
+
+    logger.info("プレビュー面を作成 surface={}", type(surface).__name__)
+    return surface
 
 
 class CaptureArea(tk.Frame):
@@ -306,6 +329,7 @@ class CaptureArea(tk.Frame):
         show_width: int = 640,
         show_height: int = 360,
         take_stick_log: bool | None = None,
+        renderer: str = "auto",
     ) -> None:
         super().__init__(
             master,
@@ -412,7 +436,7 @@ class CaptureArea(tk.Frame):
         # 映像面。子窓は Frame の HWND に作る（設計 6節）。Windows は
         # 親を動かすときに子を動かすが大きさは変えないので、<Configure> が
         # 無いと最初の geo 指定以降がそのままになる。
-        self._surface: PreviewRenderer = _create_preview_surface(self)
+        self._surface: PreviewRenderer = _create_preview_surface(self, renderer)
         self._surface.attach(int(self.winfo_id()), self.show_size)
         # GdiSurface は attach() の中で自己検査済みになる。その verdict を
         # ここで残さないと「覆われているか」の verdict が起動直後の記録にない。

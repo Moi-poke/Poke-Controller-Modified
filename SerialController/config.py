@@ -58,6 +58,8 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "baud_rate": 9600,
             "fps": 45,
             "show_size": "640x360",
+            # 描画方式。候補は WindowUtils.RENDERER_VALUES が正
+            "renderer": "auto",
             "is_show_realtime": True,
             "is_show_serial": False,
             "is_use_keyboard": True,
@@ -229,6 +231,13 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
     if general.get("show_size", "") not in valid_sizes:
         general["show_size"] = "640x360"
         changed.append("General Setting.show_size")
+    # 描画方式。WindowUtils.RENDERER_VALUES と同じ中身の複製になる。
+    # このファイルは tkinter を引き込めないため表を>importできず、
+    # 候補を増やすときは両方を直す（ずれは既定へ戻す tolerant 補正）。
+    valid_renderers = ("auto", "gdi", "photo")
+    if general.get("renderer", "") not in valid_renderers:
+        general["renderer"] = "auto"
+        changed.append("General Setting.renderer")
     # Transport / Arbitration もここで直す。読む側（Sender）で落ちると
     # 起動直後の接続で例外になり、原因が設定だと分かりにくい。
     # name の存在確認まではしない（利用者定義の Transport が足される

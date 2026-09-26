@@ -66,6 +66,28 @@ def test_complete_missing_fixes_invalid() -> None:
     assert "Arbitration.mode" in changed
 
 
+def test_renderer_default_and_sanitize() -> None:
+    """renderer の既定値と、不正値を候補値へ戻す動きの検証。"""
+    import WindowUtils
+
+    assert config.default_sections()["General Setting"]["renderer"] == "auto"
+    assert WindowUtils.RENDERER_VALUES == ["auto", "gdi", "photo"]
+    parser = make_parser()
+    config.complete_missing(parser)
+    general = parser["General Setting"]
+    assert general["renderer"] == "auto"
+    assert config.complete_missing(parser) == []
+    general["renderer"] = "typo"
+    changed = config.complete_missing(parser)
+    assert general["renderer"] == "auto"
+    assert "General Setting.renderer" in changed
+    assert config.complete_missing(parser) == []
+    del general["renderer"]
+    changed = config.complete_missing(parser)
+    assert general["renderer"] == "auto"
+    assert "General Setting.renderer" in changed
+
+
 def test_migrate_legacy_keymap() -> None:
     parser = make_parser()
     config.complete_missing(parser)

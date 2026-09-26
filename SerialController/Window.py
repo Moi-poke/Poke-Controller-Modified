@@ -219,6 +219,8 @@ class PokeControllerApp(
         self.camera_keys: dict[int, str] = {}
         self._camera_labels: list[str] = []
         self.camera_key = tk.StringVar()
+        # プレビューの描画手法。設定ファイルを正本として _save_settings で書き戻す
+        self.renderer = tk.StringVar()
         self._display_after_id = None
         self._sash_after_id: Any = None
         self._sash_restore_attempts = 0
@@ -333,6 +335,7 @@ class PokeControllerApp(
         self.is_use_keyboard.set(self.settings.is_use_keyboard.get())
         self.fps.set(str(self.settings.fps.get()))
         self.show_size.set(self.settings.show_size.get())
+        self.renderer.set(self.settings.renderer.get())
         self.com_port.set(self.settings.com_port.get())
         self.com_port_name.set(self.settings.com_port_name.get())
         self.camera_id.set(self.settings.camera_id.get())
@@ -357,6 +360,7 @@ class PokeControllerApp(
 
         WindowUtils.selectCombobox(self.fps_cb, self.fps.get())
         WindowUtils.selectCombobox(self.show_size_cb, self.show_size.get())
+        WindowUtils.selectCombobox(self.renderer_cb, self.renderer.get())
         self.show_size_tmp = self.show_size_cb["values"].index(self.show_size_cb.get())
 
         # Baud Rate は候補で縛らない。GameCube の自動化や独自マイコンで
@@ -580,6 +584,7 @@ class PokeControllerApp(
         )
         self.settings.fps.set(self._current_fps())
         self.settings.show_size.set(self.show_size.get())
+        self.settings.renderer.set(self.renderer.get())
         self.settings.com_port.set(self.com_port.get())
         self.settings.com_port_name.set(self.com_port_name.get())
         self.settings.baud_rate.set(self._currentBaudRate())

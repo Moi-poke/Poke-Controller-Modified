@@ -85,6 +85,9 @@ class CameraPanelMixin:
     filt_enabled: Any
     filt_check: Any
     filt_setting_button: Any
+    renderer_label: Any
+    renderer: Any
+    renderer_cb: Any
     _filt_params: dict[str, Any]
     _camera_open_lock: Any
     _camera_open_seq: int
@@ -213,7 +216,23 @@ class CameraPanelMixin:
         self.filt_setting_button = ttk.Button(self.camera_f2)
         self.filt_setting_button.config(text="調整...", command=self.openFilterDialog)
         self.filt_setting_button.grid(column=7, row=0)
-        self.camera_f2.grid(column=0, columnspan=8, row=3, sticky="nsew")
+
+        # 描画方式の選択。候補は WindowUtils の表を 1 箇所で共有する。
+        self.renderer_label = ttk.Label(self.camera_f2)
+        self.renderer_label.config(text="Renderer:")
+        self.renderer_label.grid(column=8, padx="5", row=0, sticky="ew")
+
+        self.renderer = tk.StringVar()
+        self.renderer_cb = ttk.Combobox(self.camera_f2)
+        self.renderer_cb.config(
+            textvariable=self.renderer,
+            state="readonly",
+            values=WindowUtils.RENDERER_VALUES,
+        )
+        self.renderer_cb.grid(column=9, padx="10", row=0, sticky="ew")
+        self.renderer_cb.bind("<<ComboboxSelected>>", self.applyRenderer, add="")
+
+        self.camera_f2.grid(column=0, columnspan=10, row=3, sticky="nsew")
 
         # -- カメラ名
         self.camera_name_l = ttk.Label(self.camera_lf)
@@ -303,6 +322,14 @@ class CameraPanelMixin:
             fps = 45
         self.fps.set(str(fps))
         return fps
+
+    def _current_renderer(self) -> str:
+        """描画方式を候補表の値で返す。表に無ければ既定（auto）へ戻す。"""
+        renderer = self.renderer.get()
+        if renderer not in WindowUtils.RENDERER_VALUES:
+            renderer = "auto"
+        self.renderer.set(renderer)
+        return renderer
 
     def _cameraIdOrNone(self) -> int | None:
         """Camera ID を通常の int で返す。空や不正なら None を返す。
@@ -433,6 +460,7 @@ class CameraPanelMixin:
             width,
             height,
             self.settings.is_take_stick_log.get(),
+            renderer=self.settings.renderer.get(),
         )
         self.preview.config(cursor="crosshair")
         self.preview.grid(
@@ -673,6 +701,19 @@ class CameraPanelMixin:
             self.preview.setFps(fps)
         if self.camera is not None:
             self.camera.setFps(fps)
+        self._on_setting_changed()
+
+    def applyRenderer(self, event: Any = None) -> None:
+        """描画方式の選択を保存し、次回起動から効くことをログ欄へ知らせる。
+
+        面は起動時に1回だけ作られる（差し替える口が無い）ので、反映は
+        再起動に任せる。選択のたびにダイアログは出さない：tkmsg は同期で、
+        開いた瞬間 GUI スレッドが止まる。sys.stdout は LogPane が拾って
+        いるので、案内は print だけで足りる。
+        """
+        renderer = self._current_renderer()
+        self.settings.renderer.set(renderer)
+        print(f"描画方式を {renderer} に変更しました（再起動後に反映されます）")
         self._on_setting_changed()
 
     def applyBaudRate(self, event: Any = None) -> None:

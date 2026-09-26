@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import time
 import tkinter as tk
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Final
 
 import cv2
@@ -18,6 +20,7 @@ import numpy as np
 from PIL import Image, ImageTk
 from core.Camera import CAPTURE_SIZE
 from core.preview_renderer import TK_COLORREF, OverlayState, RenderResult
+from loguru import logger
 
 # The reverse of the single authored table, derived rather than written out
 # twice: this backend needs COLORREF -> name, and a second hand-kept table could
@@ -26,6 +29,31 @@ from core.preview_renderer import TK_COLORREF, OverlayState, RenderResult
 _NAME_BY_COLORREF: Final[dict[int, str]] = {
     colorref: name for name, colorref in TK_COLORREF.items()
 }
+
+#: host の束縛のうち、Tk が host 自身に擎ち上げるもの。Canvas が受け取った
+#: 事人ではない事象なので、出し直すと handler が意図しない理由で走る。
+#: 特に ``<Configure>`` は host の箱が動いたとき Tk が擎ち上げ、それが
+#: ``resize`` を呼ぶ（``GuiAssets.py:481``）ので、返すと表面が自分の大きさを
+#: 自分で受け取って resize へ再入する。
+_HOST_RAISED: Final[frozenset[str]] = frozenset(
+    {"<Configure>", "<Map>", "<Unmap>", "<Destroy>", "<Visibility>"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SelfTestResult:
+    """起動時 1 回の自己検査の結果。形は ``core.gdi_surface`` の同名と同じ。
+
+    値域だけが違うので、``fully_occluded`` はこの面では「プレビューの 1 ピクセルも
+    画面に出ていない」を意味し、GDI 面の ``covered`` が報告している事実と同じになる
+    （判定の根拠は ``PhotoImageSurface.self_test``）。core 側から import しないのは、
+    非 Windows で動くこの面が Win32 モジュールを巻き込まないため
+    （``GuiAssets.py:305`` が遅延 import と同じ理由でそうしている）。
+    """
+
+    outcome: str  # "not_run" | "not_mapped" | "empty_box" | "visible"
+    fully_occluded: bool
+    clip_box: tuple[int, int, int, int] = (0, 0, 0, 0)
 
 
 class PhotoImageSurface:
@@ -44,26 +72,106 @@ class PhotoImageSurface:
         self._size = (0, 0)
         self._photo: Any = None
         self._overlay: OverlayState = OverlayState()
+        self._rebuilding = False
+        self._pending_frame = False
+        self._logged_failures: set[str] = set()
 
     def attach(self, parent_hwnd: int, size: tuple[int, int]) -> None:
         # 子窓を持たないので親 HWND は使わない（プロトコルの形は合わせる）。
         _ = parent_hwnd
-        self._canvas = tk.Canvas(
-            self._host, borderwidth=0, highlightthickness=0, cursor=""
-        )
+        try:
+            canvas = tk.Canvas(
+                self._host, borderwidth=0, highlightthickness=0, cursor=""
+            )
+        except tk.TclError as error:
+            # 素通しにすると起動時の例外でアプリごと止まる。子窓を作れなかった
+            # GDI 面と同じ扱いにする（gdi_surface.py:659-667）: ファイルに原因を
+            # 残し、画面に出る 1 行も出して、未接続のまま返す。compose が no_hwnd
+            # で答えるので、毎フレーム同じ失敗を撒き散らさない。
+            logger.warning("プレビュー面を作れない error={} stage=attach", error)
+            print("プレビュー面を作れません。映像は表示されません。")
+            return
+        self._canvas = canvas
         self._canvas.pack(fill=tk.BOTH, expand=True)
         self._image_id = self._canvas.create_image(0, 0, anchor=tk.NW)
+        self._forward_host_binds()
+        self._pending_frame = False
         self.resize(size)
 
+    def _forward_host_binds(self) -> None:
+        """Canvas 上のポインタ操作を host の束縛へ、同じ名前で届け直す。
+
+        GDI 面の子は外国の HWND なので Tk の当たり判定に載らず、クリックは
+        必ず host（Frame）へ届く。Canvas は host の子供なので箱を覆い、
+        Tk が擎ち上げるポインタ事象は全部 Canvas で止まる。host が束縛した
+        名前は ``host.bind()`` で読み戻せるので、同じ名前で Canvas にも
+        束縛し、届いた時点で host へ出し直す。名前を並べ直していないので、
+        あとから host 側で足した束縛もここを直さずに届く。
+        """
+        for sequence in self._host.bind():
+            if sequence not in _HOST_RAISED:
+                self._canvas.bind(sequence, self._reemitter(sequence), add="+")
+
+    def _reemitter(self, sequence: str) -> Callable[[Any], None]:
+        """``sequence`` を host へ同じ座標で出し直す束縛を作る。
+
+        ``event_generate`` は受け取った側のために新しい事象を作るので、
+        handler が読む ``event.x/event.y`` は渡した値そのものになる。Canvas は
+        host の bindtag には無いので、出し直してもこの束縛へ戻らない。
+        ``when="now"`` は順序を保つためで、既定の ``tail`` だと press と
+        続く motion の琶くれが起きる。
+        """
+
+        def _reemit(event: Any) -> None:
+            self._host.event_generate(sequence, x=event.x, y=event.y, when="now")
+
+        return _reemit
+
     def resize(self, size: tuple[int, int]) -> None:
-        self._size = (int(size[0]), int(size[1]))
-        if self._canvas is not None:
-            self._canvas.config(width=self._size[0], height=self._size[1])
+        """受け皿を新しい大きさに変える。GDI 面と同じ順番で同じ物を捨てる。
+
+        ``gdi_surface.py:772-779`` と対で読むこと。両者は同じ
+        ``PreviewRenderer`` の契約の下にあるので、片方だけが受け付ける
+        大きさが残ると mac/Linux だけ描画が止まる。
+        """
+        if self._canvas is None or self._rebuilding:
+            return
+        width, height = int(size[0]), int(size[1])
+        # Tk は geom が決まる前に 1x1 の <Configure> を送ってくる。1 ピクセルの
+        # 受け皿を作っても絵は出ないので、大きさが決まるまで前の箱を使う。
+        # 0 や負も同じ（そもそも箱にならない）。
+        if width <= 1 or height <= 1 or (width, height) == self._size:
+            return
+        self._rebuilding = True
+        try:
+            # ここで設定するのは requested size であって実寸ではない。実寸は
+            # geometry manager（fill=BOTH, expand=True）が決めるので、<_size>
+            # を当てにした判定はしない（compose もカメラ解像度を相手にする）。
+            self._canvas.config(width=width, height=height)
+            # Tk が受け入れた後にだけ覚える。config が途中で失敗すると箱は
+            # 前のままなのに _size だけ新しいと、compose が無い箱へ描く。
+            self._size = (width, height)
+        finally:
+            # 作り直しの外では必ず落とす。一度でも落とさなくなると、それ以降
+            # の resize が全部拒まれる。
+            self._rebuilding = False
 
     def compose(self, frame: np.ndarray, overlay: OverlayState) -> RenderResult:
         started = time.perf_counter_ns()
         if self._canvas is None:
+            self._note_failure(
+                "no_hwnd", "プレビュー面が未接続で合成できない stage=compose"
+            )
             return RenderResult(False, time.perf_counter_ns() - started, "no_hwnd")
+        # strides[0] >= w*3 は C-contiguous でも常に成り立つので証拠にならない。
+        if not frame.flags.c_contiguous:
+            self._note_failure(
+                "frame_not_contiguous",
+                "プレビュー合成は連続した BGR を要求する stage=compose",
+            )
+            return RenderResult(
+                False, time.perf_counter_ns() - started, "frame_not_contiguous"
+            )
         frame_size = frame.shape[1::-1]
         # 判定の相手は _size でもなく canvas でもなく、カメラが返す映像の解像度
         # （CAPTURE_SIZE）である。GDI 面の core/gdi_surface.py と同じ規則。
@@ -71,14 +179,31 @@ class PhotoImageSurface:
         # 生きているフレームを 1 枚も描かなくなる。
         # 縮小も拡大もしない。寸法が違えば捨てる。
         if frame_size != CAPTURE_SIZE:
+            self._note_failure(
+                "dimension_mismatch",
+                "プレビューは 1:1 しか描かないので捨てた {}x{} のまま capture={} "
+                "owned={} client={}",
+                frame_size[0],
+                frame_size[1],
+                CAPTURE_SIZE,
+                self._size,
+                self.client_size(),
+            )
             return RenderResult(
                 False, time.perf_counter_ns() - started, "dimension_mismatch"
             )
         if frame_size == self._size:
             image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         else:
-            # 受け皿が映像と違う大きさなら 1:1 の範囲だけ描く。大きい時は
-            # 残りを黒で埋め、小さい時は切る。換算しないので GDI 面と同じ絵になる。
+            # 残りは黒で埋める（受け皿が大きい時）、切る（小さい時）。換算しない
+            # ので GDI 面と同じ絵になる。
+            self._note_failure(
+                "letterboxed",
+                "受け皿 {} が映像 {} と大きさ違いなので 1:1 の範囲だけ描く "
+                "stage=compose",
+                self._size,
+                frame_size,
+            )
             height = min(frame.shape[0], self._size[1])
             width = min(frame.shape[1], self._size[0])
             image = Image.new("RGB", self._size)
@@ -90,26 +215,73 @@ class PhotoImageSurface:
             )
         self._photo = ImageTk.PhotoImage(image)
         self._overlay = overlay
+        self._pending_frame = True
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
 
     def present(self) -> RenderResult:
         started = time.perf_counter_ns()
-        if self._canvas is None or self._photo is None:
+        if self._canvas is None:
+            self._note_failure(
+                "no_hwnd", "プレビュー面が未接続で提示できない stage=present"
+            )
             return RenderResult(False, time.perf_counter_ns() - started, "no_hwnd")
+        # 箱は有るので「未接続」とは言わない。compose が棄却した frame の
+        # まま present を呼ぶと、原因が attach 側だと誤読される。
+        if not self._pending_frame:
+            return RenderResult(False, time.perf_counter_ns() - started, "no_frame")
         self._canvas.itemconfig(self._image_id, image=self._photo)
+        self._pending_frame = False
         self._draw_overlay(self._overlay)
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
 
     def release(self) -> None:
         canvas = self._canvas
         self._photo = None
+        self._pending_frame = False
+        self._rebuilding = False
         self._canvas = None
         self._image_id = None
         if canvas is not None:
             canvas.destroy()
 
     def client_size(self) -> tuple[int, int]:
-        return self._size
+        """受け皿の実寸。GDI 面の GetClientRect と同じ読み方をする。
+
+        ``_size``（resize が Tk に要求した大きさ）ではない。Canvas は
+        fill=BOTH, expand=True なので実寸は geometry manager が決める。
+        """
+        if self._canvas is None:
+            return (0, 0)
+        return (int(self._canvas.winfo_width()), int(self._canvas.winfo_height()))
+
+    def self_test(self) -> SelfTestResult:
+        """プレビューが画面に出ているかを検査する。形は GDI 面の自己検査と同じ。
+
+        GDI 面は back buffer に sentinel を書いて child DC で読み戻すが、Canvas に
+        DC は無い。代わりに Tk が答えられる値だけを読むので書き込みも後始末も要ら
+        ず、呼ぶたびにその時の状態になる。``not_mapped`` は「壊れている」ではない
+        （pack は mainloop が回るまでマップを予約するだけ）。
+        """
+        if self._canvas is None:
+            return SelfTestResult("not_run", False, (0, 0, 0, 0))
+        width, height = self.client_size()
+        if not self._canvas.winfo_ismapped():
+            return SelfTestResult("not_mapped", True, (0, 0, 0, 0))
+        if width <= 1 or height <= 1:
+            return SelfTestResult("empty_box", True, (0, 0, width, height))
+        return SelfTestResult("visible", False, (0, 0, width, height))
+
+    def _note_failure(self, detail: str, template: str, *args: Any) -> None:
+        """同じ reason のログは 1 度だけ出す。回数は RenderResult の detail が持つ。
+
+        compose / present は毎フレーム呼ばれるので、拒絶ごとに 1 行出すと
+        1 分に数千行になって、必要な 1 行が埋もれる。GDI 面と同じ規則で、原因は
+        detail で 1 度だけ言う（gdi_surface.py:888-893）。
+        """
+        if detail in self._logged_failures:
+            return
+        self._logged_failures.add(detail)
+        logger.warning(template, *args)
 
     def _draw_overlay(self, overlay: OverlayState) -> None:
         # 項目は作り直さない。前回分を "overlay" タグでまとめて消す。

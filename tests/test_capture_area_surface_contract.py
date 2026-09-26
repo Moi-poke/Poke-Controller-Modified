@@ -507,15 +507,19 @@ def test_configure_handler_resizes_the_surface_with_the_new_client_size() -> Non
 # ===========================================================================
 
 
-def test_constructor_signature_is_unchanged_and_positional() -> None:
+def test_constructor_signature_keeps_the_positional_order_and_adds_a_renderer() -> None:
     # Given: the real class.
     capture_area = _capture_area_class()
 
     # When: the constructor is inspected.
     parameters = list(inspect.signature(capture_area.__init__).parameters.values())
 
-    # Then: the parameter order and defaults are exactly what they were, because
-    # RealCaptureHarness.start and _run_teardown_probe both pass ser positionally.
+    # Then: the parameter order and defaults are still exactly what they were for
+    # every existing parameter, because RealCaptureHarness.start and
+    # _run_teardown_probe both pass ser positionally. The renderer-selection seam
+    # (tests/test_renderer_selection.py) supersedes the earlier "unchanged" pin by
+    # appending one trailing keyword; the order it appended at is now part of the
+    # contract, so the list below is that signature, not a stale copy of it.
     assert [parameter.name for parameter in parameters] == [
         "self",
         "camera",
@@ -526,6 +530,7 @@ def test_constructor_signature_is_unchanged_and_positional() -> None:
         "show_width",
         "show_height",
         "take_stick_log",
+        "renderer",
     ]
     assert [parameter.default for parameter in parameters[1:5]] == [
         inspect.Parameter.empty
@@ -534,6 +539,10 @@ def test_constructor_signature_is_unchanged_and_positional() -> None:
     assert parameters[6].default == 640
     assert parameters[7].default == 360
     assert parameters[8].default is None
+
+    # Then: and the appended keyword defaults to the platform's own choice, so
+    # every caller written before the seam existed still gets GDI on Windows.
+    assert parameters[9].default == "auto"
 
     # Then: and all of them stay positionally callable, which the harness relies on.
     assert all(
@@ -1435,17 +1444,44 @@ def test_photo_surface_paints_the_capture_frame_into_a_smaller_show_size(
             built.append(image)
 
     class _Canvas:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def pack(self, **kwargs: Any) -> None:
+            return None
+
+        def create_image(self, *args: Any, **kwargs: Any) -> str:
+            return "image"
+
+        def config(self, **kwargs: Any) -> None:
+            return None
+
         def itemconfig(self, _item: Any, **_kwargs: Any) -> None:
             return None
 
         def delete(self, _tag: str) -> None:
             return None
 
+    class _Host:
+        """A host that binds nothing, which is what makes it forward nothing.
+
+        ``attach`` reads ``host.bind()`` to decide which pointer events the
+        canvas has to hand on. ``None`` cannot answer that, and it only ever
+        survived here because the ``_Canvas`` double below ignores the master
+        it is handed -- so the real ``tk.Canvas(None)`` never runs.
+        """
+
+        def bind(self, *_args: Any) -> tuple[str, ...]:
+            return ()
+
     monkeypatch.setattr(module.ImageTk, "PhotoImage", _PhotoImage)
-    area = module.PhotoImageSurface(host=None)
+    monkeypatch.setattr(module.tk, "Canvas", _Canvas)
+    area = module.PhotoImageSurface(host=_Host())
     show_size = (640, 360)
-    area.resize(show_size)
-    area._canvas = _Canvas()
+    # Attach through the production path: hand-wiring _canvas after a bare
+    # resize() leaves an invalid state (no canvas at resize time), which the
+    # surface now correctly refuses instead of recording a phantom size.
+    area.attach(0, show_size)
     area._image_id = "image"
     frame = bgr_frame(1280, 720)
     assert frame.shape == (720, 1280, 3) and frame.flags.c_contiguous is True
