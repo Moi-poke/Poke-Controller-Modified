@@ -127,7 +127,6 @@ class PokeControllerApp(
         # _build_preview が済んでいるため、ここでは必ずある。
         if self.preview is None:
             raise RuntimeError("preview is not built")
-        self.preview.startCapture()
 
         self.menu = PokeController_Menubar(self)
         self.root.config(menu=self.menu)
@@ -135,6 +134,11 @@ class PokeControllerApp(
         # _build_ui 時点では canvas が最終寸法になっていないため、
         # ここで測り直す（早すぎると小さな値で無意味になる）。
         self._apply_content_minsize()
+        # 描画ループの開始は寸法確定の後にする。PreviewClock は after_idle の
+        # 自己再予約チェーンで動き、update_idletasks() は idle queue が空に
+        # なるまで戻らないため、先に起こすとここで無限に回って mainloop に
+        # 届かず GUI が出ない。順序を変えても描画開始が数十 ms 遅れるだけ。
+        self.preview.startCapture()
 
     # ------------------------------------------------------------------
     # 状態

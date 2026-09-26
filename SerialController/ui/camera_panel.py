@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 import tkinter as tk
 import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
@@ -20,6 +21,11 @@ import WindowUtils
 from GuiAssets import CaptureArea
 from core.Camera import Camera
 from loguru import logger
+
+# _on_camera_opened へ渡すまでの再試行上限。mainloop は構築直後に始まるため
+# 通常は 1 回で通る。待つのは裏スレッドであり GUI は止めない。
+_OPENED_HANDOFF_TIMEOUT_S = 10.0
+_OPENED_HANDOFF_RETRY_S = 0.05
 
 
 class CameraLabelframe(ttk.Labelframe):
@@ -343,14 +349,42 @@ class CameraPanelMixin:
         except Exception as e:
             logger.warning(f"カメラを開く裏処理で例外: {e}")
             ok = False
-        try:
-            self.root.after(0, self._on_camera_opened, cam_id, seq, camera, ok)
-        except tk.TclError:
-            # 終了済み。開いてしまった物は閉じる（保持リーク防止）。
+        self._hand_off_open_result(camera, cam_id, seq, ok)
+
+    def _hand_off_open_result(
+        self, camera: Any, cam_id: int, seq: int, ok: bool
+    ) -> None:
+        """開結果を GUI スレッドへ渡す。mainloop 開始前なら始まるまで待つ。
+
+        ``after`` は mainloop 開始前に呼ぶと ``RuntimeError`` を投げる
+        （``TclError`` ではない）。ここで落とすと結果受けが走らず、失敗時の
+        通知と陳腐カメラの破棄が抜ける。待つのは裏スレッドであり、起動自体は
+        止めない。試行中に終了すれば開いた物だけ閉じて抜ける。
+        """
+        deadline = time.monotonic() + _OPENED_HANDOFF_TIMEOUT_S
+        while True:
             try:
-                camera.destroy()
-            except Exception:
-                pass
+                self.root.after(0, self._on_camera_opened, cam_id, seq, camera, ok)
+                return
+            except tk.TclError:
+                # 終了済み。開いてしまった物は閉じる（保持リーク防止）。
+                try:
+                    camera.destroy()
+                except Exception:
+                    pass
+                return
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "カメラ open 結果の受け渡しを断念: mainloop が "
+                        f"{_OPENED_HANDOFF_TIMEOUT_S} 秒待っても始まらない"
+                    )
+                    try:
+                        camera.destroy()
+                    except Exception:
+                        pass
+                    return
+                time.sleep(_OPENED_HANDOFF_RETRY_S)
 
     def _on_camera_opened(self, cam_id: int, seq: int, camera: Any, ok: bool) -> None:
         """裏開きの結果受け（GUI スレッド）。古ければ捨てる。"""
