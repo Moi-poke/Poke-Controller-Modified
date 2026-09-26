@@ -876,12 +876,14 @@ class GdiSurface:
                 )
         guide = overlay.guide
         if guide.visible:
-            # 範囲枠だけは 4 辺とも 1 伸ばす。Tk 側が max_x+1 で箱を作る。
+            # Tk の矩形は両端 inclusive なので max_x+1 までの画素を涂る。
+            # GDI は右と下を除外するため、そこだけ 1 伸ばす。左上はそのまま渡す。
+            # 左上も伸ばすと Tk の箱より 1px 大きくなる。
             self._select(self._guide_pen, self._hollow_brush)
             self._api.rectangle(
                 self._memory_dc,
-                guide.x0 - _EXTENT_COMPENSATION,
-                guide.y0 - _EXTENT_COMPENSATION,
+                guide.x0,
+                guide.y0,
                 guide.x1 + _EXTENT_COMPENSATION,
                 guide.y1 + _EXTENT_COMPENSATION,
             )

@@ -1599,9 +1599,12 @@ def test_guide_alone_issues_one_dashed_rectangle_with_plus_one_extents() -> None
     # When: only the guide is composited.
     result = surface.compose(_frame(720, 1280), module.OverlayState(guide=guide))
 
-    # Then: exactly one Rectangle, expanded by 1 on all four sides.
+    # Then: exactly one Rectangle, expanded by 1 on the right and the bottom only.
+    #       Tk's rectangle is inclusive on both edges, GDI excludes right and
+    #       bottom, so only those two need the +1. Extending the left and top
+    #       as well would draw the box one pixel larger than Tk did.
     assert result.ok is True
-    assert _shape_sequence(api) == [("rectangle", 99, 199, 301, 401)]
+    assert _shape_sequence(api) == [("rectangle", 100, 200, 301, 401)]
     assert api.ellipse_calls == []
 
     # Then: the guide pen is dashed, so the SelectArea reads as a range box.
@@ -1682,7 +1685,7 @@ def test_full_overlay_issues_all_seven_shapes_in_the_documented_order() -> None:
         ("ellipse", 653, 343, 667, 357),
         ("ellipse", 169, 89, 231, 151),
         ("ellipse", 211, 104, 219, 112),
-        ("rectangle", 99, 199, 301, 401),
+        ("rectangle", 100, 200, 301, 401),
         ("rectangle", 10, 20, 111, 221),
         ("rectangle", 20, 30, 101, 201),
     ]

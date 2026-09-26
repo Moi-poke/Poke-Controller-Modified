@@ -273,7 +273,7 @@ In order, and only for components that are active:
 | left knob | `Ellipse(hdc, kx-k-1, ky-k-1, kx+k+1, ky+k+1)`, **solid** brush | `create_oval` `:983` |
 | right ring | as left | right-stick equivalent |
 | right knob | as left, solid | right-stick equivalent |
-| `SelectArea` | `Rectangle(hdc, x0-1, y0-1, x1+1, y1+1)`, dashed pen | `create_rectangle` `:733-740` |
+| `SelectArea` | `Rectangle(hdc, x0, y0, x1+1, y1+1)`, dashed pen | `create_rectangle` `:733-740` |
 | `ImgRect` outer | `Rectangle(hdc, o.x0, o.y0, o.x1+1, o.y1+1)`, 4 px white | `create_rectangle` `:1224-1226` |
 | `ImgRect` inner | `Rectangle(hdc, i.x0, i.y0, i.x1+1, i.y1+1)`, 2 px, cached colour | `create_rectangle` `:1227-1229` |
 
@@ -656,11 +656,25 @@ and before the root is destroyed, and the GDI surface releases cleanly inside it
   lives once in `core.preview_renderer.py` beside the field it feeds, and
   `photo_surface` derives its reverse lookup from it at import, so the two
   directions cannot disagree.
-- **The guide rectangle is probably one pixel too wide on the left and top.**
-  Section 5's extent convention says only `right+1` / `bottom+1`, but the
-  `SelectArea` row and the test both specify `x0-1, y0-1, x1+1, y1+1`. The
-  current Tk code builds the box as `min, min, max+1, max+1`, so the `-1` is
-  probably wrong. Resolve in step E, where the range selector moves.
+- **RESOLVED — the guide rectangle was one pixel too wide on the left and top.**
+  The shape table had `x0-1, y0-1, x1+1, y1+1` for `SelectArea`, which
+  contradicted section 5's own convention and its sibling `_draw_rect`, both of
+  which add the compensation only on the right and the bottom. The `-1` came
+  from a comment that half-justified it, and it had been carried into the test
+  as an expectation, so the defect was pinned rather than caught.
+
+  The Tk original settles it. `MotionRangeSS` called
+  `coords("SelectArea", min_x, min_y, max_x + 1, max_y + 1)`, and a Tk
+  rectangle is inclusive on both edges, so it painted `min_x .. max_x + 1`. The
+  faithful GDI port is therefore `Rectangle(min_x, min_y, max_x + 2, max_y + 2)`.
+  The shipped code passed `min_x - 1, min_y - 1, max_x + 2, max_y + 2` — one
+  pixel larger than Tk on the left and the top. The guide now passes `x0` and
+  `y0` through unchanged, matching `_draw_rect`, and the two pinned expectations
+  moved from `(99, 199, 301, 401)` to `(100, 200, 301, 401)`.
+
+  The ellipses legitimately subtract on the left and the top: an ellipse needs
+  both corners of its bounding box moved to cover the same pixel span, so the
+  three shapes are not symmetric by accident.
 - **`gdi_surface.py` is 714 pure LOC**, over the project's 250 ceiling, because
   the 26-method api Protocol plus its ctypes implementation is roughly half of
   it. Split into `gdi_surface.py` and `win32_gdi_api.py` before it grows further.
