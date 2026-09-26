@@ -443,6 +443,10 @@ class CaptureArea(tk.Frame):
         # 無いと最初の geo 指定以降がそのままになる。
         self._surface: PreviewRenderer = _create_preview_surface(self, renderer)
         self._surface.attach(int(self.winfo_id()), self.show_size)
+        # 自己検査の前にウィンドウが画面に出るのを待つ。not_mapped は
+        # mainloop が回るまで解消しないので、待たずに検査すると真の退行と
+        # 環境要因を区別できない。
+        self.wait_visibility()
         # GdiSurface は attach() の中で自己検査済みになる。その verdict を
         # ここで残さないと「覆われているか」の verdict が起動直後の記録にない。
         # mac/Linux の PhotoImageSurface には自己検査が無いので 無ければ None。

@@ -1205,16 +1205,20 @@ def test_renderer_settles_and_keeps_drawing(
     # window still advances presents, so counting presents alone cannot tell
     # "drawn" from "drawn somewhere invisible". The artifact above is retained;
     # the verdict is a skip with the outcome named, never a green pass.
+    # Only known environmental factors skip: covered (occluded by another
+    # window) and not_mapped (wait_visibility did not resolve). Everything
+    # else -- not_run (attach failure), empty_box (degenerate size),
+    # wrong_color (sentinel mismatch) -- is a real regression and FAILs.
     outcome = report["surface_selftest"]["outcome"]
-    if outcome != "sentinel_matched" and renderer == "gdi":
+    if renderer == "gdi" and outcome == "covered":
         pytest.skip(
-            f"gdi self-test outcome={outcome!r}: pixels unproven on this run; "
+            f"gdi self-test outcome={outcome!r}: window occluded by another; "
             "see surface_selftest in report.json"
         )
-    if outcome != "visible" and renderer == "photo":
+    if outcome == "not_mapped":
         pytest.skip(
-            f"photo self-test outcome={outcome!r}: pixels unproven on this run; "
-            "see surface_selftest in report.json"
+            f"self-test outcome={outcome!r}: window not viewable after "
+            "wait_visibility; see surface_selftest in report.json"
         )
     assert report["production_resize_guards_present"], report[
         "production_resize_guards_present"

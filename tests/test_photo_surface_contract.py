@@ -214,6 +214,9 @@ class _RecordingCanvas:
     def winfo_ismapped(self) -> bool:
         return self.mapped
 
+    def winfo_viewable(self) -> bool:
+        return self.mapped
+
     def itemconfig(self, item: Any, **kwargs: Any) -> None:
         self.itemconfig_calls.append((item, kwargs))
 
@@ -714,6 +717,22 @@ def test_present_on_an_unattached_surface_still_reports_no_hwnd(
     assert (result.ok, result.detail) == (False, "no_hwnd"), result
 
 
+def test_compose_on_an_unattached_surface_still_reports_no_hwnd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a constructed but unattached surface.
+    from core.preview_renderer import OverlayState
+
+    surface = _photo_surface_module().PhotoImageSurface(host=None)
+    width, height = _capture_size()
+
+    # When: compose is asked with a valid contiguous frame.
+    result = surface.compose(_contiguous_frame(width, height), OverlayState())
+
+    # Then: the unattached case keeps its own detail, same as present.
+    assert (result.ok, result.detail) == (False, "no_hwnd"), result
+
+
 def test_a_second_present_after_one_frame_reports_no_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -883,7 +902,7 @@ def test_self_test_before_attach_says_nothing_has_run_yet() -> None:
     result = surface.self_test()
     assert isinstance(result.outcome, str)
     assert result.outcome == "not_run", result.outcome
-    assert result.fully_occluded is False
+    assert result.fully_occluded is None
     assert result.clip_box == (0, 0, 0, 0)
 
 
@@ -1165,6 +1184,22 @@ def test_structural_and_hover_events_are_never_forwarded_to_the_canvas(
     # what it never names, so a future <Enter> handler stays on the host.
     assert set(attached.canvas.bindings) - {"<Destroy>"} == set(POINTER_SEQUENCES), (
         f"the canvas is bound to {sorted(attached.canvas.bindings)}"
+    )
+
+
+def test_keymap_is_not_forwarded_despite_containing_key_substring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a host that binds <Keymap>, which contains "Key" as a substring.
+    host = _HostFrame()
+    host.bind("<Keymap>", lambda event: None)
+    attached = _attach(monkeypatch, host=host)
+
+    # When/Then: <Keymap> is NOT forwarded. Substring matching would have
+    # forwarded it because "Key" in "<Keymap>" is True. Exact token matching
+    # splits on "-" and compares each token, so "Keymap" != "Key".
+    assert "<Keymap>" not in attached.canvas.bindings, (
+        f"<Keymap> was forwarded: {sorted(attached.canvas.bindings)}"
     )
 
 

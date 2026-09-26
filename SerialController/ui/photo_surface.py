@@ -13,7 +13,7 @@ import time
 import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import cv2
 import numpy as np
@@ -33,22 +33,38 @@ _NAME_BY_COLORREF: Final[dict[int, str]] = {
 #: host の束縛のうち Canvas へ転送してよい種類。ポインタとキーだけであり、
 #: Tk が host 自身に擎げる構造・hover・focus 系は名指ししない。除外表は
 #: 書いた者が覚えている物しか載らないが、許可表は載せない物を運ばない。
-_FORWARDABLE_KINDS: Final[tuple[str, ...]] = ("Button", "Motion", "MouseWheel", "Key")
+_FORWARDABLE_KINDS: Final[tuple[str, ...]] = (
+    "Button",
+    "ButtonRelease",
+    "Motion",
+    "MouseWheel",
+    "Key",
+)
+
+
+def _is_forwardable(sequence: str) -> bool:
+    """Tk イベント型名が許可表に完全一致するかを判定する。
+
+    部分文字列照合（``kind in sequence``）では ``<Keymap>`` が ``Key`` に
+    一致してしまう。``-`` で分割したトークンが許可表のいずれかと完全一致する
+    ときだけ転送する。
+    """
+    tokens = sequence.strip("<>").split("-")
+    return any(token in _FORWARDABLE_KINDS for token in tokens)
 
 
 @dataclass(frozen=True, slots=True)
 class SelfTestResult:
     """起動時 1 回の自己検査の結果。形は ``core.gdi_surface`` の同名と同じ。
 
-    値域だけが違うので、``fully_occluded`` はこの面では「プレビューの 1 ピクセルも
-    画面に出ていない」を意味し、GDI 面の ``covered`` が報告している事実と同じになる
-    （判定の根拠は ``PhotoImageSurface.self_test``）。core 側から import しないのは、
-    非 Windows で動くこの面が Win32 モジュールを巻き込まないため
+    ``fully_occluded`` は「プレビューの 1 ピクセルも画面に出ていない」を意味する。
+    ``not_run``（未接続）では判定不能なので ``None`` を返す。core 側から import
+    しないのは、非 Windows で動くこの面が Win32 モジュールを巻き込まないため
     （``GuiAssets.py:305`` が遅延 import と同じ理由でそうしている）。
     """
 
-    outcome: str  # "not_run" | "not_mapped" | "empty_box" | "visible"
-    fully_occluded: bool
+    outcome: Literal["not_run", "not_mapped", "empty_box", "visible"]
+    fully_occluded: bool | None
     clip_box: tuple[int, int, int, int] = (0, 0, 0, 0)
 
 
@@ -116,7 +132,7 @@ class PhotoImageSurface:
         あとから host 側で足した束縛もここを直さずに届く。
         """
         for sequence in self._host.bind():
-            if not any(kind in sequence for kind in _FORWARDABLE_KINDS):
+            if not _is_forwardable(sequence):
                 continue
             self._canvas.bind(sequence, self._reemitter(sequence), add="+")
 
@@ -269,11 +285,18 @@ class PhotoImageSurface:
         DC は無い。代わりに Tk が答えられる値だけを読むので書き込みも後始末も要ら
         ず、呼ぶたびにその時の状態になる。``not_mapped`` は「壊れている」ではない
         （pack は mainloop が回るまでマップを予約するだけ）。
+
+        ``visible`` は「オクルージョン無く表示されている」ことを意味しない。
+        ``winfo_viewable()`` は先祖ウィンドウが最小化されていないかを見るが、
+        他のウィンドウに隠れているかは測らない。オクルージョン検知はこの面の
+        能力及び E2E の artifact でのみ行う。
+        ``clip_box`` は名前に反してクリップ領域ではなくクライアントサイズを
+        返す（GDI 面の同名フィールドと同じ誤称）。
         """
         if self._canvas is None:
-            return SelfTestResult("not_run", False, (0, 0, 0, 0))
+            return SelfTestResult("not_run", None, (0, 0, 0, 0))
         width, height = self.client_size()
-        if not self._canvas.winfo_ismapped():
+        if not self._canvas.winfo_viewable():
             return SelfTestResult("not_mapped", True, (0, 0, 0, 0))
         if width <= 1 or height <= 1:
             return SelfTestResult("empty_box", True, (0, 0, width, height))
