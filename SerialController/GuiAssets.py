@@ -445,9 +445,13 @@ class CaptureArea(tk.Frame):
         self._surface.attach(int(self.winfo_id()), self.show_size)
         from ui.photo_surface import SelfTestResult
 
+        # 「まだやっていない」。``None`` は既に「self_test を持たない面」の
+        # 意味で使うので、未判定とは別の値にしておく。
         self.surface_selftest = SelfTestResult("pending", None, (0, 0, 0, 0))
+        self._selftest_after_id: str | None = None
         self._schedule_selftest()
         self.bind("<Configure>", self._onConfigure)
+        self.bind("<Destroy>", self._cancelSelftest, add="+")
 
     _SELFTEST_POLL_MS: Final[int] = 50
     _SELFTEST_TIMEOUT_S: Final[float] = 2.0
@@ -464,17 +468,30 @@ class CaptureArea(tk.Frame):
         self._poll_selftest()
 
     def _poll_selftest(self) -> None:
+        """自己検査を、判定が出るか期限が来るまで繰り返す。
+
+        host の ``winfo_viewable()`` を見るのは足りない。pack による子のマップ
+        は idle の処理で行われるので、host が viewable になった直後は Canvas が
+        まだマップされていないことがある。その1 回を ``not_mapped`` で確定させ
+        るのは、表示できている面を未マップと誤判定することになる。面自身の答え
+        を見て、``not_mapped`` のうちは打ち切らずに待つ。
+
+        ``not_run`` も判定ではない。面が構築時に持つ初期値であり、子窓や DC が
+        まだ使えなかった1 回の試行がそのまま残るだけ。判定が出た ``self_test()``
+        まで待ち、打ち切りは期限だけが担う。
+        """
         if not hasattr(self, "_surface"):
             return
-        if self.winfo_viewable():
-            self._run_selftest()
+        result = self._run_selftest()
+        if getattr(result, "outcome", None) not in ("not_mapped", "not_run"):
             return
         if time.monotonic() > self._selftest_deadline:
-            self._run_selftest()
             return
-        self.after(self._SELFTEST_POLL_MS, self._poll_selftest)
+        self._selftest_after_id = self.after(
+            self._SELFTEST_POLL_MS, self._poll_selftest
+        )
 
-    def _run_selftest(self) -> None:
+    def _run_selftest(self) -> Any:
         probe: Any = self._surface
         self.surface_selftest = (
             probe.self_test() if hasattr(probe, "self_test") else None
@@ -483,6 +500,29 @@ class CaptureArea(tk.Frame):
             "プレビュー面の自己検査 outcome={}",
             getattr(self.surface_selftest, "outcome", "not_supported"),
         )
+        return self.surface_selftest
+
+    def _cancelSelftest(self, event: Any) -> None:
+        """予約済みの after を外す。破棄後に残ると background error になる。
+
+        ``hasattr(self, "_surface")`` は破棄されたあとも True のままなので、
+        それでは打ち切りにならない。after の ID を持っておき、破棄の時点で外す。
+        """
+        destroyed = getattr(event, "widget", None)
+        # Tkinter は破棄中の widget を解決できなければパス文字列で渡す
+        # （``Misc.__str__`` が返す ``_w`` と同じ形）。
+        if destroyed is not self and destroyed != getattr(self, "_w", None):
+            # 子（Canvas など）の破棄ではポーリングは続ける。停止は期限が
+            # 来たときだけで、面の答では打ち切らない。
+            return
+        if self._selftest_after_id is None:
+            return
+        try:
+            self.after_cancel(self._selftest_after_id)
+        except tk.TclError:
+            # 既に消化済み、または widget が既に消えている。
+            pass
+        self._selftest_after_id = None
 
     @property
     def overlay(self) -> OverlayState:

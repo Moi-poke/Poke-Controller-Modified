@@ -827,7 +827,6 @@ def _run_renderer(
             renderer=renderer,
         )
         surface_name = type(area.surface).__name__
-        surface_selftest = getattr(area, "surface_selftest", None)
         _assert_surface_reports_its_box(area)
         record = _install_configure_recorder(area, probe)
         area.pack(fill=tk.BOTH, expand=True)
@@ -940,6 +939,13 @@ def _run_renderer(
         finally:
             watchdog.disarm()
     total_elapsed_s = time.perf_counter() - total_started
+
+    # The self-test is armed on the Tk timer wheel at construction and only
+    # settles once the window is mapped, so it must be read here -- after the
+    # run pumped the loop -- and not at construction. Reading it early
+    # snapshots the pre-run "pending" value and fails every healthy run.
+    if area is not None:
+        surface_selftest = getattr(area, "surface_selftest", None)
 
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -1208,11 +1214,24 @@ def test_renderer_settles_and_keeps_drawing(
     # Only known environmental factors skip: covered (occluded by another
     # window) and not_mapped (polling timeout did not resolve). Everything
     # else -- not_run (attach failure), empty_box (degenerate size),
-    # wrong_color (sentinel mismatch) -- is a real regression and FAILs.
+    # wrong_color (sentinel mismatch), pending (the poll never completed), and
+    # a missing verdict outright -- is a real regression and FAILs.
     # photo's "visible" means "viewable and non-empty size" only; GDI's
     # "sentinel_matched" proves pixels arrived (sentinel write + readback).
     # The artifact is the real evidence for both.
+    assert report["surface_selftest"] is not None, (
+        "surface_selftest is missing: CaptureArea recorded no verdict at all, "
+        "so nothing was proven. See the log line for _run_selftest"
+    )
     outcome = report["surface_selftest"]["outcome"]
+    # "pending" means the after() poll never completed inside its budget, and a
+    # never-ran verdict is a broken run -- not an environmental skip. Left
+    # unhandled it would fall through to the equality assert below anyway, so
+    # naming it here keeps the failure about what actually went wrong.
+    assert outcome != "pending", (
+        "surface_selftest outcome='pending': the self-test never ran; see "
+        "surface_selftest in report.json"
+    )
     if renderer == "gdi" and outcome == "covered":
         pytest.skip(
             f"gdi self-test outcome={outcome!r}: window occluded by another; "
@@ -1228,9 +1247,12 @@ def test_renderer_settles_and_keeps_drawing(
         f"{renderer} self-test outcome={outcome!r} != {expected!r}: "
         "pixels unproven on this run; see surface_selftest in report.json"
     )
-    assert report["production_resize_guards_present"], report[
-        "production_resize_guards_present"
-    ]
+    # The dict is filled one row per guard from the live source, so an empty
+    # dict (the probe never ran) has to fail as loudly as a missing token.
+    guards = report["production_resize_guards_present"]
+    assert guards, "the resize guard probe recorded nothing"
+    missing = sorted(label for label, present in guards.items() if not present)
+    assert not missing, f"resize guards missing from the production source: {missing}"
 
     # Then: and it terminated. The watchdog is the claim, not the absence of an
     # exception -- a hang produces no exception to miss.

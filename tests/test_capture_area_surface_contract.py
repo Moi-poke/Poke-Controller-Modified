@@ -1101,6 +1101,193 @@ def test_attach_surfaces_the_surface_self_test_outcome() -> None:
     )
 
 
+class _SelfTestSurface:
+    """The one seam the poll reads: ``self_test()`` answering in order.
+
+    The last answer repeats, so a poll that should have stopped keeps asking
+    and the test can say so instead of hanging on a short list.
+    """
+
+    def __init__(self, *answers: Any) -> None:
+        self.answers = list(answers)
+        self.calls = 0
+
+    def self_test(self) -> Any:
+        answer = self.answers[min(self.calls, len(self.answers) - 1)]
+        self.calls += 1
+        return answer
+
+
+class _DestroyEvent:
+    """A ``<Destroy>`` event carrying only the field the cancel path reads."""
+
+    def __init__(self, widget: Any) -> None:
+        self.widget = widget
+
+
+def test_the_self_test_poll_stops_the_moment_the_surface_answers() -> None:
+    # Given: a surface that can answer, and a widget double that records after.
+    from ui.photo_surface import SelfTestResult
+
+    bare = bare_capture_area()
+    area = bare.area
+    area._surface = _SelfTestSurface(
+        SelfTestResult("visible", False, (0, 0, SHOW_WIDTH, SHOW_HEIGHT))
+    )
+
+    # When: the startup poll runs.
+    area._schedule_selftest()
+
+    # Then: a settled verdict ends the polling there and then -- arming a
+    # retry would leave the widget's after queue holding a callback that
+    # re-reads an answer that has not changed.
+    assert area.surface_selftest.outcome == "visible", area.surface_selftest
+    assert bare.widget.after_calls == [], bare.widget.after_calls
+
+
+def test_the_self_test_poll_retries_while_the_surface_stays_unmapped() -> None:
+    # Given: a surface that reports "not mapped" once and a real answer after.
+    from ui.photo_surface import SelfTestResult
+
+    bare = bare_capture_area()
+    area = bare.area
+    area._surface = _SelfTestSurface(
+        SelfTestResult("not_mapped", True, (0, 0, 0, 0)),
+        SelfTestResult("visible", False, (0, 0, SHOW_WIDTH, SHOW_HEIGHT)),
+    )
+
+    # When: the startup poll runs before the window is mapped.
+    area._schedule_selftest()
+
+    # Then: "not mapped" is not a verdict. Host visibility is the wrong thing
+    # to key on -- the pack that maps the Canvas runs in an idle handler, so
+    # the host can be viewable while the Canvas still answers "not mapped",
+    # and a single probe would freeze that misreading into the record.
+    assert area.surface_selftest.outcome == "not_mapped", area.surface_selftest
+    assert len(bare.widget.after_calls) == 1, bare.widget.after_calls
+    delay_ms, _callback = bare.widget.after_calls[0]
+    assert delay_ms == _capture_area_class()._SELFTEST_POLL_MS, delay_ms
+
+    # When: the armed retry runs once the window is up.
+    bare.widget.after_calls[0][1]()
+
+    # Then: the placeholder is replaced by the real answer and the polling
+    # stops -- the retry is not rearmed.
+    assert area.surface_selftest.outcome == "visible", area.surface_selftest
+    assert len(bare.widget.after_calls) == 1, bare.widget.after_calls
+
+
+def test_the_self_test_poll_retries_while_the_surface_reports_not_run() -> None:
+    # Given: a surface whose first probe ran before its window existed (the
+    # attach-time BitBlt can fail outright) and a real answer after.
+    from ui.photo_surface import SelfTestResult
+
+    bare = bare_capture_area()
+    area = bare.area
+    area._surface = _SelfTestSurface(
+        SelfTestResult("not_run", False, (0, 0, 0, 0)),
+        SelfTestResult("covered", False, (0, 0, SHOW_WIDTH, SHOW_HEIGHT)),
+    )
+
+    # When: the startup poll runs before the surface can run its test.
+    area._schedule_selftest()
+
+    # Then: "not_run" is not a verdict either. __init__ schedules the poll
+    # before pack, so a surface whose startup probe fails there would be
+    # frozen into the record as "never ran" while the window goes on to
+    # render normally -- exactly the record the E2E then rejects.
+    assert area.surface_selftest.outcome == "not_run", area.surface_selftest
+    assert len(bare.widget.after_calls) == 1, bare.widget.after_calls
+    delay_ms, _callback = bare.widget.after_calls[0]
+    assert delay_ms == _capture_area_class()._SELFTEST_POLL_MS, delay_ms
+
+    # When: the armed retry runs once the surface can answer.
+    bare.widget.after_calls[0][1]()
+
+    # Then: the placeholder is replaced by the real answer and the polling
+    # stops -- the retry is not rearmed.
+    assert area.surface_selftest.outcome == "covered", area.surface_selftest
+    assert len(bare.widget.after_calls) == 1, bare.widget.after_calls
+
+
+def test_the_self_test_poll_gives_up_at_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a surface that never gets mapped, and a clock that steps past the
+    # deadline between arming and probing.
+    from ui.photo_surface import SelfTestResult
+
+    bare = bare_capture_area()
+    area = bare.area
+    area._surface = _SelfTestSurface(SelfTestResult("not_mapped", True, (0, 0, 0, 0)))
+    clock = iter([1000.0, 1004.0])
+    monkeypatch.setattr(_gui_assets().time, "monotonic", lambda: next(clock, 1004.0))
+
+    # When: the startup poll runs.
+    area._schedule_selftest()
+
+    # Then: the deadline turns an unanswered poll into a recorded verdict
+    # rather than an endless queue of 50 ms retries.
+    assert area.surface_selftest.outcome == "not_mapped", area.surface_selftest
+    assert bare.widget.after_calls == [], bare.widget.after_calls
+
+
+def test_the_self_test_poll_records_a_surface_without_a_self_test() -> None:
+    # Given: a surface carrying no self_test at all, which RecordingSurface
+    # is -- the same shape a renderer without the method would have.
+    bare = bare_capture_area()
+    area = bare.area
+    assert not hasattr(bare.surface, "self_test"), dir(bare.surface)
+
+    # When: the startup poll runs.
+    area._schedule_selftest()
+
+    # Then: None is recorded and the polling ends at once. None means "no such
+    # method" and is distinct from the "pending" placeholder, so a reader can
+    # tell a surface that cannot answer from one that has not answered yet.
+    assert area.surface_selftest is None, area.surface_selftest
+    assert bare.widget.after_calls == [], bare.widget.after_calls
+
+
+def test_a_destroy_cancels_the_armed_self_test_after_and_a_child_does_not() -> None:
+    # Given: the wiring, read from the parsed __init__ because a bare area
+    # never runs it -- the binding is the half a runtime test would miss.
+    init = class_method(_capture_area_node(), "__init__")
+    assert _bind_targets_in(init).get("<Destroy>") == "self._cancelSelftest", (
+        f"<Destroy> is bound to {_bind_targets_in(init).get('<Destroy>')!r}, so a "
+        "widget destroyed while a retry is armed keeps the callback, and Tk "
+        "answers it with 'invalid command name'"
+    )
+
+    # Given: a poll that has armed exactly one retry.
+    from ui.photo_surface import SelfTestResult
+
+    bare = bare_capture_area()
+    area = bare.area
+    area._surface = _SelfTestSurface(SelfTestResult("not_mapped", True, (0, 0, 0, 0)))
+    area._schedule_selftest()
+    armed = area._selftest_after_id
+    assert armed is not None, "the poll armed no retry to cancel"
+
+    # When: the host itself is destroyed.
+    area._cancelSelftest(_DestroyEvent(area))
+
+    # Then: the armed after is cancelled and forgotten...
+    assert bare.widget.after_cancel_calls == [armed], bare.widget.after_cancel_calls
+    assert area._selftest_after_id is None, area._selftest_after_id
+
+    # When: only a child is destroyed instead.
+    bare.widget.after_cancel_calls.clear()
+    area._selftest_after_id = armed
+    area._cancelSelftest(_DestroyEvent(object()))
+
+    # Then: the poll is left alone. The Canvas going away is already answered
+    # by the surface's own not_run, so cancelling here would strand the
+    # placeholder instead of resolving it.
+    assert bare.widget.after_cancel_calls == [], bare.widget.after_cancel_calls
+    assert area._selftest_after_id == armed, area._selftest_after_id
+
+
 # ===========================================================================
 # I. A None frame has to reach the screen, as a presented disabled image
 # ===========================================================================

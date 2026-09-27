@@ -456,6 +456,7 @@ def bare_capture_area(
 
     area._last_frame_seq = None
     area._rect_after_id = None
+    area._selftest_after_id = None
 
     area._surface = surface
     area._stick_left = defaults.left_stick
