@@ -30,6 +30,7 @@ _SYNCHRONIZE: Final[int] = 0x00100000
 _ZERO: Final[int] = 0
 _NATIVE_WAKE_POLL_MS: Final[int] = 0
 _NATIVE_WAKE_IDLE_POLL_MS: Final[int] = 1
+_NATIVE_WAKE_DRAIN_BUDGET_S: Final[float] = 0.004
 
 
 class StopResult(StrEnum):
@@ -1955,10 +1956,13 @@ class PreviewClock:
             self._on_native_wake()
             return True
         drained = False
+        deadline = time.perf_counter() + _NATIVE_WAKE_DRAIN_BUDGET_S
         while self._state is _ClockState.HIGH_RESOLUTION and self._runtime is runtime:
             if not consume_wake_signal():
                 break
             drained = True
+            if time.perf_counter() >= deadline:
+                break
         return drained
 
     def _on_native_wake(self) -> None:

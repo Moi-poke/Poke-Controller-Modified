@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -1240,6 +1241,46 @@ def test_native_wake_drain_processes_all_queued_wakes(
         assert drained is True
         assert runtime.drain_calls == 3
         assert runtime.remaining_signals == 0
+    finally:
+        clock.stop()
+
+
+def test_native_wake_drain_hands_the_loop_back_within_its_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EndlessRuntime(FakeNativeRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.drain_calls = 0
+
+        def consume_wake_signal(self) -> bool:
+            self.drain_calls += 1
+            if self.drain_calls > 100:
+                raise RuntimeError("drain spun past its budget")
+            time.sleep(0.001)
+            return True
+
+    root = FakeRoot()
+    runtime = EndlessRuntime()
+    clock = preview_clock.PreviewClock(
+        root,
+        _dispatch_with_label([], "tick"),
+        60,
+        200,
+    )
+    monkeypatch.setattr(
+        preview_clock, "_create_native_runtime", lambda **_kwargs: runtime
+    )
+    try:
+        # Given: a wake source that never reports an empty queue.
+        clock.start()
+
+        # When: the main-thread drain runs.
+        drained = clock._drain_native_wakes()
+
+        # Then: the drain hands the loop back inside its time budget.
+        assert drained is True
+        assert runtime.drain_calls <= 10
     finally:
         clock.stop()
 
