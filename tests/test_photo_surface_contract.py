@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tkinter as tk
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -246,11 +247,36 @@ class _PointerEvent:
     double does too. A double that handed the original object back would let a
     production path pass the same event along instead of copying the
     coordinates across, and the two are indistinguishable there.
+
+    ``keysym`` and ``delta`` are present on every instance, because
+    ``tkinter.Misc._substitute`` assigns both unconditionally -- a production
+    branch that picks its options with ``hasattr`` therefore always fires, on
+    pointer events too.
     """
 
-    def __init__(self, x: int, y: int) -> None:
+    def __init__(self, x: int, y: int, keysym: str = "??", delta: int = 0) -> None:
         self.x = x
         self.y = y
+        self.keysym = keysym
+        self.delta = delta
+
+
+def _accepted_generate_options(sequence: str) -> frozenset[str]:
+    """The options real ``event generate`` takes for this event type.
+
+    Tk answers ``"<type> event doesn't accept "-<option>" option"`` for any
+    other option, which is what makes the per-event split in ``_reemitter``
+    load-bearing rather than cosmetic. The table is the one measured against
+    the Tk this suite runs on; ``test_tk_only_accepts_the_option_its_own_event``
+    is what keeps it honest.
+    """
+    options = frozenset({"x", "y", "when", "time", "state", "rootx", "rooty"})
+    tokens = sequence.strip("<>").split("-")
+    if "MouseWheel" in tokens:
+        return options | {"delta"}
+    if "Key" in tokens or "KeyRelease" in tokens:
+        return options | {"keysym"}
+    return options
 
 
 class _HostFrame:
@@ -264,7 +290,9 @@ class _HostFrame:
 
     ``bind()`` with no sequence answers the tuple the surface reads to decide
     what to forward. Tk answers with its canonical spelling, so the tests bind
-    canonical names and get the same string back.
+    canonical names and get the same string back. ``event_generate`` refuses the
+    options Tk refuses for that event type, and records every option it did
+    accept so a test can assert what the far side was handed.
     """
 
     def __init__(self, **options: Any) -> None:
@@ -272,6 +300,7 @@ class _HostFrame:
         self.config_calls: list[dict[str, Any]] = []
         self.cursor_history: list[str] = []
         self.raised: list[tuple[str, int, int]] = []
+        self.raised_kwargs: list[tuple[str, dict[str, Any]]] = []
         self.delivered: list[tuple[str, int, int]] = []
         self._handlers: dict[str, Any] = {}
 
@@ -289,6 +318,19 @@ class _HostFrame:
             self.cursor_history.append(str(kwargs["cursor"]))
 
     def event_generate(self, sequence: str, **kwargs: Any) -> str:
+        # Mirrors Tk's own refusal, so a reemit that hands over an option the
+        # event type does not take fails the way it fails on a real display --
+        # with TclError, not with a silently dropped field.
+        rejected = sorted(
+            option
+            for option in kwargs
+            if option not in _accepted_generate_options(sequence)
+        )
+        if rejected:
+            raise tk.TclError(
+                f'{sequence} event doesn\'t accept "-{rejected[0]}" option'
+            )
+        self.raised_kwargs.append((sequence, dict(kwargs)))
         point = (int(kwargs["x"]), int(kwargs["y"]))
         self.raised.append((sequence, *point))
         handler = self._handlers.get(sequence)
@@ -1266,6 +1308,114 @@ def test_a_binding_the_app_never_uses_is_forwarded_too(
     # test in this section and fail the first time a binding is added -- which
     # is the whole reason the list is not written down.
     assert host.delivered == [(UNUSED_SEQUENCE, 11, 13)], host.delivered
+
+
+def test_a_pointer_reemit_hands_the_host_coordinates_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a host bound to every pointer and modifier sequence it carries.
+    sequences = POINTER_SEQUENCES + MODIFIER_SEQUENCES + (UNUSED_SEQUENCE,)
+    host = _HostFrame()
+    for sequence in sequences:
+        host.bind(sequence, lambda event: None)
+    attached = _attach(monkeypatch, host=host)
+
+    # When: each one is raised over the picture.
+    for sequence in sequences:
+        attached.canvas.bindings[sequence](_PointerEvent(23, 47))
+
+    # Then: every reemit carried only what a pointer event accepts. Tk refuses
+    # "-keysym" and "-delta" on these types, so one of them would raise and
+    # swallow the gesture rather than merely arrive with a junk field -- which
+    # is why the branch in _reemit is keyed on the event type and not on what
+    # the event object happens to carry.
+    assert [sequence for sequence, _ in host.raised_kwargs] == list(sequences), (
+        host.raised_kwargs
+    )
+    for sequence, kwargs in host.raised_kwargs:
+        assert set(kwargs) == {"x", "y", "when"}, (sequence, sorted(kwargs))
+
+
+def test_a_key_reemit_carries_the_keysym_and_a_wheel_reemit_carries_the_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a host bound to a key and to the wheel -- the two events whose
+    # meaning lives in a field rather than in the coordinates.
+    host = _HostFrame()
+    host.bind("<Key-a>", lambda event: None)
+    host.bind("<MouseWheel>", lambda event: None)
+    attached = _attach(monkeypatch, host=host)
+
+    # When: a key press and a wheel turn happen over the picture.
+    attached.canvas.bindings["<Key-a>"](_PointerEvent(1, 2, keysym="a"))
+    attached.canvas.bindings["<MouseWheel>"](_PointerEvent(1, 2, delta=120))
+
+    # Then: the fields arrived. The host reads them off the forwarded event to
+    # tell which key was pressed and which way the wheel turned, so dropping
+    # them would be a silent loss of input rather than a visible failure.
+    by_sequence = dict(host.raised_kwargs)
+    assert by_sequence["<Key-a>"]["keysym"] == "a", by_sequence
+    assert by_sequence["<MouseWheel>"]["delta"] == 120, by_sequence
+
+
+def test_the_double_refuses_an_option_the_event_type_cannot_take() -> None:
+    # Given: the double that stands in for Tk. It has to model the refusal, or
+    # the two tests above would pass against a stand-in that accepts anything.
+    host = _HostFrame()
+
+    # When/Then: a key option on a pointer event is red here exactly as it is
+    # TclError on a display, and the reverse holds for the wheel's option.
+    for sequence, option, value in (
+        ("<Button-1>", "keysym", "a"),
+        ("<Motion>", "keysym", "a"),
+        ("<ButtonRelease-1>", "delta", 0),
+        ("<Key-a>", "delta", 120),
+        ("<MouseWheel>", "keysym", "a"),
+    ):
+        with pytest.raises(tk.TclError) as caught:
+            host.event_generate(sequence, x=1, y=2, when="now", **{option: value})
+        assert f"-{option}" in str(caught.value), (
+            sequence,
+            option,
+            str(caught.value),
+        )
+        assert option not in _accepted_generate_options(sequence)
+
+
+def test_tk_only_accepts_the_option_its_own_event_takes() -> None:
+    # Given: a real Tk root, so the table the double enforces is checked
+    # against Tk itself rather than against a second opinion.
+    try:
+        root = tk.Tk()
+    except tk.TclError as error:
+        pytest.skip(f"no display for the real-Tk option check: {error}")
+    try:
+        root.geometry("64x64+0+0")
+        root.update()
+
+        # Tk's overloads cannot see through a dict built at runtime, so both
+        # call sites unpack a dict pinned at an explicit Any boundary.
+        event_kwargs: dict[str, Any]
+
+        # Then/When: the pointer types reject both foreign options...
+        for sequence in ("<Button-1>", "<Motion>", "<ButtonRelease-1>"):
+            for option, value in (("keysym", "a"), ("delta", 0)):
+                event_kwargs = {option: value}
+                with pytest.raises(tk.TclError, match="doesn't accept"):
+                    root.event_generate(sequence, x=1, y=1, when="now", **event_kwargs)
+                assert option not in _accepted_generate_options(sequence)
+
+        # ...and the two types that own them accept exactly those.
+        for sequence, option, value in (
+            ("<MouseWheel>", "delta", 120),
+            ("<Key>", "keysym", "a"),
+            ("<KeyRelease>", "keysym", "a"),
+        ):
+            event_kwargs = {option: value}
+            root.event_generate(sequence, x=1, y=1, when="now", **event_kwargs)
+            assert option in _accepted_generate_options(sequence)
+    finally:
+        root.destroy()
 
 
 def test_the_cursor_over_the_picture_follows_the_host_setting(
