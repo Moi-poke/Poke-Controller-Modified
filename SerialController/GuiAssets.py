@@ -443,6 +443,9 @@ class CaptureArea(tk.Frame):
         # 無いと最初の geo 指定以降がそのままになる。
         self._surface: PreviewRenderer = _create_preview_surface(self, renderer)
         self._surface.attach(int(self.winfo_id()), self.show_size)
+        from ui.photo_surface import SelfTestResult
+
+        self.surface_selftest = SelfTestResult("pending", None, (0, 0, 0, 0))
         self._schedule_selftest()
         self.bind("<Configure>", self._onConfigure)
 

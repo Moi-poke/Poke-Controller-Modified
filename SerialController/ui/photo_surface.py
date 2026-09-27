@@ -152,17 +152,20 @@ class PhotoImageSurface:
         handler が読む ``event.x/event.y`` は渡した値そのものになる。Canvas は
         host の bindtag には無いので、出し直してもこの束縛へ戻らない。
         ``when="now"`` は順序を保つためで、既定の ``tail`` だと press と
-        続く motion の琶くれが起きる。
+        続く motion の乱れが起きる。
 
-        ``MouseWheel`` は ``delta``、``Key`` は ``keysym`` を引き継ぐ。
-        これらを渡さないと、ホイールが効かず、キーの判別ができない。
+        ``MouseWheel`` は ``delta``、``Key``/``KeyRelease`` は ``keysym``
+        を引き継ぐ。これらを渡さないと、ホイールが効かず、キーの判別が
+        できない。イベント型で分けて渡すのは、``hasattr`` では全イベントで
+        常に True になり、``<Button>`` に ``keysym="??"`` が渡って
+        TclError になるため。
         """
 
         def _reemit(event: Any) -> None:
             kwargs: dict[str, Any] = {"x": event.x, "y": event.y, "when": "now"}
-            if hasattr(event, "delta"):
+            if "MouseWheel" in sequence:
                 kwargs["delta"] = event.delta
-            if hasattr(event, "keysym"):
+            if "Key" in sequence:
                 kwargs["keysym"] = event.keysym
             self._host.event_generate(sequence, **kwargs)
 
