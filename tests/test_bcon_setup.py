@@ -426,8 +426,9 @@ def test_menubar_opens_bcon_setup() -> None:
     """Bcon設定がメニューから開ける。WakeSetupは非推奨でメニューに出さない。"""
     from Menubar import PokeController_Menubar
 
+    # 別窓は廃してタブへ移した（closingBconSetup は無い）。メニューはタブを選ぶ
     assert hasattr(PokeController_Menubar, "OpenBconSetup")
-    assert hasattr(PokeController_Menubar, "closingBconSetup")
+    assert not hasattr(PokeController_Menubar, "closingBconSetup")
     assert not hasattr(PokeController_Menubar, "OpenWakeSetup")
     src = Path("SerialController/Menubar.py").read_text(encoding="utf-8")
     assert "Bcon設定" in src

@@ -87,6 +87,7 @@ class SerialPanelMixin:
     applyBaudRate: Any
     _on_setting_changed: Any
     _update_title: Any
+    _refresh_bcon_tab: Any
 
     def _build_serial_frame(self) -> None:
         self.serial_lf = ttk.Labelframe(self.tab_serial)
@@ -421,6 +422,8 @@ class SerialPanelMixin:
         self.transport_cb.config(values=names)
         current = self._selectedTransportName()
         self.transport_name.set(current)
+        # 選択値が決まった今が Bcon タブを出す最初の機会
+        self._refresh_bcon_tab()
 
     def applyTransport(self, event: Any = None) -> None:
         """選択された通信方式へ差し替えて開き直す。"""
@@ -430,11 +433,15 @@ class SerialPanelMixin:
         # 画面から選び直した以上、起動引数の指定はもう効かせない
         self.serial.clear_override()
         if self.serial.sender is None:
+            self._refresh_bcon_tab()
             self._on_setting_changed()
             return
         switched, _linked = self.serial.switch_transport(name, transport_logger=logger)
         if not switched:
+            # 差し替えなし（同じ方式・失敗）でも、画面の選択とタブは揃えておく
+            self._refresh_bcon_tab()
             return
+        self._refresh_bcon_tab()
         # 線は閉じられているので開き直す（従来どおり繋がった状態に戻す）
         self.activateSerial()
         self._on_setting_changed()

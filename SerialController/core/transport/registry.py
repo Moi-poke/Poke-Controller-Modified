@@ -128,6 +128,22 @@ def get_transport_info(name: str) -> dict[str, Any] | None:
     return dict(info) if info is not None else None
 
 
+def transport_capability(name: str | None) -> str:
+    """名前から能力を引く。知らない名前・空は LEGACY_ROW（画面へは何も出さない）。
+
+    resolve_transport_name は知らない名前を GUI へ print する。タブの出し入れの
+    ように「選択が変わるたび・状態を見るだけ」の問合せでは鳴らしたくないため、
+    旧名の読み替えだけ同じ表で行い、黙って引く。
+    """
+    key = str(name).strip() if name is not None else ""
+    if key not in _REGISTRY:
+        key = TRANSPORT_ALIASES.get(key, key)
+    info = _REGISTRY.get(key)
+    if info is None:
+        return LEGACY_ROW
+    return str(info.get("capability", LEGACY_ROW))
+
+
 def resolve_transport_name(name: str | None) -> str:
     """指定された名前を、実際に使える名前へ直す。
 

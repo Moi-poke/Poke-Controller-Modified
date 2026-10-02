@@ -161,6 +161,15 @@ class SerialService:
         """登録されている通信方式名の一覧（選択欄の候補に使う）。"""
         return transport.list_transports()
 
+    @staticmethod
+    def uses_bcon(name: str | None) -> bool:
+        """その通信方式が bcon 系（能力 BCON_STATE）か。
+
+        名前の直書きではなく能力で見る。別プロセス版（switch-bcon-proc）や
+        利用者定義の bcon 互換も同じ口で拾える。
+        """
+        return transport.transport_capability(name) == transport.BCON_STATE
+
     def selected_transport_name(self, configured: str) -> str:
         """これから使う通信方式の名前を決める。
 

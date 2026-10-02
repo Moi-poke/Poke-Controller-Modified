@@ -35,6 +35,7 @@ from services.audio_service import AudioService
 from services.command_runner import CommandRunner
 from services.serial_service import SerialService
 from ui.audio_panel import AudioPanelMixin
+from ui.bcon_panel import BconPanelMixin
 from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
 from ui.log_panel import LogPanelMixin
@@ -67,6 +68,7 @@ class PokeControllerApp(
     CameraPanelMixin,
     AudioPanelMixin,
     SerialPanelMixin,
+    BconPanelMixin,
     CommandPanelMixin,
     LogPanelMixin,
 ):
@@ -288,6 +290,7 @@ class PokeControllerApp(
 
     def _build_setting_tabs(self) -> None:
         """シリアル/コントローラ/オーディオ/コマンドのタブ枠を作る。
+        Bcon タブは bcon 系の Transport を選んだときだけ、シリアルの隣へ出る。
 
         各パネルは自分のタブへ Labelframe を載せる。カメラとログは
         タブの外に残し、常時見えるようにする。
@@ -301,6 +304,9 @@ class PokeControllerApp(
         self.setting_nb.add(self.tab_controller, text="コントローラ")
         self.setting_nb.add(self.tab_audio, text="オーディオ")
         self.setting_nb.add(self.tab_command, text="コマンド")
+        # Bcon タブは Transport が bcon 系のときだけ「シリアル」の隣へ足す
+        # （枠だけここで作る。出し入れは _refresh_bcon_tab）。
+        self._build_bcon_tab()
         self.setting_nb.grid(
             column=0, columnspan=3, padx="5", row=1, rowspan=3, sticky="nsew"
         )
@@ -507,6 +513,8 @@ class PokeControllerApp(
                 self.menu.closeAll()
             except Exception as exc:
                 logger.warning(f"子窓を閉じるときに例外: {exc}")
+        # Bcon タブの購読・期限予約・poll を root 破棄の前に止める
+        self._close_bcon_tab()
         self.runner.shutdown(self.ser)
         self.serial.stop_keyboard()
         self.closingController()

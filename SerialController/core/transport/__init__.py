@@ -42,6 +42,7 @@ from core.transport.registry import (
     load_transport_plugins as load_transport_plugins,
     register_transport as register_transport,
     resolve_transport_name as resolve_transport_name,
+    transport_capability as transport_capability,
     unregister_transport as unregister_transport,
 )
 from core.transport.text_serial import (

@@ -116,6 +116,14 @@ STATUS_FLAG_WIRED = 0x20
 # Commands/CommandColor.py から読む）。
 
 
+def _sender_opened(sender: Any) -> bool:
+    """送り先の線が開いているか。口が無い・壊れていれば偽（例外なし）。"""
+    try:
+        return bool(sender.isOpened())
+    except Exception:
+        return False
+
+
 def parse_capture_seconds(raw: Any) -> int | None:
     """取込秒数を読む。1-60の外は None（送らず注意を出す側で使う）。"""
     try:
@@ -424,8 +432,22 @@ def connect_bcon(
 class BconSetup:
     """bcon設定の小窓。1つだけ開く前提で使う。"""
 
-    def __init__(self, master: Any, sender: Any) -> None:
+    def __init__(
+        self,
+        master: Any,
+        sender: Any,
+        *,
+        embedded: bool = False,
+        sender_provider: Callable[[], Any] | None = None,
+    ) -> None:
+        """embedded=True なら master（タブ枠）の中へ組む。別窓は作らない。
+
+        sender_provider は送り先を都度引く口。serial サービスは Sender を
+        作り直しうるため、タブのように長く生きる側は握り込まず引き直す。
+        """
         self._sender = sender
+        self._sender_provider = sender_provider
+        self._embedded = embedded
         self._queue: queue.Queue = DropOldestQueue(maxsize=BCON_QUEUE_MAX)
         self._queue_dropped_total = 0
         self._busy = False
@@ -450,16 +472,33 @@ class BconSetup:
         # 取込期限の保存証拠とafter予約。期限は要求秒数＋余白の壁時計。
         self._capture_saved_seen = False
         self._capture_deadline_id: Any = None
+        # タブで本体色の問合せを済ませたか（表示のたびに線を叩かない）
+        self._color_asked = False
 
-        self.window = tk.Toplevel(master)
-        self.window.title(BCON_WINDOW_TITLE)
-        self.window.protocol("WM_DELETE_WINDOW", self.close)
+        if embedded:
+            # タブ枠は Notebook が持つ。close で枠ごと壊さず中身（_body）だけ壊す
+            self.window = master
+        else:
+            self.window = tk.Toplevel(master)
+            self.window.title(BCON_WINDOW_TITLE)
+            self.window.protocol("WM_DELETE_WINDOW", self.close)
 
         body = ttk.Frame(self.window, padding=8)
         body.pack(fill=tk.BOTH, expand=True)
+        self._body = body
+
+        # タブは横長で縦が足りないため、操作列とログ列を左右に分ける。
+        # 別窓は従来どおり縦積み（同じ親へ積む＝列を分けない）。
+        if embedded:
+            col_ops = ttk.Frame(body)
+            col_ops.pack(side=tk.LEFT, fill=tk.Y, anchor=tk.N)
+            col_info = ttk.Frame(body)
+            col_info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16, 0))
+        else:
+            col_ops = col_info = body
 
         ttk.Label(
-            body,
+            col_ops,
             text=(
                 "前提: シリアルが開いていること（開→HELLO→live開始の順を守る）。\n"
                 "接続ボタンは STATE を止めて HELLO を送り、通ってから起こす。\n"
@@ -468,14 +507,14 @@ class BconSetup:
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(0, 8))
 
-        row0 = ttk.Frame(body)
+        row0 = ttk.Frame(col_ops)
         row0.pack(fill=tk.X, pady=2)
         self._btn_connect = ttk.Button(
             row0, text="接続(HELLO→開始)", command=self._on_connect
         )
         self._btn_connect.pack(side=tk.LEFT, padx=2)
 
-        row1 = ttk.Frame(body)
+        row1 = ttk.Frame(col_ops)
         row1.pack(fill=tk.X, pady=2)
         ttk.Label(row1, text="取込秒数").pack(side=tk.LEFT)
         self._seconds = tk.IntVar(value=15)
@@ -485,7 +524,7 @@ class BconSetup:
         self._btn_cap = ttk.Button(row1, text="取込開始", command=self._on_capture)
         self._btn_cap.pack(side=tk.LEFT, padx=4)
 
-        row2 = ttk.Frame(body)
+        row2 = ttk.Frame(col_ops)
         row2.pack(fill=tk.X, pady=2)
         self._btn_beacon = ttk.Button(row2, text="BEACON再生", command=self._on_beacon)
         self._btn_beacon.pack(side=tk.LEFT, padx=2)
@@ -494,7 +533,7 @@ class BconSetup:
         self._btn_ping = ttk.Button(row2, text="疎通(PING)", command=self._on_ping)
         self._btn_ping.pack(side=tk.LEFT, padx=2)
 
-        row3 = ttk.Frame(body)
+        row3 = ttk.Frame(col_ops)
         row3.pack(fill=tk.X, pady=2)
         self._btn_winfo = ttk.Button(row3, text="W表示", command=self._on_wired_show)
         self._btn_winfo.pack(side=tk.LEFT, padx=2)
@@ -503,7 +542,7 @@ class BconSetup:
         self._btn_w1 = ttk.Button(row3, text="W1有線", command=self._on_wired_on)
         self._btn_w1.pack(side=tk.LEFT, padx=2)
 
-        row_em = ttk.Frame(body)
+        row_em = ttk.Frame(col_ops)
         row_em.pack(fill=tk.X, pady=2)
         ttk.Label(row_em, text="種別").pack(side=tk.LEFT)
         self._btn_e0 = ttk.Button(
@@ -519,14 +558,18 @@ class BconSetup:
         )
         self._btn_e2.pack(side=tk.LEFT, padx=2)
 
-        row_bootsel = ttk.Frame(body)
+        row_bootsel = ttk.Frame(col_ops)
         row_bootsel.pack(fill=tk.X, pady=2)
         self._btn_bootsel = ttk.Button(
             row_bootsel, text="BOOTSEL再起動", command=self._on_bootsel
         )
         self._btn_bootsel.pack(side=tk.LEFT, padx=2)
+        self._btn_reconnect = ttk.Button(
+            row_bootsel, text="再接続を試す", command=self._on_reconnect
+        )
+        self._btn_reconnect.pack(side=tk.LEFT, padx=2)
 
-        row_baud = ttk.Frame(body)
+        row_baud = ttk.Frame(col_info)
         row_baud.pack(fill=tk.X, pady=2)
         ttk.Label(row_baud, text="baud").pack(side=tk.LEFT)
         self._baud_var = tk.StringVar(value=BAUD_DISPLAY_LABELS[BAUD_DEFAULT_INDEX])
@@ -541,14 +584,14 @@ class BconSetup:
         self._btn_baud = ttk.Button(row_baud, text="実行", command=self._on_baud)
         self._btn_baud.pack(side=tk.LEFT, padx=4)
 
-        row4 = ttk.Frame(body)
+        row4 = ttk.Frame(col_info)
         row4.pack(fill=tk.X, pady=2)
         self._btn_clear = ttk.Button(row4, text="X破棄", command=self._on_clear)
         self._btn_clear.pack(side=tk.LEFT, padx=2)
         self._btn_keys = ttk.Button(row4, text="K鍵削除", command=self._on_delete_keys)
         self._btn_keys.pack(side=tk.LEFT, padx=2)
 
-        row5 = ttk.Frame(body)
+        row5 = ttk.Frame(col_info)
         row5.pack(fill=tk.X, pady=2)
         ttk.Label(row5, text="色(RRGGBB)").pack(side=tk.LEFT)
         self._colors: list[Any] = []
@@ -562,7 +605,14 @@ class BconSetup:
             entry.pack(side=tk.LEFT, padx=2)
             self._colors.append(var)
             color_entries.append(entry)
-        self._color_canvas = tk.Canvas(row5, width=96, height=20, highlightthickness=0)
+        if embedded:
+            row5_tail = ttk.Frame(col_info)
+            row5_tail.pack(fill=tk.X, pady=2)
+        else:
+            row5_tail = row5
+        self._color_canvas = tk.Canvas(
+            row5_tail, width=96, height=20, highlightthickness=0
+        )
         self._color_canvas.pack(side=tk.LEFT, padx=4)
         self._color_items: list[int] = []
         for index in range(4):
@@ -575,12 +625,17 @@ class BconSetup:
         for entry, var in zip(color_entries, self._colors):
             entry.bind("<KeyRelease>", lambda _e: self._refresh_color_preview())
             var.trace_add("write", lambda *_a: self._refresh_color_preview())
-        self._btn_color = ttk.Button(row5, text="色変更", command=self._on_color)
+        self._btn_color = ttk.Button(row5_tail, text="色変更", command=self._on_color)
         self._btn_color.pack(side=tk.LEFT, padx=4)
         self._refresh_color_preview()
-        self._query_color_on_open()
+        if embedded:
+            # タブは起動時に作られ、線が開く前から居る。開いた後で最初に
+            # 表示された時に問う（別窓は従来どおり開いた時に問う）。
+            self.window.bind("<Map>", self._on_tab_mapped, add="+")
+        else:
+            self._query_color_on_open()
 
-        row_player = ttk.Frame(body)
+        row_player = ttk.Frame(col_info)
         row_player.pack(fill=tk.X, pady=2)
         ttk.Label(row_player, text="プレイヤーLED").pack(side=tk.LEFT)
         # PLAYER_INFO のLEDはbit0=LED1..bit3=LED4。実機は縦4灯で
@@ -607,12 +662,17 @@ class BconSetup:
         self._vib_label = ttk.Label(row_player, text="振動: 未受信")
         self._vib_label.pack(side=tk.LEFT, padx=4)
 
-        self._log = tk.Text(body, height=16, width=72, state=tk.DISABLED)
+        self._log = tk.Text(
+            col_info,
+            height=8 if embedded else 16,
+            width=60 if embedded else 72,
+            state=tk.DISABLED,
+        )
         self._log.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
         self._poll()
         # 既に bcon で繋がっていれば、窓を開いた時点から実況を受ける。
-        self._bind_player_info(getattr(self._sender, "transport", None))
+        self._bind_player_info(getattr(self._current_sender(), "transport", None))
 
     # -- 画面まわり ------------------------------------------------------
     # WakeSetup と同一規律である。作業は別スレッド、画面更新だけ after()、
@@ -639,9 +699,11 @@ class BconSetup:
         except Exception:
             pass
         self._busy = False
+        # 埋め込みは枠（タブ）を残して中身だけ壊す。別窓は窓ごと壊す。
+        target = self._body if getattr(self, "_embedded", False) else self.window
         try:
-            if self.window.winfo_exists():
-                self.window.destroy()
+            if target.winfo_exists():
+                target.destroy()
         except Exception:
             pass
 
@@ -762,14 +824,52 @@ class BconSetup:
         except Exception:
             pass
 
+    def _follow_sender(self) -> None:
+        """送り先の運搬器が替わっていたら PLAYER_INFO の購読を張り直す。
+
+        別窓は開いた時点の運搬器を使えばよいが、タブは起動時から居て
+        Transport 切替・再接続をまたぐ。ボタンを押すまで実況が止まる
+        のを避けるため、poll のたびに同一性だけ見る（替わった時だけ張る）。
+        """
+        try:
+            transport = getattr(self._current_sender(), "transport", None)
+        except Exception:
+            return
+        if transport is not getattr(self, "_rx_transport", None):
+            self._bind_player_info(transport)
+
+    def _on_tab_mapped(self, _event: Any = None) -> None:
+        """タブが表示されたら、線が開いていて未問合せのときだけ色を問う。"""
+        if self._color_asked or getattr(self, "_closed", False):
+            return
+        if not _sender_opened(self._current_sender()):
+            return
+        self._color_asked = True
+        self._query_color_on_open()
+
+    def _current_sender(self) -> Any:
+        """今の送り先。provider があればそれを引き、無ければ渡された物。"""
+        provider = getattr(self, "_sender_provider", None)
+        if callable(provider):
+            try:
+                return provider()
+            except Exception:
+                _LOGGER.exception("送り先の取得に失敗しました")
+                return None
+        return self._sender
+
     def _query_color_on_open(self) -> None:
         """窓を開いたら本体色を問い、4欄へ前埋めする。線待ちは別スレッド。"""
         try:
-            sender = self._sender
+            sender = self._current_sender()
             transport = getattr(sender, "transport", None)
         except Exception:
             return
         if transport is None or not is_bcon_transport(transport):
+            return
+        # タブは接続前から存在する。線が閉じている間は問わない
+        # （問うと失敗扱いで 000000 へ潰し、利用者の入力を消してしまう）。
+        if getattr(self, "_embedded", False) and not _sender_opened(sender):
             return
 
         def job() -> None:
@@ -1103,6 +1203,8 @@ class BconSetup:
                 pass
             self._note_poll_tick(tick_start, drained)
             return
+        if getattr(self, "_embedded", False):
+            self._follow_sender()
         batch: list[Any] = []
         try:
             while len(batch) < BCON_FLUSH_MAX:
@@ -1278,7 +1380,7 @@ class BconSetup:
                     pass
 
     def _transport(self) -> Any | None:
-        sender = self._sender
+        sender = self._current_sender()
         transport = getattr(sender, "transport", None)
         if transport is None:
             self._queue.put(("log", "シリアルが開いていません。先に接続してください。"))
@@ -1381,11 +1483,15 @@ class BconSetup:
             transport = self._transport()
             if transport is None:
                 return
-            connect_bcon(
+            connected = connect_bcon(
                 transport,
                 lambda text: self._queue.put(("log", text)),
-                self._sender,
+                self._current_sender(),
             )
+            # タブは接続前から居るため、繋がった今が色を読める最初の機会
+            if connected and getattr(self, "_embedded", False):
+                self._color_asked = True
+                self._query_color_on_open()
 
         self._run(job)
 
@@ -1668,6 +1774,44 @@ class BconSetup:
                     "RPI-RP2ドライブ表示・COM再出現まで待ってください。"
                     "復帰後はポートを選び直して再接続し、再HELLOからやり直してください。"
                     "再接続後は取込・BEACONが使えます。",
+                )
+            )
+
+        self._run(job)
+
+    def _on_reconnect(self) -> None:
+        """Pico の待機状態を明示的に解除して再接続を試みる。
+
+        Switch がコントローラを受け付けない状態 (1台制限など) では Pico は
+        拒否されて page を止め待機する。時間では自動では復帰しないので、
+        運用者が明示的に起こす。実コントローラーのボタン押下に相当する。
+        送信はワーカースレッドから行い、応答はキューで GUI へ戻す。
+        """
+
+        def job() -> None:
+            transport = self._require_bcon()
+            if transport is None:
+                return
+            try:
+                request = getattr(transport, "request_reconnect", None)
+                ok = bool(request(timeout=1.0)) if callable(request) else False
+            except Exception:
+                ok = False
+            if not ok:
+                self._queue.put(
+                    (
+                        "log",
+                        "再接続要求に応答なしでした。FWがT_RECONNECT(0x3B)対応か、"
+                        "COM Survivalを確認してください。",
+                    )
+                )
+                return
+            self._queue.put(
+                (
+                    "log",
+                    "再接続を試みます。Switch側でコントローラを受け付ける状態"
+                    "（別コントローラを解除済み）にしてから行ってください。"
+                    "接続できたかはUART0ログの hid open で確認してください。",
                 )
             )
 

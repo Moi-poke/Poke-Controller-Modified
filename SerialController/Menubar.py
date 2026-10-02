@@ -3,7 +3,6 @@ from typing import Any
 
 import DiscordNotify
 import WindowUtils
-from BconSetup import BconSetup
 from InputLogConfig import InputLogConfig
 from KeyConfig import PokeKeycon
 from SerialMonitor import SerialMonitor
@@ -20,7 +19,6 @@ class PokeController_Menubar(tk.Menu):
 
         self.poke_treeview: Any | None = None
         self.key_config: PokeKeycon | None = None
-        self.bcon_setup: BconSetup | None = None
         self.serial_monitor: SerialMonitor | None = None
         self.input_log_config: InputLogConfig | None = None
 
@@ -224,23 +222,18 @@ class PokeController_Menubar(tk.Menu):
         logger.info(f"縦横比の固定を{'有効' if lock else '解除'}にしました。")
 
     def OpenBconSetup(self) -> None:
-        logger.debug("Open BconSetup window")
-        bcon_window = getattr(self.bcon_setup, "window", None)
-        if bcon_window is not None and self._alive(bcon_window):
-            bcon_window.focus_force()
-            return
-        self.bcon_setup = None
-        self.bcon_setup = BconSetup(self.root, self.ser)
-        self.bcon_setup.window.protocol("WM_DELETE_WINDOW", self.closingBconSetup)
+        """Bcon設定タブを前面にする。別窓は開かない。
 
-    def closingBconSetup(self) -> None:
-        logger.debug("Close BconSetup window")
-        if self.bcon_setup is not None:
-            try:
-                self.bcon_setup.close()
-            except Exception:
-                pass
-            self.bcon_setup = None
+        タブは Transport が bcon 系のときだけ出る。出ていないときは、
+        メニューが無反応に見えないよう理由を画面へ出す。
+        """
+        logger.debug("Select Bcon tab")
+        if self.app.select_bcon_tab():
+            return
+        print(
+            "Bcon設定は Transport を switch-bcon（または switch-bcon-proc）に"
+            "すると、シリアルの隣のタブに出ます。"
+        )
 
     def OpenSerialMonitor(self) -> None:
         logger.debug("Open SerialMonitor window")
@@ -276,7 +269,6 @@ class PokeController_Menubar(tk.Menu):
         except Exception:
             pass
         for name in (
-            "bcon_setup",
             "key_config",
             "poke_treeview",
             "input_log_config",
