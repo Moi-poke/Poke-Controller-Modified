@@ -42,7 +42,10 @@ _PS_DASH = 1
 _BI_RGB = 0
 _BITSPIXEL = 12
 _CLR_INVALID = 0xFFFFFFFF
-_NULL_BRUSH_STOCK = 1
+# ストックブラシは 5 = HOLLOW_BRUSH (NULL_BRUSH)。1 は LTGRAY_BRUSH で
+# 輪郭線の中を 0xC0C0C0 に塗りつぶし、capture 映像を覆う。設計 5節
+# L287/L295/L327 は全輪郭線に NULL_BRUSH を要求する。
+_NULL_BRUSH_STOCK = 5
 
 _WINDOW_CLASS = "PokeConPreviewSurface"
 _SUPPORTED_BIT_DEPTHS = (16, 24, 32)
@@ -613,6 +616,9 @@ class GdiSurface:
         self._child = 0
         self._memory_dc = 0
         self._back: np.ndarray[tuple[int, ...], np.dtype[np.uint8]] | None = None
+        # 映像だけの base 層。compose が映像を書いてオーバーレイを描く前に
+        # 撮り、recompose がここから復元する。_back の入れ替え時に無効化。
+        self._base: np.ndarray[tuple[int, ...], np.dtype[np.uint8]] | None = None
         self._size = (0, 0)
         self._rebuilding = False
         self._pending_frame = False
@@ -748,6 +754,9 @@ class GdiSurface:
         # lpvBits はこの配列を指すので DC より先に落とす。DIB section は DC と
         # 共に死ぬので HBITMAP には DeleteObject しない（二重解放になる）。
         self._back = None
+        # base も古い DIB を指すので同時に無効化。残すと recompose が解放済み
+        # メモリを読み戻す。
+        self._base = None
         if self._memory_dc:
             self._api.delete_dc(self._memory_dc)
         self._memory_dc = memory_dc
@@ -846,6 +855,11 @@ class GdiSurface:
             np.copyto(target[:, :, :3], frame[:height, :width])
             if target.shape[2] > 3:
                 target[:, :, 3] = 0xFF
+        # 映像を書いた直後・オーバーレイを描く前に base を撮る。描画後にずらすと
+        # 前のオーバーレイが base に焼き込み、recompose が意味を失う。
+        if self._base is None or self._base.shape != back.shape:
+            self._base = np.empty_like(back)
+        np.copyto(self._base, back)
         self._draw_overlay(overlay)
         self._pending_frame = True
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
@@ -885,6 +899,30 @@ class GdiSurface:
             )
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
 
+    def recompose(self, overlay: OverlayState) -> RenderResult:
+        """合成済みの映像にだけオーバーレイを描き直す。新しい frame は要らない。
+
+        compose が撮った映像 base を back に戻してからオーバーレイを描く。
+        カメラからの読み直しも frame の変換もしない。base が無い（一度も
+        合成していない）時は no_frame を返す。
+        """
+        started = time.perf_counter_ns()
+        if self._child == 0 or self._back is None:
+            self._note_failure(
+                "no_hwnd", "プレビュー面が未接続で再合成できない stage=recompose"
+            )
+            return RenderResult(False, time.perf_counter_ns() - started, "no_hwnd")
+        base = self._base
+        if base is None:
+            self._note_failure(
+                "no_frame", "合成済みの映像が無く再合成できない stage=recompose"
+            )
+            return RenderResult(False, time.perf_counter_ns() - started, "no_frame")
+        np.copyto(self._back, base)
+        self._draw_overlay(overlay)
+        self._pending_frame = True
+        return RenderResult(True, time.perf_counter_ns() - started, "ok")
+
     def _note_failure(self, detail: str, template: str, *args: Any) -> None:
         """同じ reason のログは 1 度だけ出す。回数は各カウンタが持つ。"""
         if detail in self._logged_failures:
@@ -897,6 +935,9 @@ class GdiSurface:
             return
         # lpvBits はこの配列を指すので DestroyWindow より先に落とす。
         self._back = None
+        # base も同じ DIB を見るので同時に落とす。解放後に残すと recompose が
+        # 解放済みメモリを読み戻す。
+        self._base = None
         self._pending_frame = False
         child, memory_dc = self._child, self._memory_dc
         self._child = 0

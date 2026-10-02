@@ -280,6 +280,29 @@ class PhotoImageSurface:
         self._draw_overlay(self._overlay)
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
 
+    def recompose(self, overlay: OverlayState) -> RenderResult:
+        """新しいフレーム無しでオーバーレイだけを描き直す。
+
+        スティックを離した時に新しいフレームは来ない。来るのはオーバーレイだけ。
+        ``_drawFrame`` はカメラの ``seq`` だけで描き直しを決める
+        （``GuiAssets.py:752-754``）ので、フレームが変わらない間は何も描かれず、
+        押していないスティックの表示が残る。この面は毎フレーム PhotoImage を
+        作り直すので、古いフレームで compose し直すのは無駄が大きい。代わりに
+        "overlay" タグの項目を消して、新しいオーバーレイだけを描く。
+
+        present と同じく、呼ばれた時点で描画は完了する。フレームは触らない
+        （PhotoImage を作らず、カメラバッファも読み直さない）。
+        """
+        started = time.perf_counter_ns()
+        if self._canvas is None:
+            self._note_failure(
+                "no_hwnd", "プレビュー面が未接続で再合成できない stage=recompose"
+            )
+            return RenderResult(False, time.perf_counter_ns() - started, "no_hwnd")
+        self._overlay = overlay
+        self._draw_overlay(overlay)
+        return RenderResult(True, time.perf_counter_ns() - started, "ok")
+
     def release(self) -> None:
         canvas = self._canvas
         self._photo = None

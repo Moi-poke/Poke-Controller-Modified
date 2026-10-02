@@ -150,11 +150,11 @@ class _Recording:
 class RecordingSurface(_Recording):
     """``PreviewRenderer``-shaped double for the present path.
 
-    All six protocol methods exist, so ``isinstance(surface, PreviewRenderer)``
+    All seven protocol methods exist, so ``isinstance(surface, PreviewRenderer)``
     holds and a defensive check in production cannot reject the double. Only
-    ``compose`` / ``present`` / ``resize`` / ``release`` are the ones the
-    ``CaptureArea`` contract talks about; ``attach`` and ``client_size`` exist
-    to satisfy the protocol and are recorded for completeness.
+    ``compose`` / ``recompose`` / ``present`` / ``resize`` / ``release`` are the
+    ones the ``CaptureArea`` contract talks about; ``attach`` and ``client_size``
+    exist to satisfy the protocol and are recorded for completeness.
     """
 
     def __init__(self, client_size: tuple[int, int] = (1280, 720)) -> None:
@@ -162,6 +162,7 @@ class RecordingSurface(_Recording):
         self.attach_calls: list[tuple[int, tuple[int, int]]] = []
         self.resizes: list[tuple[int, int]] = []
         self.composes: list[tuple[Any, Any]] = []
+        self.recompose_calls: list[Any] = []
         self.presents = 0
         self.releases = 0
         self._client_size = client_size
@@ -177,6 +178,11 @@ class RecordingSurface(_Recording):
     def compose(self, frame: Any, overlay: Any) -> Any:
         self._record("compose", frame, overlay)
         self.composes.append((frame, overlay))
+        return _render_result(ok=True, detail="ok")
+
+    def recompose(self, overlay: Any) -> Any:
+        self._record("recompose", overlay)
+        self.recompose_calls.append(overlay)
         return _render_result(ok=True, detail="ok")
 
     def present(self) -> Any:

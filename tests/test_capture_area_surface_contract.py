@@ -58,6 +58,8 @@ from gdi_present_doubles import (
     bgr_frame,
     filter_probe_frame,
     spy,
+    stick_press,
+    stick_release,
 )
 from gdi_source_readers import (
     GUI_ASSETS_SOURCE,
@@ -1699,3 +1701,110 @@ def test_photo_surface_paints_the_capture_frame_into_a_smaller_show_size(
     image = built[-1]
     assert image.size == show_size
     assert np.array_equal(np.asarray(image)[:, :, ::-1], frame[:360, :640])
+
+
+# ===========================================================================
+# K. An overlay change with an unchanged seq must still repaint
+# ===========================================================================
+#
+# ``_drawFrame`` dedups on the camera sequence alone
+# (``GuiAssets.py:752-754``): a repeated ``seq`` returns ``False`` before the
+# overlay is ever consulted. The mouse handlers only mutate the frozen
+# ``StickState`` / ``OverlayState`` data -- redraw is purely timer-driven
+# through ``PreviewClock`` -> ``_dispatch_tick`` -> ``_drawFrame`` -- so
+# ``_drawFrame`` is the ONLY place that can notice an overlay change. On a
+# capture board running 5-10 fps the consequence is visible: the ring lags
+# 100-200 ms behind the drag, and after the finger lifts the stale ring stays
+# on screen until the camera happens to publish a new generation.
+#
+# Both tests are RED today and both fail on the return value as their primary
+# assertion, so the RED reason is unambiguous: ``_drawFrame`` returns
+# ``False``. The secondary assertion (the surface really was asked to repaint)
+# is made on the existing compose recording, ``RecordingSurface.composes``;
+# the double has no recompose counter, and inventing one is another agent's
+# task in a later wave.
+
+
+def test_draw_frame_repaints_when_only_the_overlay_changed() -> None:
+    # Given: a bare area whose camera has published exactly one generation, so
+    # the same-seq skip has a sequence to skip.
+    bare = bare_capture_area()
+    frame = bgr_frame()
+    bare.camera.frame = frame
+    bare.camera.sequence = 1
+
+    # When: the first frame is drawn...
+    first = getattr(bare.area, "_drawFrame")(frame, 1)
+
+    # Then: ...and it really was presented and stored its seq, so the second
+    # call below is a same-seq call rather than a first call in a second
+    # costume. PASSES today; it is the guard that keeps the RED below about
+    # the overlay rather than about the fixture.
+    assert first is True
+    assert bare.area._last_frame_seq == 1
+
+    # When: the overlay changes while the camera frame does not -- the stick is
+    # armed between two ticks of a 5-10 fps source -- and the same seq is drawn
+    # again.
+    stick_press(bare.area, 3, 4, "L")
+    second = getattr(bare.area, "_drawFrame")(frame, 1)
+
+    # Then: the second draw repaints, because the overlay is part of what is
+    # on the screen. RED today: the skip at GuiAssets.py:752-754 keys on seq
+    # alone, so the armed ring waits for the next camera generation -- up to
+    # 100-200 ms at 5-10 fps -- before it appears.
+    assert second is True, (
+        "UNMET: _drawFrame returned False for a repeated seq after the overlay "
+        "changed. The same-seq skip at GuiAssets.py:752-754 keys on seq alone, "
+        "so an armed stick is not drawn until the camera publishes a new frame."
+    )
+
+    # Then: and the surface really was asked to repaint, so a fix that returns
+    # True without composing would satisfy the assertion above and still draw
+    # nothing. Asserted on the compose recording plus the recompose counter
+    # (``RecordingSurface.composes`` + ``recompose_calls``): the overlay-only
+    # path repaints through recompose, not compose.
+    assert len(bare.surface.composes) + len(bare.surface.recompose_calls) == 2, (
+        f"UNMET: the surface recorded {len(bare.surface.composes)} compose(s) "
+        f"and {len(bare.surface.recompose_calls)} recompose(s) "
+        "for two draws; an overlay change with an unchanged seq has to reach "
+        "the surface again."
+    )
+
+
+def test_draw_frame_repaints_after_release_without_a_new_frame() -> None:
+    # Given: a bare area on generation 1 with the left stick armed, so the
+    # overlay on screen is a ring the camera did not change.
+    bare = bare_capture_area()
+    frame = bgr_frame()
+    bare.camera.frame = frame
+    bare.camera.sequence = 1
+    getattr(bare.area, "_drawFrame")(frame, 1)
+    stick_press(bare.area, 3, 4, "L")
+    assert bare.area._last_frame_seq == 1
+
+    # When: the stick is released -- the overlay changes back to default -- and
+    # the same seq is drawn again before the camera publishes a new frame.
+    stick_release(bare.area, "L")
+    repainted = getattr(bare.area, "_drawFrame")(frame, 1)
+
+    # Then: the draw repaints, so the stale ring is erased at once. RED today:
+    # the same-seq skip returns False and the ring stays on screen until the
+    # next camera generation, up to 100-200 ms at 5-10 fps.
+    assert repainted is True, (
+        "UNMET: _drawFrame returned False for a repeated seq after the stick "
+        "was released. The same-seq skip at GuiAssets.py:752-754 keys on seq "
+        "alone, so the released ring is not erased until the camera publishes "
+        "a new frame."
+    )
+
+    # Then: and the surface really was asked to repaint. Asserted on the
+    # compose recording plus the recompose counter
+    # (``RecordingSurface.composes`` + ``recompose_calls``): the overlay-only
+    # path repaints through recompose, not compose.
+    assert len(bare.surface.composes) + len(bare.surface.recompose_calls) == 2, (
+        f"UNMET: the surface recorded {len(bare.surface.composes)} compose(s) "
+        f"and {len(bare.surface.recompose_calls)} recompose(s) "
+        "for two draws; releasing the stick with an unchanged seq has to reach "
+        "the surface again."
+    )

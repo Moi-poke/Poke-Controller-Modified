@@ -1044,6 +1044,9 @@ def test_preview_renderer_protocol_is_runtime_checkable_over_its_method_set() ->
         def compose(self, frame: Any, overlay: Any) -> Any:
             return None
 
+        def recompose(self, overlay: Any) -> Any:
+            return None
+
         def present(self) -> Any:
             return None
 
@@ -1066,8 +1069,14 @@ def test_preview_renderer_protocol_is_runtime_checkable_over_its_method_set() ->
         def present(self) -> Any:
             return None
 
-    # Then: the protocol is runtime checkable and pins exactly the six methods.
+    # Then: the protocol is runtime checkable and pins exactly the seven methods.
     assert getattr(protocol, "_is_runtime_protocol", False) is True
+    assert hasattr(protocol, "recompose"), (
+        "PreviewRenderer has no recompose method. _drawFrame calls "
+        "self._surface.recompose(overlay) when only the overlay changed "
+        "under an unchanged seq, so a renderer that implements only the "
+        "protocol would crash with AttributeError at stick release."
+    )
     assert isinstance(Conforming(), protocol) is True
     assert isinstance(Incomplete(), protocol) is False
 
@@ -2286,3 +2295,105 @@ def test_the_real_apis_every_symbol_declares_argtypes_and_restype() -> None:
     assert len(functions) >= 20, f"only {len(functions)} symbols resolved"
     undeclared = [name for name, fn in functions.items() if fn.argtypes is None]
     assert not undeclared, f"no argtypes declared: {sorted(undeclared)}"
+
+
+# ---------------------------------------------------------------------------
+# B (continued). real-GDI rendering contracts that the recording double cannot
+# see, and the recompose path the surface does not have yet.
+# ---------------------------------------------------------------------------
+
+# Win32 のストックブラシ ID: 0=WHITE_BRUSH, 1=LTGRAY_BRUSH, 2=GRAY,
+# 3=DKGRAY, 4=BLACK, 5=NULL_BRUSH。設計（5節 L287/L295/L327）は全ての
+# 輪郭線に NULL_BRUSH を要求する。
+_PROBE_SIZE = 200
+# 探針が使った "映像" の色。COLORREF 0x00BBGGRR で r=0xCC g=0x66 b=0x33。
+# GetPixel の戻り値はこれだが、32bpp DIB のメモリは B,G,R,A 順なので、
+# ピクセルに書き込む値は R/B を入れ替えないと GetPixel の戻り値と一致しない。
+_VIDEO_SENTINEL = 0x003366CC
+_DIB_SENTINEL = 0x00CC6633
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 GDI rendering is Windows-only")
+def test_hollow_brush_leaves_the_pixels_under_every_outline_untouched() -> None:
+    # Given: the real shipped api, a 200x200 32bpp DIB filled with a sentinel
+    # "video" colour, and a memory DC with the DIB selected into it. No window,
+    # no HWND, no display, no hardware -- this runs headless on CI.
+    module = _surface_module()
+    api = module.CtypesGdiApi()
+    info = module.DibInfo(
+        bi_width=_PROBE_SIZE,
+        bi_height=-_PROBE_SIZE,
+        bi_bit_count=32,
+        bi_compression=_BI_RGB,
+    )
+    section = api.create_dib_section(info)
+    pixels = np.ctypeslib.as_array(
+        ctypes.cast(section.bits_address, ctypes.POINTER(ctypes.c_uint32)),
+        shape=(_PROBE_SIZE * _PROBE_SIZE,),
+    )
+    pixels[:] = _DIB_SENTINEL
+    hdc = api.create_compatible_dc(0)
+    api.select_object(hdc, section.hbitmap)
+    pen = api.create_pen(_PS_SOLID, 1, _WHITE)
+    # _build_static_objects が使うのと同じオブジェクト。
+    brush = api.create_hollow_brush()
+    try:
+        api.select_object(hdc, pen)
+        api.select_object(hdc, brush)
+
+        # When: an Ellipse is drawn over the sentinel.
+        api.ellipse(hdc, 40, 40, 160, 160)
+
+        # Then: the interior pixel still equals the sentinel video colour.
+        # 今日は brush が LTGRAY_BRUSH なので内側は 0xC0C0C0 になり、ここで落ちる。
+        assert api.get_pixel(hdc, 100, 100) == _VIDEO_SENTINEL
+
+        # When: the DIB is reset and a Rectangle is drawn over the sentinel.
+        pixels[:] = _DIB_SENTINEL
+        api.rectangle(hdc, 40, 40, 160, 160)
+
+        # Then: the interior pixel still equals the sentinel video colour.
+        assert api.get_pixel(hdc, 100, 100) == _VIDEO_SENTINEL
+    finally:
+        api.delete_dc(hdc)
+        api.delete_object(section.hbitmap)
+        api.delete_object(pen)
+        api.delete_object(brush)
+
+
+def test_recompose_restores_the_video_base_without_a_new_frame() -> None:
+    # Given: an attached surface with a composited frame and an active left stick.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+    surface = _attached(api, module)
+    overlay_a = module.OverlayState(
+        left_stick=module.StickState(
+            active=True, center_x=640, center_y=360, radius=60, knob_x=660, knob_y=350
+        )
+    )
+    assert surface.compose(_frame(720, 1280), overlay_a).ok is True
+    snapshot = surface._back.copy()
+    ellipses_before = len(api.ellipse_calls)
+
+    # When: the back buffer is scribbled over, simulating the residue a
+    # previous overlay draw leaves on the video.
+    surface._back[:] = 0
+
+    # When: recompose is called with a different overlay and no new frame.
+    # 引数が overlay だけなのが「新しい frame は要らない」の証拠。
+    overlay_b = module.OverlayState(
+        right_stick=module.StickState(
+            active=True, center_x=200, center_y=120, radius=30, knob_x=215, knob_y=108
+        )
+    )
+    result = surface.recompose(overlay_b)
+
+    # Then: it returns a successful RenderResult.
+    assert result.ok is True
+
+    # Then: the video base is restored from a private base layer -- not left
+    # dirty and not re-read from the camera.
+    assert np.array_equal(surface._back, snapshot)
+
+    # Then: the new overlay was actually drawn.
+    assert len(api.ellipse_calls) > ellipses_before

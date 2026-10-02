@@ -1461,3 +1461,70 @@ def test_the_cursor_over_the_picture_follows_the_host_setting(
     assert not [c for c in attached.canvas.config_calls if "cursor" in c], (
         f"the surface set a cursor on the canvas: {attached.canvas.config_calls}"
     )
+
+
+# ===========================================================================
+# recompose() redraws the overlay with no new frame
+# ===========================================================================
+#
+# スティックを離した時に新しいフレームは来ない。来るのはオーバーレイだけ。
+# GdiSurface には専用の経路が既にあるが、この面には無い。無いと mac/Linux
+# だけスティックの表示が残り、押していないのに押しているように見える。
+
+
+def test_recompose_redraws_the_overlay_without_a_new_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an attached surface that has composited and presented one frame
+    # with an active left stick, with the records cleared so what gets
+    # measured below is the recompose's own effect and not the present's.
+    from core.preview_renderer import OverlayState, RenderResult, StickState
+
+    attached = _attach(monkeypatch)
+    surface, canvas = attached.surface, attached.canvas
+    width, height = _capture_size()
+    held = OverlayState(
+        left_stick=StickState(
+            active=True,
+            center_x=100,
+            center_y=100,
+            radius=20,
+            knob_x=110,
+            knob_y=100,
+        )
+    )
+    composed = surface.compose(_contiguous_frame(width, height), held)
+    assert composed.ok is True, composed.detail
+    assert surface.present().ok is True
+    assert canvas.item_calls, "the held stick never reached the canvas"
+    canvas.item_calls.clear()
+    canvas.delete_calls.clear()
+    photos_after_present = len(attached.photos)
+
+    # When: the stick is released and only the overlay is recomposited. No
+    # new frame arrives -- the camera has nothing new to say, and a caller
+    # that had one would have called compose instead.
+    result = surface.recompose(OverlayState())
+
+    # Then: it answers in the protocol's own shape, so the overlay-only path
+    # is a first-class operation and not something the caller has to fake by
+    # recompositing a stale frame.
+    assert isinstance(result, RenderResult), result
+    assert result.ok is True, result
+
+    # Then: and the canvas reflects the new overlay exactly. The held
+    # stick's ovals are taken down and nothing is drawn in their place,
+    # because a released stick draws no circle.
+    assert canvas.delete_calls == ["overlay"], canvas.delete_calls
+    assert canvas.item_calls == [], (
+        f"recompose drew {canvas.item_calls}; a released stick must leave no "
+        "overlay items behind"
+    )
+
+    # Then: and no PhotoImage was built, because the camera buffer was never
+    # re-read. A recompose that rebuilt the frame would do the erased video's
+    # work twice and could not be told apart from a full compose.
+    assert len(attached.photos) == photos_after_present, (
+        f"recompose built {len(attached.photos) - photos_after_present} new "
+        "PhotoImage(s); the overlay-only path must not touch the frame"
+    )

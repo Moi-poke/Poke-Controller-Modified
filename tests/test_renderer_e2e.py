@@ -163,7 +163,7 @@ GUARD_PROBES: Final[tuple[tuple[str, str], ...]] = (
     ("idempotence guard", "== self._size"),
 )
 
-SCHEMA_VERSION: Final[int] = 1
+SCHEMA_VERSION: Final[int] = 2
 REPORT_ARTIFACT: Final[str] = "report.json"
 GEOMETRY_TRACE_ARTIFACT: Final[str] = "geometry_trace.jsonl"
 TEARDOWN_ARTIFACT: Final[str] = "teardown.json"
@@ -811,6 +811,7 @@ def _run_renderer(
     clock_mode = "stopped"
     surface_name = ""
     surface_selftest: Any = None
+    surface_selftest_live: Any = None
     try:
         root = tk.Tk()
         root.title(f"PokeCon renderer E2E ({renderer})")
@@ -859,6 +860,21 @@ def _run_renderer(
         shim_calls = shim.run_until(RUN_S)
         run_elapsed_s = time.perf_counter() - started
         commits_after_run = probe.commits
+
+        # End-of-run self-test capture, before teardown: the GuiAssets mirror
+        # and the surface's own verdict, read at one moment while the window
+        # is still mapped. The mirror is read here rather than after the
+        # finally block because the non-vacuity control replays configure
+        # events through _onConfigure, which -- once the mirror refresh below
+        # lands -- would rewrite the mirror after the report was measured and
+        # hide the staleness this field exists to catch. The live read must
+        # also precede release(): photo's release() sets _canvas=None, after
+        # which self_test() answers "not_run" and the comparison becomes
+        # vacuous. Reading either at construction would snapshot the pre-run
+        # "pending" value and fail every healthy run.
+        surface_selftest = getattr(area, "surface_selftest", None)
+        live_probe = getattr(area.surface, "self_test", None)
+        surface_selftest_live = live_probe() if callable(live_probe) else None
     finally:
         try:
             stop_result = "not_reached"
@@ -940,13 +956,6 @@ def _run_renderer(
             watchdog.disarm()
     total_elapsed_s = time.perf_counter() - total_started
 
-    # The self-test is armed on the Tk timer wheel at construction and only
-    # settles once the window is mapped, so it must be read here -- after the
-    # run pumped the loop -- and not at construction. Reading it early
-    # snapshots the pre-run "pending" value and fails every healthy run.
-    if area is not None:
-        surface_selftest = getattr(area, "surface_selftest", None)
-
     report = {
         "schema_version": SCHEMA_VERSION,
         "renderer_requested": renderer,
@@ -959,6 +968,18 @@ def _run_renderer(
                 ),
             }
             if surface_selftest is not None
+            else None
+        ),
+        "surface_selftest_live": (
+            {
+                "outcome": str(
+                    getattr(surface_selftest_live, "outcome", "not_supported")
+                ),
+                "fully_occluded": bool(
+                    getattr(surface_selftest_live, "fully_occluded", False)
+                ),
+            }
+            if surface_selftest_live is not None
             else None
         ),
         "clock_mode": clock_mode,
@@ -1231,6 +1252,23 @@ def test_renderer_settles_and_keeps_drawing(
     assert outcome != "pending", (
         "surface_selftest outcome='pending': the self-test never ran; see "
         "surface_selftest in report.json"
+    )
+    # Freshness: the widget's mirror must agree with the surface's own
+    # end-of-run verdict. _poll_selftest stops at the first definitive
+    # outcome (GuiAssets.py:470-492), so a transient "covered" during
+    # mapping freezes into the mirror while resize keeps re-testing the
+    # surface -- without this check that staleness hides behind the
+    # occlusion skip below and the run reads green while proving nothing.
+    live = report["surface_selftest_live"]
+    assert live is not None, (
+        "surface_selftest_live is missing: the surface's self_test() was not "
+        "read at the end of the run, so staleness cannot be judged"
+    )
+    assert live["outcome"] == outcome, (
+        f"stale self-test mirror: mirror={outcome!r} but the surface's own "
+        f"end-of-run verdict={live['outcome']!r}; _poll_selftest froze on an "
+        "early outcome while resize re-tested; see surface_selftest_live in "
+        "report.json"
     )
     if renderer == "gdi" and outcome == "covered":
         pytest.skip(

@@ -171,6 +171,7 @@ class PreviewRenderer(Protocol):
     def attach(self, parent_hwnd: int, size: tuple[int, int]) -> None: ...
     def resize(self, size: tuple[int, int]) -> None: ...
     def compose(self, frame: np.ndarray, overlay: OverlayState) -> RenderResult: ...
+    def recompose(self, overlay: OverlayState) -> RenderResult: ...
     def present(self) -> RenderResult: ...
     def release(self) -> None: ...
     def client_size(self) -> tuple[int, int]: ...
@@ -190,6 +191,11 @@ class RenderResult:
 and the blit independently, which is the `t_blit` metric split the plan requires.
 Both return a `RenderResult` rather than raising: a failed present must never
 take down the Tk mainloop.
+
+`recompose` is compose's overlay-only sibling: it repaints the overlay over the
+already-composed video (GDI restores the saved base copy into the back buffer;
+photo redraws the Tk overlay items in place) without reading a new frame, so an
+overlay-only change such as a stick drag never waits for the next camera frame.
 
 ### Overlay state 窶・logical, not graphical
 
@@ -434,11 +440,20 @@ Three consequences the self-test must absorb:
   usable positive signal for the fully-covered case; nothing distinguishes the Tk
   case except a failed point read.
 
-The design therefore has exactly one foreign child, and a one-time self-test
-after the first present: write a known sentinel, `BitBlt`, read it back from the
-**child** DC, and on `CLR_INVALID` report `covered` and additionally check
-`GetClipBox` so the log can say whether the child is fully occluded. Once per
-surface, never per frame.
+The design therefore has exactly one foreign child, and a self-test that runs
+when the surface is attached and re-runs on every accepted `resize`, never per
+frame: write a known sentinel, `BitBlt`, read it back from the **child** DC, and
+on `CLR_INVALID` report `covered` and additionally check `GetClipBox` so the log
+can say whether the child is fully occluded.
+
+The verdict is mirrored on `CaptureArea.surface_selftest` for tests to read. The
+poll that fills the mirror stops at the first definitive outcome while the
+surface keeps re-testing on resize, so `GuiAssets._refreshSelftestMirror`
+re-reads the verdict after every resize; without it a resize that turns
+`covered` into `sentinel_matched` stays invisible. The renderer E2E captures
+both the mirror and the surface's own `self_test()` at end of run and fails on
+any disagreement ("stale self-test mirror"); that gate bumped `schema_version`
+to 2 and added the `surface_selftest_live` report field.
 
 ## 8. D and E. Overlay wiring into CaptureArea
 

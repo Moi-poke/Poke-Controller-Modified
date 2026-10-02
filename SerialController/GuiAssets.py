@@ -502,6 +502,26 @@ class CaptureArea(tk.Frame):
         )
         return self.surface_selftest
 
+    def _refreshSelftestMirror(self) -> None:
+        """面の自己検査結果をミラーへ反映する。
+
+        ``_poll_selftest`` は最初の確定判定で打ち切るが、面は resize のたびに
+        ``self_test()`` をやり直す。ミラーが打ち切り時点の値のまま面の答と
+        ずれないよう、受け皿の resize 後に走らせて塞ぐ。判定が変わったとき
+        だけ記録する（``<Configure>`` は嵐になりうる）。
+        """
+        probe: Any = self._surface
+        if not hasattr(probe, "self_test"):
+            return
+        result = probe.self_test()
+        if result == getattr(self, "surface_selftest", None):
+            return
+        self.surface_selftest = result
+        logger.info(
+            "プレビュー面の自己検査 outcome={}（リサイズ後に更新）",
+            getattr(result, "outcome", "not_supported"),
+        )
+
     def _cancelSelftest(self, event: Any) -> None:
         """予約済みの after を外す。破棄後に残ると background error になる。
 
@@ -564,6 +584,7 @@ class CaptureArea(tk.Frame):
                 max(int(event.height), self.show_height),
             )
         )
+        self._refreshSelftestMirror()
 
     def startCapture(self) -> None:
         """描画ループを開始する。"""
@@ -613,7 +634,13 @@ class CaptureArea(tk.Frame):
             if showing:
                 frame, seq = self._readLatest()
                 if self._drawFrame(frame, seq):
-                    self._stat_shown += 1
+                    # 表示実測 fps はカメラフレームの提示数を測るもの。
+                    # オーバーレイだけの再描画（recompose）が True を返しても
+                    # tick 周波数で飽和するので、seq が変わったとき（または seq
+                    # なしの従来経路）だけ数える。
+                    if seq is None or seq != getattr(self, "_stat_counted_seq", None):
+                        self._stat_shown += 1
+                        self._stat_counted_seq = seq
                     if self._stat_began_at is None:
                         self._stat_began_at = started
                 draw_ms = (time.perf_counter() - started) * 1000.0
@@ -741,31 +768,73 @@ class CaptureArea(tk.Frame):
         返り値は 1 枚が実際に画面へ出たかどうか。描こうとした数では
         なく出た数を数えるので、合成も提示も落ちた tick は 0 になる。
 
-        同じ seq では合成・提示を省く。5〜10fps の機器では描画 tick より
+        同じ (seq, overlay) では合成・提示を省く。5〜10fps の機器では描画 tick より
         frame が変わらないことが多く、無駄な変換が数倍に膨らむ。
-        clear() で seq が進むため旧絵を使い回さない。
+        clear() で seq が進むため旧絵を使い回さない。frame が同じでも
+        overlay が変わったとき（スティックの押下・解放など）は映像の複製から
+        オーバーレイだけ描き直す。カメラバッファは再読しない。
 
         フィルタも補正も有効でなければ _convert を経由せず、受け取った
         frame をそのまま renderer へ渡す。毎フレームの確保がゼロになる
         経路で、設計の前提そのものでもある。
         """
         last_seq = getattr(self, "_last_frame_seq", None)
-        if seq is not None and seq == last_seq:
-            return False
+        same_frame = seq is not None and seq == last_seq
+
         if frame is None:
+            # 停止画像はオーバーレイを描画しないので、seq のみで重複排除する。
+            # ただし生フレームと同じ seq が来ても、画面上はまだ停止画像では
+            # ない。停止画像専用の seq 記録で重複を判定し、カメラ停止の検知を
+            # 逃がさない（stopCapture 後は tick 自体が回らないので無限再描画に
+            # はならない）。
+            last_disabled_seq = getattr(self, "_last_disabled_seq", None)
+            if seq is not None and seq == last_disabled_seq:
+                return False
             shown = self._showDisabled()
-            if shown and seq is not None:
-                self._last_frame_seq = seq
+            if shown:
+                if seq is not None:
+                    self._last_disabled_seq = seq
+                # カメラ停止の告警は tick 毎のログになるので、生フレームから
+                # 停止画像へ移った瞬間に 1 回だけ出す。
+                if not getattr(self, "_last_shown_disabled", False):
+                    self._last_shown_disabled = True
+                    logger.warning(
+                        "カメラから frame を取得できないため停止画像を表示する seq={}",
+                        seq,
+                    )
             return shown
-        composed = self._surface.compose(self._prepared(frame), self.overlay)
+
+        overlay = self.overlay  # 1 回だけ読む（property は毎回新規 dataclass）
+        # overlay は不変 dataclass の組み立てなので、押下→解放で値が元に
+        # 戻る経路では == では変更を検知できない。差し替えられた各
+        # コンポーネントの同一性で「変わったか」を判定する。
+        last_overlay = getattr(self, "_last_overlay", None)
+        same_overlay = (
+            last_overlay is not None
+            and overlay.left_stick is last_overlay.left_stick
+            and overlay.right_stick is last_overlay.right_stick
+            and overlay.guide is last_overlay.guide
+            and overlay.img_rect is last_overlay.img_rect
+        )
+        if same_frame and same_overlay:
+            return False
+        if same_frame:
+            # 新しいフレームは無いがオーバーレイだけ変わった → 映像の複製から
+            # オーバーレイだけ描き直す（カメラバッファは再読しない）。
+            composed = self._surface.recompose(overlay)
+        else:
+            composed = self._surface.compose(self._prepared(frame), overlay)
         # 合成が落ちても提示は呼ぶ。1 tick 1 回の提示という現状を保ち、
         # どちらの reason で落ちたかを両方観測できるようにする。
         presented = self._surface.present()
         shown = self._note_render(composed, presented)
         # 提示が成功を返しても合成が落ちていれば画出していない。出たときだけ
         # 进入済みにする。
-        if seq is not None and shown:
-            self._last_frame_seq = seq
+        if shown:
+            self._last_overlay = overlay
+            self._last_shown_disabled = False
+            if seq is not None:
+                self._last_frame_seq = seq
         return shown
 
     def _prepared(self, frame: Any) -> Any:
@@ -878,6 +947,7 @@ class CaptureArea(tk.Frame):
         self.config(width=self.show_width, height=self.show_height)
         self._allocBuffers()
         self._surface.resize(self.show_size)
+        self._refreshSelftestMirror()
         logger.info(f"Show size set to {self.show_width} x {self.show_height}")
 
     def saveCapture(self) -> None:
