@@ -1043,10 +1043,21 @@ class CaptureArea(tk.Frame):
 
         crop_x0, crop_y0 = mapper.to_capture(self.min_x, self.min_y)
         crop_x1, crop_y1 = mapper.to_capture(self.max_x, self.max_y)
-        self.camera.saveCapture(
+        # loguru はファイル（と stderr）へしか出ず、ログ欄（sys.stdout 経由）には
+        # 出さない。saveCapture の戻り値を捨てると、押した本人には「何も起きな
+        # かった」と「保存された」の区別がつかないので、成否を 1 行だけ出す。
+        saved = self.camera.saveCapture(
             crop=1,
             crop_ax=[crop_x0, crop_y0, crop_x1, crop_y1],
         )
+        if saved:
+            saved_to = getattr(self.camera, "capture_dir", "Captures")
+            print(
+                f"範囲キャプチャを保存しました: ({crop_x0}, {crop_y0})-"
+                f"({crop_x1}, {crop_y1}) → {saved_to}"
+            )
+        else:
+            print("範囲キャプチャに失敗しました（詳細はログファイル）")
 
         # after には呼び出し可能オブジェクトを渡す（直接呼ぶと即時実行になる）
         # 予約 ID は控えておく。終了時に残っていると破棄途中の Frame を

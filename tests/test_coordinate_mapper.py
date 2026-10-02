@@ -124,6 +124,10 @@ class _RecordingCamera:
     capture_size: tuple[int, int] = CAPTURE_SIZE
     frame: Any = None
     saves: list[dict[str, Any]] = field(default_factory=list)
+    #: What ``saveCapture`` answers. ``None`` is the default rather than ``True``
+    #: so a double left alone reports the failure a save path that never returns
+    #: a value would produce, and the success contract has to ask for it.
+    save_result: bool | None = None
 
     def readFrame(self, copy: bool = False) -> Any:
         frame = self.frame
@@ -131,8 +135,9 @@ class _RecordingCamera:
             return None
         return frame.copy() if copy else frame
 
-    def saveCapture(self, *args: Any, **kwargs: Any) -> None:
+    def saveCapture(self, *args: Any, **kwargs: Any) -> bool | None:
         self.saves.append({"args": args, "kwargs": dict(kwargs)})
+        return self.save_result
 
 
 @contextmanager
@@ -158,6 +163,21 @@ def _captured_log() -> Iterator[list[str]]:
 def _logged_integers(messages: list[str]) -> list[int]:
     """Every integer in ``messages``, in order. The wording is not the contract."""
     return [int(token) for message in messages for token in _INT_TOKEN.findall(message)]
+
+
+def _printed_integers_in_order(text: str, expected: list[int]) -> bool:
+    """True when ``expected`` appears in ``text`` as an ordered subsequence.
+
+    Subsequence, not equality, on purpose: a success line also carries the save
+    directory, whose digits are not coordinates and may change. What must not
+    change is the identity and the order of the crop values, so ``(400, 300)``
+    first is a failure even though every one of the four numbers is present.
+    """
+    remaining = list(expected)
+    for token in _INT_TOKEN.findall(text):
+        if remaining and int(token) == remaining[0]:
+            remaining.pop(0)
+    return not remaining
 
 
 def _mapper_type() -> Any:
@@ -199,6 +219,22 @@ def _area_at_fixed_size(frame: Any, requested_size: tuple[int, int]) -> Any:
     bare = bare_capture_area(width=CAPTURE_WIDTH, height=CAPTURE_HEIGHT)
     bare.area.camera = _RecordingCamera(capture_size=requested_size, frame=frame)
     return bare
+
+
+def _range_area(save_result: bool | None) -> Any:
+    """A bare ``CaptureArea`` at the fixed assumption whose ``saveCapture`` answers
+    ``save_result``.
+
+    The return value is the only thing ``ReleaseRangeSS`` can branch on, so the
+    success and failure contracts are the same drag with a different answer from
+    the camera. ``None`` is included because a save path that returns nothing is
+    indistinguishable from a failure to the caller that has to branch on it.
+    """
+    area = _area_at_fixed_size(
+        np.zeros((CAPTURE_HEIGHT, CAPTURE_WIDTH, 3), np.uint8), CAPTURE_SIZE
+    ).area
+    area.camera.save_result = save_result
+    return area
 
 
 def _capture_area_node() -> ast.ClassDef:
@@ -807,3 +843,100 @@ def test_capture_area_keeps_the_capture_size_ratio_read_out_of_the_frame() -> No
         "mouseCtrlLeftPress still reads self.camera.capture_size instead of the "
         "delivered frame's shape"
     )
+
+
+# ===========================================================================
+# 9. The range capture reports its outcome to the person who pressed the button
+# ===========================================================================
+
+
+def test_release_range_ssa_prints_one_success_line_with_the_crop_coordinates(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a forward drag whose save succeeds.
+    area = _range_area(True)
+
+    # When: the drag is pressed, moved and released.
+    getattr(area, "StartRangeSS")(PointerEvent(x=100, y=50))
+    getattr(area, "MotionRangeSS")(PointerEvent(x=400, y=300))
+    getattr(area, "ReleaseRangeSS")(PointerEvent(x=400, y=300))
+
+    # Then: exactly one line reaches the GUI log pane. ``sys.stdout`` is what
+    # ``LogPane`` drains, so ``print`` is the only channel the person at the
+    # keyboard can see -- and the file-only loguru sink is why they currently
+    # cannot tell "did nothing" from "saved".
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, lines
+
+    # Then: and it opens with the success wording, so a failure line can never
+    # be read as a successful capture.
+    assert lines[0].startswith("範囲キャプチャを保存しました:"), lines[0]
+
+    # Then: and it carries the four crop coordinates in order. This is the only
+    # place the caller learns *what* was saved rather than just that something
+    # was. The save directory is deliberately not pinned -- it moves.
+    assert _printed_integers_in_order(lines[0], [100, 50, 400, 300]), lines[0]
+
+
+@pytest.mark.parametrize("save_result", [False, None], ids=["false", "none"])
+def test_release_range_ssa_prints_one_failure_line_when_the_save_does_not_succeed(
+    capsys: pytest.CaptureFixture[str],
+    save_result: bool | None,
+) -> None:
+    # Given: a drag whose camera reports failure -- as False, or as None from a
+    # save path that never returns a value at all.
+    area = _range_area(save_result)
+
+    # When: the drag is pressed, moved and released.
+    getattr(area, "StartRangeSS")(PointerEvent(x=100, y=50))
+    getattr(area, "MotionRangeSS")(PointerEvent(x=400, y=300))
+    getattr(area, "ReleaseRangeSS")(PointerEvent(x=400, y=300))
+
+    # Then: one line, and that line is the whole message -- nothing in the
+    # failure case is the caller's to act on but the fact that it failed.
+    assert capsys.readouterr().out.splitlines() == [
+        "範囲キャプチャに失敗しました（詳細はログファイル）"
+    ]
+
+
+def test_start_and_motion_range_ssa_print_nothing_to_the_log_pane(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a drag in progress on a camera that would report success on
+    # release, so silence here cannot be blamed on a failing save.
+    area = _range_area(True)
+
+    # When: the press is handled.
+    getattr(area, "StartRangeSS")(PointerEvent(x=100, y=50))
+
+    # Then: nothing reaches the log pane. The press is an in-flight state, and
+    # a line for it would be a second, earlier report of a result the person
+    # has not been given yet.
+    assert capsys.readouterr().out == ""
+
+    # When: the drag moves.
+    getattr(area, "MotionRangeSS")(PointerEvent(x=400, y=300))
+
+    # Then: still nothing. A line per motion event would bury the one line
+    # that says the capture is done.
+    assert capsys.readouterr().out == ""
+
+
+def test_release_range_ssa_prints_the_crop_coordinates_in_order_for_a_backward_drag(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: the same successful drag, released at the origin instead of at the
+    # far corner.
+    area = _range_area(True)
+
+    # When: the drag runs the other way.
+    getattr(area, "StartRangeSS")(PointerEvent(x=400, y=300))
+    getattr(area, "MotionRangeSS")(PointerEvent(x=100, y=50))
+    getattr(area, "ReleaseRangeSS")(PointerEvent(x=100, y=50))
+
+    # Then: one line carrying the same ordered rectangle. A line built from the
+    # raw press/release pair would read 400 and 300 first and describe the
+    # wrong two corners, which is the one thing a range capture message is for.
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1, lines
+    assert _printed_integers_in_order(lines[0], [100, 50, 400, 300]), lines[0]
