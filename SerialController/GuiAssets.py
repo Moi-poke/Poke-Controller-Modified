@@ -1544,6 +1544,7 @@ class CaptureArea(tk.Frame):
         self.bind("<Button1-Motion>", lambda ev: self.mouseLeftPressing(ev, self.ser))
         self.bind("<ButtonRelease-1>", lambda ev: self.mouseLeftRelease(self.ser))
         logger.debug("Bind left click")
+        self._sync_surface_binds()
 
     def BindRightClick(self) -> None:
         """右ドラッグを右スティックに割り当てる。"""
@@ -1551,18 +1552,34 @@ class CaptureArea(tk.Frame):
         self.bind("<Button3-Motion>", lambda ev: self.mouseRightPressing(ev, self.ser))
         self.bind("<ButtonRelease-3>", lambda ev: self.mouseRightRelease(self.ser))
         logger.debug("Bind right click")
+        self._sync_surface_binds()
 
     def UnbindLeftClick(self) -> None:
         """左ドラッグの割り当てを外す。"""
         for seq in ("<ButtonPress-1>", "<Button1-Motion>", "<ButtonRelease-1>"):
             self.unbind(seq)
         logger.debug("Unbind left click")
+        self._sync_surface_binds()
 
     def UnbindRightClick(self) -> None:
         """右ドラッグの割り当てを外す。"""
         for seq in ("<ButtonPress-3>", "<Button3-Motion>", "<ButtonRelease-3>"):
             self.unbind(seq)
         logger.debug("Unbind right click")
+        self._sync_surface_binds()
+
+    def _sync_surface_binds(self) -> None:
+        """束縛の増減を描画面へ伝える。
+
+        photo 面は Frame を覆う Canvas がポインタ事象を受け止めるので、Frame の
+        束縛を Canvas から転送している。転送表は attach 時点の束縛から作られ、
+        スティック操作は attach の後に Bind*/Unbind* で増減するため、その都度
+        追従させないとプレビュー上のドラッグが Frame へ届かない。GDI 面は子窓が
+        入力を取らず Frame へ直接届くので sync_host_binds を持たず、何もしない。
+        """
+        sync = getattr(getattr(self, "_surface", None), "sync_host_binds", None)
+        if callable(sync):
+            sync()
 
 
 # GUI of switch controller simulator

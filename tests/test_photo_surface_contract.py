@@ -151,12 +151,12 @@ def _non_contiguous_frame(width: int, height: int) -> np.ndarray:
 class _RecordingCanvas:
     """The ``tk.Canvas`` stand-in ``attach`` builds its canvas from.
 
-    Records ``pack`` / ``bind`` / ``create_image`` / ``config`` / ``itemconfig`` /
-    ``delete`` and the overlay item calls, and can re-enter or fail from inside
-    ``config`` so the ``resize`` guard is exercised at the only seam that can
-    nest. It also answers ``winfo_width`` / ``winfo_height`` / ``winfo_ismapped``,
-    because the live-size and self-test contracts below ask the surface what the
-    box currently is rather than what it once requested.
+    Records ``pack`` / ``bind`` / ``unbind`` / ``create_image`` / ``config`` /
+    ``itemconfig`` / ``delete`` and the overlay item calls, and can re-enter or
+    fail from inside ``config`` so the ``resize`` guard is exercised at the only
+    seam that can nest. It also answers ``winfo_width`` / ``winfo_height`` /
+    ``winfo_ismapped``, because the live-size and self-test contracts below ask
+    the surface what the box currently is rather than what it once requested.
     """
 
     def __init__(self, host: Any = None, **_options: Any) -> None:
@@ -164,6 +164,8 @@ class _RecordingCanvas:
         self.options = _options
         self.pack_calls: list[dict[str, Any]] = []
         self.bindings: dict[str, Any] = {}
+        self.bound_handlers: dict[str, list[Any]] = {}
+        self.unbind_calls: list[tuple[str, Any]] = []
         self.image_ids: list[tuple[int, int, str]] = []
         self.config_calls: list[tuple[int, int]] = []
         self.itemconfig_calls: list[tuple[Any, dict[str, Any]]] = []
@@ -192,9 +194,45 @@ class _RecordingCanvas:
         self.pack_calls.append(kwargs)
 
     def bind(self, sequence: str, func: Any, add: Any = None) -> str:
-        """The only seam the pointer forwarding is installed through."""
+        """The only seam the pointer forwarding is installed through.
+
+        ``add="+"`` *accumulates* on a real Tk widget, so the handlers are kept
+        in a list per sequence instead of one slot: a second forwarding of a
+        sequence that already has one is a second handler, and a double that
+        overwrites cannot tell the two apart. ``bindings`` still holds the most
+        recent handler, because the contracts above reach a sequence by name;
+        :meth:`handlers` is what answers "how many forwardings does this
+        sequence carry".
+        """
+        if add:
+            self.bound_handlers.setdefault(sequence, []).append(func)
+        else:
+            self.bound_handlers[sequence] = [func]
         self.bindings[sequence] = func
         return sequence
+
+    def unbind(self, sequence: str, funcid: Any = None) -> str:
+        """Drop a binding the way Tk does: all of it, or one named funcid."""
+        self.unbind_calls.append((sequence, funcid))
+        if funcid is None:
+            self.bound_handlers.pop(sequence, None)
+            self.bindings.pop(sequence, None)
+            return ""
+        remaining = [
+            handler
+            for handler in self.bound_handlers.get(sequence, [])
+            if handler is not funcid
+        ]
+        if remaining:
+            self.bound_handlers[sequence] = remaining
+        else:
+            self.bound_handlers.pop(sequence, None)
+            self.bindings.pop(sequence, None)
+        return ""
+
+    def handlers(self, sequence: str) -> list[Any]:
+        """Every handler Tk would run for ``sequence``, in installation order."""
+        return list(self.bound_handlers.get(sequence, []))
 
     def create_image(self, x: int, y: int, **kwargs: Any) -> str:
         item = f"image{len(self.image_ids)}"
@@ -290,9 +328,12 @@ class _HostFrame:
 
     ``bind()`` with no sequence answers the tuple the surface reads to decide
     what to forward. Tk answers with its canonical spelling, so the tests bind
-    canonical names and get the same string back. ``event_generate`` refuses the
-    options Tk refuses for that event type, and records every option it did
-    accept so a test can assert what the far side was handed.
+    canonical names and get the same string back. ``unbind()`` really drops the
+    handler, the way ``CaptureArea.UnbindLeftClick`` drops it from the Frame,
+    so a test can hand the surface a binding that has been withdrawn.
+    ``event_generate`` refuses the options Tk refuses for that event type, and
+    records every option it did accept so a test can assert what the far side
+    was handed.
     """
 
     def __init__(self, **options: Any) -> None:
@@ -302,6 +343,7 @@ class _HostFrame:
         self.raised: list[tuple[str, int, int]] = []
         self.raised_kwargs: list[tuple[str, dict[str, Any]]] = []
         self.delivered: list[tuple[str, int, int]] = []
+        self.unbind_calls: list[str] = []
         self._handlers: dict[str, Any] = {}
 
     def bind(
@@ -311,6 +353,11 @@ class _HostFrame:
             return tuple(self._handlers)
         self._handlers[sequence] = func
         return sequence
+
+    def unbind(self, sequence: str, funcid: Any = None) -> None:
+        """Forget a binding, so the host can shrink as well as grow."""
+        self.unbind_calls.append(sequence)
+        self._handlers.pop(sequence, None)
 
     def config(self, **kwargs: Any) -> None:
         self.config_calls.append(kwargs)
@@ -1528,3 +1575,165 @@ def test_recompose_redraws_the_overlay_without_a_new_frame(
         f"recompose built {len(attached.photos) - photos_after_present} new "
         "PhotoImage(s); the overlay-only path must not touch the frame"
     )
+
+
+# ===========================================================================
+# The picture catches up with bindings the host adds or drops later
+# ===========================================================================
+#
+# ``attach`` forwards whatever the host is bound to at the moment it runs, and
+# ``CaptureArea.__init__`` attaches right there (``GuiAssets.py:445``). The six
+# stick sequences are bound *after* that: ``camera_panel.py:473-474`` reaches
+# ``BindLeftClick`` / ``BindRightClick`` through ``ApplyLStickMouse`` /
+# ``ApplyRStickMouse`` (``GuiAssets.py:1527-1539``). So on this backend the
+# gestures that matter most are exactly the ones never forwarded -- the Canvas
+# covers the whole host box, Tk raises the pointer event on the Canvas, and the
+# host's six handlers sit there unread. The same wiring works on Windows
+# because GDI's video lives in a foreign HWND Tk cannot hit-test, so nothing
+# this section pins is broken there.
+#
+# One public method closes the gap: ``sync_host_binds()`` re-reads
+# ``host.bind()``, forwards what is new, drops what the host no longer reports,
+# and is idempotent. Idempotence is the load-bearing part and not a nicety:
+# ``canvas.bind(..., add="+")`` *accumulates* on a real Tk widget, so a second
+# forwarding of a sequence that already has one is a second handler, and each
+# extra ``Bind*`` call would then run the host handler once more per drag. The
+# double therefore keeps one list per sequence -- see ``_RecordingCanvas.bind``
+# -- because a canvas double that merely overwrites one slot per sequence cannot
+# see the duplication and would let this section pass vacuously.
+
+
+def _fire(canvas: _RecordingCanvas, sequence: str, event: Any) -> None:
+    """Every handler Tk would run for ``sequence`` on ``canvas``, in order.
+
+    The counterpart of Tk's binding table: a sequence nobody is bound to runs
+    nothing at all, which is what makes "the Canvas stopped re-emitting" and
+    "the Canvas never had a handler" indistinguishable from the outside.
+    """
+    for handler in canvas.handlers(sequence):
+        handler(event)
+
+
+def test_a_binding_the_host_adds_after_attach_is_forwarded_by_the_next_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an attached surface whose host carries no pointer binding at all --
+    # the state attach() sees for the sticks, because BindLeftClick runs later.
+    host = _HostFrame()
+    attached = _attach(monkeypatch, host=host)
+    assert host.bind() == (), host.bind()
+    assert set(attached.canvas.bindings) == {"<Destroy>"}, sorted(
+        attached.canvas.bindings
+    )
+    pressed: list[tuple[int, int]] = []
+
+    # When: the host is bound afterwards and the surface is asked to catch up.
+    host.bind("<Button-1>", lambda event: pressed.append((event.x, event.y)))
+    attached.surface.sync_host_binds()
+
+    # Then: the canvas holds the sequence, which it did not at attach time.
+    assert "<Button-1>" in attached.canvas.bindings, (
+        f"the canvas is bound to {sorted(attached.canvas.bindings)}; a press "
+        "bound on the host after attach stops at the canvas and the host's "
+        "handler never runs"
+    )
+
+    # Then: and the press over the picture runs the handler bound after attach,
+    # with the coordinates the canvas reported.
+    _fire(attached.canvas, "<Button-1>", _PointerEvent(41, 42))
+    assert pressed == [(41, 42)], pressed
+    assert host.delivered == [("<Button-1>", 41, 42)], host.delivered
+
+
+def test_a_binding_the_host_drops_is_taken_off_the_canvas_by_the_next_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a host carrying two sequences from the left drag, both forwarded
+    # by attach because both were already bound when it ran.
+    dropped = "<Button-1>"
+    kept = "<B1-Motion>"
+    host = _HostFrame()
+    for sequence in (dropped, kept):
+        host.bind(sequence, lambda event: None)
+    attached = _attach(monkeypatch, host=host)
+    assert {dropped, kept} <= set(attached.canvas.bindings), sorted(
+        attached.canvas.bindings
+    )
+
+    # When: one of them is unbound -- what UnbindLeftClick does to the Frame --
+    # and the surface is asked to catch up.
+    host.unbind(dropped)
+    attached.surface.sync_host_binds()
+
+    # Then: the sequence the host no longer reports is gone from the canvas.
+    assert dropped not in attached.canvas.bindings, (
+        f"the canvas is still bound to {sorted(attached.canvas.bindings)}; a "
+        "forwarding the host has withdrawn keeps the gesture alive after the "
+        "assignment is taken away"
+    )
+
+    # Then: and a press over that part of the picture re-emits nothing at all.
+    _fire(attached.canvas, dropped, _PointerEvent(7, 9))
+    assert host.raised == [], host.raised
+
+    # Then: and the sequence that was *not* unbound is still forwarded, so the
+    # sync removed one forwarding instead of clearing the canvas. Without this
+    # the assertion above would also pass if the whole table had been wiped.
+    _fire(attached.canvas, kept, _PointerEvent(7, 9))
+    assert host.raised == [(kept, 7, 9)], host.raised
+
+
+def test_syncing_the_same_host_bindings_twice_forwards_each_of_them_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a host bound to one drag sequence, already forwarded by attach.
+    host = _HostFrame()
+    dragged: list[tuple[int, int]] = []
+    host.bind("<B1-Motion>", lambda event: dragged.append((event.x, event.y)))
+    attached = _attach(monkeypatch, host=host)
+    assert len(attached.canvas.handlers("<B1-Motion>")) == 1, (
+        "the fixture is wrong: attach must have forwarded the sequence once"
+    )
+
+    # When: the surface is asked to catch up three more times, as one Bind* /
+    # Unbind* / Bind* cycle on a real widget would.
+    for _attempt in range(3):
+        attached.surface.sync_host_binds()
+
+    # Then: the canvas still carries exactly one handler for it. add="+" appends,
+    # so a re-forwarded sequence is not replaced but accumulated -- and a second
+    # copy would move the stick twice per pixel of mouse travel.
+    assert len(attached.canvas.handlers("<B1-Motion>")) == 1, (
+        f"the canvas holds {len(attached.canvas.handlers('<B1-Motion>'))} "
+        "handler(s) for <B1-Motion>; bind(..., add='+') accumulates, so a sync "
+        "that does not remember what it already forwarded doubles the gesture"
+    )
+
+    # Then: and one drag over the picture runs the host's handler once.
+    _fire(attached.canvas, "<B1-Motion>", _PointerEvent(21, 22))
+    assert dragged == [(21, 22)], dragged
+    assert host.raised == [("<B1-Motion>", 21, 22)], host.raised
+
+
+def test_syncing_the_host_binds_before_attach_raises_nothing_and_does_nothing() -> None:
+    # Given: a constructed but unattached surface, so there is no canvas to
+    # forward onto -- the state CaptureArea is in before __init__ reaches
+    # attach(), and the state the surface returns to when the canvas is gone.
+    surface = _photo_surface_module().PhotoImageSurface(host=_HostFrame())
+    assert surface._canvas is None
+
+    # When: the sync is asked for anyway. A raise here ends the caller, and the
+    # callers are ordinary UI paths (Bind*/Unbind*) with nobody to catch them.
+    with _captured_log() as messages:
+        surface.sync_host_binds()
+
+    # Then: nothing happened and nothing was remembered, because there is no
+    # box to hold a forwarding in the first place.
+    assert surface._canvas is None
+    assert surface.client_size() == (0, 0), surface.client_size()
+
+    # Then: and it said nothing about it either. "Doing nothing" that logs a
+    # warning per call is not nothing: Bind*/Unbind* run on every settings
+    # change, and a warning each time is how a file log gets filled with a
+    # condition that is the normal state of an unattached surface.
+    assert messages == [], messages

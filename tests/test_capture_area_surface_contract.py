@@ -51,8 +51,10 @@ from gdi_present_doubles import (
     PHOTO_IMAGE_ATTRIBUTES,
     PIL_SYMBOLS,
     SHOW_HEIGHT,
+    SHOW_SIZE,
     SHOW_WIDTH,
     PointerEvent,
+    RecordingWidget,
     StubCamera,
     bare_capture_area,
     bgr_frame,
@@ -1808,3 +1810,246 @@ def test_draw_frame_repaints_after_release_without_a_new_frame() -> None:
         "for two draws; releasing the stick with an unchanged seq has to reach "
         "the surface again."
     )
+
+
+# ===========================================================================
+# L. A stick bound after the surface was attached still reaches the picture
+# ===========================================================================
+#
+# ``CaptureArea.__init__`` attaches the renderer at ``GuiAssets.py:445``, and
+# the six stick sequences are bound afterwards: ``camera_panel.py:473-474``
+# reaches ``BindLeftClick`` / ``BindRightClick`` through ``ApplyLStickMouse`` /
+# ``ApplyRStickMouse`` (``GuiAssets.py:1527-1539``). On the GDI backend the
+# order is harmless, because the video lives in a foreign HWND Tk cannot
+# hit-test, so every click reaches the Frame. On the fallback backend the
+# Canvas *is* a Tk child covering the whole host box, so Tk raises the pointer
+# event on the Canvas and only what the surface forwarded ever gets to the
+# Frame -- the bindings present at attach, and nothing bound since.
+#
+# So both sticks, the range select and the colour probe are gestures a
+# mac/Linux user cannot perform over the picture, drawn by the same surface
+# that makes them impossible. The fix is one public method on the surface
+# (``sync_host_binds``) plus a call to it from ``Bind*`` / ``Unbind*``, so this
+# module pins the call site and the re-forwarding that follows it, while the
+# idempotence rule itself stays with ``test_photo_surface_contract.py``, which
+# owns the surface.
+
+
+#: ``ButtonPress`` / ``KeyPress`` are spelled out in the source and normalised
+#: away by Tk. Scoped to the first token, which is all the six stick sequences
+#: need: no ``CaptureArea`` binding carries a modifier ahead of its type.
+_CANONICAL_HEADS: dict[str, str] = {"ButtonPress": "Button", "KeyPress": "Key"}
+
+
+def _canonical_sequence(sequence: str) -> str:
+    """The spelling Tk answers a sequence-less ``bind()`` query with.
+
+    ``tk.Misc.bind()`` with no sequence returns the *normalised* patterns, not
+    the ones the source typed: ``<ButtonPress-1>`` comes back as ``<Button-1>``
+    and ``<Button1-Motion>`` as ``<B1-Motion>``. The forwarding surface reads
+    that answer and judges every sequence against it, so a double that echoed
+    the source spelling back would make ``_is_forwardable`` refuse the very
+    sequences production forwards -- and the contract below would be measuring
+    the double's spelling instead of the product's behaviour.
+    """
+    head, _, rest = sequence.strip("<>").partition("-")
+    index = head.removeprefix("Button")
+    if head.startswith("Button") and index.isdigit():
+        head = f"B{index}"
+    else:
+        head = _CANONICAL_HEADS.get(head, head)
+    return f"<{head}-{rest}>" if rest else f"<{head}>"
+
+
+class _QueryableWidget(RecordingWidget):
+    """``RecordingWidget`` that also answers Tk's sequence-less ``bind()``.
+
+    ``RecordingWidget.bind`` answers ``f"{sequence}-bind"`` for *every* call,
+    the query included. Iterating that string yields single characters, so a
+    real ``PhotoImageSurface`` can never read a usable answer off it and a
+    ``CaptureArea`` wired to one cannot be exercised through the shared
+    fixture. The query is answered here with the tuple of normalised patterns
+    instead -- and it is deliberately *not* recorded in ``bind_calls``, because a
+    query binds nothing and a recorder that counted it would report a bind that
+    never happened.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bound: dict[str, str] = {}
+
+    def bind(self, sequence: Any = None, func: Any = None, add: Any = None) -> Any:
+        if sequence is None:
+            return tuple(self.bound)
+        self.bound[_canonical_sequence(str(sequence))] = str(sequence)
+        return super().bind(sequence, func, add)
+
+    def unbind(self, sequence: Any = None, funcid: Any = None) -> None:
+        if sequence is not None:
+            self.bound.pop(_canonical_sequence(str(sequence)), None)
+        super().unbind(sequence, funcid)
+
+
+class _ForwardingCanvas:
+    """The ``tk.Canvas`` the fallback surface builds, as a binding recorder.
+
+    Only the calls ``attach`` and the forwarding make are here. ``bind``
+    accumulates per sequence the way ``add="+"`` does, because the contract is
+    about how many forwardings a sequence ended up carrying, and a double that
+    overwrites one slot per sequence cannot answer that.
+    """
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.handlers: dict[str, list[Any]] = {}
+        self.bound_calls: list[str] = []
+        self.unbind_calls: list[str] = []
+        self.config_calls: list[dict[str, Any]] = []
+
+    def pack(self, **_kwargs: Any) -> None:
+        return None
+
+    def create_image(self, *_args: Any, **_kwargs: Any) -> str:
+        return "image"
+
+    def config(self, **kwargs: Any) -> None:
+        self.config_calls.append(dict(kwargs))
+
+    def itemconfig(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def delete(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def bind(self, sequence: str, func: Any = None, add: Any = None) -> str:
+        if func is None:
+            return sequence
+        self.bound_calls.append(sequence)
+        self.handlers.setdefault(sequence, []).append(func)
+        return sequence
+
+    def unbind(self, sequence: str, funcid: Any = None) -> str:
+        self.unbind_calls.append(sequence)
+        self.handlers.pop(sequence, None)
+        return ""
+
+    def winfo_width(self) -> int:
+        return self.config_calls[-1]["width"] if self.config_calls else 0
+
+    def winfo_height(self) -> int:
+        return self.config_calls[-1]["height"] if self.config_calls else 0
+
+    def winfo_ismapped(self) -> bool:
+        return False
+
+    def winfo_viewable(self) -> bool:
+        return False
+
+
+def _photo_backed_area(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Any, _ForwardingCanvas, _QueryableWidget]:
+    """A bare ``CaptureArea`` whose ``_surface`` is a real ``PhotoImageSurface``.
+
+    ``bare_capture_area()`` installs a ``RecordingSurface`` and a widget that
+    cannot answer a sequence-less ``bind()``, so neither the fallback surface
+    nor the forwarding it performs can be reached through it. This swaps the
+    widget for one that answers the query and attaches a real surface against a
+    recording Canvas -- the composition mac/Linux gets from
+    ``_create_preview_surface`` (``GuiAssets.py:309-312``).
+
+    ``bare.surface`` is left as the shared ``RecordingSurface`` and is *not* the
+    surface under test; that one is ``area._surface``, exactly as production
+    reads it. ``tk.Canvas`` and ``ImageTk.PhotoImage`` are stubbed because a
+    real Canvas needs a display and a real PhotoImage a live Tk root;
+    monkeypatch reverts both when the test ends.
+    """
+    import ui.photo_surface as module
+
+    class _PhotoImage:
+        def __init__(self, _image: Any) -> None:
+            return None
+
+    canvas = _ForwardingCanvas()
+    monkeypatch.setattr(module.tk, "Canvas", lambda *_a, **_k: canvas)
+    monkeypatch.setattr(module.ImageTk, "PhotoImage", _PhotoImage)
+
+    bare = bare_capture_area()
+    widget = _QueryableWidget()
+    bare.widget = widget
+    for name, method in (
+        ("config", widget.config),
+        ("configure", widget.configure),
+        ("bind", widget.bind),
+        ("unbind", widget.unbind),
+        ("after", widget.after),
+        ("after_cancel", widget.after_cancel),
+    ):
+        setattr(bare.area, name, method)
+
+    surface = module.PhotoImageSurface(host=bare.area)
+    bare.area._surface = surface
+    surface.attach(0, SHOW_SIZE)
+    assert surface._canvas is canvas, "attach did not install the double"
+    assert canvas.bound_calls == ["<Destroy>"], canvas.bound_calls
+    canvas.bound_calls.clear()
+    return bare, canvas, widget
+
+
+@pytest.mark.parametrize(
+    ("bind_name", "unbind_name", "typed", "forwarded"),
+    [
+        (
+            "BindLeftClick",
+            "UnbindLeftClick",
+            ("<ButtonPress-1>", "<Button1-Motion>", "<ButtonRelease-1>"),
+            ("<Button-1>", "<B1-Motion>", "<ButtonRelease-1>"),
+        ),
+        (
+            "BindRightClick",
+            "UnbindRightClick",
+            ("<ButtonPress-3>", "<Button3-Motion>", "<ButtonRelease-3>"),
+            ("<Button-3>", "<B3-Motion>", "<ButtonRelease-3>"),
+        ),
+    ],
+)
+def test_a_stick_bound_after_attach_reaches_the_picture_and_leaves_on_unbind(
+    monkeypatch: pytest.MonkeyPatch,
+    bind_name: str,
+    unbind_name: str,
+    typed: tuple[str, str, str],
+    forwarded: tuple[str, str, str],
+) -> None:
+    # Given: a CaptureArea on the fallback backend whose renderer is already
+    # attached and which has no stick bound yet -- the state the real
+    # construction leaves it in, because __init__ attaches and the stick
+    # bindings come afterwards.
+    bare, canvas, widget = _photo_backed_area(monkeypatch)
+    area = bare.area
+    assert widget.bound == {}, widget.bound
+    assert canvas.bound_calls == [], canvas.bound_calls
+
+    # When: the drag is assigned to its stick.
+    getattr(area, bind_name)()
+
+    # Then: the Frame carries the three sequences it always did ...
+    assert widget.bound_sequences() == list(typed), widget.bound_sequences()
+
+    # Then: ... and the Canvas under the picture carries them too, in Tk's own
+    # spelling, which is the only spelling the surface judges forwardability on.
+    # Without this the gesture is dead over the video on every non-Windows box,
+    # and the cursor never becomes a dot because the handler that sets it is
+    # the one that never runs.
+    carried = set(canvas.handlers)
+    assert carried == {"<Destroy>", *forwarded}, sorted(carried)
+    counts = {name: len(handlers) for name, handlers in canvas.handlers.items()}
+    assert all(count == 1 for count in counts.values()), counts
+
+    # When: the assignment is withdrawn -- which is how a stick is ever turned
+    # off (ApplyLStickMouse -> UnbindLeftClick, GuiAssets.py:1527-1532).
+    getattr(area, unbind_name)()
+
+    # Then: the three sequences are gone from the Canvas, and the <Destroy> the
+    # surface installed on itself is not collateral damage of the removal.
+    left = set(canvas.handlers)
+    assert left == {"<Destroy>"}, sorted(left)
+    assert set(canvas.unbind_calls) == set(forwarded), canvas.unbind_calls

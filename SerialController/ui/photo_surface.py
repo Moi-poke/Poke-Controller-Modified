@@ -98,6 +98,10 @@ class PhotoImageSurface:
         self._rebuilding = False
         self._pending_frame = False
         self._logged_failures: set[str] = set()
+        #: Canvas へ転送済みで、まだ host 側の束縛が残っている sequence。
+        #: 記録しているのは「張った」ことだけなので、この集合から消すと二度と
+        #: 張らない。冪等性を支えている記録。
+        self._forwarded: set[str] = set()
 
     def attach(self, parent_hwnd: int, size: tuple[int, int]) -> None:
         # 子窓を持たないので親 HWND は使わない（プロトコルの形は合わせる）。
@@ -121,7 +125,9 @@ class PhotoImageSurface:
         # 検出して _canvas を離すことで、以降の present/resize は未接続経路
         # （no_hwnd）に落ち、例外は漏れない。
         self._canvas.bind("<Destroy>", self._on_canvas_destroy, add="+")
-        self._forward_host_binds()
+        # この瞬間に host が束縛しているものだけを持ち上げる。attach 後に足される
+        # 束縛は sync_host_binds が運ぶ。
+        self.sync_host_binds()
         self._pending_frame = False
         self.resize(size)
 
@@ -131,21 +137,51 @@ class PhotoImageSurface:
         self._canvas = None
         self._image_id = None
         self._pending_frame = False
+        # 破棄済みの Canvas へ張った転送記録は、新しい Canvas には持ち越さない。
+        self._forwarded.clear()
 
-    def _forward_host_binds(self) -> None:
-        """Canvas 上のポインタ操作を host の束縛へ、同じ名前で届け直す。
+    def sync_host_binds(self) -> None:
+        """host の束縛の増減を Canvas へ追従させる。何度呼んでも結果は同じ。
 
         GDI 面の子は外国の HWND なので Tk の当たり判定に載らず、クリックは
-        必ず host（Frame）へ届く。Canvas は host の子供なので箱を覆い、
-        Tk が擎ち上げるポインタ事象は全部 Canvas で止まる。host が束縛した
-        名前は ``host.bind()`` で読み戻せるので、同じ名前で Canvas にも
-        束縛し、届いた時点で host へ出し直す。名前を並べ直していないので、
-        あとから host 側で足した束縛もここを直さずに届く。
+        必ず host（Frame）へ届く。Canvas は host の子供なので箱を覆い、Tk が
+        擎ち上げるポインタ事象は全部 Canvas で止まる。host が束縛した名前は
+        ``host.bind()`` で読み戻せるので、同じ名前で Canvas にも束縛し、届いた
+        時点で host へ出し直す。名前を並べ直していないので、この面が知らない
+        sequence も同じ扱いになる。
+
+        attach は 1 度しか起きないのに host の束縛は attach の後に増える。
+        ``CaptureArea`` は構造構築の中で面を作り、6 本のスティック列は後から
+        ``BindLeftClick`` / ``BindRightClick``（``GuiAssets.py:1541-1567``）で
+        張るので、attach 時点の転送ではいちばん大事なジェスチャだけが
+        届かない。ここでは host 側の「今」を読み直すので、張るのも外すのも
+        このメソッド 1 つで足りる。呼出側は ``Bind*`` / ``Unbind*`` の直後。
+
+        転送済みを記録するのは冪等性のため。``canvas.bind(..., add="+")`` は
+        積み上げなので、同じ sequence を二度張ると一回のドラッグで host の
+        ハンドラが二度走る。記録があれば張らずに済み、host 側の列が消えた時
+        だけ張った分を ``unbind`` で外して記録も消す。
+
+        Canvas が無いときは黙って帰る。``Bind*`` / ``Unbind*`` は設定変更の
+        たびに呼ばれる普通の UI 経路で、呼び出し側が例外を拾っていない。
+        未接続は正常な状態なので、警告 1 行でも出さない。
         """
-        for sequence in self._host.bind():
-            if not _is_forwardable(sequence):
-                continue
+        if self._canvas is None:
+            return
+        wanted = {
+            sequence for sequence in self._host.bind() if _is_forwardable(sequence)
+        }
+        for sequence in sorted(wanted - self._forwarded):
+            # Tk が受け入れた後に記録する。途中で失敗した列まで記録すると、
+            # 次回は「転送済み」で答えて再張しないまま止まる。
             self._canvas.bind(sequence, self._reemitter(sequence), add="+")
+            self._forwarded.add(sequence)
+        for sequence in sorted(self._forwarded - wanted):
+            # unbind は Canvas 上のその sequence の束縛を全部外す。転送以外に
+            # Canvas へ張っているのは <Destroy> だけで、これは転送対象外
+            # （_is_forwardable が <Destroy> を落とす）なので巻き込まれない。
+            self._canvas.unbind(sequence)
+            self._forwarded.discard(sequence)
 
     def _reemitter(self, sequence: str) -> Callable[[Any], None]:
         """``sequence`` を host へ同じ座標で出し直す束縛を作る。
@@ -308,6 +344,9 @@ class PhotoImageSurface:
         self._photo = None
         self._pending_frame = False
         self._rebuilding = False
+        # 破棄する Canvas へ張った転送記録は残さない。残すと、次の Canvas に
+        # 何も張られていないのに「転送済み」と答えてジェスチャが届かなくなる。
+        self._forwarded.clear()
         self._canvas = None
         self._image_id = None
         if canvas is not None:
