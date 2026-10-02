@@ -28,7 +28,12 @@ _CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: Final[int] = 0x00000002
 _TIMER_MODIFY_STATE: Final[int] = 0x00000002
 _SYNCHRONIZE: Final[int] = 0x00100000
 _ZERO: Final[int] = 0
-_NATIVE_WAKE_POLL_MS: Final[int] = 0
+_NATIVE_WAKE_POLL_MS: Final[int] = 1
+# poll の自己再予約の下限。after_idle 経由の再予約は Tk の idle 列だけが消化するため
+# 同じ Interpreter の after(ms) タイマーが発火せず、after() 駆動の処理（ログ・Bcon タブ・
+# 統計）が全て止まってフリーズに見える（実測: 3 秒で心拍 0 回）。0 ms で
+# after() を再予約しても idle 処理と再描画を飢えさせるので、必ず 1 ms 以上で予約する。
+_NATIVE_WAKE_MIN_POLL_MS: Final[int] = 1
 _NATIVE_WAKE_IDLE_POLL_MS: Final[int] = 1
 _NATIVE_WAKE_DRAIN_BUDGET_S: Final[float] = 0.004
 
@@ -1675,7 +1680,7 @@ class PreviewClock:
         runtime: _NativeRuntime | None = None
         # Tcl async wake は意図的に使わない。ctypes の Tcl_AsyncMark トランポリンは
         # ワーカースレッドから Tcl インタプリタへ再入し、プロセスを fatal 終了させた
-        # 実測があるため。起床は PostMessageW + after_idle 排出経路に一本化する。
+        # 実測があるため。起床は PostMessageW + after(ms) poll 経路に一本化する。
         try:
             runtime = _create_native_runtime(
                 owner_thread_id=self._owner_thread_id,
@@ -2044,13 +2049,11 @@ class PreviewClock:
         if self._native_wake_after_id is not None:
             return
         try:
-            after_idle = getattr(self._root, "after_idle", None)
-            if callable(after_idle):
-                self._native_wake_after_id = str(after_idle(self._poll_native_wake))
-            else:
-                self._native_wake_after_id = str(
-                    self._root.after(delay_ms, self._poll_native_wake)
-                )
+            # after_idle は使わない（理由は _NATIVE_WAKE_MIN_POLL_MS の注記）。
+            delay = max(_NATIVE_WAKE_MIN_POLL_MS, int(delay_ms))
+            self._native_wake_after_id = str(
+                self._root.after(delay, self._poll_native_wake)
+            )
         except (OSError, RuntimeError, ValueError, AttributeError):
             self._last_health_callback_result = -1
             self._begin_native_recovery("after")

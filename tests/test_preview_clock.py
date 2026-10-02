@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import _tkinter
 import os
 import threading
 import time
+import tkinter as tk
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -16,6 +18,28 @@ from GuiAssets import CaptureArea
 from ui import preview_clock
 
 type WakeSource = Literal["timer", "control", "stale_timer", "error"]
+
+#: The real-Tk starvation check (``test_native_wake_poll_does_not_starve_tk_after_timers``).
+#: A 20 ms heartbeat must fire at least five times inside a 0.5 s window, so the
+#: margin against a healthy run (~25 beats) survives a loaded machine. ``_POLL_BUDGET``
+#: is a hang guard, not a throttle: a poll that re-arms through ``after_idle`` never
+#: gives ``dooneevent`` its turn back, and the budget is what ends that spin.
+_HEARTBEAT_MS = 20
+_MIN_HEARTBEATS = 5
+_WINDOW_S = 0.5
+_POLL_BUDGET = 4_000
+
+#: Roots whose Tk event loop was pumped, kept referenced on purpose. Releasing
+#: the last reference of a *pumped* root (``Tk.__del__`` -> ``Tcl_DeleteInterp``)
+#: kills a later test in the same process with a Windows fatal exception
+#: (0x80000003, "Garbage-collecting" + a worker thread inside
+#: ``test_stop_signal_failure_retries_before_join_and_cleanup``); keeping the
+#: reference defers that finalization to process exit and the crash disappears.
+#: Reproduced with a bare Tk pump and no ``PreviewClock`` involved, so this is
+#: not the preview clock's doing; root cause not identified yet. Same repro:
+#: ``pytest tests/test_preview_clock.py::test_native_wake_poll_does_not_starve_tk_after_timers
+#: tests/test_preview_clock.py::test_stop_signal_failure_retries_before_join_and_cleanup``.
+_PUMPED_TK_ROOTS: list[Any] = []
 
 
 class FakeRoot:
@@ -252,6 +276,39 @@ class _PacerRuntime(FakeNativeRuntime):
         return {**super().snapshot(), **self.mailbox.snapshot()}
 
 
+class _NeverWakingRuntime(FakeNativeRuntime):
+    """``consume_wake_signal()`` が常に False のランタイム。
+
+    wake は一度も起床しないので、``_poll_native_wake`` の再予約だけが毎回
+    起きる。poll の再予約が Tk のイベントループを占有するなら、それは
+    poll とは無関係な ``after(ms)`` タイマーが止まる形でしか現れない。
+
+    ``poll_budget`` は「poll の呼び出し回数の上限」であり、上限に達した時点で
+    ``stop_clock()`` を呼んで再予約を止める。``after_idle`` の自己再予約は
+    Tk の idle 排出が尽きない限り ``doonevent`` が返らないため、テスト自身が
+    ハングしないための装置である。仕様どおりに ``after`` で再予約する実装では
+    0.5 秒の窓内で上限に達しない（``after(1)`` の poll は高々数百回）。
+    """
+
+    def __init__(self, poll_budget: int) -> None:
+        super().__init__()
+        self.poll_budget = poll_budget
+        self.poll_calls = 0
+        self.poll_budget_exhausted = False
+        self._stop_clock: Callable[[], object] | None = None
+
+    def bind_stop_clock(self, stop_clock: Callable[[], object]) -> None:
+        self._stop_clock = stop_clock
+
+    def consume_wake_signal(self) -> bool:
+        self.poll_calls += 1
+        if self.poll_calls >= self.poll_budget:
+            self.poll_budget_exhausted = True
+            if self._stop_clock is not None:
+                self._stop_clock()
+        return False
+
+
 def _tick(
     control: preview_clock._ControlState, sequence: int
 ) -> preview_clock.PreviewTick:
@@ -289,6 +346,15 @@ def _close_native_runtime(runtime: Any) -> None:
     runtime.request_stop()
     assert runtime.join(1.0)
     runtime.destroy()
+
+
+def _pending_poll_ids(root: FakeRoot) -> list[str]:
+    """``after`` 予約されたまま残っている ``_poll_native_wake`` の after id 一覧。"""
+    return [
+        after_id
+        for after_id, callback in root.callbacks.items()
+        if callback.__name__ == "_poll_native_wake"
+    ]
 
 
 def _force_stop_signal_success(api: Any) -> None:
@@ -548,7 +614,10 @@ def test_start_dispatches_one_synchronous_tick_before_control(
 def test_native_start_never_installs_tcl_async_wake_trampoline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ネイティブ起動は Tcl async 通知を作らず、PostMessageW + after_idle 排出に任せる。"""
+    """ネイティブ起動は Tcl async 通知を作らず、起床の排出は after タイマーの poll に任せる。
+
+    起床は PostMessageW で届き、Tk 側は idle 列ではなく after() タイマーで排出する。
+    """
     root = TclInterpRoot()
     captured: list[dict[str, Any]] = []
 
@@ -1072,7 +1141,7 @@ def test_native_wake_poll_drains_signal_when_runtime_exposes_deferred_drain(
         clock.stop()
 
 
-def test_native_wake_poll_uses_idle_delay_until_wake_is_consumed(
+def test_native_wake_poll_always_rearms_with_at_least_a_one_millisecond_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class RecordingRoot(FakeRoot):
@@ -1112,7 +1181,7 @@ def test_native_wake_poll_uses_idle_delay_until_wake_is_consumed(
     try:
         # Given: the native drain starts without a pending wake.
         clock.start()
-        assert root.delays[-1] == 1
+        assert root.delays[-1] >= 1
 
         # When: a pending wake is consumed.
         runtime.publish_tick(_tick(runtime.controls[-1], 1))
@@ -1123,7 +1192,11 @@ def test_native_wake_poll_uses_idle_delay_until_wake_is_consumed(
             if callback.__name__ == "_poll_native_wake"
         )
         root.callbacks.pop(poll_id)()
-        assert root.delays[-1] == 0
+
+        # Then: the re-armed delay is still at least 1 ms. A 0 ms self-reservation
+        # is the one that starves Tk's own idle work, so a consumed wake must not
+        # buy the loop a zero-delay spin.
+        assert root.delays[-1] >= 1
 
         # Then: the following empty poll returns to the idle delay.
         next_poll_id = next(
@@ -1137,9 +1210,16 @@ def test_native_wake_poll_uses_idle_delay_until_wake_is_consumed(
         clock.stop()
 
 
-def test_native_start_arms_and_rearms_the_after_idle_wake_poll(
+def test_native_start_arms_and_rearms_the_timer_wake_poll_without_after_idle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """poll は ``after_idle`` ではなく ``after``（1 ms 以上）でしか予約されない。
+
+    ``after_idle`` による自己再予約は Tk の idle 列だけが消化するため、同じ
+    Interpreter の ``after(ms)`` タイマーが発火しなくなり、アプリ側の
+    ``after()`` 駆動処理が全て止まる（実測: 3 秒で心拍 0 回）。
+    """
+
     class PollingRuntime(FakeNativeRuntime):
         def __init__(self) -> None:
             super().__init__()
@@ -1166,37 +1246,105 @@ def test_native_start_arms_and_rearms_the_after_idle_wake_poll(
         60,
         200,
     )
+    armed_poll_id = ""
     try:
-        # Given: a real Tk root that offers after_idle.
+        # Given: a real Tk root shape that offers after_idle.
         clock.start()
 
-        # Then: the poll is armed through after_idle, not through after().
-        assert len(root.idle_callbacks) == 1
-        assert "_poll_native_wake" not in [
-            callback.__name__ for callback in root.callbacks.values()
-        ]
+        # Then: after_idle is never used at all, and the poll is a plain after()
+        # timer with a delay of at least 1 ms.
+        assert root.idle_callbacks == {}, root.idle_callbacks
+        assert root.after_delays[-1] >= 1
+        poll_ids = _pending_poll_ids(root)
+        assert len(poll_ids) == 1, poll_ids
 
-        # When: the idle poll runs with no pending native wake.
-        root.run_idle()
+        # When: the poll runs with no pending native wake.
+        root.callbacks.pop(poll_ids[0])()
 
-        # Then: it re-arms exactly one idle poll and dispatches nothing.
-        assert len(root.idle_callbacks) == 1
+        # Then: it re-arms exactly one after() poll and dispatches nothing.
+        assert root.idle_callbacks == {}, root.idle_callbacks
+        assert root.after_delays[-1] >= 1
+        assert len(_pending_poll_ids(root)) == 1
         assert calls == ["tick"]
 
-        # When: a native wake is pending and the re-armed idle poll runs.
+        # When: a native wake is pending and the re-armed poll runs.
         runtime.publish_tick(_tick(runtime.controls[-1], 1))
         runtime.poll_pending = True
-        root.run_idle()
+        root.callbacks.pop(_pending_poll_ids(root)[0])()
 
-        # Then: the wake is dispatched and the idle poll stays armed.
+        # Then: the wake is dispatched and the poll stays armed through after().
         assert calls == ["tick", "tick"]
         assert runtime.main_dispatch_count == 1
-        assert len(root.idle_callbacks) == 1
+        assert root.idle_callbacks == {}, root.idle_callbacks
+        assert root.after_delays[-1] >= 1
+        armed_poll_ids = _pending_poll_ids(root)
+        assert len(armed_poll_ids) == 1, armed_poll_ids
+        armed_poll_id = armed_poll_ids[0]
     finally:
         clock.stop()
 
-    # Then: stopping the clock cancels the armed idle poll.
-    assert root.idle_callbacks == {}
+    # Then: stopping the clock cancels the armed poll.
+    assert armed_poll_id in root.cancelled
+    assert _pending_poll_ids(root) == []
+
+
+def test_native_wake_poll_does_not_starve_tk_after_timers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """poll の再予約は、実 Tk 上の無関係な ``after(ms)`` タイマーを餓死させない。
+
+    起動直後の ``_WINDOW_S`` 秒間、poll と無関係な 20 ms 心拍が 5 回以上鳴る
+    こと。``after_idle`` の自己再予約だと Tk のイベントループが idle 排出に
+    占有され、``after(ms)`` タイマーが一度も発火しないので心拍は 0 のままに
+    なる（実測: 3 秒で心拍 0 回）。
+
+    終了判定は Tk タイマーに依存しない。``mainloop()`` / ``update()`` は
+    不具合時に戻らないので使わず、``doonevent`` を壁時計と poll 呼び出し
+    回数の双方で打ち切る。root の生存については ``_PUMPED_TK_ROOTS`` の
+    コメントを参照。
+    """
+    try:
+        root = tk.Tk()
+    except tk.TclError as error:
+        pytest.skip(f"no display for the real-Tk poll starvation check: {error}")
+    root.withdraw()
+    runtime = _NeverWakingRuntime(poll_budget=_POLL_BUDGET)
+    monkeypatch.setattr(
+        preview_clock, "_create_native_runtime", lambda **_kwargs: runtime
+    )
+    clock = preview_clock.PreviewClock(
+        root, lambda: preview_clock.DispatchResult(schedule="active"), 60, 200
+    )
+    runtime.bind_stop_clock(clock.stop)
+    beats = 0
+
+    def beat() -> None:
+        nonlocal beats
+        beats += 1
+        root.after(_HEARTBEAT_MS, beat)
+
+    try:
+        clock.start()
+
+        # Given: an unrelated after(20 ms) heartbeat on the same interpreter.
+        root.after(_HEARTBEAT_MS, beat)
+
+        # When: the event loop is pumped for the wall-clock window.
+        deadline = time.perf_counter() + _WINDOW_S
+        while time.perf_counter() < deadline and not runtime.poll_budget_exhausted:
+            root.tk.dooneevent(_tkinter.DONT_WAIT | _tkinter.ALL_EVENTS)
+
+        # Then: the app's own after() timers kept firing. A poll that owns the
+        # event loop instead leaves the window at zero heartbeats.
+        assert beats >= _MIN_HEARTBEATS, (
+            f"{beats} heartbeat(s) in a {_WINDOW_S:.1f}s window after "
+            f"{runtime.poll_calls} poll call(s); the native wake poll starved "
+            "Tk's own after(ms) timers"
+        )
+    finally:
+        clock.stop()
+        root.destroy()
+        _PUMPED_TK_ROOTS.append(root)
 
 
 def test_native_wake_drain_processes_all_queued_wakes(
