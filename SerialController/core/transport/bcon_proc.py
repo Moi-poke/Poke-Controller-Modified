@@ -58,6 +58,8 @@ _ALLOWED_CALLS = frozenset(
         "stop_live_loop",
         "live_loop_running",
         "live_stats",
+        "request_bootsel",
+        "request_reconnect",
     }
 )
 
@@ -1060,3 +1062,29 @@ class BconProcTransport(Transport):
         if len(payload) != 12:
             return None
         return payload
+
+    def request_bootsel(self, timeout: float = 1.0) -> bool:
+        """BOOTSEL突入を子へ要求する。失敗はFalse（例外は投げない）。
+
+        実装は子（BconTransport）側にある。線は子が握っているので
+        応答待ちの繰り返し送信も子の中で行われる。返るのは
+        「Picoが要求を受け取った」ことまで。
+        """
+        try:
+            limit = float(timeout)
+        except (TypeError, ValueError):
+            limit = 1.0
+        # 子の応答待ち（ACKまでの反復送信）を見込むため往復に余裕を持たせる。
+        return self._rpc_bool("request_bootsel", (limit,), limit + 3.0)
+
+    def request_reconnect(self, timeout: float = 1.0) -> bool:
+        """待機状態の明示解除を子へ要求する。失敗はFalse（例外は投げない）。
+
+        request_bootsel と同じ形の子RPC。Switch が受け入れるかまでは
+        判定しない（別問題）。
+        """
+        try:
+            limit = float(timeout)
+        except (TypeError, ValueError):
+            limit = 1.0
+        return self._rpc_bool("request_reconnect", (limit,), limit + 3.0)

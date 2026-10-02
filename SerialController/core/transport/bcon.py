@@ -37,6 +37,7 @@ from core.transport.bcon_protocol import (
     T_PING,
     T_PLAYER_INFO,
     T_PONG,
+    T_RECONNECT,
     T_RUMBLE,
     T_STATE,
     T_STATUS,
@@ -1861,13 +1862,55 @@ class BconTransport(Transport):
             self._logger.debug(f"set_emulate_modeで例外: {e!r}", exc_info=True)
             return False
 
+    def _send_until_status(
+        self,
+        type_: int,
+        payload: bytes,
+        limit: float,
+        label: str,
+    ) -> bool:
+        """STATUS-ACK が来��まで同じフレームを繰り返し送る。
+
+        Pico は baud hunt 中、**有効frame 2連続**で確定し、確定した瞬間に
+        inbox を捨てる (`Switch-bcon/src/main.c:274-281`)。そのため1発では
+        「baud確定」と「命令実行」を同時に満たせず、1発だけ送ると必ず失敗する。
+        hunt は `HUNT_DWELL_MS`(150ms) x 4スロット = 600ms 周期で回っている
+        ので、1周以上を覆うだけ再送する。ACK は購読側で拾う。
+        送信は旧レートのまま（baud切替はしない）。
+        """
+        found: dict[str, Any] = {}
+        done = threading.Event()
+        entry = ((T_STATUS,), done, found)
+        with self._rx_lock:
+            self._rx_waiters.append(entry)
+        try:
+            deadline = time.monotonic() + limit
+            sent = 0
+            while not done.is_set():
+                if time.monotonic() >= deadline:
+                    return False
+                if not self._send_session_frame(type_, payload, label):
+                    return False
+                sent += 1
+                # 購読を待ち切るのではなく、短間隔で再送する。
+                done.wait(0.08)
+            self._logger.debug(f"{label}: {sent}回送ってACKを受けた")
+            return True
+        finally:
+            with self._rx_lock:
+                if entry in self._rx_waiters:
+                    self._rx_waiters.remove(entry)
+
     def request_bootsel(self, timeout: float = 1.0) -> bool:
         """BOOTSEL突入を要求する。失敗はFalse＋可視log。
 
-        T_BOOTSEL＋BOOTSEL_MAGICを1発で送り、旧レートのままSTATUS-ACK
-        を待つ。baud切替・_tx_hold操作・再起動側の処理はしない（Pico側が
+        T_BOOTSEL＋BOOTSEL_MAGICをSTATUS-ACKが返るまで繰り返し送り、旧レート
+        のまま待つ。baud切替・_tx_hold操作・再起動側の処理はしない（Pico側が
         約500ms後に自発再起動する）。再起動中のSTATE送出は止め、復帰後に
         再HELLOからやり直すこと。例外は投げない。
+
+        繰り返し送出が要るのは、Pico が baud hunt 中だと1発では命令が
+        実行されないため。`_send_until_status` の注記を見ること。
         """
         try:
             try:
@@ -1897,31 +1940,16 @@ class BconTransport(Transport):
                     print(msg)
                     self._logger.warning(msg)
                     return False
-            found: dict[str, Any] = {}
-            done = threading.Event()
-            entry = ((T_STATUS,), done, found)
-            with self._rx_lock:
-                self._rx_waiters.append(entry)
-            try:
-                ok = self._send_session_frame(
-                    T_BOOTSEL,
-                    bytes([BOOTSEL_MAGIC]),
-                    "bcon:BOOTSEL",
-                )
-                if not ok:
-                    msg = "bconのBOOTSEL要求送出に失敗しました。"
-                    print(msg)
-                    self._logger.warning(msg)
-                    return False
-                if not done.wait(limit):
-                    msg = f"bconのBOOTSEL応答が来ませんでした({limit:.1f}s)。"
-                    print(msg)
-                    self._logger.warning(msg)
-                    return False
-            finally:
-                with self._rx_lock:
-                    if entry in self._rx_waiters:
-                        self._rx_waiters.remove(entry)
+            if not self._send_until_status(
+                T_BOOTSEL,
+                bytes([BOOTSEL_MAGIC]),
+                limit,
+                "bcon:BOOTSEL",
+            ):
+                msg = f"bconのBOOTSEL応答が来ませんでした({limit:.1f}s)。"
+                print(msg)
+                self._logger.warning(msg)
+                return False
             self._logger.info(
                 "bconへBOOTSEL突入を要求しました。約500ms後自発再起動"
                 "します。再起動中のSTATE送出は止め、復帰後に再HELLOから"
@@ -1930,6 +1958,58 @@ class BconTransport(Transport):
             return True
         except Exception as e:
             self._logger.debug(f"request_bootselで例外: {e!r}", exc_info=True)
+            return False
+
+    def request_reconnect(self, timeout: float = 1.0) -> bool:
+        """拒否されて待機状態に入った Pico を明示的に起こす。失敗はFalse＋log。
+
+        T_RECONNECT をSTATUS-ACKが返るまで繰り返し送り、旧レートのまま待つ。
+        baud切替はしない。Picoは待機状態を解除して能動再接続を再開するが、
+        Switch が受け入れるかまではここでは判定しない (別問題)。
+        例外は投げない。
+        """
+        try:
+            try:
+                limit = float(timeout)
+            except (TypeError, ValueError):
+                limit = 1.0
+            if math.isnan(limit):
+                limit = 1.0
+            elif math.isinf(limit):
+                limit = 5.0
+            else:
+                limit = max(0.1, min(limit, 5.0))
+            if self.ser is None:
+                msg = "bconが開いていないため再接続要求しません。"
+                print(msg)
+                self._logger.warning(msg)
+                return False
+            if not self.rx_pump_running():
+                try:
+                    if not self.start_rx_pump() or not self.rx_pump_running():
+                        msg = "bconの受信ポンプが動かないため再接続要求しません。"
+                        print(msg)
+                        self._logger.warning(msg)
+                        return False
+                except Exception:
+                    msg = "bconの受信ポンプ起動に失敗したため再接続要求しません。"
+                    print(msg)
+                    self._logger.warning(msg)
+                    return False
+            if not self._send_until_status(
+                T_RECONNECT,
+                b"",
+                limit,
+                "bcon:RECONNECT",
+            ):
+                msg = f"bconの再接続応答が来ませんでした({limit:.1f}s)。"
+                print(msg)
+                self._logger.warning(msg)
+                return False
+            self._logger.info("bconへ再接続を要求しました。Picoが再接続を試みます。")
+            return True
+        except Exception as e:
+            self._logger.debug(f"request_reconnectで例外: {e!r}", exc_info=True)
             return False
 
     def send_config(self, type_: int, payload: bytes) -> bool:

@@ -28,7 +28,7 @@
 
 ## File Structure
 
-- 作成: `SerialController/core/transport/bcon_protocol.py` — CRC-8/SMBUS・TYPE/LEN表・`frame_build`・スライディング受信パーサ・SEQ・BAUD表・ERRCODE。Pico/BTstack非依存の純粋層（`C:\pico-bcon\src/proto/protocol.[hc]`のPC側写し）。
+- 作成: `SerialController/core/transport/bcon_protocol.py` — CRC-8/SMBUS・TYPE/LEN表・`frame_build`・スライディング受信パーサ・SEQ・BAUD表・ERRCODE。Pico/BTstack非依存の純粋層（`C:\PokeCon\Switch-bcon\src/proto/protocol.[hc]`のPC側写し）。
 - 作成: `SerialController/core/serial/bcon_mapping.py` — Modified行（`<btn-hex> <hat> [lx ly [rx ry]]`＋`end`）→中間姿勢（buttons u32＋sticks u16域0-4095中央0x0800）へのLEN非依存写像。Y反転はここ1箇所。
 - 作成: `SerialController/core/transport/bcon.py` — `BconTransport(Transport)`本体。姿勢受付・フレーム化・SEQ・独立スレッド送信ループ（120Hz絶対時刻）・バイナリRXポンプ・HELLO/BAUD状態機械。内部4区画でPhase 2移設可能にする。
 - 修正: `SerialController/core/transport/base.py` — `BCON_STATE`定数＋`LIVE_WORKER_CAPABILITIES`へ追加（2-3行）。
@@ -50,7 +50,7 @@
 - Test: `tests/test_bcon_protocol.py`
 
 **Interfaces:**
-- Consumes: なし（`C:\pico-bcon\spec\protocol_v3.md:36-52,161-168`、`src/proto/protocol.h:11-52`、`protocol.c:31-50,78-155`を仕様源にする）。
+- Consumes: なし（`C:\PokeCon\Switch-bcon\spec\protocol_v3.md:36-52,161-168`、`src/proto/protocol.h:11-52`、`protocol.c:31-50,78-155`を仕様源にする）。
 - Produces: `crc8(data: bytes) -> int`、`frame_build(type: int, payload: bytes, seq: int) -> bytes`、`class BconParser`（`feed(data: bytes) -> list[tuple[int, bytes, int]]`で`(type, payload, seq)`確定分を返す）、`BAUD_TABLE: dict[int, int]`、`proto_expected_len(type: int) -> int`、`proto_state_len_ok(plen: int) -> bool`、`TYPE_*`／`RESULT_*`／`ERR_*`定数。Task 3-4がこれを使う。
 
 - [ ] **Step 1: Write the failing test**
@@ -96,7 +96,7 @@ Expected: FAIL（`core.transport.bcon_protocol`が無い、`ModuleNotFoundError`
 """bcon_protocol.py - bconバイナリの組立と受信（純粋層）。
 
 Pico側 `src/proto/protocol.[hc]` のPC側写し。BTstack・TinyUSB・
-tkinterに依存しない。仕様は `C:\pico-bcon\spec\protocol_v3.md` が正。
+tkinterに依存しない。仕様は `C:\PokeCon\Switch-bcon\spec\protocol_v3.md` が正。
 """
 
 from __future__ import annotations
@@ -302,7 +302,7 @@ git commit -m "feat(bcon): add binary frame core with sliding resync parser"
 - Test: `tests/test_bcon_mapping.py`
 
 **Interfaces:**
-- Consumes: Task 1の`BTN`ビット定義（値は`C:\pico-bcon\src\proto\protocol.h:54-78`と同値でここに再定義しない。写像表は`2026-09-16-pokecon-compat-design.md §1.3-1.5`）。
+- Consumes: Task 1の`BTN`ビット定義（値は`C:\PokeCon\Switch-bcon\src\proto\protocol.h:54-78`と同値でここに再定義しない。写像表は`2026-09-16-pokecon-compat-design.md §1.3-1.5`）。
 - Produces: `wire_row_to_state(row: str) -> dict[str, int]`（`{"buttons": u32, "lx": u16, "ly": u16, "rx": u16, "ry": u16}`、u16域0-4095中央0x0800）、`is_end_row(row: str) -> bool`、`neutral_state() -> dict[str, int]`。Task 3が`send_row`内で使う。LEN8送出時は`u16>>4`相当（`0x800>>4==0x80`）でu8化する。
 
 - [ ] **Step 1: Write the failing test**

@@ -1,6 +1,6 @@
 # bcon対応 設計書
 
-合意: wakecon対応はフリーズし、bcon（`C:\pico-bcon`）へネイティブバイナリで全対応する。
+合意: wakecon対応はフリーズし、bcon（`C:\PokeCon\Switch-bcon`）へネイティブバイナリで全対応する。
 Phase 1は同一プロセスに`BconTransport`を追加し120Hz化＋HELLO/STATUS対応を固め、計測で足りなければPhase 2で送信部のみ別プロセス化する（A案・段階移行）。
 
 - 対象: Switch 1 ProCon（Switch 2では互換動作）。有線優先、無線も動くが精度劣化は許容。
@@ -18,7 +18,7 @@ PokeCon Modifiedの現行対応は2種のみである（`SerialController/core/t
 
 新方式の差し口は整備済みである。`Transport` subclass＋`register_transport(name, factory, description)`で追加し、未知`capability`はlegacy等価で受入、worker要は`LIVE_WORKER_CAPABILITIES`へ加える（`core/transport/base.py:30-40`）。`WakeLink`は`get_raw_serial()/acquire_write_lock()`経由で非シリアル方式でも落とさずフォールバックする（`core/WakeLink.py:27-86`）。
 
-bcon側SSOTは`C:\pico-bcon\spec\protocol_v3.md`＋`src/proto/*`である（`C:\pico-bcon\AGENTS.md:3`）。
+bcon側SSOTは`C:\PokeCon\Switch-bcon\spec\protocol_v3.md`＋`src/proto/*`である（`C:\PokeCon\Switch-bcon\AGENTS.md:3`）。
 
 - 経路: `PC →(UART)→ Pico 2 W →(USB-HID / Classic BT)→ Switch 1`。Switch 2 BLE入力は対象外。
 - PC→Pico: データUART1 GP4/5、既定1Mbps 8N1、フロー制御なし。ログはUART0 GP0/1 @115200で分離。
@@ -152,11 +152,11 @@ Phase 1で境界だけ作り、計測トリガ（p99>2-3ms常時）で移設す�
 
 ## 7. 参考
 
-- `C:\pico-bcon\spec\protocol_v3.md`（SSOT）
-- `C:\pico-bcon\src\proto\protocol.h`、`protocol.c:31-50,78-155`（TYPE/LEN表・CRC・スライディング・SEQ）
-- `C:\pico-bcon\src\proto\dispatch.h`、`dispatch.c`（HELLO門・PONG・CONFIG・outbox）
-- `C:\pico-bcon\src\poc_dualcore\poc_send.py`（正準ビルダ・RXスキャナ・HELLO/PING/ladder流儀。量産ラッパではない）
-- `C:\pico-bcon\src\main.c:46-103,260-332,640-769,770-912`（ピン・baud・Core1取込・poll_tick・neutral・WDT・WIRED再起動）
-- `C:\pico-bcon\docs\superpowers\specs\2026-09-16-pokecon-compat-design.md`（wire→VIIPER §1.3、HAT §1.4、LS/RS quirk §1.5）
-- `C:\pico-bcon\docs\wiki\Protocol.md`（v3＋v4差分の早見表）
+- `C:\PokeCon\Switch-bcon\spec\protocol_v3.md`（SSOT）
+- `C:\PokeCon\Switch-bcon\src\proto\protocol.h`、`protocol.c:31-50,78-155`（TYPE/LEN表・CRC・スライディング・SEQ）
+- `C:\PokeCon\Switch-bcon\src\proto\dispatch.h`、`dispatch.c`（HELLO門・PONG・CONFIG・outbox）
+- `C:\PokeCon\Switch-bcon\src\poc_dualcore\poc_send.py`（正準ビルダ・RXスキャナ・HELLO/PING/ladder流儀。量産ラッパではない）
+- `C:\PokeCon\Switch-bcon\src\main.c:46-103,260-332,640-769,770-912`（ピン・baud・Core1取込・poll_tick・neutral・WDT・WIRED再起動）
+- `C:\PokeCon\Switch-bcon\docs\superpowers\specs\2026-09-16-pokecon-compat-design.md`（wire→VIIPER §1.3、HAT §1.4、LS/RS quirk §1.5）
+- `C:\PokeCon\Switch-bcon\docs\wiki\Protocol.md`（v3＋v4差分の早見表）
 - PokeCon側: `SerialController/core/transport/base.py:30-40`、`registry.py:226-239`、`text_serial.py:620-682`（PicoUart）、`core/WakeLink.py:27-86`、`WakeSetup.py`

@@ -32,6 +32,7 @@ T_BOOTSEL = 0x37
 T_EMULATE_MODE = 0x38
 T_COLOR_GET = 0x39
 T_COLOR_INFO = 0x3A
+T_RECONNECT = 0x3B
 
 RESULT_OK = 0x00
 RESULT_DOWNGRADED = 0x01
@@ -96,6 +97,7 @@ def proto_expected_len(type_: int) -> int:
         T_EMULATE_MODE: 1,
         T_COLOR_GET: 0,
         T_COLOR_INFO: 12,
+        T_RECONNECT: 0,
     }
     return table.get(type_, -1)
 
