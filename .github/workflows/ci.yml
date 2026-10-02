@@ -5,6 +5,11 @@ on:
 jobs:
   ci:
     runs-on: windows-latest
+    env:
+      # Windows の既定コンソール(cp1252)は日本語を出力できず、tools/ の検査スクリプトが
+      # 成功メッセージの print で UnicodeEncodeError になる。UTF-8 モードで文字コードに依らず動かす。
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
       - name: Set up uv
