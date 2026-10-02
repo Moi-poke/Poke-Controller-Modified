@@ -28,7 +28,7 @@ RECORD_DIRNAME = "InstalledPacks"
 BACKUP_DIRNAME = ".backup"
 
 #: 導入可否の基準にする自アプリの版（pyprojectの数値部に合わせる）。
-APP_VERSION = "4.0.1"
+APP_VERSION = "4.0.2"
 
 #: 依存導入の実行上限秒（blocking run の既定。短命の pip 呼び出しは
 #: Popen の非同期化が要らないため、溜め込まず待てる値に留める）。
