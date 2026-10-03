@@ -1827,8 +1827,12 @@ class ControllerGUI:
         """container を渡すとその枠の中に組み立てる（メイン画面への埋め込み）。
 
         渡さなければ従来どおり別ウィンドウ（Toplevel）を開く。
+
+        ser には送り先そのものか、今の送り先を返す関数を渡す。送り先は起動時の
+        組み立てより後に作られ、通信方式を変えると作り直されるので、埋め込みで
+        長く置く場合は関数を渡し、押すたびに今の送り先を引く。
         """
-        self.ser = ser
+        self._ser_source = ser
         # ボタンの押しっぱなしに対応するための保持。
         #   従来は tk.Button の command= を使っていた。command は
         #     「離したとき」に1回だけ呼ばれるため、押しっぱなしを
@@ -1899,6 +1903,15 @@ class ControllerGUI:
             for button in frame.winfo_children():
                 if isinstance(button, tk.Button):
                     self.applyButtonColor(button)
+
+    @property
+    def ser(self) -> Any:
+        """今の送り先。関数を渡されていれば呼んで引く（古い送り先を掴まない）。"""
+        source = self._ser_source
+        # Sender 自体は呼び出し可能ではない。送り先を返す関数かどうかで分ける。
+        if callable(source) and not hasattr(source, "pressButtons"):
+            return source()
+        return source
 
     def applyButtonSetting(self, button: Any) -> None:
         """ボタンの幅と配色をまとめて適用する。"""

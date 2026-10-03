@@ -42,6 +42,9 @@ class PaneArranger:
         self.sash_ratios: dict[str, list[float]] = {}
         self.root_pane: ttk.PanedWindow | None = None
         self._tree: Node | None = None
+        # 前回の位置へ戻すのを、窓に実寸が付くまで待っている間 True。
+        self._restore_pending = False
+        self._wait_id: str | None = None
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
         style = ttk.Style(parent)
@@ -104,6 +107,9 @@ class PaneArranger:
 
     def remember_sashes(self) -> None:
         """今の仕切り位置を、形ごとに割合で控える（ドラッグ後にも呼ぶ）。"""
+        if self._restore_pending:
+            # 前回の位置へ戻す前（起動直後）の既定位置で、控えを上書きしない。
+            return
         for pane in self._panes:
             length = self._length(pane)
             count = len(pane.panes()) - 1
@@ -114,11 +120,41 @@ class PaneArranger:
             ]
 
     def _restore_sashes(self) -> None:
-        """控えてある形なら、前の割合で仕切りを置き直す。"""
+        """控えてある形なら、前の割合で仕切りを置き直す。
+
+        起動直後は窓がまだ表示されておらず寸法が無いので、sashpos が効かない。
+        そのときは最初に実寸が付いた時点（Configure）まで待って戻す。
+        """
+        self._restore_pending = False
         if not any(self._keys[str(p)] in self.sash_ratios for p in self._panes):
             return
-        # 実寸が決まらないと sashpos は効かない。ここで一度だけ寸法を確定させる。
         self.parent.update_idletasks()
+        if not self._sized():
+            self._restore_pending = True
+            pane = self.root_pane
+            if pane is not None:
+                self._wait_id = pane.bind("<Configure>", self._on_sized, add="+")
+            return
+        self._apply_ratios()
+
+    def _sized(self) -> bool:
+        return all(self._length(pane) > 1 for pane in self._panes)
+
+    def _on_sized(self, _event: Any = None) -> None:
+        """実寸が付いたら一度だけ戻す。入れ子の仕切りの寸法も確定させてから。"""
+        if not self._restore_pending:
+            return
+        self.parent.update_idletasks()
+        if not self._sized():
+            return
+        self._restore_pending = False
+        pane = self.root_pane
+        if pane is not None and self._wait_id is not None:
+            pane.unbind("<Configure>", self._wait_id)
+        self._wait_id = None
+        self._apply_ratios()
+
+    def _apply_ratios(self) -> None:
         for pane in self._panes:
             ratios = self.sash_ratios.get(self._keys[str(pane)])
             length = self._length(pane)

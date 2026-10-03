@@ -135,3 +135,31 @@ def test_popping_out_twice_just_raises_the_existing_window(area: tk.Toplevel) ->
     # Then: 2 つ目は開かない（同じ入力を 2 箇所から送らない）。
     assert dock.floating is first
     dock.close_floating()
+
+
+def test_the_docked_controller_uses_the_sender_created_after_it(
+    area: tk.Toplevel,
+) -> None:
+    # Given: タブは起動時に組み立てるが、送り先（Sender）はその後に作られ、
+    #        通信方式を変えると作り直される。最初は送り先が無い。
+    current: dict[str, Any] = {"sender": None}
+    holder = tk.Frame(area)
+    dock = ControllerDock(area, holder, lambda: current["sender"])
+    assert dock.embedded is not None
+
+    # When: the sender appears after the dock was built, then A is pressed.
+    sender = _Sender()
+    current["sender"] = sender
+    dock.embedded._onPress("A")
+    dock.embedded._onRelease("A")
+
+    # Then: 押した時点の送り先へ届く（組み立て時の送り先を掴みっぱなしにしない）。
+    assert sender.pressed and sender.released == sender.pressed
+
+    # When: the sender is rebuilt (transport switched) and A is pressed again.
+    rebuilt = _Sender()
+    current["sender"] = rebuilt
+    dock.embedded._onPress("A")
+
+    # Then: 作り直した送り先へ届く。
+    assert rebuilt.pressed

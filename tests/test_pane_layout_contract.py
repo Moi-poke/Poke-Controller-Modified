@@ -158,3 +158,31 @@ def test_reset_puts_dragged_dividers_back_to_their_default_place(areas: _Areas) 
     assert areas.arranger.root_pane is not None
     assert abs(areas.arranger.root_pane.sashpos(0) - default) <= 2
     assert areas.arranger.sash_ratios == {}
+
+
+def test_saved_positions_are_restored_once_the_window_gets_its_size(
+    tk_root: tk.Tk,
+) -> None:
+    # Given: 起動直後と同じく、窓がまだ表示されておらず寸法が無い状態で、
+    #        前回の仕切り位置（割合）を渡して組み立てる。
+    window = tk.Toplevel(tk_root)
+    window.withdraw()
+    try:
+        areas = _Areas(window)
+        areas.arranger.sash_ratios = {"H[V[preview,tabs],log]": [0.3]}
+        areas.apply("log_right")
+
+        # When: the window is shown and sized (the end of start-up).
+        window.geometry("900x700+0+0")
+        window.deiconify()
+        for _ in range(5):
+            window.update()
+
+        # Then: 寸法が決まった時点で前回の割合に戻る（既定の位置のままにしない）。
+        pane = areas.arranger.root_pane
+        assert pane is not None
+        assert abs(pane.sashpos(0) - int(pane.winfo_width() * 0.3)) <= 3
+        # 戻す前の既定位置で、控えを上書きしていない。
+        assert areas.arranger.sash_ratios["H[V[preview,tabs],log]"] == [0.3]
+    finally:
+        window.destroy()

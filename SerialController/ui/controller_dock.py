@@ -47,9 +47,9 @@ class ControllerDock:
     def _embed(self) -> None:
         self._away.pack_forget()
         self.pop_button.state(["!disabled"])
-        self.embedded = ControllerGUI(
-            self.root, self._sender(), container=self._pad_area
-        )
+        # 送り先は関数のまま渡す。埋め込みは起動時から置きっぱなしなので、
+        # 組み立て時の送り先（まだ無い／作り直し前）を掴まないようにする。
+        self.embedded = ControllerGUI(self.root, self._sender, container=self._pad_area)
 
     def pop_out(self) -> None:
         """別ウィンドウで開く。既に開いていれば前に出すだけ。"""
@@ -62,7 +62,7 @@ class ControllerDock:
             self.embedded = None
         self.pop_button.state(["disabled"])
         self._away.pack(fill="x", anchor="nw", before=self._pad_area)
-        self.floating = ControllerGUI(self.root, self._sender())
+        self.floating = ControllerGUI(self.root, self._sender)
         self.floating.protocol("WM_DELETE_WINDOW", self.close_floating)
 
     def close_floating(self) -> None:
