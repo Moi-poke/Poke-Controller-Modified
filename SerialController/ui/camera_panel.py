@@ -97,6 +97,7 @@ class CameraPanelMixin:
     applyProfileColor: Any
     _on_setting_changed: Any
     _apply_content_minsize: Any
+    _apply_layout: Any
 
     def _build_camera_frame(self) -> None:
         self.camera_lf = CameraLabelframe(self.frame_1)
@@ -203,7 +204,7 @@ class CameraPanelMixin:
         self.show_size = tk.StringVar()
 
         self.camera_lf.config(height=200, text="カメラ", width=200)
-        self.camera_lf.grid(columnspan=3, padx="5", sticky="ew")
+        # 置き場所は仕切り（ui/pane_layout.py）が決める。ここでは grid しない。
 
     def _setup_camera_name(self) -> None:
         """OS ごとにカメラ名コンボボックスの扱いを切り替える。
@@ -733,8 +734,8 @@ class CameraPanelMixin:
             # 色だけ先に反映する。applyProfileColor の中で帯と色チップが
             # 更新され、そのまま保存まで済みます（保存の入口は 1 つに保つ）。
             self.applyProfileColor(color)
-        self._apply_preview_layout()
-        # 要求サイズが変わるので最小サイズの制限も測り直す（タブの見切れ防止）。
+        # fit / 固定で仕切りの取り分も変わるので、配置ごと組み直す。
+        self._apply_layout()
         self._apply_content_minsize()
         self._on_setting_changed()
 
@@ -752,8 +753,8 @@ class CameraPanelMixin:
         """プレビューの要求サイズと伸び方を、現在のレイアウトに合わせて設定する。
 
         伸びない要求は要求サイズのまま上寄せ。伸ばす要求は枠いっぱいまで
-        伸ばし、16:9 を保ったまま中央寄せさせる。伸びるかどうかはカメラ枠と
-        Window 側の 2 段構成で決まる。片方だけを変えると、どちらかで余白が残る。
+        伸ばし、16:9 を保ったまま中央寄せさせる。カメラ枠の外側（仕切りの中で
+        どれだけ取り分を持つか）は layout_panel._apply_layout が決める。
         """
         preview = self.preview
         if preview is None:
@@ -765,16 +766,10 @@ class CameraPanelMixin:
             preview.grid_configure(sticky="nsew")
             self.camera_lf.rowconfigure(2, weight=1)
             self.camera_lf.columnconfigure(1, weight=1)
-            self.camera_lf.grid_configure(sticky="nsew")
-            self.frame_1.rowconfigure(0, weight=3)
-            self.frame_1.columnconfigure(0, weight=3)
         else:
             preview.grid_configure(sticky="n")
             self.camera_lf.rowconfigure(2, weight=0)
             self.camera_lf.columnconfigure(1, weight=0)
-            self.camera_lf.grid_configure(sticky="ew")
-            self.frame_1.rowconfigure(0, weight=0)
-            self.frame_1.columnconfigure(0, weight=0)
 
     def _applyFilterSettings(self) -> None:
         """設定ファイルの表示フィルタ値をパネル側の辞書へ流し込む。

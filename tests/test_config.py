@@ -266,3 +266,45 @@ def test_live_min_dwell_backfill_and_clamp() -> None:
     assert parser["Transport"]["live_min_dwell_ms"] == "16"
     parser["Transport"]["live_min_dwell_ms"] = "32"
     assert config.complete_missing(parser) == []
+
+
+def test_pane_arrangement_defaults_and_sanitize() -> None:
+    """欄の並べ方と折りたたみの既定値、壊れた並べ方を既定へ戻す動きの検証。
+
+    既存の settings.ini にはキーが無いので、補完で足されて従来どおりの見た目
+    （ログを右、全部表示）になること。
+    """
+    from core.pane_arrangement import DEFAULT_ARRANGEMENT
+
+    defaults = config.default_sections()["Window"]
+    assert defaults["arrangement"] == DEFAULT_ARRANGEMENT == "log_right"
+    assert defaults["show_tabs"] is True
+    assert defaults["show_log"] is True
+    parser = make_parser()
+    config.complete_missing(parser)
+    window = parser["Window"]
+    assert window["arrangement"] == "log_right"
+    assert window.getboolean("show_tabs") is True
+    assert window.getboolean("show_log") is True
+    window["arrangement"] = "diagonal"
+    changed = config.complete_missing(parser)
+    assert window["arrangement"] == "log_right"
+    assert "Window.arrangement" in changed
+    window["arrangement"] = "stack"
+    assert config.complete_missing(parser) == []
+    assert window["arrangement"] == "stack"
+
+
+def test_pane_sashes_default_empty_and_broken_text_is_cleared() -> None:
+    """仕切り位置（JSON 文字列）の既定は空。壊れた値は空へ戻す。"""
+    defaults = config.default_sections()["Window"]
+    assert defaults["pane_sashes"] == ""
+    parser = make_parser()
+    config.complete_missing(parser)
+    window = parser["Window"]
+    window["pane_sashes"] = "{broken"
+    changed = config.complete_missing(parser)
+    assert window["pane_sashes"] == ""
+    assert "Window.pane_sashes" in changed
+    window["pane_sashes"] = '{"V[preview,tabs]": [0.5]}'
+    assert config.complete_missing(parser) == []

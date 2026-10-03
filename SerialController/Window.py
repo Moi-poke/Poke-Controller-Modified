@@ -31,6 +31,11 @@ from Menubar import PokeController_Menubar
 from core import CommandStats, PokeConLogger
 from core.Camera import Camera
 from core.display_mode import DEFAULT_LAYOUT
+from core.pane_arrangement import (
+    DEFAULT_ARRANGEMENT,
+    format_sash_ratios,
+    parse_sash_ratios,
+)
 from loguru import logger
 from services.audio_service import AudioService
 from services.command_runner import CommandRunner
@@ -41,6 +46,7 @@ from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
 from ui.layout_panel import LayoutPanelMixin
 from ui.log_panel import LogPanelMixin
+from ui.pane_layout import PaneArranger
 from ui.preview_clock import StopResult
 from ui.scroll_host import ScrollHost
 from ui.serial_panel import SerialPanelMixin
@@ -266,6 +272,10 @@ class PokeControllerApp(
         # どちらの変数もそれより前に存在している必要がある。
         self.layout_mode = tk.StringVar(value=DEFAULT_LAYOUT)
         self.profile_color = tk.StringVar(value="")
+        # 欄の並べ方と、設定タブ・ログの表示/非表示（折りたたみ）。
+        self.arrangement = tk.StringVar(value=DEFAULT_ARRANGEMENT)
+        self.show_tabs_pane = tk.BooleanVar(value=True)
+        self.show_log_pane = tk.BooleanVar(value=True)
         self._display_after_id = None
         self._sash_after_id: Any = None
         self._sash_restore_attempts = 0
@@ -302,6 +312,11 @@ class PokeControllerApp(
         self._build_control_frame()
         self._build_command_frame()
         self._build_log_area()
+        # 3 つの欄を仕切りに載せる道具。並べ方は _apply_layout が決める。
+        self._pane_arranger = PaneArranger(
+            self.frame_1,
+            {"preview": self.camera_lf, "tabs": self.setting_nb, "log": self.log_area},
+        )
         # レイアウト切替の部品（色の帯とコンパクトバー）。他の欄が
         # 揃った後に作る（コンパクトバーはカメラ欄の子として載せる）。
         self._build_layout_widgets()
@@ -310,10 +325,6 @@ class PokeControllerApp(
 
         self.frame_1.config(height=720, padding=5, relief="flat", width=1280)
         self.scroll_host.pack(expand=True, fill="both", side="top")
-        self.frame_1.columnconfigure(3, weight=1)
-        # タブ欄とログ欄の行を縦に伸ばす。カメラ行と道具行は固定。
-        self.frame_1.rowconfigure(1, weight=1)
-        self.frame_1.rowconfigure(2, weight=1)
         self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
     def _attach_tooltips(self) -> None:
@@ -355,9 +366,6 @@ class PokeControllerApp(
         # Bcon タブは Transport が bcon 系のときだけ「シリアル」の隣へ足す
         # （枠だけここで作る。出し入れは _refresh_bcon_tab）。
         self._build_bcon_tab()
-        self.setting_nb.grid(
-            column=0, columnspan=3, padx="5", row=1, rowspan=3, sticky="nsew"
-        )
         self.setting_nb.bind(
             "<<NotebookTabChanged>>", self._unfocus_setting_tab, add=""
         )
@@ -395,6 +403,13 @@ class PokeControllerApp(
         # Settings の補完で既定へ戻っている前提）。
         self.layout_mode.set(self.settings.layout.get())
         self.profile_color.set(self.settings.profile_color.get())
+        self.arrangement.set(self.settings.arrangement.get())
+        self.show_tabs_pane.set(bool(self.settings.show_tabs.get()))
+        self.show_log_pane.set(bool(self.settings.show_log.get()))
+        # 仕切り位置は最初の _apply_layout より前に渡す（その場で戻すため）。
+        self._pane_arranger.sash_ratios = parse_sash_ratios(
+            str(self.settings.pane_sashes.get())
+        )
         self.com_port.set(self.settings.com_port.get())
         self.com_port_name.set(self.settings.com_port_name.get())
         self.camera_id.set(self.settings.camera_id.get())
@@ -647,6 +662,14 @@ class PokeControllerApp(
         self.settings.renderer.set(self.renderer.get())
         self.settings.layout.set(self.layout_mode.get())
         self.settings.profile_color.set(self.profile_color.get())
+        self.settings.arrangement.set(self.arrangement.get())
+        self.settings.show_tabs.set(bool(self.show_tabs_pane.get()))
+        self.settings.show_log.set(bool(self.show_log_pane.get()))
+        # ドラッグした仕切り位置を控えてから書く（組み直し時にも控えている）。
+        self._pane_arranger.remember_sashes()
+        self.settings.pane_sashes.set(
+            format_sash_ratios(self._pane_arranger.sash_ratios)
+        )
         self.settings.com_port.set(self.com_port.get())
         self.settings.com_port_name.set(self.com_port_name.get())
         self.settings.baud_rate.set(self._currentBaudRate())

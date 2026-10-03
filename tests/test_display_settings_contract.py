@@ -114,7 +114,7 @@ class _Panel:
     def applyProfileColor(self, color: str) -> None:
         self.calls.append(f"color={color}")
 
-    def _apply_preview_layout(self) -> None:
+    def _apply_layout(self) -> None:
         pass
 
     def _apply_content_minsize(self) -> None:

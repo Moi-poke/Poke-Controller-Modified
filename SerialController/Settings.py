@@ -90,6 +90,12 @@ class GuiSettings:
         # プロファイルごとの色（#RRGGBB、"" なら色なし）。
         # 補完（config.complete_missing）が正規化形へ直している前提。
         self.profile_color = tk.StringVar(value=window.get("profile_color"))
+        # 欄の並べ方と折りたたみ。候補は core.pane_arrangement が正。
+        self.arrangement = tk.StringVar(value=window.get("arrangement"))
+        self.show_tabs = tk.BooleanVar(value=window.getboolean("show_tabs"))
+        self.show_log = tk.BooleanVar(value=window.getboolean("show_log"))
+        # 仕切り位置（形ごとの割合、JSON 文字列）。補完で読める形に揃っている。
+        self.pane_sashes = tk.StringVar(value=window.get("pane_sashes"))
 
         # 入力ログ。従来は Sender.py の定数を書き換える必要があった
         input_log = self.setting["Input Log"]
@@ -345,6 +351,10 @@ class GuiSettings:
                 "log_sash_ratio": self.log_sash_ratio.get(),
                 "layout": self.layout.get(),
                 "profile_color": self.profile_color.get(),
+                "arrangement": self.arrangement.get(),
+                "show_tabs": self.show_tabs.get(),
+                "show_log": self.show_log.get(),
+                "pane_sashes": self.pane_sashes.get(),
             }
         )
         self.setting["Input Log"] = self._str_values(

@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from ui.camera_panel import CameraPanelMixin
 from ui.layout_panel import LayoutPanelMixin
+from ui.pane_layout import PaneArranger
 from ui.scroll_host import ScrollHost
 
 _PROFILE = "switch1"
@@ -57,7 +58,7 @@ class _Runner:
 
 
 class _Host(LayoutPanelMixin):
-    """Window と同じ行・列・重みで部品を並べた最小の宿主。"""
+    """Window と同じ欄・仕切りで部品を並べた最小の宿主。"""
 
     _current_preview_layout = CameraPanelMixin._current_preview_layout
     _apply_preview_layout = CameraPanelMixin._apply_preview_layout
@@ -76,31 +77,35 @@ class _Host(LayoutPanelMixin):
         self.com_port_name = tk.StringVar(master=root, value="COM9")
         self.transport_name = tk.StringVar(master=root, value="switch-bcon")
 
+        # 欄の並べ方と折りたたみ（Window._init_state と同じ既定）。
+        self.arrangement = tk.StringVar(master=root, value="log_right")
+        self.show_tabs_pane = tk.BooleanVar(master=root, value=True)
+        self.show_log_pane = tk.BooleanVar(master=root, value=True)
+
         # Window と同じく、本体はスクロール入れ物の中身として作る。
         self.scroll_host = ScrollHost(root)
         self.frame_1 = self.scroll_host.inner
-        # Window._build_ui と同じ: カメラ行 0、タブ欄が行 1〜3、ログが列 3。
+        # Window._build_ui と同じ: 3 つの欄を frame_1 の子として作り、仕切りに載せる。
         self.camera_lf = ttk.Labelframe(self.frame_1, text="Camera")
         ttk.Label(self.camera_lf, text="Camera ID").grid(padx="5", sticky="ew")
         self.preview = _PreviewDouble(self.camera_lf)
         self.preview.grid(column=0, columnspan=7, row=2, padx="5", pady="5")
-        self.camera_lf.grid(columnspan=3, padx="5", sticky="ew")
-        self.setting_nb = ttk.Frame(self.frame_1, height=300)
-        self.setting_nb.grid(
-            column=0, columnspan=3, padx="5", row=1, rowspan=3, sticky="nsew"
+        self.setting_nb = ttk.Frame(self.frame_1, height=300, width=400)
+        # ログ欄の枠（ノートとツールバー）。log_panel._build_log_area と同じ形。
+        self.log_area = ttk.Frame(self.frame_1)
+        self.log_nb = ttk.Frame(self.log_area, width=300, height=200)
+        self.log_nb.grid(column=0, row=0, sticky="nsew")
+        self.log_bar = ttk.Frame(self.log_area, height=20)
+        self.log_bar.grid(column=0, row=1, sticky="ew")
+        self._pane_arranger = PaneArranger(
+            self.frame_1,
+            {"preview": self.camera_lf, "tabs": self.setting_nb, "log": self.log_area},
         )
-        self.log_nb = ttk.Frame(self.frame_1, width=300)
-        self.log_nb.grid(column=3, padx="5", pady="5", row=0, rowspan=3, sticky="nsew")
-        self.log_bar = ttk.Frame(self.frame_1, height=20)
-        self.log_bar.grid(column=3, padx="5", row=3, sticky="ew")
         self.startButton = ttk.Button(self.frame_1, text="Start")
         self.pauseButton = ttk.Button(self.frame_1, text="Pause")
         self._build_layout_widgets()
 
         self.scroll_host.pack(expand=True, fill="both", side="top")
-        self.frame_1.columnconfigure(3, weight=1)
-        self.frame_1.rowconfigure(1, weight=1)
-        self.frame_1.rowconfigure(2, weight=1)
         # Window も組み立て直後に 1 回適用する（起動時のレイアウト）。
         self._apply_layout()
 
@@ -273,3 +278,48 @@ def test_a_closed_port_reads_as_not_connected(host: _Host) -> None:
 
     # Then: ポート名を出したままにしない（繋がっていると誤解する）。
     assert host.status_device.get() == "未接続"
+
+
+def test_rearranging_keeps_every_area_and_status_in_place(host: _Host) -> None:
+    for arrangement in ("side", "stack", "log_right"):
+        # When: the user picks another arrangement.
+        host.applyArrangement(arrangement)
+        _settle(host)
+
+        # Then: 3 つの欄はどれも出たまま（並べ替えで消えない）。
+        assert host.camera_lf.winfo_ismapped(), arrangement
+        assert host.setting_nb.winfo_ismapped(), arrangement
+        assert host.log_area.winfo_ismapped(), arrangement
+    assert host.arrangement.get() == "log_right"
+
+
+def test_collapsing_the_log_gives_its_width_to_the_rest(host: _Host) -> None:
+    _settle(host)
+    camera_w = host.camera_lf.winfo_width()
+
+    # When: the log is collapsed.
+    host.setPaneVisible("log", False)
+    _settle(host)
+
+    # Then: ログが消え、空いた幅をカメラ欄が使う。
+    assert not host.log_area.winfo_ismapped()
+    assert host.camera_lf.winfo_width() > camera_w
+
+    # When: expanded again.
+    host.setPaneVisible("log", True)
+    _settle(host)
+    assert host.log_area.winfo_ismapped()
+
+
+def test_a_collapsed_pane_stays_collapsed_across_compact_and_back(host: _Host) -> None:
+    # Given: the user collapsed the tabs.
+    host.setPaneVisible("tabs", False)
+
+    # When: compact, then standard again.
+    host.applyLayout("compact")
+    host.applyLayout("standard")
+    _settle(host)
+
+    # Then: 利用者が畳んだ欄は、レイアウトを往復しても畳んだまま。
+    assert not host.setting_nb.winfo_ismapped()
+    assert host.log_area.winfo_ismapped()

@@ -26,14 +26,13 @@ import tkinter.ttk as ttk
 from typing import Any
 
 from core.display_mode import LAYOUTS, layout_plan, normalize_profile_color
+from core.pane_arrangement import arrangement_tree, normalize_arrangement
 from core.status_view import BADGE_COLORS, status_view
 
 # コンパクトバーの色チップの幅（px）。色つきなら一目で分かる細帯。
 _COMPACT_CHIP_WIDTH = 12
 # 色チップの左右の余白。
 _CHIP_PAD_X = (4, 2)
-# frame_1 でタブ欄が占める、縦に伸びる行（Window._build_ui の rowconfigure）。
-_TAB_ROWS = (1, 2)
 
 
 class LayoutPanelMixin:
@@ -49,10 +48,11 @@ class LayoutPanelMixin:
     runner: Any
     # Window 側が _init_state / _apply_settings_to_widgets で用意する
     layout_mode: Any
+    arrangement: Any
+    show_tabs_pane: Any
+    show_log_pane: Any
+    _pane_arranger: Any
     profile_color: Any
-    setting_nb: Any
-    log_nb: Any
-    log_bar: Any
     startButton: Any
     pauseButton: Any
     openCommandPalette: Any
@@ -159,28 +159,6 @@ class LayoutPanelMixin:
         """現在のレイアウトに合わせて、部品の出し入れとプレビューを直す。"""
         plan = self._layout_plan()
 
-        # タブ（シリアル/コントローラ/オーディオ/コマンド/Bcon）
-        # タブ欄の行（1, 2）は Window が縦に伸びる重みを付けている。隠しても
-        # 重みが残ると、空の行が余りの高さを取ってプレビューの下に空白が出る。
-        tab_row_weight = 1 if plan.show_tabs else 0
-        for row in _TAB_ROWS:
-            self.frame_1.rowconfigure(row, weight=tab_row_weight)
-        if plan.show_tabs:
-            self.setting_nb.grid()
-        else:
-            self.setting_nb.grid_remove()
-
-        # ログ欄とその下のバー。片方だけ残ると宙に浮いたバーになる。
-        if plan.show_log:
-            self.log_nb.grid()
-            self.log_bar.grid()
-            # ログの列が伸びないと、隠した状態から戻った時に幅が詰まる。
-            self.frame_1.columnconfigure(3, weight=1)
-        else:
-            self.log_nb.grid_remove()
-            self.log_bar.grid_remove()
-            self.frame_1.columnconfigure(3, weight=0)
-
         # カメラ欄の操作部（見出し・入力・コンボ・ボタン）。
         # プレビューとコンパクトバーは残すので、grid_slaves から取り除く。
         # grid_remove は配置オプションを覚えているため、戻す時は grid() だけで
@@ -216,12 +194,41 @@ class LayoutPanelMixin:
         # プレビューの要求サイズと伸び方。実体は camera_panel 側。
         self._apply_preview_layout()
 
+        # 3 つの欄（プレビュー・設定タブ・ログ）を仕切りに並べ直す。出すかどうかは
+        # レイアウト（コンパクト等は隠す）と利用者の折りたたみの両方で決まる。
+        # 伸びるプレビューにだけ余白を多めに配る（core.pane_arrangement）。
+        tree = arrangement_tree(
+            str(self.arrangement.get()),
+            show_tabs=plan.show_tabs and bool(self.show_tabs_pane.get()),
+            show_log=plan.show_log and bool(self.show_log_pane.get()),
+            stretch=bool(plan.preview.stretch),
+        )
+        self._pane_arranger.apply(tree)
+
         # 色も設定値なので、ここでまとめて反映する。起動時の 1 回目も
         # _apply_layout を通るため、色反映の経路が 1 つで済む。
         self._apply_profile_color_widgets(str(self.profile_color.get()))
 
         # 実行状態の 1 行（コンパクトバー）とプレビューのバッジ
         self._publish_status()
+
+    def applyArrangement(self, arrangement: str) -> None:
+        """欄の並べ方を選び、画面へ適用して保存する。"""
+        self.arrangement.set(normalize_arrangement(arrangement))
+        self._relayout_and_save()
+
+    def setPaneVisible(self, name: str, visible: bool) -> None:
+        """設定タブ（tabs）かログ（log）を出す/畳む。保存もする。"""
+        var = {"tabs": self.show_tabs_pane, "log": self.show_log_pane}.get(name)
+        if var is None:
+            return
+        var.set(bool(visible))
+        self._relayout_and_save()
+
+    def _relayout_and_save(self) -> None:
+        self._apply_layout()
+        self._apply_content_minsize()
+        self._on_setting_changed()
 
     def _layout_plan(self) -> Any:
         """今のレイアウト・表示モード・固定サイズから LayoutPlan を取る。"""

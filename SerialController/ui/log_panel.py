@@ -29,6 +29,7 @@ class LogPanelMixin:
     """ログ欄Mixin。単体では使わない。"""
 
     frame_1: Any
+    log_area: Any
     root: Any
     settings: Any
     serial: SerialService
@@ -67,7 +68,11 @@ class LogPanelMixin:
         仕切りは ttk.PanedWindow でドラッグして高さを変えられるようにする。
         使い分けは Python コマンド側の print2 / log2 で行う。
         """
-        self.log_nb = ttk.Notebook(self.frame_1)
+        # ログ欄の枠。ノートと下のツールバーを 1 つにまとめ、仕切りの 1 欄にする。
+        self.log_area = ttk.Frame(self.frame_1)
+        self.log_area.rowconfigure(0, weight=1)
+        self.log_area.columnconfigure(0, weight=1)
+        self.log_nb = ttk.Notebook(self.log_area)
 
         # 「ログ」= コマンドの出力とシステムメッセージ（上下2枚）
         self.log_pane = ttk.PanedWindow(self.log_nb, orient="vertical")
@@ -88,7 +93,7 @@ class LogPanelMixin:
         self.inputLogArea = WindowUtils.makeLogText(self.input_scroll)
         self.log_nb.add(self.input_scroll, text="入力")
 
-        self.log_nb.grid(column=3, padx="5", pady="5", row=0, rowspan=3, sticky="nsew")
+        self.log_nb.grid(column=0, padx="5", pady="5", row=0, sticky="nsew")
 
         self._build_log_toolbar()
         # 仕切り位置の復元は、ウィジェットの大きさが確定してからでないと
@@ -101,8 +106,8 @@ class LogPanelMixin:
         欄を分けても、コマンドが大量に print すれば「ログ」側は流れる。
         止めたいときにすぐ止められる口を用意しておく。
         """
-        bar = ttk.Frame(self.frame_1)
-        bar.grid(column=3, padx="5", row=3, sticky="ew")
+        bar = ttk.Frame(self.log_area)
+        bar.grid(column=0, padx="5", row=1, sticky="ew")
         # レイアウト切替（layout_panel の _apply_layout）で出し入れするため、
         # ローカル変数だと外から触れず「隠せない」バーになる。
         self.log_bar = bar

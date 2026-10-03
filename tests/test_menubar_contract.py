@@ -26,14 +26,19 @@ class _App:
         self.layout_mode = tk.StringVar(master=root, value="standard")
         self.profile_color = tk.StringVar(master=root, value="")
         self.app_version = "9.9.9"
+        self.arrangement = tk.StringVar(master=root, value="log_right")
+        self.show_tabs_pane = tk.BooleanVar(master=root, value=True)
+        self.show_log_pane = tk.BooleanVar(master=root, value=True)
+        self.args: list[tuple[str, tuple[Any, ...]]] = []
 
     def __getattr__(self, name: str) -> Any:
         # 入口の名前だけ記録する偽メソッド。存在しない属性で落とさない。
         if name.startswith("_"):
             raise AttributeError(name)
 
-        def record(*_args: Any, **_kwargs: Any) -> None:
+        def record(*args: Any, **_kwargs: Any) -> None:
             self.calls.append(name)
+            self.args.append((name, args))
 
         return record
 
@@ -177,3 +182,27 @@ def test_settings_and_help_items_live_under_tools_and_help(
         assert "画面サイズのリセット" not in [
             t for _k, t in _entries(_submenu(menubar, heading))
         ]
+
+
+def test_the_view_menu_picks_the_arrangement_and_collapses_panes(
+    bar: tuple[PokeController_Menubar, _App],
+) -> None:
+    # Given: the view menu.
+    menubar, app = bar
+    view = _submenu(menubar, "表示(V)")
+    labels = [t for _k, t in _entries(view)]
+
+    # Then: 並べ方は 3 択のラジオ（今の値に印が付く）、欄はチェックで出し入れ。
+    for label in ("ログを右", "右にタブとログ", "縦一列"):
+        assert view.type(_index(view, label)) == "radiobutton"
+    for label in ("設定タブ", "ログ"):
+        assert view.type(_index(view, label)) == "checkbutton"
+    assert labels.index("縦一列") < labels.index("設定タブ")
+
+    # When: an arrangement and a collapse are chosen.
+    view.invoke(_index(view, "縦一列"))
+    view.invoke(_index(view, "ログ"))
+
+    # Then: アプリ側の入口に、選んだ値がそのまま渡る。
+    assert ("applyArrangement", ("stack",)) in app.args
+    assert ("setPaneVisible", ("log", False)) in app.args

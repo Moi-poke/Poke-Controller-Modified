@@ -26,6 +26,12 @@ from core.display_mode import (
     SHOW_SIZES,
     normalize_profile_color,
 )
+from core.pane_arrangement import (
+    DEFAULT_ARRANGEMENT,
+    format_sash_ratios,
+    normalize_arrangement,
+    parse_sash_ratios,
+)
 
 # キーコンフィグが扱うセクション。KeyConfig / Keyboard の双方が参照する。
 KEYMAP_SECTIONS: tuple = ("KeyMap-Button", "KeyMap-Direction", "KeyMap-Hat")
@@ -93,6 +99,14 @@ def default_sections() -> dict[str, dict[str, Any]]:
             # プロファイルごとの色（#RRGGBB）。空文字なら色を出さない。
             # 候補は core.display_mode.PROFILE_COLORS が正。
             "profile_color": "",
+            # 欄の並べ方。log_right（ログを右）/ side（右にタブとログ）/
+            # stack（縦一列）。候補は core.pane_arrangement.ARRANGEMENTS が正。
+            "arrangement": DEFAULT_ARRANGEMENT,
+            # 設定タブとログ欄の表示（False で折りたたむ）。
+            "show_tabs": True,
+            "show_log": True,
+            # 仕切り位置（形ごとの割合、JSON）。空なら既定の位置。
+            "pane_sashes": "",
         },
         "Input Log": {
             # プリセット名（simple / detail / compact / csv / command / raw）
@@ -316,6 +330,16 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if window.get("profile_color", "") != color:
             window["profile_color"] = color
             changed.append("Window.profile_color")
+        arrangement = window.get("arrangement", "")
+        if normalize_arrangement(arrangement) != arrangement:
+            window["arrangement"] = DEFAULT_ARRANGEMENT
+            changed.append("Window.arrangement")
+        sashes = window.get("pane_sashes", "")
+        if sashes and format_sash_ratios(parse_sash_ratios(sashes)) != sashes:
+            # 読めない値は捨てる。読める値は書式を揃えて残す。
+            parsed = parse_sash_ratios(sashes)
+            window["pane_sashes"] = format_sash_ratios(parsed) if parsed else ""
+            changed.append("Window.pane_sashes")
     if parser.has_section("PreviewFilter"):
         filt = parser["PreviewFilter"]
         float_rules = {

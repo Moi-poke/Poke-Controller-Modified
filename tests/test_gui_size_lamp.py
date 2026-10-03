@@ -113,11 +113,21 @@ def test_window_has_minimum_size() -> None:
     assert "self._apply_content_minsize()" not in build_ui
 
 
-def test_window_rows_stretch_vertically() -> None:
-    """タブ欄とログ欄の行は縦に伸びる。"""
+def test_window_puts_the_three_areas_on_draggable_panes() -> None:
+    """プレビュー・設定タブ・ログは仕切り（PaneArranger）に載せる。
+
+    行の重みで固定していた頃は大きさを変えられなかった。並べ方と仕切りの
+    振る舞いは tests/test_pane_layout_contract.py が実物の Tk で見る。
+    """
     src = Path("SerialController/Window.py").read_text(encoding="utf-8")
-    assert "self.frame_1.rowconfigure(1, weight=1)" in src
-    assert "self.frame_1.rowconfigure(2, weight=1)" in src
+    assert "PaneArranger(" in src
+    for area in (
+        '"preview": self.camera_lf',
+        '"tabs": self.setting_nb',
+        '"log": self.log_area',
+    ):
+        assert area in src
+    assert "self.frame_1.rowconfigure(1, weight=1)" not in src
 
 
 def test_transport_list_has_switch_bcon_without_pico() -> None:

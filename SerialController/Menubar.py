@@ -9,6 +9,7 @@ import WindowUtils
 from InputLogConfig import InputLogConfig
 from KeyConfig import PokeKeycon
 from SerialMonitor import SerialMonitor
+from core.pane_arrangement import ARRANGEMENTS
 from get_pokestatistics import GetFromHomeGUI
 from loguru import logger
 
@@ -154,6 +155,25 @@ class PokeController_Menubar(tk.Menu):
                 variable=self.app.layout_mode,
             )
         m.add_separator()
+        # 欄の並べ方（標準レイアウトのとき効く）。仕切りはドラッグで動かせる。
+        for value, text in ARRANGEMENTS:
+            m.add_radiobutton(
+                command=self._arrangement_command(value),
+                label=text,
+                value=value,
+                variable=self.app.arrangement,
+            )
+        # 設定タブとログの出し入れ（折りたたみ）。プレビューは常に出す。
+        for name, text, var in (
+            ("tabs", "設定タブ", self.app.show_tabs_pane),
+            ("log", "ログ", self.app.show_log_pane),
+        ):
+            m.add_checkbutton(
+                label=text,
+                variable=var,
+                command=self._pane_command(name, var),
+            )
+        m.add_separator()
         m.add_command(
             label="ウィンドウ 1280x720",
             command=lambda: self.applyWindowSize(1280, 720),
@@ -193,6 +213,14 @@ class PokeController_Menubar(tk.Menu):
         m.add_command(label="エラー報告をコピー...", command=self.OpenErrorReport)
         m.add_separator()
         m.add_command(label="バージョン情報", command=self.ShowAbout)
+
+    def _arrangement_command(self, value: str) -> Any:
+        """並べ方 1 つ分の command（ループ変数を閉じ込める）。"""
+        return lambda: self.app.applyArrangement(value)
+
+    def _pane_command(self, name: str, var: Any) -> Any:
+        """欄の出し入れ 1 つ分の command。チェックの状態をそのまま渡す。"""
+        return lambda: self.app.setPaneVisible(name, bool(var.get()))
 
     def _layout_command(self, value: str) -> Any:
         """レイアウト 1 つ分の command。ループ変数を取り違えないよう閉じ込める。"""
