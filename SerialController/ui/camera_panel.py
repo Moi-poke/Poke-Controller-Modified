@@ -79,20 +79,13 @@ class CameraPanelMixin:
     captureButton: Any
     open_folder_img: Any
     OpencaptureButton: Any
-    camera_f2: Any
-    fps_label: Any
     fps: Any
-    fps_cb: Any
-    separator_3: Any
     show_size: Any
     show_mode: Any
-    separator_4: Any
     filt_enabled: Any
     filt_check: Any
     filt_setting_button: Any
-    renderer_label: Any
     renderer: Any
-    renderer_cb: Any
     _filt_params: dict[str, Any]
     _camera_open_lock: Any
     _camera_open_seq: int
@@ -108,83 +101,37 @@ class CameraPanelMixin:
     def _build_camera_frame(self) -> None:
         self.camera_lf = CameraLabelframe(self.frame_1)
 
-        self.camera_id_label = ttk.Label(self.camera_lf)
-        self.camera_id_label.config(anchor="center", text="Camera ID:")
-        self.camera_id_label.grid(padx="5", sticky="ew")
+        # 1 行目: カメラの選択と、よく触る操作（再読み込み・表示・キャプチャ）。
+        # FPS と描画方式は滅多に変えないので表示設定ダイアログにある。
+        self.camera_name_l = ttk.Label(self.camera_lf)
+        self.camera_name_l.config(anchor="center", text="カメラ:")
+        self.camera_name_l.grid(column=0, padx="5", row=0, sticky="ew")
 
-        self.camera_entry = ttk.Entry(self.camera_lf)
-        self.camera_id = tk.IntVar()
-        self.camera_entry.config(state="normal", textvariable=self.camera_id)
-        self.camera_entry.grid(column=1, padx="5", row=0, sticky="ew")
-        self.camera_entry.columnconfigure("1", uniform="0")
+        # 表示名は「番号: 機器名 [識別子]」（WindowUtils.cameraLabel）。番号が
+        # 入るので、名前を出せる環境では Camera ID 欄を別に出さない。
+        self.camera_name_fromDLL = tk.StringVar()
+        self.Camera_Name = ttk.Combobox(self.camera_lf)
+        self.Camera_Name.config(state="readonly", textvariable=self.camera_name_fromDLL)
+        self.Camera_Name.grid(column=1, padx="5", row=0, sticky="ew")
+        self.Camera_Name.bind("<<ComboboxSelected>>", self.set_cameraid, add="")
 
         self.reloadButton = ttk.Button(self.camera_lf)
-        self.reloadButton.config(text="Reload Camera", command=self.openCamera)
+        self.reloadButton.config(text="再読み込み", command=self.openCamera)
         self.reloadButton.grid(column=2, padx="5", row=0, sticky="ew")
 
         self.separator_1 = ttk.Separator(self.camera_lf)
         self.separator_1.config(orient="vertical")
         self.separator_1.grid(column=3, row=0, sticky="ns")
 
+        # プレビュー描画の入/切（切ると描画の負荷が無くなる。取り込みは続く）。
         self.is_show_realtime = tk.BooleanVar()
         self.cb_show_realtime = ttk.Checkbutton(self.camera_lf)
         self.cb_show_realtime.config(
-            text="Show Realtime",
+            text="プレビュー表示",
             variable=self.is_show_realtime,
             command=self._on_setting_changed,
         )
-        self.cb_show_realtime.grid(column=4, row=0)
-
-        self.separator_2 = ttk.Separator(self.camera_lf)
-        self.separator_2.config(orient="vertical")
-        self.separator_2.grid(column=5, row=0, sticky="ns")
-
-        # -- キャプチャ操作
-        self.capture_f = ttk.Frame(self.camera_lf)
-        self.captureButton = ttk.Button(self.capture_f)
-        self.captureButton.config(text="Capture", command=self.saveCapture)
-        self.captureButton.grid(column=0, row=0)
-
-        self.open_folder_img = tk.PhotoImage(file=WindowUtils.OPEN_DIR_ICON_PATH)
-        self.OpencaptureButton = ttk.Button(self.capture_f)
-        self.OpencaptureButton.config(
-            image=self.open_folder_img, command=self.OpenCaptureDir
-        )
-        self.OpencaptureButton.grid(column=1, row=0)
-        self.capture_f.grid(column=6, row=0, sticky="ns")
-
-        # -- FPS / 表示サイズ
-        self.camera_f2 = ttk.Frame(self.camera_lf)
-        self.fps_label = ttk.Label(self.camera_f2)
-        self.fps_label.config(text="FPS:")
-        self.fps_label.grid(padx="5", sticky="ew")
-
-        self.fps = tk.StringVar()
-        self.fps_cb = ttk.Combobox(self.camera_f2)
-        # values の int 群は実行時に文字列化される。注釈だけの問題のため無視する。
-        self.fps_cb.config(  # type: ignore[call-overload]
-            justify="right",
-            state="readonly",
-            textvariable=self.fps,
-            values=WindowUtils.FPS_VALUES,
-            width=5,
-        )
-        self.fps_cb.grid(column=1, padx="10", row=0, sticky="ew")
-        self.fps_cb.bind("<<ComboboxSelected>>", self.applyFps, add="")
-
-        self.separator_3 = ttk.Separator(self.camera_f2)
-        self.separator_3.config(orient="vertical")
-        self.separator_3.grid(column=2, row=0, sticky="ns")
-
-        # プレビューの表示モードと固定サイズ。選ぶ画面は Menubar の
-        # 表示設定ダイアログ（カメラ欄にはコンボを置かない）。ここには
-        # 値だけ持ち、決めるのはダイアログ、反映は applyDisplaySettings。
-        self.show_mode = tk.StringVar()
-        self.show_size = tk.StringVar()
-
-        self.separator_4 = ttk.Separator(self.camera_f2)
-        self.separator_4.config(orient="vertical")
-        self.separator_4.grid(column=5, row=0, sticky="ns")
+        self.cb_show_realtime.grid(column=4, row=0, padx="5")
 
         # 表示専用フィルタ（パラメータはiniへ保存、ON/OFFはセッションのみ）。
         # 起動時は常にOFF（不意の加工表示を避ける）。
@@ -203,45 +150,57 @@ class CameraPanelMixin:
             "mode": "gray_out",
         }
         self.filt_enabled = tk.BooleanVar(value=False)
-        self.filt_check = ttk.Checkbutton(self.camera_f2)
+        self.filt_check = ttk.Checkbutton(self.camera_lf)
         self.filt_check.config(
             text="表示フィルタ",
             variable=self.filt_enabled,
             command=self.applyPreviewFilter,
         )
-        self.filt_check.grid(column=6, row=0)
+        self.filt_check.grid(column=5, row=0)
 
-        self.filt_setting_button = ttk.Button(self.camera_f2)
+        self.filt_setting_button = ttk.Button(self.camera_lf)
         self.filt_setting_button.config(text="調整...", command=self.openFilterDialog)
-        self.filt_setting_button.grid(column=7, row=0)
+        self.filt_setting_button.grid(column=6, row=0, padx="5")
 
-        # 描画方式の選択。候補は WindowUtils の表を 1 箇所で共有する。
-        self.renderer_label = ttk.Label(self.camera_f2)
-        self.renderer_label.config(text="Renderer:")
-        self.renderer_label.grid(column=8, padx="5", row=0, sticky="ew")
+        self.separator_2 = ttk.Separator(self.camera_lf)
+        self.separator_2.config(orient="vertical")
+        self.separator_2.grid(column=7, row=0, sticky="ns")
 
-        self.renderer = tk.StringVar()
-        self.renderer_cb = ttk.Combobox(self.camera_f2)
-        self.renderer_cb.config(
-            textvariable=self.renderer,
-            state="readonly",
-            values=WindowUtils.RENDERER_VALUES,
+        # -- キャプチャ操作
+        self.capture_f = ttk.Frame(self.camera_lf)
+        self.captureButton = ttk.Button(self.capture_f)
+        self.captureButton.config(text="キャプチャ", command=self.saveCapture)
+        self.captureButton.grid(column=0, row=0)
+
+        self.open_folder_img = tk.PhotoImage(file=WindowUtils.OPEN_DIR_ICON_PATH)
+        self.OpencaptureButton = ttk.Button(self.capture_f)
+        self.OpencaptureButton.config(
+            image=self.open_folder_img, command=self.OpenCaptureDir
         )
-        self.renderer_cb.grid(column=9, padx="10", row=0, sticky="ew")
-        self.renderer_cb.bind("<<ComboboxSelected>>", self.applyRenderer, add="")
+        self.OpencaptureButton.grid(column=1, row=0)
+        self.capture_f.grid(column=8, row=0, padx="5", sticky="ns")
 
-        self.camera_f2.grid(column=0, columnspan=10, row=3, sticky="nsew")
+        # 2 行目: Camera ID。カメラ名を取れない環境（Linux 等）でだけ使う。
+        # 出し入れは _setup_camera_name が決める。
+        self.camera_id_label = ttk.Label(self.camera_lf)
+        self.camera_id_label.config(anchor="center", text="カメラ ID:")
+        self.camera_id_label.grid(column=0, padx="5", row=1, sticky="ew")
 
-        # -- カメラ名
-        self.camera_name_l = ttk.Label(self.camera_lf)
-        self.camera_name_l.config(anchor="center", text="Camera Name: ")
-        self.camera_name_l.grid(column=0, padx="5", row=1, sticky="ew")
+        self.camera_entry = ttk.Entry(self.camera_lf)
+        self.camera_id = tk.IntVar()
+        self.camera_entry.config(state="normal", textvariable=self.camera_id, width=6)
+        self.camera_entry.grid(column=1, padx="5", row=1, sticky="w")
 
-        self.camera_name_fromDLL = tk.StringVar()
-        self.Camera_Name = ttk.Combobox(self.camera_lf)
-        self.Camera_Name.config(state="readonly", textvariable=self.camera_name_fromDLL)
-        self.Camera_Name.grid(column=1, columnspan=6, padx="5", row=1, sticky="ew")
-        self.Camera_Name.bind("<<ComboboxSelected>>", self.set_cameraid, add="")
+        # FPS と描画方式の値。選ぶ画面は表示設定ダイアログ、反映は
+        # applyDisplaySettings 経由の applyFps / applyRenderer。
+        self.fps = tk.StringVar()
+        self.renderer = tk.StringVar()
+
+        # プレビューの表示モードと固定サイズ。選ぶ画面は Menubar の
+        # 表示設定ダイアログ（カメラ欄にはコンボを置かない）。ここには
+        # 値だけ持ち、決めるのはダイアログ、反映は applyDisplaySettings。
+        self.show_mode = tk.StringVar()
+        self.show_size = tk.StringVar()
 
         self.camera_lf.config(height=200, text="Camera", width=200)
         self.camera_lf.grid(columnspan=3, padx="5", sticky="ew")
@@ -274,7 +233,9 @@ class CameraPanelMixin:
 
         try:
             self.locateCameraCmbbox()
-            self.camera_entry.config(state="disable")
+            # 一覧の表示名に番号が入っているので、ID 欄は二重表示になる。
+            self.camera_id_label.grid_remove()
+            self.camera_entry.grid_remove()
         except Exception as e:
             logger.error(f"An error occurred: {e}")
             message = (
@@ -466,7 +427,7 @@ class CameraPanelMixin:
         )
         self.preview.config(cursor="crosshair")
         self.preview.grid(
-            column=0, columnspan=7, row=2, padx="5", pady="5", sticky=tk.NSEW
+            column=0, columnspan=9, row=2, padx="5", pady="5", sticky=tk.NSEW
         )
 
         # 復元したチェック状態を実際のマウス操作へ反映する。設定を読んだ
@@ -742,7 +703,12 @@ class CameraPanelMixin:
         pass
 
     def applyDisplaySettings(
-        self, mode: str, size: str, color: str | None = None
+        self,
+        mode: str,
+        size: str,
+        color: str | None = None,
+        fps: str | None = None,
+        renderer: str | None = None,
     ) -> None:
         """表示モードと固定サイズを検証してプレビューへ反映し、保存する。
 
@@ -751,8 +717,16 @@ class CameraPanelMixin:
         GUI スレッドがそこで止まる（描画まで止まる）。
 
         Menubar の表示設定ダイアログから呼ばれる。値の補正はここで一度だけ
-        行う。color を省いた呼び出し（2 引数）では色を変えない。
+        行う。color / fps / renderer を省いた呼び出しではそれらを変えない。
+        FPS と描画方式は値が変わったときだけ従来の applyFps / applyRenderer
+        を通す（変わらないのに「再起動後に反映」と案内しない）。
         """
+        if fps is not None and str(fps) != str(self.fps.get()):
+            self.fps.set(str(fps))
+            self.applyFps()
+        if renderer is not None and renderer != self.renderer.get():
+            self.renderer.set(renderer)
+            self.applyRenderer()
         self.show_mode.set(mode if mode in SHOW_MODES else DEFAULT_SHOW_MODE)
         self.show_size.set(size if size in SHOW_SIZES else DEFAULT_SHOW_SIZE)
         if color is not None:
@@ -790,14 +764,14 @@ class CameraPanelMixin:
         if layout.stretch:
             preview.grid_configure(sticky="nsew")
             self.camera_lf.rowconfigure(2, weight=1)
-            self.camera_lf.columnconfigure(0, weight=1)
+            self.camera_lf.columnconfigure(1, weight=1)
             self.camera_lf.grid_configure(sticky="nsew")
             self.frame_1.rowconfigure(0, weight=3)
             self.frame_1.columnconfigure(0, weight=3)
         else:
             preview.grid_configure(sticky="n")
             self.camera_lf.rowconfigure(2, weight=0)
-            self.camera_lf.columnconfigure(0, weight=0)
+            self.camera_lf.columnconfigure(1, weight=0)
             self.camera_lf.grid_configure(sticky="ew")
             self.frame_1.rowconfigure(0, weight=0)
             self.frame_1.columnconfigure(0, weight=0)

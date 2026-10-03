@@ -452,6 +452,8 @@ class PokeController_Menubar(tk.Menu):
             size=self.app.show_size.get(),
             on_apply=self.app.applyDisplaySettings,
             color=color_var.get() if color_var is not None else "",
+            fps=str(self.app.fps.get()),
+            renderer=str(self.app.renderer.get()),
         )
         # 閉じたら参照を捨てる。Destroy は子にも飛ぶので親自身だけ拾う。
         dialog.bind("<Destroy>", self._on_display_settings_destroyed, add="+")

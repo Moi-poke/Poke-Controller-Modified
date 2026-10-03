@@ -381,9 +381,6 @@ class PokeControllerApp(
         self._refreshTransportChoices()
         self._refreshArbitrationChoices()
 
-        WindowUtils.selectCombobox(self.fps_cb, self.fps.get())
-        WindowUtils.selectCombobox(self.renderer_cb, self.renderer.get())
-
         # Baud Rate は候補で縛らない。GameCube の自動化や独自マイコンで
         # 9600 / 4800 以外を使う人がいる。設定にある値が候補に無ければ
         # 候補そのものへ足して選ぶ。矯正すると設定ファイルへ書き戻る

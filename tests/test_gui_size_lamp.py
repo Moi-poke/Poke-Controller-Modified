@@ -55,7 +55,17 @@ def test_the_display_settings_dialog_offers_two_modes_and_one_size_picker() -> N
         assert label in modes, f"{label} ボタンが無い"
     assert "disabled" in modes, "fit 時に固定サイズ欄を無効化する文字列が無い"
     # Window 本体は読まない（循環になる）
-    assert "import Window" not in src
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert "Window" not in imported
     assert callable(DisplaySettingsDialog)
 
 

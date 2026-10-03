@@ -243,13 +243,6 @@ def test_apply_settings_shows_the_loaded_renderer_before_settings_are_ready() ->
         for call in _calls(apply_settings)
         if dotted_name(call.func) == "self.renderer.set"
     ]
-    selects = [
-        call
-        for call in _calls(apply_settings)
-        if dotted_name(call.func) == "WindowUtils.selectCombobox"
-        and call.args
-        and dotted_name(call.args[0]) == "self.renderer_cb"
-    ]
     readies = [
         child
         for child in ast.walk(apply_settings)
@@ -259,15 +252,25 @@ def test_apply_settings_shows_the_loaded_renderer_before_settings_are_ready() ->
         )
     ]
 
-    # Then: 変数を流し込んでから候補を選び、最後に保存可能にする
+    # Then: 変数を流し込んでから保存可能にする。選ぶ画面は表示設定ダイアログで、
+    #       開くたびにこの変数を読む（tests/test_display_settings_contract.py）。
     assert len(seeds) == 1, f"renderer の流し込みが {len(seeds)} 箇所（1 箇所）"
-    assert len(selects) == 1, f"renderer_cb の選択が {len(selects)} 箇所（1 箇所）"
     assert len(readies) == 1, "_settings_ready の代入が 1 箇所"
-    shown = selects[0].args[1]
-    assert (
-        isinstance(shown, ast.Call) and dotted_name(shown.func) == "self.renderer.get"
+    assert seeds[0].lineno < readies[0].lineno
+
+
+def test_the_camera_row_no_longer_carries_fps_or_renderer_comboboxes() -> None:
+    # Given / When
+    build = class_method(
+        class_node(module_tree(CAMERA_PANEL_SOURCE), "CameraPanelMixin"),
+        "_build_camera_frame",
     )
-    assert seeds[0].lineno < selects[0].lineno < readies[0].lineno
+
+    # Then: 滅多に変えない設定は表示設定ダイアログへ移した。変数だけ残す。
+    assert not _self_attr_assignments(build, "renderer_cb")
+    assert not _self_attr_assignments(build, "fps_cb")
+    assert len(_self_attr_assignments(build, "renderer")) == 1
+    assert len(_self_attr_assignments(build, "fps")) == 1
 
 
 def test_the_save_funnel_is_the_only_writer_of_the_renderer_mirror() -> None:
@@ -290,60 +293,6 @@ def test_the_save_funnel_is_the_only_writer_of_the_renderer_mirror() -> None:
     ]
     assert saves, "_save_settings が settings.save() を呼んでいない"
     assert writers[0].lineno < saves[0].lineno
-
-
-def test_camera_panel_builds_a_readonly_renderer_combobox_from_the_shared_candidates() -> (
-    None
-):
-    # Given / When: Window.py が selectCombobox(self.renderer_cb, ...) で触る属性の
-    # 主が camera_panel 側にあることを、ファイルを解析して確かめる（Tk 不要）。
-    build = class_method(
-        class_node(module_tree(CAMERA_PANEL_SOURCE), "CameraPanelMixin"),
-        "_build_camera_frame",
-    )
-
-    # Then: 画面用の変数とコンボボックスが camera_f2 の中に1つずつ載る
-    variables = _self_attr_assignments(build, "renderer")
-    assert len(variables) == 1, f"renderer 変数の定義が {len(variables)} 個（1 個だけ）"
-    variable = variables[0].value
-    assert isinstance(variable, ast.Call)
-    assert dotted_name(variable.func) == "tk.StringVar"
-    widgets = _self_attr_assignments(build, "renderer_cb")
-    assert len(widgets) == 1, f"renderer_cb の定義が {len(widgets)} 個（1 個だけ）"
-    widget = widgets[0].value
-    assert isinstance(widget, ast.Call) and dotted_name(widget.func) == "ttk.Combobox"
-    assert [dotted_name(arg) for arg in widget.args] == ["self.camera_f2"], (
-        "renderer_cb は camera_f2 に載せる"
-    )
-
-    # Then: 候補は WindowUtils の表をそのまま使い、選択以外では書き換えられない
-    config = _calls_to(build, "self.renderer_cb", "config")
-    assert len(config) == 1, f"renderer_cb.config() が {len(config)} 箇所（1 箇所）"
-    assert (
-        dotted_name(_keyword_value(config[0], "values"))
-        == "WindowUtils.RENDERER_VALUES"
-    ), "候補は WindowUtils.RENDERER_VALUES をそのまま使う"
-    state = _keyword_value(config[0], "state")
-    assert isinstance(state, ast.Constant) and state.value == "readonly", (
-        "renderer_cb は readonly（選択以外は書き換え不可）"
-    )
-
-    # Then: 既存の 0-7 列に重ねず、8/9 列へ置く
-    assert _grid_column(build, "self.renderer_label") == 8
-    assert _grid_column(build, "self.renderer_cb") == 9
-
-
-def test_camera_f2_row_spans_the_renderer_columns() -> None:
-    # Given / When
-    build = class_method(
-        class_node(module_tree(CAMERA_PANEL_SOURCE), "CameraPanelMixin"),
-        "_build_camera_frame",
-    )
-
-    # Then: 9 列目を置いた行が 10 列ぶん幅を持つ（はみ出して潰さない）
-    span = _keyword_value(_calls_to(build, "self.camera_f2", "grid")[0], "columnspan")
-    assert isinstance(span, ast.Constant)
-    assert span.value == 10
 
 
 def test_build_preview_forwards_the_sanitized_renderer_from_settings() -> None:
@@ -443,19 +392,3 @@ def test_apply_renderer_never_opens_a_modal_confirmation() -> None:
     assert "askokcancel" not in call_attr_names(handler), (
         "applyRenderer() が askokcancel を呼ぶ（GUI スレッドを止める）"
     )
-
-
-def test_renderer_combobox_applies_the_choice_on_selection() -> None:
-    # Given / When: renderer_cb へ選択確定を結ぶ bind を探す。
-    build = _mixin_method("_build_camera_frame")
-    binds = _calls_to(build, "self.renderer_cb", "bind")
-
-    # Then: 1 つだけ。2 つだと同じ選択で 2 回保存・2 回通知になる。
-    assert len(binds) == 1, f"renderer_cb.bind() が {len(binds)} 箇所（1 箇所）"
-    event = binds[0].args[0]
-    assert isinstance(event, ast.Constant) and event.value == "<<ComboboxSelected>>", (
-        "選択確定の仮想イベントは <<ComboboxSelected>>"
-    )
-    callback = binds[0].args[1]
-    assert isinstance(callback, ast.Attribute)
-    assert dotted_name(callback) == "self.applyRenderer"

@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """display_settings.py - 表示設定のダイアログ（tkinter）。
 
-プレビューの表示モード（固定サイズ／ウィンドウに合わせる）と、固定モードの
-ときのプリセットを決める画面。判断そのものは core.display_mode が持ち、ここは
+プレビューの表示モード（固定サイズ／ウィンドウに合わせる）、固定モードの
+ときのプリセット、FPS と描画方式を決める画面。FPS と描画方式は一度決めたら
+滅多に変えないので、カメラ欄の常設コンボからここへ移した。判断そのものは core.display_mode が持ち、ここは
 選ぶ・画面変数へ書く・適用を呼ぶだけ。Window 本体は import しない（循環になる）。
 
 一度に1つだけ開いてほしいので、開いているかの判定と参照の保持は呼び出し側
@@ -17,6 +18,7 @@ import tkinter.ttk as ttk
 from collections.abc import Callable
 from typing import Any
 
+import WindowUtils
 from core.display_mode import (
     DEFAULT_SHOW_MODE,
     DEFAULT_SHOW_SIZE,
@@ -32,6 +34,11 @@ _MODE_LABELS: dict[str, str] = {
     "fit": "ウィンドウに合わせる（16:9 を維持）",
 }
 
+# FPS・描画方式が候補表に無いときの既定。camera_panel の _current_fps /
+# _current_renderer と同じ値（画面と実際の値をずらさない）。
+_DEFAULT_FPS = "45"
+_DEFAULT_RENDERER = "auto"
+
 # プロファイルの色の見本の大きさ（px）。1 枚だけあれば意味が伝わる。
 _COLOR_SAMPLE_SIZE = 24
 
@@ -42,7 +49,8 @@ def _known(value: str, choices: tuple[str, ...], fallback: str) -> str:
 
 
 class DisplaySettingsDialog(tk.Toplevel):
-    """表示設定。OK／適用の瞬間に ``on_apply(mode, size, color)`` を呼ぶ。
+    """表示設定。OK／適用の瞬間に ``on_apply(mode, size, color, fps, renderer)``
+    を呼ぶ。
 
     適用は即時。ウィンドウの最小サイズと設定の保存は呼び出し側
     （applyDisplaySettings）が行うので、ここでは変数へ書くところまでで
@@ -54,8 +62,10 @@ class DisplaySettingsDialog(tk.Toplevel):
         master: tk.Misc,
         mode: str,
         size: str,
-        on_apply: Callable[[str, str, str], None],
+        on_apply: Callable[[str, str, str, str, str], None],
         color: str = "",
+        fps: str = _DEFAULT_FPS,
+        renderer: str = _DEFAULT_RENDERER,
     ) -> None:
         super().__init__(master)
         self._on_apply = on_apply
@@ -130,6 +140,45 @@ class DisplaySettingsDialog(tk.Toplevel):
         )
         self.color_sample.grid(column=2, padx=(8, 0), pady=(8, 0), row=color_row)
 
+        # FPS（取り込みと表示の両方）。候補は WindowUtils の表を共有する。
+        fps_values = [str(v) for v in WindowUtils.FPS_VALUES]
+        self.fps_var = tk.StringVar(
+            value=_known(str(fps), tuple(fps_values), _DEFAULT_FPS)
+        )
+        fps_row = color_row + 1
+        ttk.Label(body, text="FPS").grid(column=0, row=fps_row, pady=(8, 0), sticky="w")
+        self.fps_cb = ttk.Combobox(
+            body,
+            textvariable=self.fps_var,
+            state="readonly",
+            values=fps_values,
+            width=12,
+        )
+        self.fps_cb.grid(column=1, padx="5", pady=(8, 0), row=fps_row, sticky="w")
+
+        # 描画方式。面は起動時に 1 回だけ作るので、変更は再起動後に効く。
+        renderers = tuple(WindowUtils.RENDERER_VALUES)
+        self.renderer_var = tk.StringVar(
+            value=_known(renderer, renderers, _DEFAULT_RENDERER)
+        )
+        renderer_row = fps_row + 1
+        ttk.Label(body, text="描画方式").grid(
+            column=0, row=renderer_row, pady=(8, 0), sticky="w"
+        )
+        self.renderer_cb = ttk.Combobox(
+            body,
+            textvariable=self.renderer_var,
+            state="readonly",
+            values=list(renderers),
+            width=12,
+        )
+        self.renderer_cb.grid(
+            column=1, padx="5", pady=(8, 0), row=renderer_row, sticky="w"
+        )
+        ttk.Label(body, text="（再起動後に反映）").grid(
+            column=2, padx=(8, 0), pady=(8, 0), row=renderer_row, sticky="w"
+        )
+
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.grid(column=0, row=1, sticky="e")
         specs = (
@@ -187,12 +236,17 @@ class DisplaySettingsDialog(tk.Toplevel):
         except Exception:
             return "#F0F0F0"
 
-    def _chosen(self) -> tuple[str, str, str]:
-        """いま選んだ (mode, size, color) を返す。無効化中のサイズも載せる。"""
+    def _chosen(self) -> tuple[str, str, str, str, str]:
+        """いま選んだ (mode, size, color, fps, renderer) を返す。
+
+        無効化中のサイズも載せる。
+        """
         return (
             self.mode_var.get(),
             self.size_var.get(),
             self._chosen_color(self.color_var.get()),
+            self.fps_var.get(),
+            self.renderer_var.get(),
         )
 
     def _apply(self) -> None:
