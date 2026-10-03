@@ -84,6 +84,12 @@ class GuiSettings:
         # ログ欄の仕切り位置。画素ではなく割合で持つ（ウィンドウの
         # 大きさが変わっても同じ見た目の比率を保つため）
         self.log_sash_ratio = tk.DoubleVar(value=window.getfloat("log_sash_ratio"))
+        # ウィンドウレイアウト。候補は core.display_mode.LAYOUTS が正。
+        # 補完済みなので fallback は付けない（show_size と同じ形）
+        self.layout = tk.StringVar(value=window.get("layout"))
+        # プロファイルごとの色（#RRGGBB、"" なら色なし）。
+        # 補完（config.complete_missing）が正規化形へ直している前提。
+        self.profile_color = tk.StringVar(value=window.get("profile_color"))
 
         # 入力ログ。従来は Sender.py の定数を書き換える必要があった
         input_log = self.setting["Input Log"]
@@ -337,6 +343,8 @@ class GuiSettings:
                 "geometry": self.window_geometry.get(),
                 "restore_geometry": self.restore_geometry.get(),
                 "log_sash_ratio": self.log_sash_ratio.get(),
+                "layout": self.layout.get(),
+                "profile_color": self.profile_color.get(),
             }
         )
         self.setting["Input Log"] = self._str_values(

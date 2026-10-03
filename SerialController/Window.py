@@ -30,6 +30,7 @@ from GuiAssets import CaptureArea, ControllerGUI
 from Menubar import PokeController_Menubar
 from core import CommandStats, PokeConLogger
 from core.Camera import Camera
+from core.display_mode import DEFAULT_LAYOUT
 from loguru import logger
 from services.audio_service import AudioService
 from services.command_runner import CommandRunner
@@ -38,6 +39,7 @@ from ui.audio_panel import AudioPanelMixin
 from ui.bcon_panel import BconPanelMixin
 from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
+from ui.layout_panel import LayoutPanelMixin
 from ui.log_panel import LogPanelMixin
 from ui.preview_clock import StopResult
 from ui.serial_panel import SerialPanelMixin
@@ -71,6 +73,7 @@ class PokeControllerApp(
     BconPanelMixin,
     CommandPanelMixin,
     LogPanelMixin,
+    LayoutPanelMixin,
 ):
     """メインウィンドウ（組立専用）。
 
@@ -132,6 +135,10 @@ class PokeControllerApp(
 
         self.menu = PokeController_Menubar(self)
         self.root.config(menu=self.menu)
+        # プレビュー確定後に設定どおりのレイアウトを適用する。ここで入れ替えないと、
+        # 隠す部品があるのに標準のまま見せる、またはプレビューが標準用の要求
+        # サイズのままになる（起動が 1 回ぶんずれる）。
+        self._apply_layout()
         # プレビュー確定後に中身の実寸で最小化を制限する。
         # _build_ui 時点では canvas が最終寸法になっていないため、
         # ここで測り直す（早すぎると小さな値で無意味になる）。
@@ -223,6 +230,13 @@ class PokeControllerApp(
         self.camera_key = tk.StringVar()
         # プレビューの描画手法。設定ファイルを正本として _save_settings で書き戻す
         self.renderer = tk.StringVar()
+        # ウィンドウのレイアウト（standard / compact / preview）と
+        # プロファイルの色。どちらも起動時は既定値で置き、設定を流し込む
+        # 段階（_apply_settings_to_widgets）で設定値へ書き換える。
+        # _build_preview が _apply_preview_layout を呼ぶため、
+        # どちらの変数もそれより前に存在している必要がある。
+        self.layout_mode = tk.StringVar(value=DEFAULT_LAYOUT)
+        self.profile_color = tk.StringVar(value="")
         self._display_after_id = None
         self._sash_after_id: Any = None
         self._sash_restore_attempts = 0
@@ -257,6 +271,9 @@ class PokeControllerApp(
         self._build_control_frame()
         self._build_command_frame()
         self._build_log_area()
+        # レイアウト切替の部品（色の帯とコンパクトバー）。他の欄が
+        # 揃った後に作る（コンパクトバーはカメラ欄の子として載せる）。
+        self._build_layout_widgets()
 
         self.frame_1.config(height=720, padding=5, relief="flat", width=1280)
         self.frame_1.pack(expand=True, fill="both", side="top")
@@ -271,6 +288,11 @@ class PokeControllerApp(
 
         固定値だけでは背の高いタブ（コマンド等）が隠れる。実測の
         要求寸法を下限にし、小さい画面では画面内に収まる上限で切る。
+
+        コンパクト / プレビューのレイアウトでは MIN_WINDOW_* の下限を
+        使わない。1280x720 を要求されたままでは、4 台を 1 画面に
+        並べられない（実測の要求寸法＝プレビュー＋1 行だけになる）。
+        画面サイズでの上限は従来どおり。
         """
         try:
             self.root.update_idletasks()
@@ -281,8 +303,12 @@ class PokeControllerApp(
         except Exception:
             self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
             return
-        min_w = max(MIN_WINDOW_WIDTH, min(req_w, scr_w))
-        min_h = max(MIN_WINDOW_HEIGHT, min(req_h, max(720, scr_h - 80)))
+        if self._layout_plan().enforce_min_window:
+            min_w = max(MIN_WINDOW_WIDTH, min(req_w, scr_w))
+            min_h = max(MIN_WINDOW_HEIGHT, min(req_h, max(720, scr_h - 80)))
+        else:
+            min_w = min(req_w, scr_w)
+            min_h = min(req_h, max(720, scr_h - 80))
         try:
             self.root.minsize(min_w, min_h)
         except Exception:
@@ -343,6 +369,10 @@ class PokeControllerApp(
         self.show_size.set(self.settings.show_size.get())
         self.show_mode.set(self.settings.show_mode.get())
         self.renderer.set(self.settings.renderer.get())
+        # ウィンドウレイアウトとプロファイルの色。設定値が正（不正値は
+        # Settings の補完で既定へ戻っている前提）。
+        self.layout_mode.set(self.settings.layout.get())
+        self.profile_color.set(self.settings.profile_color.get())
         self.com_port.set(self.settings.com_port.get())
         self.com_port_name.set(self.settings.com_port_name.get())
         self.camera_id.set(self.settings.camera_id.get())
@@ -433,6 +463,9 @@ class PokeControllerApp(
 
         head = " ".join(parts)
         self.root.title(f"{head} - {NAME} {VERSION}")
+        # 状態が変わる経路は全部この関数を通る（実行開始・一時停止・停止待ち・
+        # 接続・切断）。だから 1 行の配信もここに置けば、配信経路が 1 つで済む。
+        self._publish_status()
 
     # ------------------------------------------------------------------
     # コマンド
@@ -593,6 +626,8 @@ class PokeControllerApp(
         self.settings.show_size.set(self.show_size.get())
         self.settings.show_mode.set(self.show_mode.get())
         self.settings.renderer.set(self.renderer.get())
+        self.settings.layout.set(self.layout_mode.get())
+        self.settings.profile_color.set(self.profile_color.get())
         self.settings.com_port.set(self.com_port.get())
         self.settings.com_port_name.set(self.com_port_name.get())
         self.settings.baud_rate.set(self._currentBaudRate())

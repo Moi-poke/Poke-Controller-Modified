@@ -15,12 +15,15 @@ from __future__ import annotations
 import tkinter as tk
 import tkinter.ttk as ttk
 from collections.abc import Callable
+from typing import Any
 
 from core.display_mode import (
     DEFAULT_SHOW_MODE,
     DEFAULT_SHOW_SIZE,
+    PROFILE_COLORS,
     SHOW_MODES,
     SHOW_SIZES,
+    normalize_profile_color,
 )
 
 # モード名のラベル。fit だけ意味が伝わりにくいため 16:9 を保つことを明示する。
@@ -29,6 +32,9 @@ _MODE_LABELS: dict[str, str] = {
     "fit": "ウィンドウに合わせる（16:9 を維持）",
 }
 
+# プロファイルの色の見本の大きさ（px）。1 枚だけあれば意味が伝わる。
+_COLOR_SAMPLE_SIZE = 24
+
 
 def _known(value: str, choices: tuple[str, ...], fallback: str) -> str:
     """候補に無い値は既定へ落とす（壊れた設定で起動を止めないため）。"""
@@ -36,7 +42,7 @@ def _known(value: str, choices: tuple[str, ...], fallback: str) -> str:
 
 
 class DisplaySettingsDialog(tk.Toplevel):
-    """表示設定。OK／適用の瞬間に ``on_apply(mode, size)`` を呼ぶ。
+    """表示設定。OK／適用の瞬間に ``on_apply(mode, size, color)`` を呼ぶ。
 
     適用は即時。ウィンドウの最小サイズと設定の保存は呼び出し側
     （applyDisplaySettings）が行うので、ここでは変数へ書くところまでで
@@ -48,7 +54,8 @@ class DisplaySettingsDialog(tk.Toplevel):
         master: tk.Misc,
         mode: str,
         size: str,
-        on_apply: Callable[[str, str], None],
+        on_apply: Callable[[str, str, str], None],
+        color: str = "",
     ) -> None:
         super().__init__(master)
         self._on_apply = on_apply
@@ -65,6 +72,10 @@ class DisplaySettingsDialog(tk.Toplevel):
         known_size = _known(size, SHOW_SIZES, DEFAULT_SHOW_SIZE)
         self.mode_var = tk.StringVar(value=known_mode)
         self.size_var = tk.StringVar(value=known_size)
+        # 色も正規化してから持つ（見本と保存値がずれないように）。
+        self.color_var = tk.StringVar(
+            value=self._color_name(normalize_profile_color(color))
+        )
 
         body = ttk.Frame(self, padding=10)
         body.grid(column=0, row=0, sticky="ew")
@@ -93,6 +104,32 @@ class DisplaySettingsDialog(tk.Toplevel):
         )
         self.size_cb.grid(column=1, padx="5", pady=(8, 0), row=size_row, sticky="w")
 
+        # プロファイルの色。並べた窓を見分けるための識別子なので、
+        # ここで選んだ色が帯とコンパクトバーの色チップに出る。
+        color_row = size_row + 1
+        ttk.Label(body, text="プロファイルの色").grid(
+            column=0, row=color_row, pady=(8, 0), sticky="w"
+        )
+        self.color_cb = ttk.Combobox(
+            body,
+            textvariable=self.color_var,
+            state="readonly",
+            values=[name for name, _ in PROFILE_COLORS],
+            width=12,
+        )
+        self.color_cb.grid(column=1, padx="5", pady=(8, 0), row=color_row, sticky="w")
+        self.color_cb.bind("<<ComboboxSelected>>", self._sync_color, add="")
+
+        # 選んだ色の見本。枠を 1 本引いて、空の「なし」も形が分かるようにする。
+        self.color_sample = tk.Frame(
+            body,
+            width=_COLOR_SAMPLE_SIZE,
+            height=_COLOR_SAMPLE_SIZE,
+            highlightthickness=1,
+            highlightbackground="#808080",
+        )
+        self.color_sample.grid(column=2, padx=(8, 0), pady=(8, 0), row=color_row)
+
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.grid(column=0, row=1, sticky="e")
         specs = (
@@ -106,6 +143,7 @@ class DisplaySettingsDialog(tk.Toplevel):
             )
 
         self._sync_enabled()
+        self._sync_color()
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.bind("<Escape>", lambda _event: self._cancel(), add="+")
 
@@ -114,9 +152,48 @@ class DisplaySettingsDialog(tk.Toplevel):
         state = "disabled" if self.mode_var.get() == "fit" else "readonly"
         self.size_cb.config(state=state)
 
-    def _chosen(self) -> tuple[str, str]:
-        """いま選んだ (mode, size) を返す。無効化中のサイズもそのまま載せる。"""
-        return (self.mode_var.get(), self.size_var.get())
+    @staticmethod
+    def _color_name(color: str) -> str:
+        """``#RRGGBB`` を表の日本語名へ戻す。無ければ「なし」。"""
+        for name, value in PROFILE_COLORS:
+            if value == color:
+                return name
+        return PROFILE_COLORS[0][0]
+
+    @staticmethod
+    def _chosen_color(name: str) -> str:
+        """表の日本語名を ``#RRGGBB`` へ戻す。無ければ空文字。"""
+        for candidate, value in PROFILE_COLORS:
+            if candidate == name:
+                return value
+        return ""
+
+    def _sync_color(self, _event: Any = None) -> None:
+        """見本の色を、表から読み直して差し替える。
+
+        「なし」を選んだときは枠だけ出す（背景の色は残さない）。
+        """
+        color = self._chosen_color(self.color_var.get())
+        self.color_sample.config(background=color if color else self._sample_bg())
+
+    def _sample_bg(self) -> str:
+        """「なし」のときの空き地の色。ttk の TFrame の背景色へ合わせる。
+
+        ttk のウィジェットは background オプションを持たない（色は Style が
+        持つ）ので、cget ではなく lookup で見る。取れなければ OS 既定の色。
+        """
+        try:
+            return str(ttk.Style(self).lookup("TFrame", "background") or "#F0F0F0")
+        except Exception:
+            return "#F0F0F0"
+
+    def _chosen(self) -> tuple[str, str, str]:
+        """いま選んだ (mode, size, color) を返す。無効化中のサイズも載せる。"""
+        return (
+            self.mode_var.get(),
+            self.size_var.get(),
+            self._chosen_color(self.color_var.get()),
+        )
 
     def _apply(self) -> None:
         """選んだ内容を適用する（窓は閉じない）。"""

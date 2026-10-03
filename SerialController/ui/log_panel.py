@@ -42,6 +42,7 @@ class LogPanelMixin:
     inputLogArea: Any
     log_autoscroll: Any
     show_input_log: Any
+    log_bar: Any
     _closing: bool
     _display_after_id: Any
     _sash_after_id: Any
@@ -102,6 +103,9 @@ class LogPanelMixin:
         """
         bar = ttk.Frame(self.frame_1)
         bar.grid(column=3, padx="5", row=3, sticky="ew")
+        # レイアウト切替（layout_panel の _apply_layout）で出し入れするため、
+        # ローカル変数だと外から触れず「隠せない」バーになる。
+        self.log_bar = bar
 
         self.log_autoscroll = tk.BooleanVar(value=True)
         ttk.Checkbutton(bar, text="追従", variable=self.log_autoscroll).pack(

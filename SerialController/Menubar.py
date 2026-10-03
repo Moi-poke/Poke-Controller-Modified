@@ -37,6 +37,22 @@ class PokeController_Menubar(tk.Menu):
             label="表示設定...",
         )
         self.menu_view.add("separator")
+        # ウィンドウのレイアウト。複数台を 1 画面に並べるときに使う。
+        # ラジオボタン 1 つにまとめたいので、variable を共有して
+        # command 側だけを分ける（既定引数で取り違えないように）。
+        for value, text in (
+            ("standard", "標準"),
+            ("compact", "コンパクト（複数台向け）"),
+            ("preview", "プレビューのみ"),
+        ):
+            self.menu_view.add(
+                "radiobutton",
+                command=lambda v=value: self.app.applyLayout(v),
+                label=text,
+                value=value,
+                variable=self.app.layout_mode,
+            )
+        self.menu_view.add("separator")
         self.menu_view.add(
             "command",
             command=lambda: self.applyWindowSize(1280, 720),
@@ -343,11 +359,15 @@ class PokeController_Menubar(tk.Menu):
             self.display_settings.lift()
             return
         self.display_settings = None
+        # 色変数は UI 構築が済めば必ずあるが、偽 app（テスト用）に無い
+        # ときのために getattr で守る（OpenKeyConfig と同じ方針）。
+        color_var = getattr(self.app, "profile_color", None)
         dialog = display_settings.DisplaySettingsDialog(
             self.root,
             mode=self.app.show_mode.get(),
             size=self.app.show_size.get(),
             on_apply=self.app.applyDisplaySettings,
+            color=color_var.get() if color_var is not None else "",
         )
         # 閉じたら参照を捨てる。Destroy は子にも飛ぶので親自身だけ拾う。
         dialog.bind("<Destroy>", self._on_display_settings_destroyed, add="+")

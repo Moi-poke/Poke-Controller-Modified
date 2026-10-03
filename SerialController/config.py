@@ -18,10 +18,13 @@ import re
 from typing import Any
 
 from core.display_mode import (
+    DEFAULT_LAYOUT,
     DEFAULT_SHOW_MODE,
     DEFAULT_SHOW_SIZE,
+    LAYOUTS,
     SHOW_MODES,
     SHOW_SIZES,
+    normalize_profile_color,
 )
 
 # キーコンフィグが扱うセクション。KeyConfig / Keyboard の双方が参照する。
@@ -83,6 +86,13 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "restore_geometry": True,
             # ログ欄の仕切り位置(0.0〜1.0)。上側の占める割合
             "log_sash_ratio": 0.6,
+            # ウィンドウのレイアウト。standard / compact / preview のいずれか。
+            # 複数台を 1 画面に並べるときに compact / preview を選ぶ。
+            # 候補は core.display_mode.LAYOUTS が正。
+            "layout": DEFAULT_LAYOUT,
+            # プロファイルごとの色（#RRGGBB）。空文字なら色を出さない。
+            # 候補は core.display_mode.PROFILE_COLORS が正。
+            "profile_color": "",
         },
         "Input Log": {
             # プリセット名（simple / detail / compact / csv / command / raw）
@@ -293,6 +303,19 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if volume is None or not 0.0 <= volume <= 1.0:
             audio["monitor_volume"] = "0.8"
             changed.append("Audio.monitor_volume")
+    # ウィンドウのレイアウトとプロファイルの色。レイアウトの候補は
+    # core.display_mode が正で、このファイルは core を読める（tkinter を
+    # 引き込まない）ため複製しない。色は core.display_mode の
+    # normalize_profile_color で審査し、正規化形で残す。
+    if parser.has_section("Window"):
+        window = parser["Window"]
+        if window.get("layout", "") not in LAYOUTS:
+            window["layout"] = DEFAULT_LAYOUT
+            changed.append("Window.layout")
+        color = normalize_profile_color(window.get("profile_color", ""))
+        if window.get("profile_color", "") != color:
+            window["profile_color"] = color
+            changed.append("Window.profile_color")
     if parser.has_section("PreviewFilter"):
         filt = parser["PreviewFilter"]
         float_rules = {

@@ -24,7 +24,7 @@ from core.display_mode import (
     DEFAULT_SHOW_SIZE,
     SHOW_MODES,
     SHOW_SIZES,
-    preview_layout,
+    layout_plan,
 )
 from loguru import logger
 
@@ -100,6 +100,8 @@ class CameraPanelMixin:
     camera_name_fromDLL: Any
     Camera_Name: Any
     Command_nb: Any
+    layout_mode: Any
+    applyProfileColor: Any
     _on_setting_changed: Any
     _apply_content_minsize: Any
 
@@ -446,9 +448,10 @@ class CameraPanelMixin:
             logger.error(message)
 
     def _build_preview(self) -> None:
-        # 表示モードの判断は core.display_mode に任せる。show_size を直接
-        # 解釈しない（fit では使わない値になるため）。
-        layout = preview_layout(self.show_mode.get(), self.show_size.get())
+        # プレビューの要求サイズは core.display_mode に任せる。show_size を
+        # 直接解釈しない（fit では使わない値になるため）。レイアウトが
+        # コンパクト / プレビューのときはそちらの要求が勝つ（layout_plan）。
+        layout = self._current_preview_layout()
         width, height = layout.request_size
         self.preview = CaptureArea(
             self.camera,
@@ -738,7 +741,9 @@ class CameraPanelMixin:
         """
         pass
 
-    def applyDisplaySettings(self, mode: str, size: str) -> None:
+    def applyDisplaySettings(
+        self, mode: str, size: str, color: str | None = None
+    ) -> None:
         """表示モードと固定サイズを検証してプレビューへ反映し、保存する。
 
         確認ダイアログは出さない。拡大縮小は即時で、選び直せば元へ戻るため
@@ -746,26 +751,41 @@ class CameraPanelMixin:
         GUI スレッドがそこで止まる（描画まで止まる）。
 
         Menubar の表示設定ダイアログと「画面サイズのリセット」の両方から
-        呼ばれるため、値の補正はここで一度だけ行う。
+        呼ばれるため、値の補正はここで一度だけ行う。color は表示設定の
+        ダイアログからのみ渡される（画面サイズのリセットは 2 引数のまま）。
         """
         self.show_mode.set(mode if mode in SHOW_MODES else DEFAULT_SHOW_MODE)
         self.show_size.set(size if size in SHOW_SIZES else DEFAULT_SHOW_SIZE)
+        if color is not None:
+            # 色だけ先に反映する。applyProfileColor の中で帯と色チップが
+            # 更新され、そのまま保存まで済みます（保存の入口は 1 つに保つ）。
+            self.applyProfileColor(color)
         self._apply_preview_layout()
         # 要求サイズが変わるので最小サイズの制限も測り直す（タブの見切れ防止）。
         self._apply_content_minsize()
         self._on_setting_changed()
 
-    def _apply_preview_layout(self) -> None:
-        """表示モードに合わせて、プレビューの要求サイズと伸び方を設定する。
+    def _current_preview_layout(self) -> Any:
+        """今のレイアウト・表示モードで、プレビューへ要求する配置を返す。
 
-        fixed は要求サイズのまま上寄せ。fit は枠いっぱいまで伸ばし、16:9 を
-        保ったまま中央寄せさせる。伸びるかどうかはカメラ枠と Window 側の
-        2 段構成で決まる。片方だけを変えると、どちらかで余白が残る。
+        判断は core.display_mode.layout_plan（1 箇所）。ここが show_mode を
+        解釈し直すと、コンパクト時の要求と食い違う。
+        """
+        return layout_plan(
+            self.layout_mode.get(), self.show_mode.get(), self.show_size.get()
+        ).preview
+
+    def _apply_preview_layout(self) -> None:
+        """プレビューの要求サイズと伸び方を、現在のレイアウトに合わせて設定する。
+
+        伸びない要求は要求サイズのまま上寄せ。伸ばす要求は枠いっぱいまで
+        伸ばし、16:9 を保ったまま中央寄せさせる。伸びるかどうかはカメラ枠と
+        Window 側の 2 段構成で決まる。片方だけを変えると、どちらかで余白が残る。
         """
         preview = self.preview
         if preview is None:
             return
-        layout = preview_layout(self.show_mode.get(), self.show_size.get())
+        layout = self._current_preview_layout()
         width, height = layout.request_size
         preview.setShowsize(height, width)
         if layout.stretch:

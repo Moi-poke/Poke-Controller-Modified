@@ -130,6 +130,95 @@ def test_show_size_accepts_the_960x540_preset() -> None:
     assert "General Setting.show_size" in changed
 
 
+def test_layout_default_and_sanitize() -> None:
+    """layout の既定値と、不正値を候補値へ戻す動きの検証。"""
+    from core.display_mode import DEFAULT_LAYOUT, LAYOUTS
+
+    defaults = config.default_sections()["Window"]
+    assert defaults["layout"] == DEFAULT_LAYOUT
+    assert DEFAULT_LAYOUT == "standard"
+    assert DEFAULT_LAYOUT in LAYOUTS
+    parser = make_parser()
+    config.complete_missing(parser)
+    window = parser["Window"]
+    assert window["layout"] == "standard"
+    assert config.complete_missing(parser) == []
+    window["layout"] = "typo"
+    changed = config.complete_missing(parser)
+    assert window["layout"] == "standard"
+    assert "Window.layout" in changed
+    assert config.complete_missing(parser) == []
+    # キーごと消して補完が効くことも確かめる（追加したキーの抜け防止）
+    del window["layout"]
+    changed = config.complete_missing(parser)
+    assert window["layout"] == "standard"
+    assert "Window.layout" in changed
+
+
+def test_layout_keeps_every_candidate_value() -> None:
+    """候補3つ（standard / compact / preview）は補正で潰されない。"""
+    from core.display_mode import LAYOUTS
+
+    assert LAYOUTS == ("standard", "compact", "preview")
+    parser = make_parser()
+    config.complete_missing(parser)
+    for candidate in LAYOUTS:
+        parser["Window"]["layout"] = candidate
+        assert config.complete_missing(parser) == [], candidate
+        assert parser["Window"]["layout"] == candidate
+
+
+def test_profile_color_default_and_sanitize() -> None:
+    """profile_color の既定値（色なし）と、壊れた値を空へ戻す動きの検証。"""
+    from core.display_mode import normalize_profile_color
+
+    defaults = config.default_sections()["Window"]
+    assert defaults["profile_color"] == ""
+    parser = make_parser()
+    config.complete_missing(parser)
+    window = parser["Window"]
+    assert window["profile_color"] == ""
+    assert config.complete_missing(parser) == []
+    # 正しい #RRGGBB は残る（小文字は正規化形へ直し、その直し分を報告する）
+    window["profile_color"] = "#1e88e5"
+    changed = config.complete_missing(parser)
+    assert window["profile_color"] == "#1E88E5"
+    assert "Window.profile_color" in changed
+    assert config.complete_missing(parser) == [], "正規化後は安定（2度目は直さない）"
+    # 壊れた値（色名・桁数不足）は空へ戻す（Tk へ渡すと落ちるため）
+    for junk in ("red", "#FFF", "1E88E5", "#GGGGGG"):
+        window["profile_color"] = junk
+        changed = config.complete_missing(parser)
+        assert window["profile_color"] == "", junk
+        assert "Window.profile_color" in changed, junk
+    assert config.complete_missing(parser) == []
+    del window["profile_color"]
+    changed = config.complete_missing(parser)
+    assert window["profile_color"] == ""
+    assert "Window.profile_color" in changed
+    # 保存の往復で値が揺れない（正規化と補完が食い違わないことの担保）
+    window["profile_color"] = "#43A047"
+    config.complete_missing(parser)
+    assert normalize_profile_color(window["profile_color"]) == window["profile_color"]
+
+
+def test_window_section_keys_round_trip_through_a_written_ini() -> None:
+    """[Window] に足したキーが、書き出し→読み直しで消えない。"""
+    import io
+
+    parser = make_parser()
+    config.complete_missing(parser)
+    parser["Window"]["layout"] = "compact"
+    parser["Window"]["profile_color"] = "#E53935"
+    buf = io.StringIO()
+    parser.write(buf)
+    reread = make_parser()
+    reread.read_string(buf.getvalue())
+    assert config.complete_missing(reread) == []
+    assert reread["Window"]["layout"] == "compact"
+    assert reread["Window"]["profile_color"] == "#E53935"
+
+
 def test_migrate_legacy_keymap() -> None:
     parser = make_parser()
     config.complete_missing(parser)
