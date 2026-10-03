@@ -19,6 +19,13 @@ LOG_DIRNAME = "log"
 # 報告に載せる末尾の上限。全文は重いのでここで打ち切る。
 TAIL_LINES = 200
 TAIL_MAX_BYTES = 50 * 1024
+# 統計行を省く前に読む量。実ログは 6 割超が 5 秒ごとの映像統計なので、
+# 省いた後に TAIL_LINES 行が残るよう多めに読む。
+SCAN_LINES = 2000
+SCAN_MAX_BYTES = 400 * 1024
+# 定期的に出る統計行の目印（ログの「モジュール 関数」の部分）。最新の 1 行
+# だけ残せば、カメラが映らない不具合も「取込 0fps」で分かる。
+VIDEO_STATS_MARKER = "_log_video_stats"
 
 
 def resolve_log_dir(app_dir: str | None = None) -> str:
@@ -77,6 +84,25 @@ def read_tail_lines(
     while len(lines) > 1 and len("\n".join(lines).encode("utf-8")) > max_bytes:
         lines = lines[1:]
     return lines
+
+
+def condense_tail(lines: list[str], max_lines: int = TAIL_LINES) -> list[str]:
+    """定期的な映像統計を最新の 1 行に畳み、末尾 max_lines 行に切る。
+
+    統計に押し出されて、肝心の例外や操作の行が報告から消えるのを防ぐ。
+    省いた行数は 1 行書き添える（隠したことが読み手に分かるように）。
+    """
+    stats = [i for i, line in enumerate(lines) if VIDEO_STATS_MARKER in line]
+    if len(stats) <= 1:
+        return lines[-max_lines:]
+    latest = stats[-1]
+    dropped = set(stats[:-1])
+    kept = [line for i, line in enumerate(lines) if i not in dropped]
+    note = f"(映像の統計 {len(dropped)} 行を省略。最新の 1 行だけ残しています)"
+    kept = kept[-(max_lines - 1) :]
+    # 最新の統計行は位置ごと残っている。省略の注記はその直前に置く。
+    position = kept.index(lines[latest]) if lines[latest] in kept else 0
+    return kept[:position] + [note] + kept[position:]
 
 
 def build_report(

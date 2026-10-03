@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 
+from core import error_report
+
 
 def test_resolve_log_dir_is_absolute_and_cwd_independent() -> None:
     """log 置き場は APP_DIR 基準の絶対パス。cwd を見ない。"""
@@ -78,3 +80,39 @@ def test_build_report_contains_env_and_tail_without_secrets() -> None:
     params = set(inspect.signature(er.build_report).parameters)
     assert "settings" not in params
     assert "webhook" not in params
+
+
+def _stats(i: int) -> str:
+    return (
+        f"2026-10-04 02:26:{i:02d},000 ui.log_panel _log_video_stats [DEBUG]: "
+        f"映像: 取込 {i}fps / 表示 {i}fps"
+    )
+
+
+def test_condense_keeps_every_normal_line_and_only_the_latest_video_stats() -> None:
+    # Given: 5 秒ごとの映像統計が通常の行の間に大量に挟まったログ（実ログでは 6 割超）。
+    lines: list[str] = []
+    for i in range(300):
+        lines.append(_stats(i))
+        if i % 3 == 0:
+            lines.append(f"通常の行 {i}")
+
+    # When
+    out = error_report.condense_tail(lines, max_lines=200)
+
+    # Then: 通常の行は全部残る（統計に押し出されない）。統計は最新の 1 行だけ
+    #       残し、省いた件数を書く（カメラが映らない不具合は最新行で分かる）。
+    normal = [line for line in lines if line.startswith("通常の行")]
+    assert [line for line in out if line.startswith("通常の行")] == normal
+    kept_stats = [line for line in out if "_log_video_stats" in line]
+    assert kept_stats == [_stats(299)]
+    assert any("映像の統計 299 行を省略" in line for line in out)
+
+
+def test_condense_leaves_a_log_without_stats_alone_except_the_line_cap() -> None:
+    lines = [f"行 {i}" for i in range(250)]
+
+    out = error_report.condense_tail(lines, max_lines=200)
+
+    # Then: 統計が無ければ何も足さず、末尾 200 行に切るだけ。
+    assert out == lines[-200:]

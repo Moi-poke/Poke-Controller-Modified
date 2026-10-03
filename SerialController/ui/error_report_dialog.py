@@ -47,7 +47,17 @@ def collect_report(
     base = app_dir if app_dir is not None else WindowUtils.APP_DIR
     log_dir = error_report.resolve_log_dir(base)
     log_path = error_report.latest_log_file(log_dir)
-    tail = error_report.read_tail_lines(log_path) if log_path else []
+    # 多めに読んでから、定期的な映像統計を畳んで末尾に切る。
+    raw = (
+        error_report.read_tail_lines(
+            log_path,
+            max_lines=error_report.SCAN_LINES,
+            max_bytes=error_report.SCAN_MAX_BYTES,
+        )
+        if log_path
+        else []
+    )
+    tail = error_report.condense_tail(raw)
     text = error_report.build_report(
         app_version=app_version,
         os_name=os_name,
