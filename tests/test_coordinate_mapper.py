@@ -81,6 +81,27 @@ IDENTITY_COORDINATES: list[tuple[int, int]] = [
 #: coordinate fails.
 _INT_TOKEN = re.compile(r"-?\d+")
 
+#: The offset a letterboxed preview actually has: the image sits 100 px right of
+#: and 50 px below the display area's corner, which is what ``fit_rect`` returns
+#: for a viewport wider than 16:9. Two distinct non-zero values on purpose, so an
+#: axis swap in the translation cannot pass.
+DISPLAY_ORIGIN: tuple[int, int] = (100, 50)
+
+#: ``(content, viewport, expected)``. ``expected`` is ``(x, y, width, height)``.
+_FitRectCase = tuple[tuple[int, int], tuple[int, int], tuple[int, int, int, int]]
+
+#: The four placements the brief fixes by hand, in (width, height) throughout.
+#: ``narrow`` is limited by width, ``tall`` and ``exact`` land on the same rule
+#: with different margins, and ``wide`` is the case the width branch cannot
+#: handle: the viewport is wide enough that height, not width, is the binding
+#: constraint, so swapping the branches shows up as a stretched image.
+FIT_RECT_CASES: list[_FitRectCase] = [
+    ((1280, 720), (1000, 700), (0, 68, 1000, 563)),
+    ((1280, 720), (1280, 720), (0, 0, 1280, 720)),
+    ((1280, 720), (1920, 1200), (0, 60, 1920, 1080)),
+    ((1280, 720), (2000, 720), (360, 0, 1280, 720)),
+]
+
 
 # ---------------------------------------------------------------------------
 # Test-only doubles. Kept here rather than in gdi_present_doubles.py because the
@@ -209,6 +230,31 @@ def _identity_mapper() -> Any:
     )
 
 
+def _offset_mapper(display_origin: tuple[int, int] = DISPLAY_ORIGIN) -> Any:
+    """A mapper at the fixed operating assumption whose image is offset.
+
+    The size pair is left at the identity on purpose: with a scale of 1.0 the
+    only difference from ``_identity_mapper`` is the translation, so a failure
+    here is attributable to the origin rather than to the rounding rule.
+    """
+    return _mapper_type()(
+        capture_size=CAPTURE_SIZE,
+        display_size=CAPTURE_SIZE,
+        display_origin=display_origin,
+    )
+
+
+def _fit_rect() -> Any:
+    """``fit_rect``, imported at call time so its absence is a per-test RED.
+
+    Same seam as ``_mapper_type``: a module-level import would turn every
+    placement test red for the same reason and hide which one actually broke.
+    """
+    from core.coordinates import fit_rect
+
+    return fit_rect
+
+
 def _area_at_fixed_size(frame: Any, requested_size: tuple[int, int]) -> Any:
     """A bare ``CaptureArea`` at 1280x720 whose camera reports ``requested_size``.
 
@@ -298,22 +344,31 @@ def test_coordinate_mapper_is_a_frozen_slotted_dataclass() -> None:
     assert not hasattr(mapper, "__dict__")
 
 
-def test_coordinate_mapper_carries_exactly_capture_size_then_display_size() -> None:
+def test_coordinate_mapper_carries_capture_display_and_origin_in_that_order() -> None:
     # Given: the transform layer's class.
     mapper_type = _mapper_type()
 
-    # Then: the two sizes are the only fields, in this order. A third field
-    # would be a third source of truth for the scale, which is the bug.
+    # Then: the three fields are the only ones, in this order -- the two sizes
+    # and the offset the image sits at inside the display area. A fourth field
+    # would be a fourth source of truth for the scale, which is the bug.
     assert [item.name for item in dataclasses.fields(mapper_type)] == [
         "capture_size",
         "display_size",
+        "display_origin",
     ]
 
-    # Then: and the keyword form is the supported constructor, so both names are
-    # pinned as the public API rather than as a positional convention.
+    # Then: and the keyword form is the supported constructor, so all three
+    # names are pinned as the public API rather than as a positional convention.
     assert _identity_mapper() == mapper_type(
         capture_size=(1280, 720), display_size=(1280, 720)
     )
+
+    # Then: and ``display_origin`` defaults to the corner, so every construction
+    # that omits it keeps the two-size behaviour it had before the origin
+    # existed. A default of anything else would silently move every caller.
+    assert mapper_type(
+        capture_size=(1280, 720), display_size=(1280, 720)
+    ).display_origin == (0, 0)
 
     # Then: the types are left to mypy on the production side; a test that read
     # ``field.type`` would be asserting a string, not a contract.
@@ -940,3 +995,342 @@ def test_release_range_ssa_prints_the_crop_coordinates_in_order_for_a_backward_d
     lines = capsys.readouterr().out.splitlines()
     assert len(lines) == 1, lines
     assert _printed_integers_in_order(lines[0], [100, 50, 400, 300]), lines[0]
+
+
+# ===========================================================================
+# 10. 映像を表示領域に収めて中央に置く配置計算
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("content", "viewport", "expected"),
+    FIT_RECT_CASES,
+    ids=["narrow", "exact", "tall", "wide"],
+)
+def test_fit_rect_keeps_the_aspect_ratio_and_centres_the_result(
+    content: tuple[int, int],
+    viewport: tuple[int, int],
+    expected: tuple[int, int, int, int],
+) -> None:
+    # Given: a 16:9 content size and a viewport to place it in.
+    fit_rect = _fit_rect()
+
+    # When: the largest rectangle of that shape that fits is computed.
+    rect = fit_rect(content, viewport)
+
+    # Then: it is the rectangle the brief fixes by hand -- the aspect ratio is
+    # kept and the leftover space becomes margin on both sides of the axis that
+    # is left over, rather than being spent on stretching the image.
+    assert rect == expected, rect
+
+
+def test_fit_rect_letterboxes_a_portrait_viewport_instead_of_stretching() -> None:
+    # Given: a viewport taller than it is wide, so width is the binding axis.
+    fit_rect = _fit_rect()
+
+    # When: a 16:9 content is placed in it.
+    rect = fit_rect(CAPTURE_SIZE, (400, 900))
+
+    # Then: the whole width is used and the height shrinks to match, so 400/225
+    # is 16:9 to within a pixel. Scaling each axis independently would have
+    # filled 400x900 and turned the picture into a different shape.
+    assert rect == (0, 337, 400, 225), rect
+
+    # Then: and the leftover height is split above and below, not all below.
+    _, y, _, height = rect
+    assert y == (900 - height) // 2, rect
+
+
+@pytest.mark.parametrize(
+    ("content", "viewport"),
+    [
+        ((0, 720), (1000, 700)),
+        ((1280, 0), (1000, 700)),
+        ((-1280, 720), (1000, 700)),
+        ((1280, 720), (0, 700)),
+        ((1280, 720), (1000, -1)),
+        ((0, 0), (0, 0)),
+    ],
+    ids=[
+        "zero_width_content",
+        "zero_height_content",
+        "negative_width_content",
+        "zero_width_viewport",
+        "negative_height_viewport",
+        "both_empty",
+    ],
+)
+def test_fit_rect_returns_an_empty_rect_when_either_extent_is_not_positive(
+    content: tuple[int, int],
+    viewport: tuple[int, int],
+) -> None:
+    # Given: a content or viewport size with no extent on some axis -- the state
+    # a camera that has not delivered a frame yet leaves behind.
+    fit_rect = _fit_rect()
+
+    # When: a placement is asked for.
+    rect = fit_rect(content, viewport)
+
+    # Then: an empty rectangle, because the aspect ratio is undefined here and
+    # dividing by either extent would raise inside the preview's resize path.
+    assert rect == (0, 0, 0, 0), rect
+
+
+@pytest.mark.parametrize(
+    "viewport",
+    [(1000, 700), (700, 1000), (1920, 1200), (1200, 1920), (333, 777)],
+)
+def test_fit_rect_never_returns_a_rect_that_overflows_its_viewport(
+    viewport: tuple[int, int],
+) -> None:
+    # Given: viewports of both orientations around the fixed 16:9 content,
+    # including one that divides unevenly on both axes.
+    fit_rect = _fit_rect()
+
+    # When: a placement is computed.
+    x, y, width, height = fit_rect(CAPTURE_SIZE, viewport)
+
+    # Then: the rectangle is inside the viewport on every side. Rounding the
+    # scaled axis to the nearest pixel can overshoot by one, and a rectangle
+    # that starts inside and ends outside would be drawn clipped for no reason.
+    assert 0 <= x and x + width <= viewport[0], (viewport, width, height)
+    assert 0 <= y and y + height <= viewport[1], (viewport, width, height)
+    assert width > 0 and height > 0, (viewport, width, height)
+
+
+# ===========================================================================
+# 11. 表示面の中で映像を置いている位置（display_origin）
+# ===========================================================================
+
+
+@pytest.mark.parametrize("coordinate", IDENTITY_COORDINATES)
+def test_a_display_origin_of_zero_leaves_the_transform_untouched(
+    coordinate: tuple[int, int],
+) -> None:
+    # Given: a mapper that omits the origin -- the shape every already-written
+    # call site builds, since the field defaults to the corner.
+    mapper = _identity_mapper()
+    x, y = coordinate
+
+    # When: a display point is mapped into capture space.
+    there = mapper.to_capture(x, y)
+
+    # Then: the origin contributes nothing, so the two-size behaviour and every
+    # contract pinned above survive the third field unchanged.
+    assert there == (x, y), there
+
+    # When: the capture point is mapped back.
+    back = mapper.to_display(*there)
+
+    # Then: still the identity.
+    assert back == (x, y), back
+
+
+@pytest.mark.parametrize("coordinate", IDENTITY_COORDINATES)
+def test_to_capture_subtracts_the_display_origin_before_scaling(
+    coordinate: tuple[int, int],
+) -> None:
+    # Given: a mapper at the identity scale whose image is offset inside the
+    # display area, so subtraction is the only thing the mapping can do.
+    mapper = _offset_mapper()
+    x, y = coordinate
+
+    # When: a display point is mapped into capture space.
+    mapped = mapper.to_capture(x, y)
+
+    # Then: the offset comes off first. A click on the image's own top-left
+    # pixel must be capture (0, 0) -- the offset is where the image is, not part
+    # of the pixel it shows.
+    assert mapped == (x - DISPLAY_ORIGIN[0], y - DISPLAY_ORIGIN[1]), mapped
+
+
+def test_to_capture_subtracts_the_display_origin_before_applying_the_scale() -> None:
+    # Given: a mapper that halves the width, so the origin and the scale are
+    # both observable in the result.
+    mapper = _mapper_type()(
+        capture_size=(640, 720),
+        display_size=(1280, 720),
+        display_origin=(10, 20),
+    )
+
+    # When: a display point is mapped into capture space.
+    mapped = mapper.to_capture(30, 40)
+
+    # Then: (30 - 10) * 0.5 = 10 and (40 - 20) * 1.0 = 20. Scaling first and
+    # subtracting after would give (5, 0), which is inside the frame and
+    # therefore silently wrong -- the same failure shape as the ratio bug.
+    assert mapped == (10, 20), mapped
+
+
+def test_to_capture_clamps_against_the_image_extent_not_the_display_area() -> None:
+    # Given: an offset mapper at the fixed operating assumption.
+    mapper = _offset_mapper()
+
+    # When: a click on the margin above and to the left of the image is clamped.
+    on_margin = mapper.to_capture(40, 10, clamp=True)
+
+    # Then: it lands on the image's own top-left pixel. Clamping before the
+    # subtraction would instead report an interior pixel of the image, which is
+    # in bounds and indistinguishable from a deliberate click.
+    assert on_margin == (0, 0), on_margin
+
+    # When: a click past the image's right and bottom edges is clamped.
+    past_edge = mapper.to_capture(1400, 800, clamp=True)
+
+    # Then: it is held at the image's last addressable pixel, so the bound still
+    # comes from ``capture_size`` and the margin does not widen the target.
+    assert past_edge == (CAPTURE_WIDTH - 1, CAPTURE_HEIGHT - 1), past_edge
+
+
+def test_to_display_adds_the_display_origin() -> None:
+    # Given: an offset mapper at the fixed operating assumption.
+    mapper = _offset_mapper()
+
+    # When: the image's own corners are mapped into display space.
+    top_left = mapper.to_display(0, 0)
+    bottom_right = mapper.to_display(CAPTURE_WIDTH - 1, CAPTURE_HEIGHT - 1)
+
+    # Then: the first lands on the image's corner inside the display area, which
+    # is the point a drawn rectangle is positioned against, and the second at
+    # the origin plus the image's own extent.
+    assert top_left == DISPLAY_ORIGIN, top_left
+    assert bottom_right == (
+        DISPLAY_ORIGIN[0] + CAPTURE_WIDTH - 1,
+        DISPLAY_ORIGIN[1] + CAPTURE_HEIGHT - 1,
+    ), bottom_right
+
+
+@pytest.mark.parametrize("coordinate", IDENTITY_COORDINATES)
+def test_display_then_capture_round_trips_losslessly_with_a_display_origin(
+    coordinate: tuple[int, int],
+) -> None:
+    # Given: an offset mapper at the identity scale.
+    mapper = _offset_mapper()
+    x, y = coordinate
+
+    # When: a display point goes to capture space and back.
+    there = mapper.to_capture(x, y)
+    back = mapper.to_display(*there)
+
+    # Then: the round trip is lossless, because the origin is a translation
+    # applied once on the way in and undone once on the way out. A click and the
+    # box it drew therefore still refer to the same pixel.
+    assert back == (x, y), back
+
+
+@pytest.mark.parametrize("coordinate", IDENTITY_COORDINATES)
+def test_capture_then_display_round_trips_losslessly_with_a_display_origin(
+    coordinate: tuple[int, int],
+) -> None:
+    # Given: an offset mapper at the identity scale.
+    mapper = _offset_mapper()
+    x, y = coordinate
+
+    # When: a capture point goes to display space and back.
+    there = mapper.to_display(x, y)
+    back = mapper.to_capture(*there)
+
+    # Then: it is lossless in the other direction too, which is the one
+    # ``ImgRect`` exercises on every recognition result.
+    assert back == (x, y), back
+
+
+# ===========================================================================
+# 12. 表示座標の長さをキャプチャ座標の長さに直す
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("capture_size", "display_size", "length", "expected"),
+    [
+        ((2560, 1440), (1280, 720), 10, 20),
+        ((640, 720), (1280, 720), 10, 5),
+        (CAPTURE_SIZE, CAPTURE_SIZE, 10, 10),
+    ],
+    ids=["double", "half", "identity"],
+)
+def test_length_to_capture_scales_by_the_capture_to_display_width_ratio(
+    capture_size: tuple[int, int],
+    display_size: tuple[int, int],
+    length: int,
+    expected: int,
+) -> None:
+    # Given: a mapper whose capture width differs from its display width -- the
+    # state a letterboxed preview is always in.
+    mapper = _mapper_type()(capture_size=capture_size, display_size=display_size)
+
+    # When: a display-space length (a stick circle's radius) is converted.
+    converted = mapper.length_to_capture(length)
+
+    # Then: it scales by the x ratio, so the drawn circle keeps the size it has
+    # on screen instead of drifting by the display's own scale.
+    assert converted == expected, converted
+
+
+def test_length_to_capture_rounds_to_nearest_rather_than_truncating() -> None:
+    # Given: a mapper that halves the width, so an odd length lands on .5.
+    mapper = _mapper_type()(capture_size=(640, 720), display_size=(1280, 720))
+
+    # When: a 3 px display length is converted -- 3 * 0.5 = 1.5.
+    converted = mapper.length_to_capture(3)
+
+    # Then: it rounds to 2, where truncating toward zero would give 1. A length
+    # has no "toward zero" contract the way a coordinate does, so the rule here
+    # is deliberately the opposite of ``to_capture``'s.
+    assert converted == 2, converted
+
+
+def test_length_to_capture_breaks_an_exact_half_toward_even() -> None:
+    # Given: the same halving mapper.
+    mapper = _mapper_type()(capture_size=(640, 720), display_size=(1280, 720))
+
+    # When: lengths that land exactly on .5 are converted.
+    below = mapper.length_to_capture(5)
+    above = mapper.length_to_capture(7)
+
+    # Then: they round to the nearest even pixel. The half-pixel tie is the one
+    # place the rule could differ without any other test noticing, so it is
+    # pinned here rather than left to whichever rounding the caller happened to
+    # use.
+    assert (below, above) == (2, 4), (below, above)
+
+
+def test_length_to_capture_never_returns_less_than_one_for_a_positive_length() -> None:
+    # Given: a mapper that halves the width, so a 1 px display length is half a
+    # capture pixel.
+    mapper = _mapper_type()(capture_size=(640, 720), display_size=(1280, 720))
+
+    # When: that length is converted.
+    converted = mapper.length_to_capture(1)
+
+    # Then: it is held at 1. A 0 px radius would hand the drawing code a
+    # degenerate circle, which is a silent visual fault rather than an error --
+    # and the caller already asked for something that exists.
+    assert converted == 1, converted
+
+
+@pytest.mark.parametrize("length", [0, -5], ids=["zero", "negative"])
+def test_length_to_capture_returns_zero_for_a_non_positive_length(length: int) -> None:
+    # Given: the halving mapper.
+    mapper = _mapper_type()(capture_size=(640, 720), display_size=(1280, 720))
+
+    # When: a zero or negative display length is converted.
+    converted = mapper.length_to_capture(length)
+
+    # Then: it comes back as 0 rather than being raised to the 1 px floor,
+    # because "nothing was asked for" is not the same as "something tiny".
+    assert converted == 0, converted
+
+
+def test_length_to_capture_uses_a_ratio_of_one_when_the_display_width_is_zero() -> None:
+    # Given: a mapper whose display size is still zero, which is what a camera
+    # that has not delivered a frame yet leaves behind.
+    mapper = _mapper_type()(capture_size=CAPTURE_SIZE, display_size=(0, 0))
+
+    # When: a display length is converted.
+    converted = mapper.length_to_capture(12)
+
+    # Then: it comes back at ratio 1, matching ``to_capture``'s degradation, so
+    # the first frame has a usable length instead of a ZeroDivisionError raised
+    # from inside the drawing path.
+    assert converted == 12, converted
