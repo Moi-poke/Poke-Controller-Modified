@@ -88,6 +88,48 @@ def test_renderer_default_and_sanitize() -> None:
     assert "General Setting.renderer" in changed
 
 
+def test_show_mode_default_and_sanitize() -> None:
+    """show_mode の既定値と、不正値を候補値へ戻す動きの検証。"""
+    from core.display_mode import DEFAULT_SHOW_MODE, SHOW_MODES
+
+    defaults = config.default_sections()["General Setting"]
+    assert defaults["show_mode"] == DEFAULT_SHOW_MODE
+    parser = make_parser()
+    config.complete_missing(parser)
+    general = parser["General Setting"]
+    assert general["show_mode"] == "fixed"
+    assert DEFAULT_SHOW_MODE in SHOW_MODES
+    assert config.complete_missing(parser) == []
+    general["show_mode"] = "typo"
+    changed = config.complete_missing(parser)
+    assert general["show_mode"] == "fixed"
+    assert "General Setting.show_mode" in changed
+    assert config.complete_missing(parser) == []
+    # キーごと消して補完が効くことも確かめる（追加したキーの抜け防止）
+    del general["show_mode"]
+    changed = config.complete_missing(parser)
+    assert general["show_mode"] == "fixed"
+    assert "General Setting.show_mode" in changed
+
+
+def test_show_size_accepts_the_960x540_preset() -> None:
+    """固定サイズのプリセットに 960x540 が加わった（補正で潰されない）。"""
+    from core.display_mode import SHOW_SIZES
+
+    assert "960x540" in SHOW_SIZES
+    parser = make_parser()
+    config.complete_missing(parser)
+    general = parser["General Setting"]
+    general["show_size"] = "960x540"
+    assert config.complete_missing(parser) == []
+    assert general["show_size"] == "960x540"
+    # 候補に無い値は従来どおり既定へ戻す（緩めたわけではない）
+    general["show_size"] = "800x600"
+    changed = config.complete_missing(parser)
+    assert general["show_size"] == "640x360"
+    assert "General Setting.show_size" in changed
+
+
 def test_migrate_legacy_keymap() -> None:
     parser = make_parser()
     config.complete_missing(parser)

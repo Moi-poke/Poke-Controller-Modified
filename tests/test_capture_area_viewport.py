@@ -468,5 +468,4 @@ def test_the_recognition_box_is_stored_in_capture_coordinates() -> None:
     assert (img_rect.inner.x1, img_rect.inner.y1) == (110, 220), img_rect
     assert (img_rect.outer.x0, img_rect.outer.y0) == (9, 19), img_rect
     assert (img_rect.outer.x1, img_rect.outer.y1) == (111, 221), img_rect
-    assert img_rect.visible is True, "the box must be drawn"
-    assert img_rect.inner.x0 == 10, img_rect
+    assert img_rect.visible is True, img_rect

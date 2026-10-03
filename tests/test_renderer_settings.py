@@ -45,6 +45,8 @@ CAMERA_PANEL_SOURCE = SERIAL_CONTROLLER / "ui" / "camera_panel.py"
 # 既定（"auto"）と違う値。保存されなければ「保存できていない」ことに気づけない。
 RENDERER_CHOICE = "photo"
 RENDERER_TYPO = "gd1"
+# 表示モードの既定（"fixed"）と違う値。同じく保存された与否が分かる値。
+SHOW_MODE_CHOICE = "fit"
 
 
 class _Var:
@@ -173,6 +175,49 @@ def test_renderer_mirror_get_declares_no_fallback_default() -> None:
     seed = _renderer_mirror_seed()
 
     # Then: 補完済みなので fallback= を二重に持たない（show_size と同じ形）
+    assert [keyword.arg for keyword in seed.keywords] == []
+
+
+def test_save_writes_the_show_mode_mirror_back_into_general_setting(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    # Given: 表示モードのミラーだけ読み込んだ値を持つ設定（save() は実物で通す）。
+    # ミラーが無い場合はスタブが空文字を返すので、保存されないまま終わる。
+    monkeypatch.setattr(Settings.GuiSettings, "_reload_key_maps", _noop)
+    monkeypatch.setattr(Settings.GuiSettings, "_write_ini", _noop)
+    target: Any = object.__new__(_SaveTarget)
+    target.setting = configparser.ConfigParser()
+    # renderer ミラーは _SaveTarget が意図的に拒むので閉じておく
+    target.renderer = _Var(RENDERER_CHOICE)
+    target.show_mode = _Var(SHOW_MODE_CHOICE)
+
+    # When: 唯一の保存関数を通す
+    target.save()
+
+    # Then: 組み直した dict に show_mode が残る（次に起動した위가保存値に従う）
+    assert target.setting["General Setting"]["show_mode"] == SHOW_MODE_CHOICE
+
+
+def test_show_mode_mirror_is_seeded_from_the_general_setting_section() -> None:
+    # Given / When
+    init = class_method(
+        class_node(module_tree(SETTINGS_SOURCE), "GuiSettings"), "__init__"
+    )
+    mirrors = _self_attr_assignments(init, "show_mode")
+
+    # Then: General Setting セクションの show_mode キーから bare get で読む
+    assert len(mirrors) == 1, f"show_mode ミラーの定義が {len(mirrors)} 個（1 個だけ）"
+    mirror = mirrors[0].value
+    assert isinstance(mirror, ast.Call) and dotted_name(mirror.func) == "tk.StringVar"
+    seeds = [keyword.value for keyword in mirror.keywords if keyword.arg == "value"]
+    assert len(seeds) == 1, "show_mode ミラーは value= で初期化する"
+    seed = seeds[0]
+    assert isinstance(seed, ast.Call), "show_mode ミラーは設定から get() で初期化する"
+    assert dotted_name(seed.func) == "general.get"
+    assert [arg.value for arg in seed.args if isinstance(arg, ast.Constant)] == [
+        "show_mode"
+    ]
+    # 補完済みなので fallback= を二重に持たない（renderer と同じ形）
     assert [keyword.arg for keyword in seed.keywords] == []
 
 

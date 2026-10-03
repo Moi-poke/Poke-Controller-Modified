@@ -17,6 +17,13 @@ import os
 import re
 from typing import Any
 
+from core.display_mode import (
+    DEFAULT_SHOW_MODE,
+    DEFAULT_SHOW_SIZE,
+    SHOW_MODES,
+    SHOW_SIZES,
+)
+
 # キーコンフィグが扱うセクション。KeyConfig / Keyboard の双方が参照する。
 KEYMAP_SECTIONS: tuple = ("KeyMap-Button", "KeyMap-Direction", "KeyMap-Hat")
 
@@ -58,6 +65,9 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "baud_rate": 9600,
             "fps": 45,
             "show_size": "640x360",
+            # プレビューの表示モード。fixed … プリセットで固定 /
+            # fit … ウィンドウに合わせて拡大縮小。候補は core.display_mode
+            "show_mode": "fixed",
             # 描画方式。候補は WindowUtils.RENDERER_VALUES が正
             "renderer": "auto",
             "is_show_realtime": True,
@@ -227,10 +237,14 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if value is None or not valid(value):
             general[key] = str(default)
             changed.append(f"General Setting.{key}")
-    valid_sizes = ("640x360", "1280x720", "1920x1080")
-    if general.get("show_size", "") not in valid_sizes:
-        general["show_size"] = "640x360"
+    # プレビューの固定サイズと表示モード。候補は core.display_mode が正で、
+    # このファイルは core を読める（tkinter を引き込まない）ため複製しない。
+    if general.get("show_size", "") not in SHOW_SIZES:
+        general["show_size"] = DEFAULT_SHOW_SIZE
         changed.append("General Setting.show_size")
+    if general.get("show_mode", "") not in SHOW_MODES:
+        general["show_mode"] = DEFAULT_SHOW_MODE
+        changed.append("General Setting.show_mode")
     # 描画方式。WindowUtils.RENDERER_VALUES と同じ中身の複製になる。
     # このファイルは tkinter を引き込めないため表を>importできず、
     # 候補を増やすときは両方を直す（ずれは既定へ戻す tolerant 補正）。

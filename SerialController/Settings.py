@@ -52,6 +52,8 @@ class GuiSettings:
         self.baud_rate = tk.IntVar(value=general.getint("baud_rate"))
         self.fps = tk.IntVar(value=general.getint("fps"))
         self.show_size = tk.StringVar(value=general.get("show_size"))
+        # プレビューの表示モード（fixed / fit）。show_size と同じ形の鏡。
+        self.show_mode = tk.StringVar(value=general.get("show_mode"))
         # プレビューの描画手法。補完済みなので fallback は付けない（show_size と同じ形）
         self.renderer = tk.StringVar(value=general.get("renderer"))
         self.is_show_realtime = tk.BooleanVar(
@@ -320,6 +322,7 @@ class GuiSettings:
                 "baud_rate": self.baud_rate.get(),
                 "fps": self.fps.get(),
                 "show_size": self.show_size.get(),
+                "show_mode": self.show_mode.get(),
                 "renderer": self.renderer.get(),
                 "is_show_realtime": self.is_show_realtime.get(),
                 "is_show_serial": self.is_show_serial.get(),

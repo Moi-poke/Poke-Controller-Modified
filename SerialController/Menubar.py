@@ -21,6 +21,7 @@ class PokeController_Menubar(tk.Menu):
         self.key_config: PokeKeycon | None = None
         self.serial_monitor: SerialMonitor | None = None
         self.input_log_config: InputLogConfig | None = None
+        self.display_settings: Any | None = None
 
         self.menu = tk.Menu(self, tearoff=False)
         self.menu_command = tk.Menu(self, tearoff=False)
@@ -28,15 +29,23 @@ class PokeController_Menubar(tk.Menu):
         self.add(tk.CASCADE, menu=self.menu, label="メニュー")
         self.menu.add(tk.CASCADE, menu=self.menu_command, label="コマンド")
         self.menu.add(tk.CASCADE, menu=self.menu_view, label="表示")
+        # プレビューの表示設定（モードと固定サイズ）。ウィンドウ全体の
+        # サイズとは別の概念なので、メニューを分けて頭に置く。
+        self.menu_view.add(
+            "command",
+            command=self.OpenDisplaySettings,
+            label="表示設定...",
+        )
+        self.menu_view.add("separator")
         self.menu_view.add(
             "command",
             command=lambda: self.applyWindowSize(1280, 720),
-            label="1280x720",
+            label="ウィンドウ 1280x720",
         )
         self.menu_view.add(
             "command",
             command=lambda: self.applyWindowSize(1920, 1080),
-            label="1920x1080",
+            label="ウィンドウ 1920x1080",
         )
         self.menu_view.add("separator")
         self.menu_view.add(
@@ -67,10 +76,6 @@ class PokeController_Menubar(tk.Menu):
     @property
     def preview(self) -> Any:
         return self.app.preview
-
-    @property
-    def show_size_cb(self) -> Any:
-        return self.app.show_size_cb
 
     @property
     def keyboard(self) -> Any:
@@ -272,6 +277,7 @@ class PokeController_Menubar(tk.Menu):
             "key_config",
             "poke_treeview",
             "input_log_config",
+            "display_settings",
         ):
             window = getattr(self, name, None)
             if window is None:
@@ -323,10 +329,39 @@ class PokeController_Menubar(tk.Menu):
         logger.debug("Close InputLogConfig window")
         self.input_log_config = None
 
+    def OpenDisplaySettings(self) -> None:
+        """プレビューの表示設定（モードと固定サイズ）を開く。
+
+        一度に1つだけ。既に開いていれば前面に出すだけで作り直さない。
+        「参照が None か」だけでは破棄済みの窓を掴むので、OpenInputLogConfig
+        と同じ生存判定をここでも使う。
+        """
+        logger.debug("Open DisplaySettings window")
+        from ui import display_settings
+
+        if self.display_settings is not None and self._alive(self.display_settings):
+            self.display_settings.lift()
+            return
+        self.display_settings = None
+        dialog = display_settings.DisplaySettingsDialog(
+            self.root,
+            mode=self.app.show_mode.get(),
+            size=self.app.show_size.get(),
+            on_apply=self.app.applyDisplaySettings,
+        )
+        # 閉じたら参照を捨てる。Destroy は子にも飛ぶので親自身だけ拾う。
+        dialog.bind("<Destroy>", self._on_display_settings_destroyed, add="+")
+        self.display_settings = dialog
+
+    def _on_display_settings_destroyed(self, event: Any) -> None:
+        """表示設定の窓が破棄されたときの後始末。"""
+        if event.widget is self.display_settings:
+            self.display_settings = None
+
     def ResetWindowSize(self) -> None:
+        """プレビューを既定（640x360 の固定）へ戻す。保存は _on_setting_changed 経由。"""
         logger.debug("Reset window size")
-        self.preview.setShowsize(360, 640)
-        self.show_size_cb.current(0)
+        self.app.applyDisplaySettings("fixed", "640x360")
 
     def open_discord_notify_setting(self) -> None:
         webhook = DiscordNotify.Discord_Notify()

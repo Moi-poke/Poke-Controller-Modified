@@ -18,6 +18,7 @@ import tkinter as tk
 import tkinter.ttk as ttk
 from typing import Any
 
+from core.display_mode import SHOW_SIZES
 from loguru import logger
 
 # アプリの場所。このファイルの位置から決める（起動場所に依存しない）。
@@ -29,7 +30,8 @@ OPEN_DIR_ICON_PATH = os.path.join(APP_DIR, "assets", "icons8-OpenDir-16.png")
 # 候補に無い値の扱いは読む側が決める（矯正すると利用者の設定が壊れる）。
 FPS_VALUES = [60, 45, 30, 15, 5]
 BAUD_RATE_VALUES = [9600, 4800, 19200, 38400, 57600, 115200]
-SHOW_SIZE_VALUES = ["640x360", "1280x720", "1920x1080"]
+# プレビューの固定サイズ。実体は core.display_mode が正（表は複製せず変換だけ）。
+SHOW_SIZE_VALUES = list(SHOW_SIZES)
 RENDERER_VALUES = ["auto", "gdi", "photo"]
 COM_PORT_NOT_FOUND = "(ポートが見つかりません)"
 

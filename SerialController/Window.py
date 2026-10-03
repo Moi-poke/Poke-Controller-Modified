@@ -341,6 +341,7 @@ class PokeControllerApp(
         self.is_use_keyboard.set(self.settings.is_use_keyboard.get())
         self.fps.set(str(self.settings.fps.get()))
         self.show_size.set(self.settings.show_size.get())
+        self.show_mode.set(self.settings.show_mode.get())
         self.renderer.set(self.settings.renderer.get())
         self.com_port.set(self.settings.com_port.get())
         self.com_port_name.set(self.settings.com_port_name.get())
@@ -365,9 +366,7 @@ class PokeControllerApp(
         self._refreshArbitrationChoices()
 
         WindowUtils.selectCombobox(self.fps_cb, self.fps.get())
-        WindowUtils.selectCombobox(self.show_size_cb, self.show_size.get())
         WindowUtils.selectCombobox(self.renderer_cb, self.renderer.get())
-        self.show_size_tmp = self.show_size_cb["values"].index(self.show_size_cb.get())
 
         # Baud Rate は候補で縛らない。GameCube の自動化や独自マイコンで
         # 9600 / 4800 以外を使う人がいる。設定にある値が候補に無ければ
@@ -592,6 +591,7 @@ class PokeControllerApp(
         )
         self.settings.fps.set(self._current_fps())
         self.settings.show_size.set(self.show_size.get())
+        self.settings.show_mode.set(self.show_mode.get())
         self.settings.renderer.set(self.renderer.get())
         self.settings.com_port.set(self.com_port.get())
         self.settings.com_port_name.set(self.com_port_name.get())

@@ -13,13 +13,19 @@ import subprocess
 import threading
 import time
 import tkinter as tk
-import tkinter.messagebox as tkmsg
 import tkinter.ttk as ttk
 from typing import Any
 
 import WindowUtils
 from GuiAssets import CaptureArea
 from core.Camera import Camera
+from core.display_mode import (
+    DEFAULT_SHOW_MODE,
+    DEFAULT_SHOW_SIZE,
+    SHOW_MODES,
+    SHOW_SIZES,
+    preview_layout,
+)
 from loguru import logger
 
 # _on_camera_opened へ渡すまでの再試行上限。mainloop は構築直後に始まるため
@@ -78,9 +84,8 @@ class CameraPanelMixin:
     fps: Any
     fps_cb: Any
     separator_3: Any
-    show_size_label: Any
     show_size: Any
-    show_size_cb: Any
+    show_mode: Any
     separator_4: Any
     filt_enabled: Any
     filt_check: Any
@@ -94,7 +99,6 @@ class CameraPanelMixin:
     camera_name_l: Any
     camera_name_fromDLL: Any
     Camera_Name: Any
-    show_size_tmp: Any
     Command_nb: Any
     _on_setting_changed: Any
     _apply_content_minsize: Any
@@ -170,19 +174,11 @@ class CameraPanelMixin:
         self.separator_3.config(orient="vertical")
         self.separator_3.grid(column=2, row=0, sticky="ns")
 
-        self.show_size_label = ttk.Label(self.camera_f2)
-        self.show_size_label.config(text="Show Size:")
-        self.show_size_label.grid(column=3, padx="5", row=0, sticky="ew")
-
+        # プレビューの表示モードと固定サイズ。選ぶ画面は Menubar の
+        # 表示設定ダイアログ（カメラ欄にはコンボを置かない）。ここには
+        # 値だけ持ち、決めるのはダイアログ、反映は applyDisplaySettings。
+        self.show_mode = tk.StringVar()
         self.show_size = tk.StringVar()
-        self.show_size_cb = ttk.Combobox(self.camera_f2)
-        self.show_size_cb.config(
-            textvariable=self.show_size,
-            state="readonly",
-            values=WindowUtils.SHOW_SIZE_VALUES,
-        )
-        self.show_size_cb.grid(column=4, padx="10", row=0, sticky="ew")
-        self.show_size_cb.bind("<<ComboboxSelected>>", self.applyWindowSize, add="")
 
         self.separator_4 = ttk.Separator(self.camera_f2)
         self.separator_4.config(orient="vertical")
@@ -450,7 +446,10 @@ class CameraPanelMixin:
             logger.error(message)
 
     def _build_preview(self) -> None:
-        width, height = map(int, self.show_size.get().split("x"))
+        # 表示モードの判断は core.display_mode に任せる。show_size を直接
+        # 解釈しない（fit では使わない値になるため）。
+        layout = preview_layout(self.show_mode.get(), self.show_size.get())
+        width, height = layout.request_size
         self.preview = CaptureArea(
             self.camera,
             self._current_fps(),
@@ -472,6 +471,9 @@ class CameraPanelMixin:
         # のにマウスで動かせない」状態になっていた。
         self.preview.ApplyLStickMouse()
         self.preview.ApplyRStickMouse()
+
+        # 作った直後に配置を確定する（モードが fit ならここから伸びる）。
+        self._apply_preview_layout()
 
     def _acquire_open_lock(self) -> bool:
         """カメラ open の錠を有限待ちで取る。取れなければ False。
@@ -736,25 +738,50 @@ class CameraPanelMixin:
         """
         pass
 
-    def applyWindowSize(self, event: Any = None) -> None:
-        """表示サイズを変更する。キャンセルされたら元に戻す。"""
-        if self.preview is None:
-            return
-        current_index = self.show_size_cb["values"].index(self.show_size_cb.get())
-        if self.show_size_tmp == current_index:
-            return
+    def applyDisplaySettings(self, mode: str, size: str) -> None:
+        """表示モードと固定サイズを検証してプレビューへ反映し、保存する。
 
-        width, height = map(int, self.show_size.get().split("x"))
-        self.preview.setShowsize(height, width)
+        確認ダイアログは出さない。拡大縮小は即時で、選び直せば元へ戻るため
+        「取り消す」手順が要らない。tkmsg は同期なので、選ぶたびに出すと
+        GUI スレッドがそこで止まる（描画まで止まる）。
 
-        if tkmsg.askokcancel("確認", "この画面サイズに変更しますか？"):
-            self.show_size_tmp = current_index
-            self._apply_content_minsize()
-            self._on_setting_changed()
+        Menubar の表示設定ダイアログと「画面サイズのリセット」の両方から
+        呼ばれるため、値の補正はここで一度だけ行う。
+        """
+        self.show_mode.set(mode if mode in SHOW_MODES else DEFAULT_SHOW_MODE)
+        self.show_size.set(size if size in SHOW_SIZES else DEFAULT_SHOW_SIZE)
+        self._apply_preview_layout()
+        # 要求サイズが変わるので最小サイズの制限も測り直す（タブの見切れ防止）。
+        self._apply_content_minsize()
+        self._on_setting_changed()
+
+    def _apply_preview_layout(self) -> None:
+        """表示モードに合わせて、プレビューの要求サイズと伸び方を設定する。
+
+        fixed は要求サイズのまま上寄せ。fit は枠いっぱいまで伸ばし、16:9 を
+        保ったまま中央寄せさせる。伸びるかどうかはカメラ枠と Window 側の
+        2 段構成で決まる。片方だけを変えると、どちらかで余白が残る。
+        """
+        preview = self.preview
+        if preview is None:
+            return
+        layout = preview_layout(self.show_mode.get(), self.show_size.get())
+        width, height = layout.request_size
+        preview.setShowsize(height, width)
+        if layout.stretch:
+            preview.grid_configure(sticky="nsew")
+            self.camera_lf.rowconfigure(2, weight=1)
+            self.camera_lf.columnconfigure(0, weight=1)
+            self.camera_lf.grid_configure(sticky="nsew")
+            self.frame_1.rowconfigure(0, weight=3)
+            self.frame_1.columnconfigure(0, weight=3)
         else:
-            self.show_size_cb.current(self.show_size_tmp)
-            width_bef, height_bef = map(int, self.show_size.get().split("x"))
-            self.preview.setShowsize(height_bef, width_bef)
+            preview.grid_configure(sticky="n")
+            self.camera_lf.rowconfigure(2, weight=0)
+            self.camera_lf.columnconfigure(0, weight=0)
+            self.camera_lf.grid_configure(sticky="ew")
+            self.frame_1.rowconfigure(0, weight=0)
+            self.frame_1.columnconfigure(0, weight=0)
 
     def _applyFilterSettings(self) -> None:
         """設定ファイルの表示フィルタ値をパネル側の辞書へ流し込む。
