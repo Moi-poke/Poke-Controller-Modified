@@ -465,11 +465,14 @@ class CtypesGdiApi:
         self._create_solid_brush.argtypes = [ctypes.c_ulong]
         self._create_solid_brush.restype = ctypes.c_void_p
 
-        # CreateFontW の引数は 13 個。cHeight は負にすると「文字の高さ」で
-        # 解釈される（セル高さではない）ので、ここでも負を渡す。返り値は
-        # HFONT なので 64 ビットまで受け取れる必要がある。
+        # CreateFontW の引数は 14 個（数値 13 個 + 書体名）。1 個でも欠けると
+        # 後ろが 1 つずつずれ、取り消し線付きの代替書体になる。cHeight は
+        # 負にすると「文字の高さ」で解釈される（セル高さではない）ので、
+        # ここでも負を渡す。返り値は HFONT なので 64 ビットまで受け取れる
+        # 必要がある。
         self._create_font = gdi32.CreateFontW
         self._create_font.argtypes = [
+            ctypes.c_int,
             ctypes.c_int,
             ctypes.c_int,
             ctypes.c_int,
@@ -735,6 +738,7 @@ class CtypesGdiApi:
                 0,  # cEscapement
                 0,  # cOrientation
                 weight,
+                0,  # fdwItalic
                 0,  # fdwUnderline
                 0,  # fdwStrikeOut
                 _BADGE_CHARSET,

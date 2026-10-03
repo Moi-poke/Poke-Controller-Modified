@@ -3152,6 +3152,64 @@ def test_hollow_brush_leaves_the_pixels_under_every_outline_untouched() -> None:
         api.delete_object(brush)
 
 
+class _TEXTMETRICW(ctypes.Structure):
+    _fields_ = [
+        ("tmHeight", ctypes.c_long),
+        ("tmAscent", ctypes.c_long),
+        ("tmDescent", ctypes.c_long),
+        ("tmInternalLeading", ctypes.c_long),
+        ("tmExternalLeading", ctypes.c_long),
+        ("tmAveCharWidth", ctypes.c_long),
+        ("tmMaxCharWidth", ctypes.c_long),
+        ("tmWeight", ctypes.c_long),
+        ("tmOverhang", ctypes.c_long),
+        ("tmDigitizedAspectX", ctypes.c_long),
+        ("tmDigitizedAspectY", ctypes.c_long),
+        ("tmFirstChar", ctypes.c_wchar),
+        ("tmLastChar", ctypes.c_wchar),
+        ("tmDefaultChar", ctypes.c_wchar),
+        ("tmBreakChar", ctypes.c_wchar),
+        ("tmItalic", ctypes.c_ubyte),
+        ("tmUnderlined", ctypes.c_ubyte),
+        ("tmStruckOut", ctypes.c_ubyte),
+        ("tmPitchAndFamily", ctypes.c_ubyte),
+        ("tmCharSet", ctypes.c_ubyte),
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 GDI fonts are Windows-only")
+def test_the_real_badge_font_is_the_requested_face_without_strikeout() -> None:
+    # Given: the real shipped api and a memory DC. No window, no display.
+    module = _surface_module()
+    api = module.CtypesGdiApi()
+    hdc = api.create_compatible_dc(0)
+    font = api.create_font(-30, _BADGE_WEIGHT, _BADGE_FACE)
+    gdi32 = ctypes.WinDLL("gdi32")
+    gdi32.GetTextMetricsW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_TEXTMETRICW)]
+    gdi32.GetTextMetricsW.restype = ctypes.c_int
+    gdi32.GetTextFaceW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    gdi32.GetTextFaceW.restype = ctypes.c_int
+    try:
+        # When: the badge font is selected and the realised font is read back.
+        api.select_object(hdc, font)
+        metrics = _TEXTMETRICW()
+        assert gdi32.GetTextMetricsW(hdc, ctypes.byref(metrics))
+        face = ctypes.create_unicode_buffer(64)
+        assert gdi32.GetTextFaceW(hdc, 64, face)
+
+        # Then: CreateFontW は 14 引数。1 個欠けると後ろが 1 つずつずれ、
+        #       文字コード集合の値が取り消し線へ、品質が書体名の手前へ入る。
+        #       その場合は取り消し線付きの代替書体になるので、ここで落ちる。
+        assert metrics.tmStruckOut == 0
+        assert metrics.tmUnderlined == 0
+        assert metrics.tmItalic == 0
+        assert metrics.tmWeight == _BADGE_WEIGHT
+        assert face.value == _BADGE_FACE
+    finally:
+        api.delete_dc(hdc)
+        api.delete_object(font)
+
+
 def test_recompose_restores_the_video_base_without_a_new_frame() -> None:
     # Given: an attached surface with a composited frame and an active left stick.
     module = _fresh_surface_module()
