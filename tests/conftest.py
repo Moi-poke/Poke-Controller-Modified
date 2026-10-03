@@ -31,3 +31,17 @@ def tk_root() -> Iterator[tk.Tk]:
         yield root
     finally:
         root.destroy()
+
+
+@pytest.fixture(autouse=True)
+def _collect_tk_garbage(request: pytest.FixtureRequest) -> Iterator[None]:
+    """実 Tk を使ったテストの後、ゴミになった Tk 変数をこの（主）スレッドで消す。
+
+    放っておくと、後の別テストのワーカースレッド中に回収され、Variable.__del__
+    が「main thread is not in main loop」を出す（PytestUnraisableExceptionWarning）。
+    """
+    yield
+    if "tk_root" in request.fixturenames:
+        import gc
+
+        gc.collect()
