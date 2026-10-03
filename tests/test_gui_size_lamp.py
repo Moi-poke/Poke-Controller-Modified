@@ -228,3 +228,16 @@ def test_bcon_only_widgets_hidden_without_bcon() -> None:
     assert "_bcon_only_widgets" in src
     utils = Path("SerialController/WindowUtils.py").read_text(encoding="utf-8")
     assert 'wrap="word"' in utils
+
+
+def test_audio_tab_has_no_diagnostic_record_or_latency_buttons() -> None:
+    """Test Rec と遅延計測は外した。Monitor と Level で疎通は確かめられ、
+    実測値はどこからも使われていなかったため（計測本体は tools 用に core に残す）。
+    """
+    from ui.audio_panel import AudioPanelMixin
+
+    assert not hasattr(AudioPanelMixin, "recordAudioTest")
+    assert not hasattr(AudioPanelMixin, "measureLatency")
+    src = Path("SerialController/ui/audio_panel.py").read_text(encoding="utf-8")
+    assert "Test Rec" not in src
+    assert "遅延計測" not in src
