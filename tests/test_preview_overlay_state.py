@@ -48,6 +48,7 @@ from gdi_present_doubles import (
     TK_RED_COLORREF,
     WHITE_COLORREF,
     bare_capture_area,
+    bgr_frame,
     stick_drag,
     stick_press,
     stick_release,
@@ -434,3 +435,187 @@ def test_mouse_left_release_is_safe_with_no_press_active() -> None:
     # restored to the crosshair.
     assert _left_stick(bare).active is False
     assert bare.widget.cursor_values() == ["tcross"]
+
+
+# ===========================================================================
+# The status badge: the overlay's fifth component
+# ===========================================================================
+#
+# The badge is what makes several instances running side by side readable
+# without reading the log pane: ``▶ 自動孵化`` in one window and ``⏸ 自動孵化``
+# in the next. *What* the badge says and *when* it changes is decided by the
+# caller; this file owns the two properties that make it safe to draw.
+#
+# **Identity, not equality** is the sharp one. ``_drawFrame`` decides "did the
+# overlay change?" by comparing each component with ``is``
+# (``GuiAssets.py:837-843``), because a frozen dataclass returns to its old
+# value on press-then-release and ``==`` cannot see that. A ``setBadge`` that
+# always rebuilt an equal ``BadgeState`` would therefore report a change 60
+# times a second for a status that never moved, and force a full recompose each
+# time. The recompose claim is asserted on ``RecordingSurface.recompose_calls``
+# rather than on a return value alone, so an implementation that returns True
+# without asking the surface to redraw cannot pass.
+#
+# The drawing of the badge is not here: ``test_gdi_surface_contract.py`` owns
+# the GDI side and ``test_photo_surface_contract.py`` the Canvas one.
+
+_BAD_TEXT = "▶ 自動孵化"
+_OTHER_TEXT = "⏸ 自動孵化"
+_BAD_BACKGROUND = 0x00303030
+_BAD_FOREGROUND = 0x00FFFFFF
+
+
+def _badge_of(bare: Any) -> Any:
+    """A fresh read of the area's badge, so the checker keeps seeing a change.
+
+    A helper rather than a chained ``bare.area.overlay.badge`` read: narrowing a
+    repeated member expression makes an ``is False`` assertion followed by an
+    ``is True`` one on the same expression look unreachable to the checker.
+    """
+    return bare.area.overlay.badge
+
+
+def test_the_default_overlay_carries_a_badge_that_draws_nothing() -> None:
+    # Given: a bare area nobody has reported a state for.
+    from core import preview_renderer
+
+    bare = bare_capture_area()
+
+    # Then: its badge is the all-default one -- invisible and empty -- so the
+    # renderer has nothing to draw and the overlay still equals a bare
+    # OverlayState, i.e. the added component did not move the others.
+    badge = _badge_of(bare)
+    assert badge == preview_renderer.BadgeState()
+    assert badge.visible is False
+    assert badge.text == ""
+    assert badge.background == _BAD_BACKGROUND
+    assert badge.foreground == _BAD_FOREGROUND
+    assert bare.area.overlay == preview_renderer.OverlayState()
+
+
+def test_setting_the_badge_twice_with_the_same_content_replaces_nothing() -> None:
+    # Given: an area already showing the status below.
+    bare = bare_capture_area()
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+    first = _badge_of(bare)
+    assert first.text == _BAD_TEXT
+    assert first.visible is True
+
+    # When: the very same status is reported again, as a status poller would.
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+
+    # Then: the BadgeState object is the same one. A fresh-but-equal instance
+    # would read as a change to _drawFrame's identity check and repaint a window
+    # that has not moved.
+    assert _badge_of(bare) is first
+
+
+def test_a_changed_badge_is_replaced_and_repaints_under_an_unchanged_frame() -> None:
+    # Given: an area whose camera has published one generation, so a repeated
+    # seq really is a repeat and not a first call in a second costume.
+    bare = bare_capture_area()
+    frame = bgr_frame()
+    assert getattr(bare.area, "_drawFrame")(frame, 1) is True
+    assert bare.area._last_frame_seq == 1
+    before = _badge_of(bare)
+
+    # When: the status changes -- nothing but the badge changed, and the camera
+    # has not published a new frame.
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+    assert _badge_of(bare) is not before
+    assert getattr(bare.area, "_drawFrame")(frame, 1) is True
+
+    # Then: the badge reached the surface. Without a ``badge is`` term in the
+    # change check the repeated seq would be skipped and the new status would
+    # wait for the next camera generation -- 100-200 ms at 5-10 fps, or forever
+    # if the camera has stopped.
+    repaints = bare.surface.recompose_calls
+    assert len(repaints) == 1, f"UNMET: {len(repaints)} recompose after the change"
+    assert repaints[0].badge.text == _BAD_TEXT
+
+
+def test_changing_only_the_badge_text_still_replaces_the_state() -> None:
+    # Given: an area already showing one status.
+    bare = bare_capture_area()
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+    first = _badge_of(bare)
+
+    # When: only the text differs.
+    getattr(bare.area, "setBadge")(_OTHER_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+
+    # Then: a new state carries it, so the change is observable at all.
+    replaced = _badge_of(bare)
+    assert replaced is not first
+    assert replaced.text == _OTHER_TEXT
+    assert replaced.background == _BAD_BACKGROUND
+    assert replaced.visible is True
+
+
+def test_setting_an_empty_text_hides_the_badge_instead_of_drawing_a_box() -> None:
+    # Given: an area showing a status.
+    bare = bare_capture_area()
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+
+    # When: the status is reported as "nothing to say".
+    getattr(bare.area, "setBadge")("", _BAD_BACKGROUND, _BAD_FOREGROUND)
+
+    # Then: it is not visible, so both surfaces skip it -- an empty text drawn
+    # under a measured (zero-width) box would leave an empty black rectangle.
+    badge = _badge_of(bare)
+    assert badge.visible is False
+    assert badge.text == ""
+
+
+def test_clearing_a_hidden_badge_changes_nothing() -> None:
+    # Given: an area with nothing to show, so clearBadge runs on a path that has
+    # nothing to clear.
+    bare = bare_capture_area()
+    before = _badge_of(bare)
+
+    # When: it is cleared anyway.
+    getattr(bare.area, "clearBadge")()
+
+    # Then: the state is untouched, so an idle poll loop that clears on every
+    # tick does not manufacture an overlay change on every tick.
+    assert _badge_of(bare) is before
+
+
+def test_clearing_a_visible_badge_puts_the_all_default_state_back() -> None:
+    # Given: an area showing a status.
+    bare = bare_capture_area()
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+    assert _badge_of(bare).visible is True
+
+    # When: the badge is cleared.
+    getattr(bare.area, "clearBadge")()
+
+    # Then: the badge is the all-default one again, i.e. the overlay is equal to
+    # a freshly constructed OverlayState rather than a half-cleared state.
+    from core import preview_renderer
+
+    badge = _badge_of(bare)
+    assert badge == preview_renderer.BadgeState()
+    assert badge.visible is False
+    assert badge.text == ""
+
+
+def test_an_untouched_badge_never_forces_a_second_recompose() -> None:
+    # Given: an area on generation 1 with a badge showing and nothing else going
+    # on -- the state every status poller spends almost all of its time in.
+    bare = bare_capture_area()
+    frame = bgr_frame()
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+    assert getattr(bare.area, "_drawFrame")(frame, 1) is True
+
+    # When: the same status is reported twice more and the same frame is drawn.
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+    getattr(bare.area, "setBadge")(_BAD_TEXT, _BAD_BACKGROUND, _BAD_FOREGROUND)
+    repainted = getattr(bare.area, "_drawFrame")(frame, 1)
+
+    # Then: nothing was redrawn. A poller that re-reports an unchanged status 60
+    # times a second must not turn into a full overlay recompose 60 times a
+    # second.
+    assert repainted is False
+    assert bare.surface.presents == 1
+    assert bare.surface.recompose_calls == []
+    assert len(bare.surface.composes) == 1

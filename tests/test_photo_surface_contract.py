@@ -111,6 +111,16 @@ MODIFIER_SEQUENCES: tuple[str, ...] = (
 #: hand-copied list of the twelve above.
 UNUSED_SEQUENCE = "<Shift-B1-Motion>"
 
+#: The status badge the fallback surface draws in the corner of the picture, as
+#: Win32 COLORREFs (``0x00BBGGRR``) because that is what ``BadgeState`` carries.
+#: Tk wants ``#RRGGBB``, so the conversion is byte-reversed and a passthrough
+#: would paint a dark grey badge in dark red.
+BADGE_TEXT = "▶ 自動孵化"
+BADGE_BACKGROUND = 0x00303030
+BADGE_FOREGROUND = 0x00FFFFFF
+BADGE_BACKGROUND_HEX = "#303030"
+BADGE_FOREGROUND_HEX = "#FFFFFF"
+
 
 def _photo_surface_module() -> Any:
     """``ui.photo_surface``, imported at call time so a break is a per-test RED."""
@@ -172,6 +182,17 @@ class _RecordingCanvas:
         self.coords_calls: list[tuple[Any, tuple[Any, ...]]] = []
         self.delete_calls: list[str] = []
         self.item_calls: list[tuple[str, tuple[Any, ...]]] = []
+        #: The keyword arguments of every ``item_calls`` entry, in the same
+        #: order. ``item_calls`` alone cannot say what an item looked like: two
+        #: rectangles that differ only in ``fill`` are the same tuple of
+        #: coordinates, so the badge's background box and a dashed guide would be
+        #: indistinguishable.
+        self.item_kwargs: list[dict[str, Any]] = []
+        #: ``create_text`` calls as (x, y, kwargs).
+        self.text_calls: list[tuple[int, int, dict[str, Any]]] = []
+        #: Items ``bbox`` was asked about, in order.
+        self.bbox_calls: list[Any] = []
+        self._item_geometry: dict[str, tuple[int, int, str]] = {}
         self.destroyed = 0
         #: Set by a test to run inside ``config``, which is the only call that
         #: can re-enter ``resize`` or raise out of it.
@@ -279,11 +300,44 @@ class _RecordingCanvas:
 
     def create_oval(self, *coordinates: Any, **kwargs: Any) -> str:
         self.item_calls.append(("oval", coordinates))
+        self.item_kwargs.append(dict(kwargs))
         return "oval"
 
     def create_rectangle(self, *coordinates: Any, **kwargs: Any) -> str:
         self.item_calls.append(("rectangle", coordinates))
+        self.item_kwargs.append(dict(kwargs))
         return "rectangle"
+
+    def create_text(self, x: Any, y: Any, **kwargs: Any) -> str:
+        """A text item, recorded so the badge's corner placement is checkable.
+
+        The item's geometry is remembered so ``bbox`` can answer for it: the
+        status badge has to be measured before its background box can be drawn
+        around it, and on a real Canvas that measurement is the only source.
+        """
+        text = str(kwargs.get("text", ""))
+        item = f"text{len(self.text_calls)}"
+        self.text_calls.append((int(x), int(y), dict(kwargs)))
+        self.item_calls.append(("text", (int(x), int(y))))
+        self.item_kwargs.append(dict(kwargs))
+        self._item_geometry[item] = (int(x), int(y), text)
+        return item
+
+    def bbox(self, item: Any) -> tuple[int, int, int, int] | None:
+        """The bounding box of a text item, one 8x16 cell per character.
+
+        Deterministic rather than font-metric accurate: the contract that needs
+        pinning is that the box *grows the measured rectangle by a fixed
+        margin*, and a hand-computable answer is what makes that checkable.
+        Returns ``None`` for an item it never made, which is what Tk answers for
+        an item with no extent.
+        """
+        self.bbox_calls.append(item)
+        geometry = self._item_geometry.get(item)
+        if geometry is None:
+            return None
+        x, y, text = geometry
+        return (x, y, x + 8 * len(text), y + 16)
 
     def destroy(self) -> None:
         self.destroyed += 1
@@ -1700,6 +1754,104 @@ def test_the_cursor_over_the_picture_follows_the_host_setting(
     assert not [c for c in attached.canvas.config_calls if "cursor" in c], (
         f"the surface set a cursor on the canvas: {attached.canvas.config_calls}"
     )
+
+
+# ===========================================================================
+# The status badge in the corner of the picture
+# ===========================================================================
+#
+# バッジは唯一「文字」を描く要素なので、フォント・文字色・背景色、そして
+# 文字を測って箱を作るという GDI 面と同じ語彙が要る。ここで押さえるのは
+# 2 つだけ: 「隠れているなら 1 つも作らない」と「映像の隅（Canvas ではなく
+# fit_rect の置かれた矩形）に載る」こと。色は COLORREF 0x00BBGGRR で受け、
+# Tk へ渡すときにバイト順を戻す。
+
+
+def _badge_overlay(text: str = BADGE_TEXT, visible: bool = True) -> Any:
+    """A visible overlay whose only component is the status badge."""
+    from core.preview_renderer import BadgeState, OverlayState
+
+    badge = BadgeState(
+        text=text,
+        background=BADGE_BACKGROUND,
+        foreground=BADGE_FOREGROUND,
+        visible=visible,
+    )
+    return OverlayState(badge=badge)
+
+
+def test_a_visible_badge_is_drawn_at_the_picture_corner_under_one_overlay_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a viewport of 1000x700 whose picture is 1000x563 at y=68, so the
+    # picture's top-left corner is (0, 68) and not the canvas origin.
+    attached = _attach(monkeypatch, size=(1000, 700))
+    width, height = _capture_size()
+    assert attached.surface._dest[:2] == (0, 68), attached.surface._dest
+
+    # When: an overlay carrying only a visible badge is composited and presented.
+    overlay = _badge_overlay()
+    composed = attached.surface.compose(_contiguous_frame(width, height), overlay)
+    assert composed.ok is True
+    assert attached.surface.present().ok is True
+
+    # Then: one text item, at the picture's corner plus the margin, carrying the
+    # overlay tag so the next recompose takes it down with everything else. An
+    # untagged item would survive ``delete("overlay")`` and a stale badge would
+    # outlive the state that put it there.
+    assert len(attached.canvas.text_calls) == 1, attached.canvas.text_calls
+    x, y, kwargs = attached.canvas.text_calls[0]
+    assert (x, y) == (4, 72), attached.canvas.text_calls
+    assert kwargs["text"] == BADGE_TEXT
+    assert kwargs["tags"] == "overlay"
+    assert kwargs["anchor"] == "nw"
+    # COLORREF 0x00BBGGRR ではなく #RRGGBB で渡る。バイト順を戻さない実装は
+    # 白を別の色にする（0x00FFFFFF なら同等性で見えないので注意）。
+    assert kwargs["fill"] == BADGE_FOREGROUND_HEX
+
+    # Then: and a background box under it, in the other colour. The rectangle is
+    # the FIRST of the two items so that it lands underneath the text: Tk paints
+    # in creation order, and lowering it afterwards would drop it below the
+    # video image.
+    drawn = [name for name, _coords in attached.canvas.item_calls]
+    assert drawn == ["rectangle", "text"]
+    rect_kwargs = attached.canvas.item_kwargs[0]
+    assert rect_kwargs["tags"] == "overlay"
+    assert rect_kwargs["fill"] == BADGE_BACKGROUND_HEX
+
+    # Then: and the box is sized from the measured text, grown by 4 px on every
+    # side. The double's bbox for a text item at (4, 72) holding 6 characters is
+    # (4, 72, 52, 88), so the box is (0, 68, 56, 92).
+    assert attached.canvas.bbox_calls, "the box was never measured"
+    moved = [call for call in attached.canvas.coords_calls if call[0] == "rectangle"]
+    assert moved, attached.canvas.coords_calls
+    assert moved[-1][1] == (0, 68, 56, 92), moved
+
+
+def test_a_hidden_or_empty_badge_creates_no_canvas_item_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an attached surface and the two ways a badge is not drawn.
+    from core.preview_renderer import OverlayState
+
+    attached = _attach(monkeypatch)
+    width, height = _capture_size()
+
+    # When: the all-default overlay and then a badge that is flagged visible but
+    # carries no text are both presented.
+    for overlay in (
+        OverlayState(),
+        _badge_overlay(text="", visible=True),
+    ):
+        assert attached.surface.compose(_contiguous_frame(width, height), overlay).ok
+        assert attached.surface.present().ok is True
+
+    # Then: no text item and no background box. The fallback surface rebuilds its
+    # overlay every present, so a badge that drew an empty item would put one on
+    # screen per frame forever.
+    assert attached.canvas.text_calls == []
+    assert attached.canvas.bbox_calls == []
+    assert attached.canvas.item_calls == [], attached.canvas.item_calls
 
 
 # ===========================================================================

@@ -67,6 +67,18 @@ _WHITE = 0x00FFFFFF
 # the pen cache is provably growing because the colour changed.
 _RECOGNITION = 0x00A0C0E0
 _RECOGNITION_CHANGED = 0x0000FF00
+# The badge fixture: Win32 COLORREFs for the status badge, the text it carries,
+# and the three font parameters CreateFontW is driven with. ``FW_BOLD`` and
+# ``DEFAULT_CHARSET`` come from wingdi.h; the face is the one the design names.
+_BADGE_TEXT = "▶ 自動孵化"
+_BADGE_BACKGROUND = 0x00303030
+_BADGE_FOREGROUND = 0x00FFFFFF
+_BADGE_FACE = "Yu Gothic UI"
+_BADGE_WEIGHT = 700  # FW_BOLD
+_BADGE_CHARSET = 1  # DEFAULT_CHARSET
+# ``SetBkMode`` の TRANSPARENT。背景矩形のBrush ではなく矩形そのものの色を
+# 文字が消さないための設定で、Win32 は 1 を返す。
+_TRANSPARENT = 1
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CORE = _ROOT / "SerialController" / "core"
@@ -172,6 +184,21 @@ class PenRequest:
 @dataclass(frozen=True, slots=True)
 class BrushRequest:
     color: int
+
+
+@dataclass(frozen=True, slots=True)
+class FontRequest:
+    """The three parameters ``CreateFontW`` is driven with.
+
+    ``height`` is stored as the *signed* value production passes, because the
+    sign is the contract: a negative ``cHeight`` asks GDI for the character
+    height rather than the cell height, and a double that normalised the sign
+    would let a positive-height implementation pass.
+    """
+
+    height: int
+    weight: int
+    face: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +344,17 @@ class RecordingGdiApi:
         self.brush_calls: list[BrushRequest] = []
         self.brush_handles: list[int] = []
         self.hollow_brush_handles: list[int] = []
+        self.font_calls: list[FontRequest] = []
+        self.font_handles: list[int] = []
+        #: Each font handle's character height, so ``get_text_extent`` can answer
+        #: a width derived from the font that is actually selected. Recording the
+        #: height is what makes the badge's background box checkable by hand
+        #: instead of by a magic constant.
+        self._font_heights: dict[int, int] = {}
+        self.text_extent_calls: list[tuple[int, str]] = []
+        self.bk_mode_calls: list[tuple[int, int]] = []
+        self.text_color_calls: list[int] = []
+        self.text_out_calls: list[tuple[int, int, int, str]] = []
         self.ellipse_calls: list[ShapeRequest] = []
         self.rectangle_calls: list[ShapeRequest] = []
         self.bit_blt_calls: list[BitBltRequest] = []
@@ -333,8 +371,13 @@ class RecordingGdiApi:
         self.delete_dc_calls: list[int] = []
         self.delete_object_calls: list[int] = []
         self._next_handle = 0x1000
-        self._previously_selected = 0xDEAD_BEEF
         self._clip_box = clip_box
+        # What kind of GDI object each handle is. Win32 keeps the pen, the brush
+        # and the font as three *independent* selections on a DC, and
+        # SelectObject answers the previous object **of the same kind**, so the
+        # bookkeeping has to be per (DC, kind) rather than per DC.
+        self._handle_kinds: dict[int, str] = {}
+        self._selected: dict[tuple[int, str], int] = {}
         self._client_rect = (0, 0, client_size[0], client_size[1])
         self._dc_by_hwnd: dict[int, int] = {}
         # Handles currently held from a GetDC. Win32 hands out an invalid DC
@@ -465,6 +508,7 @@ class RecordingGdiApi:
             bi_height=header.bi_height,
             bi_bit_count=header.bi_bit_count,
         )
+        self._handle_kinds[section.hbitmap] = "bitmap"
         self.dib_sections.append(section)
         return section
 
@@ -485,7 +529,14 @@ class RecordingGdiApi:
     def select_object(self, hdc: int, obj: int) -> int:
         self._record("select_object", hdc, obj)
         self.select_object_calls.append((hdc, obj))
-        return self._previously_selected
+        # Win32 answers the object of the same kind that was selected until now.
+        # That is how a caller puts back whatever it found; a single slot per DC
+        # would answer the badge's brush for a font question and hide a missing
+        # restore.
+        key = (hdc, self._handle_kinds.get(obj, "object"))
+        previous = self._selected.get(key, 0)
+        self._selected[key] = obj
+        return previous
 
     def set_window_pos(
         self,
@@ -515,12 +566,14 @@ class RecordingGdiApi:
         self._record("create_pen", style, width, color)
         self.pen_calls.append(PenRequest(style, width, color))
         handle = self._new_handle()
+        self._handle_kinds[handle] = "pen"
         self.pen_handles.append(handle)
         return handle
 
     def create_hollow_brush(self) -> int:
         self._record("create_hollow_brush")
         handle = self._new_handle()
+        self._handle_kinds[handle] = "brush"
         self.hollow_brush_handles.append(handle)
         return handle
 
@@ -528,8 +581,50 @@ class RecordingGdiApi:
         self._record("create_solid_brush", color)
         self.brush_calls.append(BrushRequest(color))
         handle = self._new_handle()
+        self._handle_kinds[handle] = "brush"
         self.brush_handles.append(handle)
         return handle
+
+    def create_font(self, height: int, weight: int, face: str) -> int:
+        self._record("create_font", height, weight, face)
+        self.font_calls.append(FontRequest(height, weight, face))
+        handle = self._new_handle()
+        self._handle_kinds[handle] = "font"
+        self.font_handles.append(handle)
+        self._font_heights[handle] = abs(int(height))
+        return handle
+
+    def get_text_extent(self, hdc: int, text: str) -> tuple[int, int]:
+        """The size of ``text`` in the font currently selected into ``hdc``.
+
+        Deterministic instead of measured: half the character height per
+        character, and the height itself. A real ``GetTextExtentPoint32W``
+        depends on font metrics and hinting this double cannot know, so the
+        width is derived from the one value the surface chose -- which is what
+        the badge's background box contract is actually about.
+        """
+        self._record("get_text_extent", hdc, text)
+        self.text_extent_calls.append((hdc, text))
+        selected = self._selected.get((hdc, "font"), 0)
+        em = self._font_heights.get(selected, 16)
+        return (len(text) * em // 2, em)
+
+    def set_bk_mode(self, hdc: int, mode: int) -> int:
+        self._record("set_bk_mode", hdc, mode)
+        self.bk_mode_calls.append((hdc, mode))
+        # The previous mode. OPAQUE (2) is the DC default, so a caller that
+        # never restored it would find 2 here.
+        return 2
+
+    def set_text_color(self, hdc: int, color: int) -> int:
+        self._record("set_text_color", hdc, color)
+        self.text_color_calls.append(color)
+        return 0
+
+    def text_out(self, hdc: int, x: int, y: int, text: str) -> bool:
+        self._record("text_out", hdc, x, y, text)
+        self.text_out_calls.append((hdc, x, y, text))
+        return True
 
     def ellipse(self, hdc: int, left: int, top: int, right: int, bottom: int) -> bool:
         self._record("ellipse", hdc, left, top, right, bottom)
@@ -733,6 +828,15 @@ class RecordingGdiApi:
     def all_brush_handles(self) -> tuple[int, ...]:
         return (*self.brush_handles, *self.hollow_brush_handles)
 
+    def selected_object(self, hdc: int, kind: str) -> int:
+        """What of ``kind`` ("bitmap"/"pen"/"brush"/"font") the DC holds now.
+
+        The stateful half of :meth:`select_object`. A test needs it to ask "did
+        the surface put my font back?", which the call log alone cannot answer
+        because the last ``select_object`` may have selected a brush.
+        """
+        return self._selected.get((hdc, kind), 0)
+
     def created_object_handles(self) -> tuple[int, ...]:
         """Every GDI object handle handed out, in creation order.
 
@@ -740,13 +844,16 @@ class RecordingGdiApi:
         SelectObject することを要求し、test_attach_issues_the_creation_
         sequence_in_order がその呼び出しを固定する。HBITMAP を漏らすと
         「選択される GDI オブジェクトは全て生成済み」という検査と
-        互いに矛盾し、どの実装も両方を満たせない。
+        互いに矛盾し、どの実装も両方を満たせない。バッジのフォントも
+        選択対象なのでここに入，否则「選択は生成済み」という検査を
+        静かに壊す。
         """
         return (
             *(section.hbitmap for section in self.dib_sections),
             *self.pen_handles,
             *self.brush_handles,
             *self.hollow_brush_handles,
+            *self.font_handles,
         )
 
     def set_client_rect(self, size: tuple[int, int]) -> None:
@@ -1076,6 +1183,7 @@ def test_overlay_state_types_are_frozen_slotted_with_documented_defaults() -> No
     module = _renderer_module()
     stick, rect = module.StickState, module.RectState
     img_rect, overlay = module.ImgRectState, module.OverlayState
+    badge = module.BadgeState
 
     # Then: each is frozen, slotted, and carries the documented field order.
     # StickState is absolute, not an offset model, so the ring can stay put while
@@ -1085,7 +1193,12 @@ def test_overlay_state_types_are_frozen_slotted_with_documented_defaults() -> No
     )
     _assert_frozen_slotted(rect, ("x0", "y0", "x1", "y1", "visible"))
     _assert_frozen_slotted(img_rect, ("outer", "inner", "visible", "color"))
-    _assert_frozen_slotted(overlay, ("left_stick", "right_stick", "guide", "img_rect"))
+    _assert_frozen_slotted(badge, ("text", "background", "foreground", "visible"))
+    # ``badge`` は最後。設計が名指しする 4 成分の後に足すので、既存の位置引数
+    # で OverlayState(...) を作る呼び出しには影響しない。
+    _assert_frozen_slotted(
+        overlay, ("left_stick", "right_stick", "guide", "img_rect", "badge")
+    )
 
     # Then: every field default is the design's zero / inactive value.
     assert stick() == module.StickState(False, 0, 0, 0, 0, 0)
@@ -1102,6 +1215,14 @@ def test_overlay_state_types_are_frozen_slotted_with_documented_defaults() -> No
     assert empty.img_rect.outer == rect()
     assert empty.img_rect.inner == rect()
 
+    # Then: and the badge is invisible and empty by default, so an area that
+    # never calls setBadge draws nothing at all.
+    assert empty.badge == badge()
+    assert empty.badge.visible is False
+    assert empty.badge.text == ""
+    assert empty.badge.background == _BADGE_BACKGROUND
+    assert empty.badge.foreground == _BADGE_FOREGROUND
+
     # When/Then: every component refuses attribute assignment.
     components = (
         empty.left_stick,
@@ -1110,6 +1231,7 @@ def test_overlay_state_types_are_frozen_slotted_with_documented_defaults() -> No
         empty.img_rect,
         empty.img_rect.outer,
         empty.img_rect.inner,
+        empty.badge,
     )
     for component in components:
         first_field = dataclasses.fields(component)[0].name
@@ -2416,6 +2538,176 @@ def test_full_overlay_issues_all_seven_shapes_in_the_documented_order() -> None:
     assert len(api.ellipse_calls) == 4
     assert len(api.rectangle_calls) == 3
     assert all(call.hdc == api.memory_dc for call in api.rectangle_calls)
+
+
+# ===========================================================================
+# B (continued). The status badge in the corner of the picture
+# ===========================================================================
+#
+# The badge is the one overlay component that carries *text*, so it is also the
+# only one that needs a font, a text colour, a background mode and a measured
+# width. Two properties are load-bearing and neither is visible in a shape
+# count:
+#
+# * **Nothing at all when hidden.** An area that never sets a badge must not pay
+#   for one: no CreateFontW per frame, no TextOutW, not one extra GDI handle.
+# * **A constant look at any viewport.** The back buffer is capture-sized, so
+#   the badge has to be drawn in capture coordinates scaled by the *inverse* of
+#   the display scale, or it would be microscopic in a 640x360 window and
+#   gigantic in a 2560x1440 one.
+
+
+def _badge_overlay(module: Any, *, text: str = _BADGE_TEXT, **kwargs: Any) -> Any:
+    """A visible overlay whose only component is the status badge."""
+    badge = module.BadgeState(text=text, visible=True, **kwargs)
+    return module.OverlayState(badge=badge)
+
+
+def _badge_brushes_for(api: RecordingGdiApi, color: int) -> list[int]:
+    """Every solid brush the double created for ``color``, in creation order."""
+    return [
+        handle
+        for handle, call in zip(api.brush_handles, api.brush_calls)
+        if call.color == color
+    ]
+
+
+def test_an_invisible_or_empty_badge_issues_no_font_no_measure_and_no_text() -> None:
+    # Given: an attached surface and the two ways a badge can be "not drawn" --
+    # the all-default badge, and a badge whose text is empty but whose visible
+    # flag somebody forgot to clear.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+    surface = _attached(api, module)
+    overlays = (
+        module.OverlayState(),
+        module.OverlayState(
+            badge=module.BadgeState(text="", visible=True, background=_BADGE_BACKGROUND)
+        ),
+    )
+
+    # When: each is composited.
+    for overlay in overlays:
+        assert surface.compose(_frame(720, 1280), overlay).ok is True
+
+    # Then: not one font is created, no width is measured and no glyph is
+    # emitted, so an area that never reports a state costs nothing per frame.
+    assert api.font_calls == []
+    assert api.font_handles == []
+    assert api.text_extent_calls == []
+    assert api.text_out_calls == []
+
+    # Then: and the shape log stays empty too -- a badge must not turn into a
+    # stray rectangle just because its text was blank.
+    assert api.rectangle_calls == []
+    assert api.ellipse_calls == []
+
+
+def test_a_visible_badge_is_drawn_at_the_same_look_at_half_and_full_scale() -> None:
+    # Given: two attached surfaces, one at half the capture width and one at
+    # exactly the capture width, both carrying the same visible badge.
+    module = _fresh_surface_module()
+
+    # When: the half-size viewport (640x360 over a 1280x720 capture, so the
+    # display scale is 0.5) composes it.
+    half_api = RecordingGdiApi()
+    half = _attached(half_api, module, size=(640, 360))
+    badge_overlay = _badge_overlay(module)
+    assert half.compose(_frame(720, 1280), badge_overlay).ok is True
+
+    # Then: every size is computed in capture coordinates by dividing the
+    # display size out, so the badge *looks* 16 px tall on screen at scale 0.5
+    # it was authored at 32 capture px: font height round(16 / 0.5) = 32, padding
+    # round(4 / 0.5) = 8, and the text sits at (pad * 2, pad * 2) = (16, 16).
+    assert half_api.font_calls == [
+        FontRequest(height=-32, weight=_BADGE_WEIGHT, face=_BADGE_FACE)
+    ]
+    assert half_api.text_out_calls == [(half_api.memory_dc, 16, 16, _BADGE_TEXT)]
+
+    # Then: and the width is measured with the font that was just selected --
+    # GetTextExtentPoint32W reads the DC's font, so measuring before selecting
+    # would size the box from the stock font instead. The double answers half
+    # the character height per character, so 6 chars at 32 px is 96.
+    assert half_api.text_extent_calls == [(half_api.memory_dc, _BADGE_TEXT)]
+    assert half_api.rectangle_calls == [
+        ShapeRequest(half_api.memory_dc, 8, 8, 8 + 16 + 96, 8 + 16 + 32)
+    ]
+
+    # Then: and the text is drawn transparent in its own colour, because the
+    # background is a painted rectangle rather than a GDI brush behind glyphs.
+    assert half_api.bk_mode_calls == [(half_api.memory_dc, _TRANSPARENT)]
+    assert half_api.text_color_calls == [_BADGE_FOREGROUND]
+
+    # Then: and that rectangle is filled with the requested background, which
+    # the surface caches per colour exactly as it caches the knob brushes.
+    assert len(_badge_brushes_for(half_api, _BADGE_BACKGROUND)) == 1
+
+    # When: the same badge is composited at exactly the capture size.
+    full_api = RecordingGdiApi()
+    full = _attached(full_api, module)
+    assert full.compose(_frame(720, 1280), badge_overlay).ok is True
+
+    # Then: the font halves and the padding halves with it, so the badge covers
+    # half the capture area and still occupies the same share of the screen.
+    # The on-screen text origin is 8 px from the corner in both cases' terms:
+    # 16 capture px at 0.5 and 8 capture px at 1.0.
+    assert full_api.font_calls == [
+        FontRequest(height=-16, weight=_BADGE_WEIGHT, face=_BADGE_FACE)
+    ]
+    assert full_api.text_out_calls == [(full_api.memory_dc, 8, 8, _BADGE_TEXT)]
+    assert full_api.rectangle_calls == [
+        ShapeRequest(full_api.memory_dc, 4, 4, 4 + 8 + 48, 4 + 8 + 16)
+    ]
+
+
+def test_a_repeated_badge_font_is_created_once_and_freed_with_the_surface() -> None:
+    # Given: an attached surface whose badge is composited three times over, at
+    # a viewport whose font height does not change between the frames.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+    surface = _attached(api, module, size=(640, 360))
+    overlay = _badge_overlay(module)
+
+    # When: the same overlay is composited again and again.
+    for _ in range(3):
+        assert surface.compose(_frame(720, 1280), overlay).ok is True
+
+    # Then: exactly one font and one background brush exist. CreateFontW per
+    # frame would burn a GDI handle per frame, which is the failure the pen and
+    # brush caches already exist to prevent.
+    assert api.font_calls == [
+        FontRequest(height=-32, weight=_BADGE_WEIGHT, face=_BADGE_FACE)
+    ]
+    assert len(api.font_handles) == 1
+    assert len(_badge_brushes_for(api, _BADGE_BACKGROUND)) == 1
+
+    # Then: and both are released, or a face that is opened and closed a hundred
+    # times would leave a hundred handles behind for the process lifetime.
+    surface.release()
+    released = set(api.delete_object_calls)
+    assert set(api.font_handles) <= released
+    assert set(_badge_brushes_for(api, _BADGE_BACKGROUND)) <= released
+
+
+def test_the_badge_puts_the_font_it_found_back_into_the_memory_dc() -> None:
+    # Given: an attached surface whose memory DC already carries a font of the
+    # caller's own, so "put back" has something observable to put back.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+    surface = _attached(api, module, size=(640, 360))
+    stock = api.create_font(height=-11, weight=400, face="Arial")
+    api.select_object(api.memory_dc, stock)
+    assert api.selected_object(api.memory_dc, "font") == stock
+
+    # When: the badge is drawn.
+    assert surface.compose(_frame(720, 1280), _badge_overlay(module)).ok is True
+
+    # Then: the DC's font is the one it had before. SelectObject answers the
+    # previous object of the same kind precisely so this is possible, and a
+    # private font left behind would change anything drawn into the same DC
+    # after the badge.
+    assert api.selected_object(api.memory_dc, "font") == stock
+    assert api.font_handles[-1] != stock, "the badge reused the caller's font"
 
 
 def test_static_gdi_objects_are_created_once_at_attach_and_never_per_frame() -> None:

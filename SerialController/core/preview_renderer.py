@@ -84,6 +84,30 @@ class ImgRectState:
 
 
 @dataclass(frozen=True, slots=True)
+class BadgeState:
+    """プレビュー左上の状態表示。
+
+    複数台を並べて起動したときに、ログ欄を見ずに各台が動いているか /
+    止まっているかが分かるようにするための枠。**何を入れるか・いつ入れ
+    替えるかは呼び出し側の責務**で、この型は「渡されたものを描く」こと
+    しかしない。
+
+    ``background`` と ``foreground`` は Tk の色名ではなく Win32
+    ``COLORREF`` (0x00BBGGRR)。``ImgRectState.color`` と同じく Tk とは
+    バイト順が逆なので、Tk へ渡す実装は自前で戻す責務を
+    負う。
+
+    既定は空・非表示。状態を出さない面が空の箱を描かないよう、
+    ``visible`` の既定は ``False``。
+    """
+
+    text: str = ""
+    background: int = 0x00303030  # Win32 COLORREF (0x00BBGGRR)
+    foreground: int = 0x00FFFFFF  # Win32 COLORREF
+    visible: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class OverlayState:
     """1 フレーム分のオーバーレイ。不変なので中途半端な更新は現れない。"""
 
@@ -91,6 +115,7 @@ class OverlayState:
     right_stick: StickState = StickState()
     guide: RectState = RectState()
     img_rect: ImgRectState = ImgRectState()
+    badge: BadgeState = BadgeState()
 
 
 @runtime_checkable

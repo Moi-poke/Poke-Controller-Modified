@@ -37,6 +37,7 @@ from core.coordinates import CoordinateMapper, fit_rect
 from core.gdi_surface import GdiSurface
 from core.preview_renderer import (
     TK_COLORREF,
+    BadgeState,
     ImgRectState,
     OverlayState,
     PreviewRenderer,
@@ -448,6 +449,9 @@ class CaptureArea(tk.Frame):
         self._stick_right = StickState()
         self._guide = RectState()
         self._img_rect = ImgRectState()
+        # 左上の状態バッジ。他の成分と同じ不変値で、setBadge が差し替える
+        # だけ。初期値は非表示なので、状態を出さない面が黒い箱を描かない。
+        self._badge = BadgeState()
         self._allocBuffers()
 
         # 映像面。子窓は Frame の HWND に作る（設計 6節）。Windows は
@@ -564,7 +568,26 @@ class CaptureArea(tk.Frame):
             right_stick=self._stick_right,
             guide=self._guide,
             img_rect=self._img_rect,
+            badge=self._badge_state(),
         )
+
+    def _badge_state(self) -> BadgeState:
+        """バッジの状態。__init__ が _badge を入れないインスタンスには既定を 1 個返す。
+
+        ``__new__`` だけで組み立てる検査用のインスタンスのための経路で、
+        実機では __init__ が必ず _badge を入れるのでここには来ない。
+
+        **既定を読み出すたびに新しいインスタンスを返してはならない。**
+        _drawFrame の「オーバーレイが変わったか」は各成分の同一性（``is``）で
+        判定するので、毎回新しい BadgeState だと「ずっと変化した」と読まれ、
+        静止したウィンドウが毎フレーム recompose される（そして recompose を
+        持たない面では AttributeError になる）。一度作ったらインスタンスに
+        残す。
+        """
+        badge = getattr(self, "_badge", None)
+        if badge is None:
+            badge = self._badge = BadgeState()
+        return badge
 
     @property
     def surface(self) -> PreviewRenderer:
@@ -840,6 +863,7 @@ class CaptureArea(tk.Frame):
             and overlay.right_stick is last_overlay.right_stick
             and overlay.guide is last_overlay.guide
             and overlay.img_rect is last_overlay.img_rect
+            and overlay.badge is last_overlay.badge
         )
         if same_frame and same_overlay:
             return False
@@ -1618,6 +1642,50 @@ class CaptureArea(tk.Frame):
         """ImgRect で描いた枠を隠す（状態は残すので同じ枠を使い回せる）。"""
         self._rect_after_id = None
         self._img_rect = replace(self._img_rect, visible=False)
+
+    # ------------------------------------------------------------------
+    # 左上の状態バッジ
+    # ------------------------------------------------------------------
+    def setBadge(
+        self,
+        text: str,
+        background: int,
+        foreground: int = 0x00FFFFFF,
+    ) -> None:
+        """プレビュー左上に描く状態バッジを差し替える。
+
+        「何をいつ入れるか」は呼び出し側の責務で、このメソッドは渡された文字列と
+        色を renderer へ渡すだけ。色は Win32 ``COLORREF`` (0x00BBGGRR) で、
+        Tk の色名ではない。
+
+        **内容が同じなら何もしない。** ``_drawFrame`` はオーバーレイの変化を
+        各成分の同一性 (``is``) で判定するので、同じ内容の BadgeState を作り
+        直すと「変化した」と読まれ、静止している窓が毎フレーム recompose される。
+        状態ポーラが同じ状態を返し続けるのは正常なので、ここで新しい
+        インスタンスを作ってはならない。
+        """
+        current = self._badge_state()
+        if (
+            current.text == text
+            and current.background == background
+            and current.foreground == foreground
+        ):
+            return
+        self._badge = BadgeState(
+            text=text,
+            background=background,
+            foreground=foreground,
+            # 空文字は「何も言わない」。描かせないので visible は False に
+            # なる。文字だけ持った空のバッジは、測定結果が 0 で箱だけが
+            # 描かれる壊れた表示になる。
+            visible=bool(text),
+        )
+
+    def clearBadge(self) -> None:
+        """バッジを消す。既に非表示なら何もしない（非表示も一種の状態）。"""
+        if not self._badge_state().visible:
+            return
+        self._badge = BadgeState()
 
     # ------------------------------------------------------------------
     # バインド管理

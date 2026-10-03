@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image, ImageTk
 from core.Camera import CAPTURE_SIZE
 from core.coordinates import fit_rect
-from core.preview_renderer import TK_COLORREF, OverlayState, RenderResult
+from core.preview_renderer import TK_COLORREF, BadgeState, OverlayState, RenderResult
 from loguru import logger
 
 # The reverse of the single authored table, derived rather than written out
@@ -36,6 +36,15 @@ _NAME_BY_COLORREF: Final[dict[int, str]] = {
 #: 大きくすると余白の分まで変換・転送になるので、余白は Canvas 側に持たせる。
 CANVAS_BACKGROUND = "black"
 
+#: バッジ（プレビュー左上の状態表示）の位置と見た目。GDI 面が「表示面 1:1 で
+#: 16 px の文字・4 px の余白」を描くのに対し、この面は表示座標にそのまま
+#: 11 pt のフォントで描く（Canvas は既に表示座標なので換算が要らない）。
+#: 背景の箱は文字を測ってから作ると必ず文字より上に来てしまう。
+#: Tk は作成した順に描くので、箱を先に空で作り、測れた位置へ後から移す。
+_BADGE_MARGIN = 4
+_BADGE_PAD = 4
+_BADGE_FONT: Final[tuple[str, int, str]] = ("Yu Gothic UI", 11, "bold")
+
 #: host の束縛のうち Canvas へ転送してよい種類。ポインタとキーだけであり、
 #: Tk が host 自身に擎げる構造・hover・focus 系は名指ししない。除外表は
 #: 書いた者が覚えている物しか載らないが、許可表は載せない物を運ばない。
@@ -47,6 +56,20 @@ _FORWARDABLE_KINDS: Final[tuple[str, ...]] = (
     "Key",
     "KeyRelease",
 )
+
+
+def _color_hex(colorref: int) -> str:
+    """Win32 ``COLORREF`` (0x00BBGGRR) を Tk の ``#RRGGBB`` へ変換する。
+
+    バイト位置が逆なので、そのまま hex にすると赤と青が入れ替わる
+    （0x00303030 はどちらでも同じ灰だが、赤系の色では目に見える）。
+    ``TK_COLORREF`` と同じ境界の逆向き処理で、名前表に無い色（バッジの
+    背景色など）にも使える。
+    """
+    red = colorref & 0xFF
+    green = (colorref >> 8) & 0xFF
+    blue = (colorref >> 16) & 0xFF
+    return f"#{red:02X}{green:02X}{blue:02X}"
 
 
 def _is_forwardable(sequence: str) -> bool:
@@ -532,6 +555,57 @@ class PhotoImageSurface:
                 outline=self._color_name(rect.color),
                 tags="overlay",
             )
+        badge = overlay.badge
+        if badge.visible and badge.text:
+            self._draw_badge(badge)
+
+    def _draw_badge(self, badge: BadgeState) -> None:
+        """プレビュー左上に状態バッジを描く。GDI 面の _draw_badge と同じ役目。
+
+        Canvas へ描くので表示座標そのままで、GDI のバックバッファのような
+        倍率換算はない。映像の置かれた矩形の左上へ _BADGE_MARGIN だけ
+        内側に置く。画像項目の上ではなく映像の左上なのは、画像が余白の中央
+        に寄っていても、見えるのは常に「映像の隅」になるから。
+
+        背景の箱は**先に空で作って**、文字を測ってから位置を移す。逆順
+        （測ってから箱を作る）だと必ず文字より上に来て、状態表示が読め
+        なくなる。Tk は項目の重なり順を直接指定する API が無いので、
+        作る順で決めるしかない。
+        """
+        x = self._dest[0] + _BADGE_MARGIN
+        y = self._dest[1] + _BADGE_MARGIN
+        # 箱を先に作る。座標は後で指定するので、ここでは潰れた箱になる。
+        background = self._canvas.create_rectangle(
+            x,
+            y,
+            x,
+            y,
+            fill=_color_hex(badge.background),
+            outline="",
+            tags="overlay",
+        )
+        item = self._canvas.create_text(
+            x,
+            y,
+            text=badge.text,
+            fill=_color_hex(badge.foreground),
+            anchor="nw",
+            font=_BADGE_FONT,
+            tags="overlay",
+        )
+        box = self._canvas.bbox(item)
+        if box is None:
+            # 文字の外接矩形が取れなかった。箱は潰れたまま残し、何も見せない。
+            self._canvas.coords(background, x, y, x, y)
+            return
+        left, top, right, bottom = box
+        self._canvas.coords(
+            background,
+            left - _BADGE_PAD,
+            top - _BADGE_PAD,
+            right + _BADGE_PAD,
+            bottom + _BADGE_PAD,
+        )
 
     @staticmethod
     def _color_name(colorref: int) -> str:

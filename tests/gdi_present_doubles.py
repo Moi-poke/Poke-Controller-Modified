@@ -405,8 +405,8 @@ def bare_capture_area(
     * ``_surface``          -- the ``PreviewRenderer`` that owns the present path
     * ``_viewport``         -- the display box the surface was last sized to
     * ``_stick_radius``     -- ``radius`` in capture units
-    * ``_stick_left`` / ``_stick_right`` / ``_guide`` / ``_img_rect`` -- the four
-      design-named ``OverlayState`` components
+    * ``_stick_left`` / ``_stick_right`` / ``_guide`` / ``_img_rect`` / ``_badge``
+      -- the design-named ``OverlayState`` components
     * ``_disabled``         -- the BGR disabled image
     * ``_filter_buf`` / ``_correct_buf`` -- the BGR filter/correction work buffers
     * ``_last_frame_seq``   -- the same-seq skip key
@@ -479,6 +479,10 @@ def bare_capture_area(
     area._stick_right = defaults.right_stick
     area._guide = defaults.guide
     area._img_rect = defaults.img_rect
+    # バッジも他のオーバーレイ成分と同じ「差し替えられた不変値」。ここが
+    # 無ければ CaptureArea.overlay が読む self._badge が無いだけで、他の
+    # どの契約も壊れない。Fixture は契約の定義に限る。
+    area._badge = defaults.badge
     area._disabled = disabled_frame(width, height)
 
     for name, method in (

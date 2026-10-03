@@ -4,7 +4,7 @@
 6節・7節・11節。動画とオーバーレイは同じ面に描く。子窓は親の絵より常に上
 に合成されるので、Canvas を透かす手は使えない（0節）。
 
-このファイルは 2 ファイル制約のため、26 メソッドの api 契約・ctypes 実装・
+このファイルは 2 ファイル制約のため、31 メソッドの api 契約・ctypes 実装・
 面の本体を同居させている。
 """
 
@@ -21,6 +21,7 @@ import numpy as np
 from core.Camera import CAPTURE_SIZE
 from core.coordinates import fit_rect
 from core.preview_renderer import (
+    BadgeState,
     ImgRectState,
     OverlayState,
     RectState,
@@ -79,6 +80,25 @@ _GUIDE_STROKE_WIDTH = 1
 _RING_STROKE_WIDTH = 1
 # 3 バイトが同じなので、COLORREF でも Tk 内部形でも同じ値になる。
 _WHITE = 0x00FFFFFF
+# バッジ（プレビュー左上の状態表示）。文字サイズと余白は「表示面 1:1 で
+# 16 px / 4 px」と決めておき、バックバッファ（キャプチャ座標）へ描くとき
+# は表示倍率の逆数を掛けて大きくする。表示面が小さいほどキャプチャ座標での
+# 値は大きくなり、見えている大きさは変わらない。
+_BADGE_FACE = "Yu Gothic UI"
+_BADGE_WEIGHT = 700  # FW_BOLD
+_BADGE_CHARSET = 1  # DEFAULT_CHARSET
+_BADGE_QUALITY = 5  # CLEARTYPE_QUALITY
+_BADGE_FONT_PX = 16
+_BADGE_MIN_FONT_PX = 12
+_BADGE_PAD_PX = 4
+_BADGE_MIN_PAD = 2
+# Rectangle はペンで縁を引く。背景と同色のペンを選べば塗りだけになり、
+# BadgeState に「枠の色」を持たせる必要がなくなる。
+_BADGE_STROKE_WIDTH = 1
+# wingdi.h の TRANSPARENT。これを指定しないと文字の背後の塗りを取り除いて
+# しまい、背景矩形が文字ごと飛び出す。背景は DC の色ではなく自分で矩形で
+# 塗るので、SetBkMode は旧値を返すだけ。
+_BKMODE_TRANSPARENT = 1
 # 起動時の自己検査で書き込む値。B と R が同じなので、DIB のメモリ順と COLORREF
 # のバイト位置が食い違っても同じ値として読み戻る。sentinel の役割は「読めた
 # か」だけなので、色順の検証には使わない。
@@ -145,7 +165,7 @@ class SelfTestResult:
 
 
 class GdiSurfaceApi(Protocol):
-    """``GdiSurface`` が Win32 に触る唯一の口。26 メソッドが全部。"""
+    """``GdiSurface`` が Win32 に触る唯一の口。31 メソッドが全部。"""
 
     def set_process_dpi_aware(self) -> bool: ...
 
@@ -196,6 +216,16 @@ class GdiSurfaceApi(Protocol):
     def create_hollow_brush(self) -> int: ...
 
     def create_solid_brush(self, color: int) -> int: ...
+
+    def create_font(self, height: int, weight: int, face: str) -> int: ...
+
+    def get_text_extent(self, hdc: int, text: str) -> tuple[int, int]: ...
+
+    def set_bk_mode(self, hdc: int, mode: int) -> int: ...
+
+    def set_text_color(self, hdc: int, color: int) -> int: ...
+
+    def text_out(self, hdc: int, x: int, y: int, text: str) -> bool: ...
 
     def ellipse(
         self, hdc: int, left: int, top: int, right: int, bottom: int
@@ -306,6 +336,12 @@ class _RECT(ctypes.Structure):
         ("right", ctypes.c_long),
         ("bottom", ctypes.c_long),
     ]
+
+
+class _SIZE(ctypes.Structure):
+    """``GetTextExtentPoint32W`` が文字幅を書き戻す先。wingdi.h の SIZE。"""
+
+    _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
 
 
 def _as_handle(value: int | None) -> int:
@@ -428,6 +464,58 @@ class CtypesGdiApi:
         self._create_solid_brush = gdi32.CreateSolidBrush
         self._create_solid_brush.argtypes = [ctypes.c_ulong]
         self._create_solid_brush.restype = ctypes.c_void_p
+
+        # CreateFontW の引数は 13 個。cHeight は負にすると「文字の高さ」で
+        # 解釈される（セル高さではない）ので、ここでも負を渡す。返り値は
+        # HFONT なので 64 ビットまで受け取れる必要がある。
+        self._create_font = gdi32.CreateFontW
+        self._create_font.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_wchar_p,
+        ]
+        self._create_font.restype = ctypes.c_void_p
+
+        # 文字数は wchar の個数。Python の str は BMP なら len() がそのまま
+        # 個数になるので、これ以上の変換はしない（要らなければ静かに短くなる）。
+        self._text_out = gdi32.TextOutW
+        self._text_out.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_wchar_p,
+            ctypes.c_int,
+        ]
+        self._text_out.restype = ctypes.c_int
+
+        self._get_text_extent = gdi32.GetTextExtentPoint32W
+        self._get_text_extent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_int,
+            ctypes.POINTER(_SIZE),
+        ]
+        self._get_text_extent.restype = ctypes.c_int
+
+        # どちらも「旧値」を返す。戻り値を捨てても描画はできるが、
+        # 元に戻すなら必要な値なので restype を整数(uint カラー)で持つ。
+        self._set_bk_mode = gdi32.SetBkMode
+        self._set_bk_mode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._set_bk_mode.restype = ctypes.c_int
+
+        self._set_text_color = gdi32.SetTextColor
+        self._set_text_color.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self._set_text_color.restype = ctypes.c_ulong
 
         self._get_stock_object = gdi32.GetStockObject
         self._get_stock_object.argtypes = [ctypes.c_int]
@@ -639,6 +727,42 @@ class CtypesGdiApi:
     def create_solid_brush(self, color: int) -> int:
         return _as_handle(self._create_solid_brush(color))
 
+    def create_font(self, height: int, weight: int, face: str) -> int:
+        return _as_handle(
+            self._create_font(
+                height,
+                0,  # cWidth: 0 は「既定」
+                0,  # cEscapement
+                0,  # cOrientation
+                weight,
+                0,  # fdwUnderline
+                0,  # fdwStrikeOut
+                _BADGE_CHARSET,
+                0,  # fdwOutputPrecision: OUT_DEFAULT_PRECIS
+                0,  # fdwClipPrecision: CLIP_DEFAULT_PRECIS
+                _BADGE_QUALITY,
+                0,  # fdwPitchAndFamily: DEFAULT_PITCH | FF_DONTCARE
+                face,
+            )
+        )
+
+    def get_text_extent(self, hdc: int, text: str) -> tuple[int, int]:
+        size = _SIZE()
+        if not self._get_text_extent(hdc, text, len(text), ctypes.byref(size)):
+            # 測れなかったときは (0, 0) を素直に返す。呼び出し側で「幅も高さも
+            # 0 のバッジは描かない」ので、潰れた箱が画面に出ることはない。
+            return (0, 0)
+        return (int(size.cx), int(size.cy))
+
+    def set_bk_mode(self, hdc: int, mode: int) -> int:
+        return int(self._set_bk_mode(hdc, mode))
+
+    def set_text_color(self, hdc: int, color: int) -> int:
+        return int(self._set_text_color(hdc, color))
+
+    def text_out(self, hdc: int, x: int, y: int, text: str) -> bool:
+        return bool(self._text_out(hdc, x, y, text, len(text)))
+
     def ellipse(self, hdc: int, left: int, top: int, right: int, bottom: int) -> bool:
         return bool(self._ellipse(hdc, left, top, right, bottom))
 
@@ -768,6 +892,11 @@ class GdiSurface:
         self._outer_pen = 0
         self._hollow_brush = 0
         self._pen_cache: dict[tuple[int, int, int], int] = {}
+        # バッジの資産。attach では作らず、初めてバッジを描いたときの
+        # 文字高さと色だけを作る。バッジを使わない面が GDI ハンドルを
+        # 1 つも抱えないためで、ノブブラシと同じ理屈。
+        self._badge_fonts: dict[int, int] = {}
+        self._badge_brushes: dict[int, int] = {}
 
     @property
     def back_buffer(self) -> np.ndarray[tuple[int, ...], np.dtype[np.uint8]] | None:
@@ -1158,6 +1287,10 @@ class GdiSurface:
             self._api.delete_object(pen)
         for brush in self._knob_brushes.values():
             self._api.delete_object(brush)
+        for font in self._badge_fonts.values():
+            self._api.delete_object(font)
+        for brush in self._badge_brushes.values():
+            self._api.delete_object(brush)
         if self._hollow_brush:
             self._api.delete_object(self._hollow_brush)
         self._ring_pens = {}
@@ -1166,6 +1299,8 @@ class GdiSurface:
         self._outer_pen = 0
         self._hollow_brush = 0
         self._pen_cache = {}
+        self._badge_fonts = {}
+        self._badge_brushes = {}
 
     def _place(self, width: int, height: int) -> None:
         self._api.set_window_pos(
@@ -1200,12 +1335,37 @@ class GdiSurface:
         }
 
     def _pen(self, style: int, width: int, color: int) -> int:
-        """attach 後に GDI 割り当てが許されるのはこの 1 箇所だけ。"""
+        """attach 後に GDI 割り当てが許されるのはこの 1 箇所だけ。
+
+        ``_font`` と ``_badge_brush`` も attach 後に割り当ててよいが、理由は
+        同じで「初回に使うまで作らない」ことだけ。
+        """
         key = (style, width, color)
         cached = self._pen_cache.get(key)
         if cached is None:
             cached = self._api.create_pen(style, width, color)
             self._pen_cache[key] = cached
+        return cached
+
+    def _font(self, font_h: int) -> int:
+        """文字高さが同じ GDI フォントを引く。キーは高さだけ。
+
+        書体名と太さはこの面が 1 種しか使わないのでキーに含めない。窓の
+        resize で高さだけが変わっても作り直さないと GDI ハンドルを使い潰す
+        ので、``_pen`` と同じ流儀で初回に 1 個だけ作る。
+        """
+        cached = self._badge_fonts.get(font_h)
+        if cached is None:
+            cached = self._api.create_font(-font_h, _BADGE_WEIGHT, _BADGE_FACE)
+            self._badge_fonts[font_h] = cached
+        return cached
+
+    def _badge_brush(self, color: int) -> int:
+        """バッジの背景色ごとの塗ブラシ。ノブブラシと同じく色をキーにする。"""
+        cached = self._badge_brushes.get(color)
+        if cached is None:
+            cached = self._api.create_solid_brush(color)
+            self._badge_brushes[color] = cached
         return cached
 
     def _select(self, pen: int, brush: int) -> None:
@@ -1250,6 +1410,56 @@ class GdiSurface:
             self._pen(_PS_SOLID, _INNER_STROKE_WIDTH, img_rect.color), img_rect.inner
         )
 
+    def _draw_badge(self, badge: BadgeState) -> None:
+        """プレビュー左上に状態バッジを描く。
+
+        バックバッファはキャプチャ解像度で、表示面は present の
+        StretchBlt で縮小・拡大される。ここでもキャプチャ座標で描くと、
+        640x360 の窓では 1/4 の大きさになり 2560x1440 の窓では 2 倍に
+        なる。そこで「表示面 1:1 の見た目」（文字 16 px・余白 4 px）を
+        表示倍率の逆数でキャプチャ座標系へ戻してから描く。
+        """
+        dest_w = self._dest[2]
+        scale = dest_w / CAPTURE_SIZE[0] if dest_w > 0 else 0.0
+        # 映像が置かれていない（no_room）ときは倍率も 0 になり得るので 1.0 に
+        # 落とす。0 で割ると例外になるが、その場合はそもそも compose が
+        # no_room を返すので、このメソッドには来ない。
+        inverse = 1.0 / scale if scale > 0 else 1.0
+        # 下限があるので極端に小さい窓でも読めなくならない。表示面上の大きさは
+        # 16 px より大きくなるので、小さくしすぎても崩れない。
+        font_h = max(_BADGE_MIN_FONT_PX, round(_BADGE_FONT_PX * inverse))
+        pad = max(_BADGE_MIN_PAD, round(_BADGE_PAD_PX * inverse))
+
+        # 測る前にフォントを選ぶ。GetTextExtentPoint32W は DC に入っている
+        # フォントで測るので、選択前に測るとストックフォントの幅になる。
+        previous_font = self._api.select_object(self._memory_dc, self._font(font_h))
+        text_w, text_h = self._api.get_text_extent(self._memory_dc, badge.text)
+        if text_w <= 0 or text_h <= 0:
+            # 測れなかった。幅 0 の箱だけを描くより何も描かないほうが、
+            # 映像に異物が出ない。
+            self._api.select_object(self._memory_dc, previous_font)
+            return
+        # Rectangle は選択中のペンで縁を引くので、背景と同色を選んで
+        # 「塗り」だけにする。文字は TRANSPARENT で上にのせる。
+        self._select(
+            self._pen(_PS_SOLID, _BADGE_STROKE_WIDTH, badge.background),
+            self._badge_brush(badge.background),
+        )
+        self._api.rectangle(
+            self._memory_dc,
+            pad,
+            pad,
+            pad + 2 * pad + text_w,
+            pad + 2 * pad + text_h,
+        )
+        self._api.set_bk_mode(self._memory_dc, _BKMODE_TRANSPARENT)
+        self._api.set_text_color(self._memory_dc, badge.foreground)
+        self._api.text_out(self._memory_dc, pad * 2, pad * 2, badge.text)
+        # 描いた後にフォントを元へ戻す。バッジ専用のフォントを DC に残して
+        # おくと、同じ DC へ後に描く何かの見た目が変わる。ペンとブラシは
+        # 既存の _select と同じく戻さない（形を描く側で必ず選び直す）。
+        self._api.select_object(self._memory_dc, previous_font)
+
     def _draw_overlay(self, overlay: OverlayState) -> None:
         # 順序は設計 5節の表どおり。空の既定値なら 1 度も形を呼ばない。
         sticks = (
@@ -1276,6 +1486,10 @@ class GdiSurface:
             )
         if overlay.img_rect.visible:
             self._draw_img_rect(overlay.img_rect)
+        # バッジは他の上に重なるのが意図なので、順序は固定する。
+        badge = overlay.badge
+        if badge.visible and badge.text:
+            self._draw_badge(badge)
 
     def _run_self_test(self) -> None:
         """sentinel を書いて child DC で読み戻す。面ごとに 1 回だけ。
