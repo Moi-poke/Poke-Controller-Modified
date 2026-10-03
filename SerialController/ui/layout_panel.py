@@ -114,10 +114,10 @@ class LayoutPanelMixin:
         ttk.Button(
             self.compact_bar, text="選択...", command=self.openCommandPalette
         ).pack(side="right", padx=2)
-        self.compact_pause = ttk.Button(self.compact_bar, text="Pause")
+        self.compact_pause = ttk.Button(self.compact_bar, text="一時停止")
         self.compact_pause.config(command=lambda: self.pauseButton.invoke())
         self.compact_pause.pack(side="right")
-        self.compact_start = ttk.Button(self.compact_bar, text="Start")
+        self.compact_start = ttk.Button(self.compact_bar, text="開始")
         self.compact_start.config(command=lambda: self.startButton.invoke())
         self.compact_start.pack(side="right")
 
@@ -180,7 +180,7 @@ class LayoutPanelMixin:
                 hidden.append(widget)
             self._hidden_camera_controls = hidden
         # 隠すときは枠の見出しも落とす（プレビューだけの枠にする）。
-        self.camera_lf.config(text="Camera" if plan.show_camera_controls else "")
+        self.camera_lf.config(text="カメラ" if plan.show_camera_controls else "")
 
         # コンパクトバー
         if plan.show_compact_bar:

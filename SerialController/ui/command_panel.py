@@ -94,13 +94,13 @@ class CommandPanelMixin:
         self.py_cb = ttk.Combobox(self.Command_nb)
         self.py_cb.config(state="readonly", textvariable=self.py_name)
         self.py_cb.pack(side="top")
-        self.Command_nb.add(self.py_cb, padding="5", text="Python Command")
+        self.Command_nb.add(self.py_cb, padding="5", text="Python コマンド")
 
         self.mcu_name = tk.StringVar()
         self.mcu_cb = ttk.Combobox(self.Command_nb)
         self.mcu_cb.config(state="readonly", textvariable=self.mcu_name)
         self.mcu_cb.pack(side="top")
-        self.Command_nb.add(self.mcu_cb, padding="5", text="Mcu Command")
+        self.Command_nb.add(self.mcu_cb, padding="5", text="MCU コマンド")
 
         # 検索とタグの絞り込み。コマンドの Notebook の真上へ置く。
         # 探す→選ぶ が上から下へ並ぶので、視線が戻らない。
@@ -150,18 +150,18 @@ class CommandPanelMixin:
         )
 
         self.reloadCommandButton = ttk.Button(self.Commands_2_f)
-        self.reloadCommandButton.config(text="Reload", command=self.reloadCommands)
+        self.reloadCommandButton.config(text="再読み込み", command=self.reloadCommands)
         self.reloadCommandButton.grid(column=0, padx="5", pady="5", row=1, sticky="ew")
 
         self.startButton = ttk.Button(self.Commands_2_f)
-        self.startButton.config(text="Start", command=self.startPlay)
+        self.startButton.config(text="開始", command=self.startPlay)
         self.startButton.grid(column=1, padx="5", pady="5", row=1, sticky="ew")
 
         # 一時停止。Start/Stop の隣に置く。停止と紛らわしくならないよう
         # 実行中だけ押せる状態にする。
         self.pauseButton = ttk.Button(self.Commands_2_f)
         self.pauseButton.config(
-            text="Pause", command=self.togglePause, state="disabled"
+            text="一時停止", command=self.togglePause, state="disabled"
         )
         self.pauseButton.grid(column=2, padx="5", pady="5", row=1, sticky="ew")
 
@@ -171,7 +171,7 @@ class CommandPanelMixin:
         self.Commands_2_f.pack(
             fill="none", expand=True, padx=5, pady=5, anchor=tk.E, side="top"
         )
-        self.command_lf.config(height="200", text="Command")
+        self.command_lf.config(height="200", text="コマンド")
         self.command_lf.pack(fill="both", expand=True, padx=5, pady=5)
 
     def _bind_keys(self) -> None:
@@ -617,12 +617,12 @@ class CommandPanelMixin:
         state = self.runner.state
         if state == "running":
             command = self.runner.running_command
-            self.startButton["text"] = "Stop"
+            self.startButton["text"] = "停止"
             self.startButton["command"] = self.stopPlay
             self.startButton["state"] = "normal"
             self.reloadCommandButton["state"] = "disabled"
             supports_pause = callable(getattr(command, "togglePause", None))
-            self.pauseButton["text"] = "Pause"
+            self.pauseButton["text"] = "一時停止"
             self.pauseButton["state"] = "normal" if supports_pause else "disabled"
             self._running_command = str(getattr(command, "NAME", ""))
             self._paused = False
@@ -630,13 +630,13 @@ class CommandPanelMixin:
             self.startButton["state"] = "disabled"
             if self._paused:
                 self._paused = False
-                self.pauseButton["text"] = "Pause"
+                self.pauseButton["text"] = "一時停止"
         else:
-            self.startButton["text"] = "Start"
+            self.startButton["text"] = "開始"
             self.startButton["command"] = self.startPlay
             self.startButton["state"] = "normal"
             self.reloadCommandButton["state"] = "normal"
-            self.pauseButton["text"] = "Pause"
+            self.pauseButton["text"] = "一時停止"
             self.pauseButton["state"] = "disabled"
             self._paused = False
             self._running_command = ""
@@ -743,7 +743,7 @@ class CommandPanelMixin:
             print("This command does not support pause.")
             return
         paused = cmd.togglePause()
-        self.pauseButton["text"] = "Resume" if paused else "Pause"
+        self.pauseButton["text"] = "再開" if paused else "一時停止"
         self._paused = paused
         self._update_title()
 

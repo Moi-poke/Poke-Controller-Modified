@@ -202,7 +202,7 @@ class CameraPanelMixin:
         self.show_mode = tk.StringVar()
         self.show_size = tk.StringVar()
 
-        self.camera_lf.config(height=200, text="Camera", width=200)
+        self.camera_lf.config(height=200, text="カメラ", width=200)
         self.camera_lf.grid(columnspan=3, padx="5", sticky="ew")
 
     def _setup_camera_name(self) -> None:

@@ -93,7 +93,7 @@ class SerialPanelMixin:
         self.serial_lf = ttk.Labelframe(self.tab_serial)
 
         self.com_port_label = ttk.Label(self.serial_lf)
-        self.com_port_label.config(text="COM Port: ")
+        self.com_port_label.config(text="COMポート: ")
         self.com_port_label.grid(padx="5", sticky="ew")
 
         self.com_port = tk.IntVar()
@@ -111,7 +111,7 @@ class SerialPanelMixin:
         self.com_port_cb.bind("<<ComboboxSelected>>", self.onComPortSelected, add="")
 
         self.baud_rate_label = ttk.Label(self.serial_lf)
-        self.baud_rate_label.config(text="Baud Rate: ")
+        self.baud_rate_label.config(text="ボーレート: ")
         self.baud_rate_label.grid(column=2, padx="5", row=0, sticky="ew")
 
         self.baud_rate = tk.StringVar()
@@ -128,13 +128,11 @@ class SerialPanelMixin:
         self.baud_rate_cb.bind("<<ComboboxSelected>>", self.applyBaudRate, add="")
 
         self.reloadComPort = ttk.Button(self.serial_lf)
-        self.reloadComPort.config(text="Reload Port", command=self.reloadSerialPort)
+        self.reloadComPort.config(text="再接続", command=self.reloadSerialPort)
         self.reloadComPort.grid(column=4, padx="5", row=0)
 
         self.disconnectComPort = ttk.Button(self.serial_lf)
-        self.disconnectComPort.config(
-            text="Disconnect Port", command=self.inactivateSerial
-        )
+        self.disconnectComPort.config(text="切断", command=self.inactivateSerial)
         self.disconnectComPort.grid(column=5, padx="5", row=0)
 
         self.separator_4 = ttk.Separator(self.serial_lf)
@@ -144,7 +142,7 @@ class SerialPanelMixin:
         self.is_show_serial = tk.BooleanVar()
         self.cb_show_serial = ttk.Checkbutton(self.serial_lf)
         self.cb_show_serial.config(
-            text="Show Serial",
+            text="送信内容を表示",
             variable=self.is_show_serial,
             command=self._on_setting_changed,
         )
@@ -154,7 +152,7 @@ class SerialPanelMixin:
         #   候補は通信方式の一覧から引く。ここに名前を
         #     書き並べない（実装を足したのに画面に出ない、を防ぐ）。
         self.transport_label = ttk.Label(self.serial_lf)
-        self.transport_label.config(text="Transport: ")
+        self.transport_label.config(text="通信方式: ")
         self.transport_label.grid(column=0, padx="5", row=1, sticky="ew")
 
         self.transport_cb = ttk.Combobox(self.serial_lf)
@@ -258,7 +256,7 @@ class SerialPanelMixin:
         # 左のコンボ列を伸ばし、右端の表示・切替へ寄せる。
         self.serial_lf.columnconfigure(1, weight=1)
 
-        self.serial_lf.config(text="Serial Settings")
+        self.serial_lf.config(text="シリアル設定")
         self.serial_lf.pack(fill="both", expand=True, padx=5, pady=5)
         self._refresh_bcon_rows()
         self._poll_player_lamp()
@@ -269,7 +267,7 @@ class SerialPanelMixin:
         self.is_use_keyboard = tk.BooleanVar()
         self.cb_use_keyboard = ttk.Checkbutton(self.control_lf)
         self.cb_use_keyboard.config(
-            text="Use Keyboard",
+            text="キーボードで操作",
             variable=self.is_use_keyboard,
             command=self._on_keyboard_toggled,
         )
@@ -277,7 +275,7 @@ class SerialPanelMixin:
 
         self.cb_left_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_left_stick_mouse.config(
-            text="Use LStick Mouse",
+            text="左スティックをマウスで",
             variable=self.camera_lf.is_use_left_stick_mouse,
             command=self._on_left_stick_toggled,
         )
@@ -285,7 +283,7 @@ class SerialPanelMixin:
 
         self.cb_right_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_right_stick_mouse.config(
-            text="Use RStick Mouse",
+            text="右スティックをマウスで",
             variable=self.camera_lf.is_use_right_stick_mouse,
             command=self._on_right_stick_toggled,
         )
@@ -295,11 +293,11 @@ class SerialPanelMixin:
 
         self.simpleConButton = ttk.Button(self.control_lf)
         self.simpleConButton.config(
-            text="Controller", command=self.createControllerWindow
+            text="仮想コントローラ...", command=self.createControllerWindow
         )
         self.simpleConButton.grid(column=0, padx="10", pady="5", row=1, sticky="ew")
 
-        self.control_lf.config(height="200", text="Controller")
+        self.control_lf.config(height="200", text="コントローラ")
         self.control_lf.pack(fill="both", expand=True, padx=5, pady=5)
 
     def _currentBaudRate(self) -> int:

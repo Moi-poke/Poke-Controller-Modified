@@ -65,7 +65,7 @@ class AudioPanelMixin:
     _on_setting_changed: Any
 
     def _build_audio_frame(self) -> None:
-        self.audio_lf = ttk.Labelframe(self.tab_audio, text="Audio")
+        self.audio_lf = ttk.Labelframe(self.tab_audio, text="オーディオ")
         self.audio_input_name = tk.StringVar()
         self.audio_output_name = tk.StringVar()
         self.audio_monitor = tk.BooleanVar()
@@ -73,7 +73,7 @@ class AudioPanelMixin:
         self.audio_level = tk.StringVar(value="--")
         self.audio_latency = tk.StringVar(value="推定 --")
 
-        ttk.Label(self.audio_lf, text="Input:").grid(padx="5", row=0, column=0)
+        ttk.Label(self.audio_lf, text="入力:").grid(padx="5", row=0, column=0)
         self.audio_input_cb = ttk.Combobox(
             self.audio_lf,
             textvariable=self.audio_input_name,
@@ -85,7 +85,7 @@ class AudioPanelMixin:
             "<<ComboboxSelected>>", self._onAudioInputSelected, add=""
         )
 
-        ttk.Label(self.audio_lf, text="Output:").grid(padx="5", row=0, column=2)
+        ttk.Label(self.audio_lf, text="出力:").grid(padx="5", row=0, column=2)
         self.audio_output_cb = ttk.Combobox(
             self.audio_lf,
             textvariable=self.audio_output_name,
@@ -99,19 +99,19 @@ class AudioPanelMixin:
 
         ttk.Checkbutton(
             self.audio_lf,
-            text="Monitor",
+            text="モニター",
             variable=self.audio_monitor,
             command=self._onMonitorToggled,
         ).grid(padx="5", row=0, column=4)
 
         self.audio_reload_button = ttk.Button(
-            self.audio_lf, text="Reload Audio", command=self.reloadAudio
+            self.audio_lf, text="再読み込み", command=self.reloadAudio
         )
         self.audio_reload_button.grid(padx="5", row=0, column=5)
 
         # 2 行目: 音量（スライダーと値）。音量は頻繁に触るので、
         # 機器選択の直下に置く。
-        ttk.Label(self.audio_lf, text="Volume:").grid(padx="5", row=1, column=0)
+        ttk.Label(self.audio_lf, text="音量:").grid(padx="5", row=1, column=0)
         self.audio_volume_scale = ttk.Scale(
             self.audio_lf,
             from_=0.0,
@@ -130,7 +130,7 @@ class AudioPanelMixin:
         self.audio_volume_label.grid(padx="5", row=1, column=4, sticky="w")
 
         # 3 行目: 計測系（レベル・遅延の推定と実測）を 1 行にまとめる。
-        ttk.Label(self.audio_lf, text="Level:").grid(padx="5", row=2, column=0)
+        ttk.Label(self.audio_lf, text="レベル:").grid(padx="5", row=2, column=0)
         measure = ttk.Frame(self.audio_lf)
         measure.grid(row=2, column=1, columnspan=4, sticky="w")
         ttk.Label(measure, textvariable=self.audio_level, width=8).pack(side="left")

@@ -44,6 +44,7 @@ from ui.log_panel import LogPanelMixin
 from ui.preview_clock import StopResult
 from ui.scroll_host import ScrollHost
 from ui.serial_panel import SerialPanelMixin
+from ui.tooltip import Tooltip
 
 NAME = "Poke-Controller"
 VERSION = "v4.0.2 Modified"  # based on 1.0-beta3(custom by @dragonite303)
@@ -51,6 +52,31 @@ VERSION = "v4.0.2 Modified"  # based on 1.0-beta3(custom by @dragonite303)
 
 # タイトルに出すコマンド名の上限。長い名前でウィンドウ名が埋まるのを防ぐ
 TITLE_COMMAND_MAX = 20
+
+
+# ボタン等の説明（ツールチップ）。キーは部品の属性名。ショートカットのある
+# 操作はキーも書く（キーの束縛は ui/command_panel.py の _bind_keys が正）。
+TOOLTIPS: dict[str, str] = {
+    "startButton": "コマンドを開始 / 停止 (F6 / Esc)",
+    "pauseButton": "コマンドを一時停止 / 再開 (F7)",
+    "reloadCommandButton": "コマンド一覧を読み込み直す (F5)",
+    "search_entry": "コマンド名で絞り込む (Esc で解除)",
+    "tagEditButton": "選択中のコマンドにタグを付ける",
+    "OpenCommandDirButton": "コマンドのフォルダを開く",
+    "reloadButton": "カメラを開き直す",
+    "cb_show_realtime": "切るとプレビューの描画を止める（取り込みは続く）",
+    "filt_check": "プレビューの見た目にだけフィルタをかける",
+    "filt_setting_button": "表示フィルタを調整する",
+    "captureButton": "今の画面を画像で保存する",
+    "OpencaptureButton": "キャプチャの保存先を開く",
+    "reloadComPort": "ポート一覧を取り直して接続し直す",
+    "disconnectComPort": "シリアルポートを閉じる",
+    "cb_show_serial": "送った内容をログ欄に出す（確認用）",
+    "simpleConButton": "画面上のコントローラで操作する",
+    "audio_reload_button": "音声デバイスを開き直す",
+    "compact_start": "コマンドを開始 / 停止 (F6 / Esc)",
+    "compact_pause": "コマンドを一時停止 / 再開 (F7)",
+}
 
 
 # メインウィンドウの最小サイズ。中身が収まらない分はスクロールバーで届くので、
@@ -279,6 +305,8 @@ class PokeControllerApp(
         # レイアウト切替の部品（色の帯とコンパクトバー）。他の欄が
         # 揃った後に作る（コンパクトバーはカメラ欄の子として載せる）。
         self._build_layout_widgets()
+        # 説明の吹き出し。部品が揃ってから表を 1 回だけ当てる。
+        self._attach_tooltips()
 
         self.frame_1.config(height=720, padding=5, relief="flat", width=1280)
         self.scroll_host.pack(expand=True, fill="both", side="top")
@@ -287,6 +315,14 @@ class PokeControllerApp(
         self.frame_1.rowconfigure(1, weight=1)
         self.frame_1.rowconfigure(2, weight=1)
         self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+
+    def _attach_tooltips(self) -> None:
+        """TOOLTIPS の表どおりに説明を付ける。無い部品は飛ばす（OS 差のため）。"""
+        self._tooltips = [
+            Tooltip(widget, text)
+            for name, text in TOOLTIPS.items()
+            if (widget := getattr(self, name, None)) is not None
+        ]
 
     def _apply_content_minsize(self) -> None:
         """レイアウトに合わせて最小サイズを決める。
