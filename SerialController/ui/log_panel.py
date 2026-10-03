@@ -158,6 +158,10 @@ class LogPanelMixin:
         if shown is None:
             shown_text = "-"
         else:
+            # 同じ実測を下端の状態の 1 行にも出す（ログを読まなくても分かる）。
+            publish = getattr(self, "publishVideoStats", None)
+            if publish is not None:
+                publish(float(shown.get("fps", 0.0)))
             shown_text = (
                 f"{shown.get('fps', 0.0)}fps"
                 f"(draw {shown.get('draw_ms', 0.0)}ms/max {shown.get('draw_max_ms', 0.0)}ms)"

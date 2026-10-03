@@ -125,13 +125,15 @@ def test_the_standard_layout_plan_keeps_every_pane_visible() -> None:
     # Given / When: 標準レイアウト（従来と同じ画面構成）
     plan = layout_plan("standard", "fixed", "1280x720")
 
-    # Then: タブ・ログ・カメラ欄の操作部 Loft すべて出し、バーもバッジも出さない。
+    # Then: タブ・ログ・カメラ欄の操作部をすべて出し、バーもバッジも出さない。
     assert plan.show_tabs is True
     assert plan.show_log is True
     assert plan.show_camera_controls is True
     assert plan.show_compact_bar is False
     assert plan.enforce_min_window is True
     assert plan.show_badge is False
+    # 状態・接続先・fps の 1 行は標準だけ（他はバーとバッジが同じ情報を出す）。
+    assert plan.show_status_bar is True
 
 
 def test_the_standard_layout_plan_delegates_the_preview_to_the_show_mode() -> None:
@@ -156,6 +158,7 @@ def test_the_compact_layout_plan_hides_the_side_panes_and_shows_the_bar() -> Non
     assert plan.show_compact_bar is True
     assert plan.enforce_min_window is False
     assert plan.show_badge is True
+    assert plan.show_status_bar is False
 
 
 def test_the_preview_layout_plan_drops_the_compact_bar() -> None:
@@ -169,6 +172,7 @@ def test_the_preview_layout_plan_drops_the_compact_bar() -> None:
     assert plan.show_compact_bar is False
     assert plan.show_badge is True
     assert plan.enforce_min_window is False
+    assert plan.show_status_bar is False
 
 
 def test_the_compact_layout_plan_ignores_the_chosen_show_mode() -> None:

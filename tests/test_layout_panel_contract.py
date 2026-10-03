@@ -46,8 +46,10 @@ class _PreviewDouble(tk.Frame):
 
 
 class _Serial:
+    opened = True
+
     def is_open(self) -> bool:
-        return True
+        return self.opened
 
 
 class _Runner:
@@ -72,6 +74,7 @@ class _Host(LayoutPanelMixin):
         self.show_mode = tk.StringVar(master=root, value="fit")
         self.show_size = tk.StringVar(master=root, value="640x360")
         self.com_port_name = tk.StringVar(master=root, value="COM9")
+        self.transport_name = tk.StringVar(master=root, value="switch-bcon")
 
         # Window と同じく、本体はスクロール入れ物の中身として作る。
         self.scroll_host = ScrollHost(root)
@@ -211,3 +214,62 @@ def test_an_unnamed_profile_still_gets_its_colour_chip_first(host: _Host) -> Non
     #       状態文の左に出る。
     assert host.compact_chip.winfo_ismapped()
     assert host.compact_chip.winfo_x() < host._compact_status_label.winfo_x()
+
+
+def test_the_standard_layout_shows_a_status_bar_with_state_device_and_fps(
+    host: _Host,
+) -> None:
+    # Given: the standard layout (applied at start-up).
+    _settle(host)
+
+    # When: the video stats arrive.
+    host.publishVideoStats(44.9)
+    _settle(host)
+
+    # Then: 下端に 1 行。状態（名前はタイトルにあるので付けない）・接続先・
+    #       表示 fps を出す。
+    assert host.status_bar.winfo_ismapped()
+    assert host.status_state.get() == "■ 停止中"
+    assert host.status_device.get() == "COM9 (switch-bcon)"
+    assert host.status_fps.get() == "表示 44.9 fps"
+
+
+def test_the_status_bar_stays_visible_when_the_window_is_too_small(
+    host: _Host,
+) -> None:
+    # When: the window is far smaller than the content.
+    host.root.geometry("300x200+0+0")
+    _settle(host)
+
+    # Then: 本体より先に詰められて消えない（スクロールで届かない場所に置かない）。
+    #       押し出された部品は unmap されても前回の高さを返すので、表示中かも見る。
+    bar_bottom = host.status_bar.winfo_y() + host.status_bar.winfo_height()
+    assert host.status_bar.winfo_ismapped()
+    assert host.status_bar.winfo_height() > 0
+    assert bar_bottom <= host.root.winfo_height()
+
+
+def test_compact_and_preview_layouts_hide_the_status_bar(host: _Host) -> None:
+    for layout in ("compact", "preview"):
+        # When: a multi-window layout is applied.
+        host.applyLayout(layout)
+        _settle(host)
+
+        # Then: バーかバッジが同じ情報を出すので、二重に出さない。
+        assert not host.status_bar.winfo_ismapped(), layout
+
+    # When: back to standard.
+    host.applyLayout("standard")
+    _settle(host)
+
+    # Then: 戻る。
+    assert host.status_bar.winfo_ismapped()
+
+
+def test_a_closed_port_reads_as_not_connected(host: _Host) -> None:
+    # When: the port is closed.
+    host.serial.opened = False
+    host._publish_status()
+
+    # Then: ポート名を出したままにしない（繋がっていると誤解する）。
+    assert host.status_device.get() == "未接続"

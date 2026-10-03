@@ -131,6 +131,9 @@ class LayoutPlan:
     show_compact_bar: bool
     enforce_min_window: bool
     show_badge: bool
+    # 下端の 1 行（状態・接続先・表示 fps）。標準だけ。コンパクト/プレビューは
+    # バーとバッジが同じ情報を出すので二重に出さない。
+    show_status_bar: bool
     preview: PreviewLayout
 
 
@@ -149,6 +152,7 @@ def layout_plan(layout: str, show_mode: str, show_size: str) -> LayoutPlan:
             # 小さい窓を許さないと 4 台を並べられないため、固定しない。
             enforce_min_window=False,
             show_badge=True,
+            show_status_bar=False,
             preview=PreviewLayout(stretch=True, request_size=COMPACT_REQUEST_SIZE),
         )
     if layout == "preview":
@@ -160,6 +164,7 @@ def layout_plan(layout: str, show_mode: str, show_size: str) -> LayoutPlan:
             show_compact_bar=False,
             enforce_min_window=False,
             show_badge=True,
+            show_status_bar=False,
             preview=PreviewLayout(stretch=True, request_size=COMPACT_REQUEST_SIZE),
         )
     # standard はプレビューの置き方だけを show_mode / show_size に委ねる
@@ -171,5 +176,6 @@ def layout_plan(layout: str, show_mode: str, show_size: str) -> LayoutPlan:
         show_compact_bar=False,
         enforce_min_window=True,
         show_badge=False,
+        show_status_bar=True,
         preview=preview_layout(show_mode, show_size),
     )

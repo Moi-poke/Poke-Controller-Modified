@@ -75,6 +75,11 @@ class LayoutPanelMixin:
     compact_status: Any
     _compact_status_label: Any
     compact_start: Any
+    transport_name: Any
+    status_bar: Any
+    status_state: Any
+    status_device: Any
+    status_fps: Any
     compact_pause: Any
 
     # ------------------------------------------------------------------
@@ -120,6 +125,19 @@ class LayoutPanelMixin:
         self.compact_start = ttk.Button(self.compact_bar, text="開始")
         self.compact_start.config(command=lambda: self.startButton.invoke())
         self.compact_start.pack(side="right")
+
+        # 標準レイアウトの下端の 1 行。状態・接続先・表示 fps を常に見せる。
+        # 出し入れは _apply_layout（root 直下に pack する）。
+        self.status_bar = ttk.Frame(self.root, padding=(6, 1))
+        self.status_state = tk.StringVar(value="")
+        self.status_device = tk.StringVar(value="")
+        self.status_fps = tk.StringVar(value="")
+        ttk.Label(self.status_bar, textvariable=self.status_state).pack(side="left")
+        ttk.Separator(self.status_bar, orient="vertical").pack(
+            side="left", fill="y", padx=8
+        )
+        ttk.Label(self.status_bar, textvariable=self.status_device).pack(side="left")
+        ttk.Label(self.status_bar, textvariable=self.status_fps).pack(side="right")
 
     # ------------------------------------------------------------------
     # レイアウト適用
@@ -182,6 +200,13 @@ class LayoutPanelMixin:
         # 隠すときは枠の見出しも落とす（プレビューだけの枠にする）。
         self.camera_lf.config(text="カメラ" if plan.show_camera_controls else "")
 
+        # 下端の状態の 1 行。本体より先に pack して、窓が小さいときに本体より
+        # 先に詰められないようにする（スクロールの外に置く）。
+        if plan.show_status_bar:
+            self.status_bar.pack(side="bottom", fill="x", before=self.scroll_host)
+        else:
+            self.status_bar.pack_forget()
+
         # コンパクトバー
         if plan.show_compact_bar:
             self.compact_bar.grid(column=0, columnspan=10, row=4, sticky="ew")
@@ -241,6 +266,17 @@ class LayoutPanelMixin:
         view = status_view(profile=profile, **state)
         bar_view = status_view(profile="", **state)
 
+        # 下端の 1 行。名前はウィンドウタイトルにあるので付けない。
+        if getattr(self, "status_state", None) is not None:
+            self.status_state.set(bar_view.text)
+            transport_var = getattr(self, "transport_name", None)
+            transport = str(transport_var.get()) if transport_var is not None else ""
+            if device and state["opened"]:
+                suffix = f" ({transport})" if transport else ""
+                self.status_device.set(f"{device}{suffix}")
+            else:
+                self.status_device.set("未接続")
+
         # コンパクトバーがあれば 1 行と操作ボタンの中身を写す。
         if getattr(self, "compact_status", None) is not None:
             self.compact_status.set(bar_view.text)
@@ -266,6 +302,11 @@ class LayoutPanelMixin:
             preview.setBadge(view.text, BADGE_COLORS[view.kind])
         else:
             preview.clearBadge()
+
+    def publishVideoStats(self, shown_fps: float) -> None:
+        """表示 fps の実測を下端の 1 行へ出す（log_panel の集計から呼ぶ）。"""
+        if getattr(self, "status_fps", None) is not None:
+            self.status_fps.set(f"表示 {shown_fps:.1f} fps")
 
     @staticmethod
     def _mirror_button(target: Any, source: Any) -> None:
