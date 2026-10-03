@@ -623,12 +623,16 @@ def test_capture_area_defines_the_named_mapper_entry_point() -> None:
 
 
 @pytest.mark.parametrize(
-    "method_name", ["StartRangeSS", "ReleaseRangeSS", "mouseCtrlLeftPress", "ImgRect"]
+    "method_name", ["mouseCtrlLeftPress", "MotionRangeSS", "_eventToCapture"]
 )
-def test_every_coordinate_consumer_reaches_the_layer_through_the_named_entry_point(
+def test_every_coordinate_conversion_reaches_the_layer_through_the_named_entry_point(
     method_name: str,
 ) -> None:
-    # Given: one of the four consumers of the capture/display mapping.
+    # Given: one of the three call sites that still turn a display point into a
+    # capture point. ``ReleaseRangeSS`` and ``ImgRect`` are absent on purpose:
+    # the range selection holds capture coordinates from the press onwards and
+    # the recognition box arrives in them, so neither converts anything -- and
+    # a second conversion there is what used to double the scale.
     consumer = class_method(_capture_area_node(), method_name)
 
     # Then: it reaches the layer through ``_mapper``, so there is exactly one
@@ -637,21 +641,70 @@ def test_every_coordinate_consumer_reaches_the_layer_through_the_named_entry_poi
         f"{method_name} does not reach the layer through CaptureArea._mapper"
     )
 
-    # Then: and it does not construct a mapper itself, which would be a second
-    # place to get the derivation wrong.
+
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "StartRangeSS",
+        "MotionRangeSS",
+        "ReleaseRangeSS",
+        "mouseCtrlLeftPress",
+        "ImgRect",
+        "_eventToCapture",
+    ],
+)
+def test_no_consumer_builds_a_mapper_inline(method_name: str) -> None:
+    # Given: any handler that touches capture or display coordinates.
+    consumer = class_method(_capture_area_node(), method_name)
+
+    # Then: it never constructs a mapper itself, which would be a second place
+    # to get the derivation wrong -- and the place the letterbox origin would
+    # quietly be left out of.
     assert "CoordinateMapper" not in referenced_names(consumer), (
         f"{method_name} builds a CoordinateMapper inline instead of calling _mapper"
+    )
+
+
+@pytest.mark.parametrize(
+    "method_name", ["StartRangeSS", "mouseLeftPress", "mouseRightPress"]
+)
+def test_every_mouse_consumer_converts_its_coordinates_at_one_entry_point(
+    method_name: str,
+) -> None:
+    # Given: a handler that turns a mouse event into a stored coordinate.
+    consumer = class_method(_capture_area_node(), method_name)
+
+    # Then: it goes through ``_eventToCapture``, so a second scale cannot appear
+    # beside the first. These three store the coordinate and read it again on
+    # every later event, which is exactly where a display-coordinate store used
+    # to drift from the capture-space overlay beside it.
+    assert "_eventToCapture" in referenced_names(consumer), (
+        f"{method_name} converts its event coordinates inline instead of "
+        "through _eventToCapture"
+    )
+
+
+def test_the_mouse_conversion_entry_point_takes_only_the_event() -> None:
+    # Given: the widget's single conversion entry point.
+    area = _gui_capture_area()
+
+    # Then: it takes the event and nothing else, in particular not a frame. The
+    # conversion has to depend on the viewport rather than on whichever frame a
+    # particular handler happens to be holding.
+    assert tuple(inspect.signature(area._eventToCapture).parameters) == (
+        "self",
+        "event",
     )
 
 
 def test_pixel_probe_follows_the_delivered_frame_and_not_the_requested_capture_size() -> (
     None
 ):
-    # Given: a camera whose DELIVERED frame is 640x720 while its REQUESTED
+    # Given: a camera whose DELIVERED frame is 640x360 while its REQUESTED
     # capture size still claims 1280x720 -- the state a camera-side resize
-    # leaves behind. A click at display x=1000 is column 500 of the frame that
-    # actually arrived.
-    frame = _RecordingFrame(CAPTURE_HEIGHT, 640)
+    # leaves behind. The viewport is 1280x720, so the 16:9 frame fills it with
+    # no margin and a click at display x=1000 is column 500 of what arrived.
+    frame = _RecordingFrame(360, 640)
     area = _area_at_fixed_size(frame, CAPTURE_SIZE).area
 
     # When: the pixel is probed at that display position.
@@ -659,14 +712,15 @@ def test_pixel_probe_follows_the_delivered_frame_and_not_the_requested_capture_s
         getattr(area, "mouseCtrlLeftPress")(PointerEvent(x=1000, y=360))
 
     # Then: the 1x1 window sliced out of the delivered frame is the one holding
-    # column 500, not the one column 639 that clamping a ratio of 1.0 would
-    # reach. The probe stays in bounds either way, so only the slice can tell
-    # the two apart -- and a wrong pixel is the bug.
-    assert frame.probes == [((360, 361), (500, 501))], frame.probes
+    # column 500, not the one column 639 that scaling by the *requested* size
+    # (a ratio of 1.0, then clamped) would reach. The probe stays in bounds
+    # either way, so only the slice can tell the two apart -- and a wrong pixel
+    # is the bug.
+    assert frame.probes == [((180, 181), (500, 501))], frame.probes
 
     # Then: and the coordinate it reports is the same one it probed.
     assert len(messages) == 2, messages
-    assert _logged_integers(messages[:1]) == [1000, 360, 500, 360]
+    assert _logged_integers(messages[:1]) == [1000, 360, 500, 180]
 
 
 @pytest.mark.parametrize(
@@ -677,10 +731,10 @@ def test_pixel_probe_follows_the_delivered_frame_and_not_the_requested_capture_s
 def test_pixel_probe_does_not_depend_on_the_requested_capture_size(
     requested_size: tuple[int, int],
 ) -> None:
-    # Given: the same delivered 640x720 frame behind four different claims from
+    # Given: the same delivered 640x360 frame behind four different claims from
     # ``camera.capture_size``. Only the last one is today's degenerate case; the
     # middle two are what a resize negotiation leaves behind.
-    frame = _RecordingFrame(CAPTURE_HEIGHT, 640)
+    frame = _RecordingFrame(360, 640)
     area = _area_at_fixed_size(frame, requested_size).area
 
     # When: the pixel is probed.
@@ -690,7 +744,7 @@ def test_pixel_probe_does_not_depend_on_the_requested_capture_size(
     # clamp read the one source the consumer indexes -- the delivered frame.
     # This is the invariant that makes a disagreement between them structurally
     # impossible rather than merely unlikely.
-    assert frame.probes == [((360, 361), (500, 501))], (
+    assert frame.probes == [((180, 181), (500, 501))], (
         f"requested size {requested_size} moved the probe: {frame.probes}"
     )
 
@@ -766,11 +820,18 @@ def test_to_display_matches_todays_show_ratio_arithmetic_at_identity() -> None:
 # ===========================================================================
 # 7. Regression guards: the four consumers at capture == display
 # ===========================================================================
+#
+# ``min_x``/``min_y``/``max_x``/``max_y``, the guide rect and the recognition box
+# are all capture coordinates now, so at this identity viewport the numbers a
+# consumer reports are unchanged from the display-coordinate release. That is
+# deliberate: these are regression guards, and
+# ``tests/test_capture_area_viewport.py`` is where a non-identity viewport shows
+# that the conversion happens -- and happens once.
 
 
 def test_release_range_ssa_crop_box_for_a_forward_drag() -> None:
     # Given: a range selection dragged from (100, 50) to (400, 300) at the fixed
-    # operating assumption, so the ratio is exactly 1.0.
+    # operating assumption, so the placement is exactly the identity.
     area = _area_at_fixed_size(
         np.zeros((CAPTURE_HEIGHT, CAPTURE_WIDTH, 3), np.uint8), CAPTURE_SIZE
     ).area
@@ -781,8 +842,10 @@ def test_release_range_ssa_crop_box_for_a_forward_drag() -> None:
     getattr(area, "MotionRangeSS")(PointerEvent(x=400, y=300))
     getattr(area, "ReleaseRangeSS")(PointerEvent(x=400, y=300))
 
-    # Then: the crop box is the display rect itself, corner for corner, and it
+    # Then: the crop box is the capture rect itself, corner for corner, and it
     # is handed over as a list of four ints -- the shape ``saveCapture`` reads.
+    # It is built from the stored min/max with no second conversion, so the box
+    # cut out is the box the guide drew.
     assert len(camera.saves) == 1
     save = camera.saves[0]
     assert save["args"] == (), save
@@ -803,11 +866,11 @@ def test_release_range_ssa_crop_box_for_a_backward_drag() -> None:
     getattr(area, "ReleaseRangeSS")(PointerEvent(x=100, y=50))
 
     # Then: the corners are still ordered, because ``ReleaseRangeSS`` swaps them
-    # at ``ReleaseRangeSS`` before building the box.
+    # before building the box.
     assert camera.saves[0]["kwargs"]["crop_ax"] == [100, 50, 400, 300]
 
 
-def test_start_range_ssa_logs_the_capture_coordinates_the_identity_ratio_produces() -> (
+def test_start_range_ssa_logs_the_display_point_and_the_capture_point_it_became() -> (
     None
 ):
     # Given: a range selection pressed at (100, 50) at the fixed assumption.
@@ -822,7 +885,9 @@ def test_start_range_ssa_logs_the_capture_coordinates_the_identity_ratio_produce
     # Then: exactly one line is emitted, and the four integers on it are the
     # display pair followed by the capture pair. ``StartRangeSS`` reports its
     # capture coordinate nowhere else, so the line is the only observable; the
-    # assertion is on the numbers, not on the sentence around them.
+    # assertion is on the numbers, not on the sentence around them. At this
+    # identity viewport the two pairs coincide, which is exactly why the
+    # scaled-viewport case lives in tests/test_capture_area_viewport.py.
     assert len(messages) == 1, messages
     assert _logged_integers(messages) == [100, 50, 100, 50]
 
@@ -840,7 +905,7 @@ def test_mouse_ctrl_left_press_probes_the_pixel_at_the_identity_coordinate() -> 
     assert frame.probes == [((360, 361), (640, 641))], frame.probes
 
 
-def test_img_rect_draws_the_display_rect_todays_show_ratio_produces() -> None:
+def test_img_rect_keeps_the_recognition_box_in_capture_coordinates() -> None:
     # Given: a bare area at the fixed operating assumption.
     from core.preview_renderer import ImgRectState, RectState
 
@@ -851,9 +916,13 @@ def test_img_rect_draws_the_display_rect_todays_show_ratio_produces() -> None:
     # When: a recognition box of (100, 50) - (200, 150) is reported.
     getattr(area, "ImgRect")(100.0, 50.0, 200.0, 150.0, "blue")
 
-    # Then: the drawn rect is the box itself, with the white outer border one
-    # capture pixel wider on every side, and the colour is the Win32 COLORREF
-    # for "blue". This is the pre-port ``ImgRect`` with a ratio of 1.0.
+    # Then: the box is stored as it arrived -- capture coordinates -- with the
+    # white outer border one capture pixel wider on every side, and the colour
+    # is the Win32 COLORREF for "blue". The renderer draws the overlay on the
+    # capture-sized back buffer, so a conversion to display coordinates here
+    # would put the box on other pixels than the ones it was found on; at this
+    # identity viewport that conversion is a no-op, which is why
+    # tests/test_capture_area_viewport.py repeats it at a scaled one.
     assert area._img_rect == ImgRectState(
         outer=RectState(x0=99, y0=49, x1=201, y1=151),
         inner=RectState(x0=100, y0=50, x1=200, y1=150),

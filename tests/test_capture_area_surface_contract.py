@@ -88,6 +88,11 @@ PHOTO_SURFACE_SOURCE = (
     / "photo_surface.py"
 )
 
+#: The capture resolution the work buffers and the disabled image are sized at.
+#: Spelled out rather than imported so a change to the constant cannot silently
+#: retarget this module's shape assertions.
+CAPTURE_WIDTH, CAPTURE_HEIGHT = 1280, 720
+
 
 def _gui_assets() -> Any:
     """Import ``GuiAssets`` at call time so a missing module is a per-test RED."""
@@ -273,18 +278,21 @@ def test_capture_area_no_longer_carries_the_photo_image_item_attributes() -> Non
     assert not (class_level & PHOTO_IMAGE_ATTRIBUTES)
 
 
-def test_load_disabled_image_returns_a_bgr_array_of_the_show_size() -> None:
+def test_load_disabled_image_returns_a_bgr_array_of_the_capture_size() -> None:
     # Given: a bare area at a known show size, with no Tk interpreter.
     bare = bare_capture_area(width=SHOW_WIDTH, height=SHOW_HEIGHT)
 
     # When: the disabled image is loaded.
     disabled = getattr(bare.area, "_loadDisabledImage")()
 
-    # Then: it is a BGR ndarray of the show size, because _showDisabled now
-    # composites pixels instead of swapping a Tk image reference.
+    # Then: it is a BGR ndarray of the CAPTURE size, because _showDisabled now
+    # composites pixels instead of swapping a Tk image reference -- and because
+    # the renderer discards anything that is not capture-sized, a show-sized
+    # image would be refused with dimension_mismatch and the "camera stopped"
+    # picture would never reach the screen.
     assert isinstance(disabled, np.ndarray)
     assert disabled.dtype == np.uint8
-    assert disabled.shape == (SHOW_HEIGHT, SHOW_WIDTH, 3)
+    assert disabled.shape == (CAPTURE_HEIGHT, CAPTURE_WIDTH, 3)
 
     # Then: and it is a real decode of Images/disabled.png, not the black
     # placeholder the type check would also accept, so the loader provably ran.
@@ -501,10 +509,13 @@ def test_configure_handler_resizes_the_surface_with_the_new_client_size() -> Non
     # When: the Frame is resized by its geometry manager.
     getattr(bare.area, "_onConfigure")(PointerEvent(width=1280, height=720))
 
-    # Then: the surface is resized to the new client size and nothing else is
-    # touched -- the child HWND is placed by the renderer, not by Tk.
+    # Then: the surface is resized to the new client size and no drawing call is
+    # issued -- the child HWND is placed by the renderer, not by Tk. The
+    # viewport and the dedup keys are the widget's own state, not surface calls;
+    # tests/test_capture_area_viewport.py pins what the handler does with them.
     assert bare.surface.names == ["resize"]
     assert bare.surface.resizes == [(1280, 720)]
+    assert bare.area._viewport == (1280, 720), bare.area._viewport
 
 
 # ===========================================================================
@@ -556,7 +567,7 @@ def test_constructor_signature_keeps_the_positional_order_and_adds_a_renderer() 
     )
 
 
-def test_set_show_size_updates_widget_buffers_and_surface() -> None:
+def test_set_show_size_updates_the_widget_the_viewport_and_the_surface() -> None:
     # Given: a bare area at 8x8 with a recording surface.
     bare = bare_capture_area()
     assert _frame_shaped_arrays(bare.area), "the bare area has no work buffers"
@@ -575,8 +586,19 @@ def test_set_show_size_updates_widget_buffers_and_surface() -> None:
     ), bare.widget.config_calls
     assert bare.surface.resizes == [(800, 480)]
 
-    # Then: and every work buffer was reallocated at the new shape.
-    assert {array.shape for array in _frame_shaped_arrays(bare.area)} == {(480, 800, 3)}
+    # Then: and the viewport -- the size the coordinate transform derives a
+    # display size and a display origin from -- follows the new request too.
+    # A <Configure> would set it anyway; doing it here is what covers the case
+    # where the geometry manager never answers.
+    assert bare.area._viewport == (800, 480), bare.area._viewport
+
+    # Then: and the work buffers were NOT resized with it. They are capture-sized
+    # and stay that way, because _convert copies a converted (capture-sized)
+    # frame into them; reallocating them from the show size was a latent
+    # ValueError on every filtered frame.
+    assert {array.shape for array in _frame_shaped_arrays(bare.area)} == {
+        (CAPTURE_HEIGHT, CAPTURE_WIDTH, 3)
+    }
 
 
 def test_set_show_size_creates_no_photo_image_and_no_disabled_tk() -> None:
@@ -644,7 +666,7 @@ def test_a_filtered_frame_reaches_compose_as_the_filters_bgr_output() -> None:
     bare.area._filter_lower = lower
     bare.area._filter_upper = upper
     bare.area._filter_mode = "gray_out"
-    frame = filter_probe_frame()
+    frame = filter_probe_frame(CAPTURE_WIDTH, CAPTURE_HEIGHT)
 
     # Then: the fixture really does hold pixels inside and outside the window, so
     # the BGR assertion below cannot pass because the filter was a no-op.
@@ -661,7 +683,7 @@ def test_a_filtered_frame_reaches_compose_as_the_filters_bgr_output() -> None:
     expected = preview_filter.apply_filter(frame, lower, upper, "gray_out")
     composed = bare.surface.composed_frames()[0]
     assert np.array_equal(composed, expected)
-    assert composed.shape == (SHOW_HEIGHT, SHOW_WIDTH, 3)
+    assert composed.shape == (CAPTURE_HEIGHT, CAPTURE_WIDTH, 3)
 
     # Then: and it is BGR, not the RGB round trip. The saturated half survives
     # apply_filter with its channels intact, so the two orders differ.
@@ -679,7 +701,7 @@ def test_a_corrected_frame_reaches_compose_as_bgr_not_rgb() -> None:
     bare.area._filter_enabled = False
     bare.area._correction = correction
     bare.area._correction_active = True
-    frame = bgr_frame()
+    frame = bgr_frame(CAPTURE_WIDTH, CAPTURE_HEIGHT)
 
     # When: a frame is drawn.
     getattr(bare.area, "_drawFrame")(frame, 1)

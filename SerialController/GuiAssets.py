@@ -32,7 +32,8 @@ import numpy as np
 #   ボタンと十字キーの種類を直接使う（UnitCommand を経由しない）。
 from Commands.Keys import Button, Hat
 from Commands.PythonCommandBase import PythonCommand
-from core.coordinates import CoordinateMapper
+from core.Camera import CAPTURE_SIZE
+from core.coordinates import CoordinateMapper, fit_rect
 from core.gdi_surface import GdiSurface
 from core.preview_renderer import (
     TK_COLORREF,
@@ -352,10 +353,18 @@ class CaptureArea(tk.Frame):
         # tkinter の keys() を隠してしまうため削除した。
         self.is_show_var = is_show
 
-        self.radius = 60  # 描画するスティック円の半径
+        self.radius = 60  # 描画するスティック円の半径（表示座標）
+        # 上記をキャプチャ座標に直した半径。押下ごとにビューポートから求め直す
+        # ので、これは初期値にすぎない。オーバーレイはキャプチャ座標で持つため、
+        # 変換前の半径を渡すと画面の縮尺ぶんだけ小さい円になる。
+        self._stick_radius = self.radius
         self.show_width = int(show_width)
         self.show_height = int(show_height)
         self.show_size = (self.show_width, self.show_height)
+        # 実際に受け皿へ渡した表示面（ビューポート）。Tk が要求サイズどおりに
+        # 割り当てるとは限らないので、座標変換の基準はこちらが正であり、
+        # show_size は「要求した大きさ」であって「描いている大きさ」ではない。
+        self._viewport: tuple[int, int] = self.show_size
 
         self.lx_init, self.ly_init = 0, 0
         self.rx_init, self.ry_init = 0, 0
@@ -421,6 +430,9 @@ class CaptureArea(tk.Frame):
         self._rect_after_id: str | None = None
         # 直近に描いた世代。同じ seq の再合成・再提示を省く。
         self._last_frame_seq: int | None = None
+        # 停止画像で描いた最後の世代。カメラが止まると seq が動かないので、
+        # 生フレームとは別の箱で重複判定する（_drawFrame 側）。
+        self._last_disabled_seq: int | None = None
 
         # 描画の作業バッファ（毎フレームの確保を避ける）
         self._filter_enabled = False
@@ -563,27 +575,34 @@ class CaptureArea(tk.Frame):
     # 映像描画
     # ------------------------------------------------------------------
     def _loadDisabledImage(self) -> np.ndarray:
-        """カメラ停止中に出す画像（BGR）。読めなければ黒画像で代用する。"""
+        """カメラ停止中に出す画像（BGR）。読めなければ黒画像で代用する。
+
+        大きさは CAPTURE_SIZE（キャプチャ解像度）に固定する。受け皿は 1:1 の
+        フレームしか合成しないので、表示サイズで作ると dimension_mismatch で
+        弾かれ、「カメラが止まった」絵が一度も画面に出ない。
+        """
+        width, height = CAPTURE_SIZE
         # imread のスタブは ndarray 固定だが、実機では読めないと None が返る。
         img: Any = cv2.imread(DISABLED_IMAGE_PATH, cv2.IMREAD_COLOR)
         if img is None:
             logger.warning(f"disabled image not found: {DISABLED_IMAGE_PATH}")
-            return np.zeros((self.show_height, self.show_width, 3), np.uint8)
-        return cv2.resize(img, self.show_size, interpolation=cv2.INTER_AREA)
+            return np.zeros((height, width, 3), np.uint8)
+        return cv2.resize(img, CAPTURE_SIZE, interpolation=cv2.INTER_AREA)
 
     def _onConfigure(self, event: Any) -> None:
-        """Frame の大きさの変化を受け皿へ伝える（設計 8節）。
+        """Frame の大きさの変化を受け皿と座標変換の基準へ伝える（設計 8節）。
 
-        Frame が表示サイズより小さいときは表示サイズを下限にする。子は 1:1
-        でしか描けないので、Frame に押し縮められて映像が 1 ピクセルも出ない
-        ことがある。余白は映像が 1:1 で入らない差分として残る。
+        受け皿は渡された表示面へ映像を縦横比のまま収めて中央に置くので、
+        表示サイズを下限にはしない。下限を設けると受け皿は Frame より大きい
+        子窓に描くことになり、絵が枠からはみ出すうえクリック位置までずれる。
         """
-        self._surface.resize(
-            (
-                max(int(event.width), self.show_width),
-                max(int(event.height), self.show_height),
-            )
-        )
+        self._viewport = (int(event.width), int(event.height))
+        self._surface.resize(self._viewport)
+        # さっき描いた絵は古い配置の絵なので、同じ世代番号でも次の tick で
+        # 描き直させる。カメラが止まっていると世代番号は動かないので、
+        # ここを落とさないとリサイズ後だけ配置が古いまま止まる。
+        self._last_frame_seq = None
+        self._last_disabled_seq = None
         self._refreshSelftestMirror()
 
     def startCapture(self) -> None:
@@ -660,10 +679,16 @@ class CaptureArea(tk.Frame):
             )
 
     def _allocBuffers(self) -> None:
-        """描画の作業バッファと停止中画像を確保する（表示サイズ変更時に作り直す）。"""
-        h, w = self.show_height, self.show_width
-        self._filter_buf = np.empty((h, w, 3), np.uint8)
-        self._correct_buf = np.empty((h, w, 3), np.uint8)
+        """描画の作業バッファと停止中画像を確保する（キャプチャ解像度で固定）。
+
+        表示サイズではなく CAPTURE_SIZE で作る。``_convert`` は補正・抽出の結果を
+        このバッファへ np.copyto する対象がキャプチャ解像度のフレームなので、
+        表示サイズのバッファだと表示寸法が 1280x720 と違う場合に毎回例外になる。
+        大きさが変わらないので setShowsize から再実行しなくてよい。
+        """
+        width, height = CAPTURE_SIZE
+        self._filter_buf = np.empty((height, width, 3), np.uint8)
+        self._correct_buf = np.empty((height, width, 3), np.uint8)
         self._disabled = self._loadDisabledImage()
 
     def setPreviewFilter(
@@ -939,14 +964,20 @@ class CaptureArea(tk.Frame):
         logger.info(f"FPS set to {fps_value} (interval {self.next_frames:.1f} ms)")
 
     def setShowsize(self, show_height: int, show_width: int) -> None:
-        """表示サイズを変更する。作業バッファを作り直し、受け皿を新しい
-        表示サイズに追従させる（子窓そのものは作り直さない）。"""
+        """要求する表示サイズを変更する。受け皿と座標変換の基準も追従させる
+        （子窓そのものは作り直さない）。
+
+        ``<Configure>`` が来れば受け皿への resize はそちらが担当するが、幾何
+        マネージャが要求サイズどおりに割り当てないことがあるため、ここでも
+        同じ値を入れておく。作業バッファはキャプチャ解像度で固定なので、
+        作り直さない。
+        """
         self.show_width = int(show_width)
         self.show_height = int(show_height)
         self.show_size = (self.show_width, self.show_height)
         self.config(width=self.show_width, height=self.show_height)
-        self._allocBuffers()
-        self._surface.resize(self.show_size)
+        self._viewport = (self.show_width, self.show_height)
+        self._surface.resize(self._viewport)
         self._refreshSelftestMirror()
         logger.info(f"Show size set to {self.show_width} x {self.show_height}")
 
@@ -970,22 +1001,43 @@ class CaptureArea(tk.Frame):
         切り出す先が無いと分かるこの場合は camera の申告した名目サイズで
         よい。未接続カメラが 0 を申告してきても、その結果は読み込みも
         保存も起きない座標に落ちるだけ。
+
+        表示側の大きさは ``self._viewport`` へ ``fit_rect`` を通したものを使う。
+        受け皿は映像を枠に収めて余白付きで中央に置くので、変換側も同じ配置を
+        知らないと余白のぶんだけクリック位置がずれる。映像そのものの矩形
+        （余白は含めない）が display_size、余白の位置が display_origin になる。
+        描画側と同じ計算を 1 箇所で共有するのが目的。
         """
         capture_size = (
             self.camera.capture_size
             if frame is None
             else (int(frame.shape[1]), int(frame.shape[0]))
         )
+        origin_x, origin_y, width, height = fit_rect(capture_size, self._viewport)
         return CoordinateMapper(
             capture_size=capture_size,
-            display_size=self.show_size,
+            display_size=(width, height),
+            display_origin=(origin_x, origin_y),
         )
+
+    def _eventToCapture(self, event: Any) -> tuple[int, int]:
+        """マウスイベントの座標をキャプチャ座標へ直す。
+
+        すべての入力がここを入口にして、以後はキャプチャ座標だけで扱う。
+        倍率と余白はビューポートから毎回求める（リサイズ直後でもずれない）。
+        変換を 1 箇所に閉じ込めて、入力ごとに別の計算を持たないようにする。
+
+        クランプはしない。ここを通る値はフレームを切り出さない（四隅や
+        中心だけ）ので、余白のクリックを映像の端に丸めるのは
+        ``mouseCtrlLeftPress`` の責務。
+        """
+        return self._mapper().to_capture(event.x, event.y)
 
     # ------------------------------------------------------------------
     # 範囲スクリーンショット (Ctrl+Shift+ドラッグ)
     # ------------------------------------------------------------------
     def StartRangeSS(self, event: Any) -> None:
-        """範囲選択を開始する。"""
+        """範囲選択を開始する。選択枠は最初からキャプチャ座標で持つ。"""
         # 選択中フレームを保持するのでコピーを受け取る
         self.ss = self.camera.readFrame(copy=True)
         if self.master.is_use_left_stick_mouse.get():
@@ -993,7 +1045,9 @@ class CaptureArea(tk.Frame):
         if self.master.is_use_right_stick_mouse.get():
             self.UnbindRightClick()
 
-        self.min_x, self.min_y = event.x, event.y
+        # 選択するのは 1 つの枠で、切り出すのも描画するのも同じフレーム上の
+        # 座標なので、入口で一度変換して以降は持ち回すだけにする。
+        self.min_x, self.min_y = self._eventToCapture(event)
         self._guide = RectState(
             x0=self.min_x,
             y0=self.min_y,
@@ -1002,13 +1056,12 @@ class CaptureArea(tk.Frame):
             visible=True,
         )
 
-        capture_x, capture_y = self._mapper(self.ss).to_capture(self.min_x, self.min_y)
         logger.info(
             "Mouse down: Show ({}, {}) / Capture ({}, {})".format(
+                event.x,
+                event.y,
                 self.min_x,
                 self.min_y,
-                capture_x,
-                capture_y,
             )
         )
 
@@ -1019,21 +1072,26 @@ class CaptureArea(tk.Frame):
 
     def MotionRangeSS(self, event: Any) -> None:
         """ドラッグ中の選択枠を追従させる。"""
-        self.max_x = min(self.show_width, max(0, event.x))
-        self.max_y = min(self.show_height, max(0, event.y))
+        # クランプの基準は表示サイズではなくキャプチャ側の大きさにする。
+        # Motion はウィジェット箱の外まで届くので、表示サイズで縛ると余白や
+        # 原点のぶんだけ位置がずれた座標になる。選択中フレームの形から取る
+        # ので、カメラの要求サイズとの食い違いの影響も受けない。
+        mapper = self._mapper(self.ss)
+        capture_x, capture_y = mapper.to_capture(event.x, event.y)
+        capture_width, capture_height = mapper.capture_size
+        self.max_x = min(capture_width, max(0, capture_x))
+        self.max_y = min(capture_height, max(0, capture_y))
         # 端は包含端で持ち、renderer 側で GDI の +1 補正をする。
         self._guide = replace(self._guide, x1=self.max_x + 1, y1=self.max_y + 1)
 
     def ReleaseRangeSS(self, event: Any) -> None:
-        """選択範囲を切り出して保存する。"""
-        mapper = self._mapper(self.ss)
-        release_x, release_y = mapper.to_capture(self.max_x, self.max_y)
+        """選択範囲を切り出して保存する。min/max はすでにキャプチャ座標。"""
         logger.info(
             "Mouse up: Show ({}, {}) / Capture ({}, {})".format(
+                event.x,
+                event.y,
                 self.max_x,
                 self.max_y,
-                release_x,
-                release_y,
             )
         )
         if self.min_x > self.max_x:
@@ -1041,8 +1099,11 @@ class CaptureArea(tk.Frame):
         if self.min_y > self.max_y:
             self.min_y, self.max_y = self.max_y, self.min_y
 
-        crop_x0, crop_y0 = mapper.to_capture(self.min_x, self.min_y)
-        crop_x1, crop_y1 = mapper.to_capture(self.max_x, self.max_y)
+        # ここで二度と変換しない。StartRangeSS / MotionRangeSS が
+        # キャプチャ座標で持ち回しているので、二度目の変換は縮尺を
+        # 二重に掛けることになる（余白のある表示では 2 回分ずれる）。
+        crop_x0, crop_y0 = self.min_x, self.min_y
+        crop_x1, crop_y1 = self.max_x, self.max_y
         # loguru はファイル（と stderr）へしか出ず、ログ欄（sys.stdout 経由）には
         # 出さない。saveCapture の戻り値を捨てると、押した本人には「何も起きな
         # かった」と「保存された」の区別がつかないので、成否を 1 行だけ出す。
@@ -1123,14 +1184,21 @@ class CaptureArea(tk.Frame):
     def _angleMag(self, event: Any, x_init: int, y_init: int) -> tuple[float, float]:
         """中心からの角度(度)と 0〜1 に丸めた倒し量を返す。
 
+        ``x_init``/``y_init`` は押下位置のキャプチャ座標、``event`` も
+        キャプチャ座標へ直してから差を取る。半径もキャプチャ座標に直した
+        ``_stick_radius`` で割るので、「画面上で 60px 動かした」操作が
+        そのまま最大倒しになる。片方だけ変換すると、画面を縮小していると
+        きの操作だけ最大まで倒らなくなる。
+
         スカラー1個の計算に numpy を使うと ufunc のディスパッチが乗り
         math の5〜10倍遅い。ここはマウス Motion のたびに呼ばれるので
         math を使う（numpy は画像処理側だけで使う）。
         """
-        dx = event.x - x_init
-        dy = y_init - event.y
+        cursor_x, cursor_y = self._eventToCapture(event)
+        dx = cursor_x - x_init
+        dy = y_init - cursor_y
         angle = math.degrees(math.atan2(dy, dx))
-        mag = math.hypot(dx, dy) / self.radius
+        mag = math.hypot(dx, dy) / self._stick_radius
         return angle, min(max(mag, 0.0), 1.0)
 
     def _sendStick(self, side: str, angle: float, mag: float) -> None:
@@ -1252,9 +1320,19 @@ class CaptureArea(tk.Frame):
         ser.writeRow("3 8 80 80 80 80", is_show=False)
 
     def _armStick(self, side: str, x: int, y: int) -> None:
-        """押下。外周円の中心は操作点に留め、ノブも同じ位置に置く。"""
+        """押下。外周円の中心は操作点に留め、ノブも同じ位置に置く。
+
+        ``x``/``y`` はキャプチャ座標、``radius`` はその座標系に直した
+        ``_stick_radius`` を使う。オーバーレイは全面キャプチャ座標で描かれる
+        ので、ここを表示座標のままだと縮尺ぶんだけ円が小さく／ノブがずれる。
+        """
         state = StickState(
-            active=True, center_x=x, center_y=y, radius=self.radius, knob_x=x, knob_y=y
+            active=True,
+            center_x=x,
+            center_y=y,
+            radius=self._stick_radius,
+            knob_x=x,
+            knob_y=y,
         )
         if side == "L":
             self._stick_left = state
@@ -1269,18 +1347,19 @@ class CaptureArea(tk.Frame):
         外周円の中心は動かさない。押した位置がそのまま円の中心で、
         何回ドラッグしても動かない（設計 5節）。
 
-        振り切りの位置は拍下位置から d = radius + radius//11 の冁周上。
+        振り切りの位置は押下位置から d = radius + radius//11 の円周上。
         画面の y は下向きなので、sin だけ符号を反転する。GDI は整数しか
-        取れないので round する（半徑は最大 0.5px ずれるが、
-        端数分は表現できない）。
+        取れないので round する（半径は最大 0.5px ずれるが、
+        端数分は表現できない）。``x_init``/``y_init`` と半径はどちらも
+        キャプチャ座標系なので、この計算は表示縮尺に依存しない。
         """
         if mag >= 1:
-            d = self.radius + self.radius // 11
+            d = self._stick_radius + self._stick_radius // 11
             rad = math.radians(angle)
             knob_x = round(x_init + d * math.cos(rad))
             knob_y = round(y_init - d * math.sin(rad))
         else:
-            knob_x, knob_y = int(event.x), int(event.y)
+            knob_x, knob_y = self._eventToCapture(event)
         if side == "L":
             current = self._stick_left
         else:
@@ -1403,7 +1482,11 @@ class CaptureArea(tk.Frame):
         if self.master.is_use_right_stick_mouse.get():
             self.UnbindRightClick()
         self.config(cursor="dot")
-        self.lx_init, self.ly_init = event.x, event.y
+        # 押下位置はキャプチャ座標で持ち続ける。Motion 側も同じ座標系で
+        # 差を取るので、ここが表示座標のままだと誤差が縮尺ぶんだけ残る。
+        # 表示上の半径もキャプチャ座標へ直し直して、この 1 回のドラッグのあいだ固定する。
+        self.lx_init, self.ly_init = self._eventToCapture(event)
+        self._stick_radius = self._mapper().length_to_capture(self.radius)
         self._armStick("L", self.lx_init, self.ly_init)
         self._langle = None
         self._lmag = None
@@ -1448,7 +1531,9 @@ class CaptureArea(tk.Frame):
         if self.master.is_use_left_stick_mouse.get():
             self.UnbindLeftClick()
         self.config(cursor="dot")
-        self.rx_init, self.ry_init = event.x, event.y
+        # 左と同じく、押下位置も半径もキャプチャ座標へ移してから固定する。
+        self.rx_init, self.ry_init = self._eventToCapture(event)
+        self._stick_radius = self._mapper().length_to_capture(self.radius)
         self._armStick("R", self.rx_init, self.ry_init)
         self._rangle = None
         self._rmag = None
@@ -1496,7 +1581,7 @@ class CaptureArea(tk.Frame):
         tag: str = "",
         ms: int = 2000,
     ) -> None:
-        """キャプチャ座標で指定された矩形を表示座標に直して描く。
+        """キャプチャ座標で指定された矩形をそのまま描く。
 
         tag は後方互換のため受け取るが、枠は1組だけを使い回すので
         参照しない。消去の予約も after_cancel で前回分を取り消してから
@@ -1504,19 +1589,21 @@ class CaptureArea(tk.Frame):
 
         外面だけ capture 座標を 1.0 拡がっている（従来の 4.5px 白い枠）。
         内面は補正なし。1つにまとめると白い枠が黙って消える。
+
+        受け皿はキャプチャ解像度のバックバッファへ描くので、ここでの
+        座標変換は不要になった。表示座標へ直すと、表示される枠が検出された
+        画素の 2 倍（または 1/2 倍）の位置にずれてしまう。
         """
-        # 認識矩形は float で届く。変換層は整数の画素番号を前提とするので、
-        # 外面は 1px 拡げたキャプチャ座標まで含めてここで整数に落とす。
-        # 倍率の丸めは層側に一本化するので、ここでは矩形を画素番号に
-        # することだけを行う。
-        mapper = self._mapper()
-        outer_x0, outer_y0 = mapper.to_display(round(x1 - 1.0), round(y1 - 1.0))
-        outer_x1, outer_y1 = mapper.to_display(round(x2 + 1.0), round(y2 + 1.0))
-        inner_x0, inner_y0 = mapper.to_display(round(x1), round(y1))
-        inner_x1, inner_y1 = mapper.to_display(round(x2), round(y2))
+        # 認識矩形は float で届く。オーバーレイは整数しか持てないため、
+        # 外面は 1px 拡げた値まで含めてここで画素番号に落とす。
         self._img_rect = ImgRectState(
-            outer=RectState(x0=outer_x0, y0=outer_y0, x1=outer_x1, y1=outer_y1),
-            inner=RectState(x0=inner_x0, y0=inner_y0, x1=inner_x1, y1=inner_y1),
+            outer=RectState(
+                x0=round(x1 - 1.0),
+                y0=round(y1 - 1.0),
+                x1=round(x2 + 1.0),
+                y1=round(y2 + 1.0),
+            ),
+            inner=RectState(x0=round(x1), y0=round(y1), x1=round(x2), y1=round(y2)),
             visible=True,
             # 未知の名前は白に落とす。Tk なら unknown color name で例外に
             # なっていたが、この経路は CaptureAreaProxy が debug で握り

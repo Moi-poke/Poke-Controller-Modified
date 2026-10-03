@@ -403,6 +403,8 @@ def bare_capture_area(
     rather than an accident of the fixture:
 
     * ``_surface``          -- the ``PreviewRenderer`` that owns the present path
+    * ``_viewport``         -- the display box the surface was last sized to
+    * ``_stick_radius``     -- ``radius`` in capture units
     * ``_stick_left`` / ``_stick_right`` / ``_guide`` / ``_img_rect`` -- the four
       design-named ``OverlayState`` components
     * ``_disabled``         -- the BGR disabled image
@@ -426,9 +428,17 @@ def bare_capture_area(
     area.is_show_var = _SettingFlag(True)
 
     area.radius = STICK_RADIUS
+    # The stick radius in capture units. Production recomputes it on every press
+    # from the viewport; this is the value that recomputation produces while
+    # capture_size == show_size, so a bare instance is not already wrong.
+    area._stick_radius = STICK_RADIUS
     area.show_width = width
     area.show_height = height
     area.show_size = (width, height)
+    # The viewport the Frame was actually given. Equal to the show size until a
+    # <Configure> says otherwise, and the only reference CaptureArea._mapper
+    # derives a display size and a display origin from.
+    area._viewport = (width, height)
 
     area.lx_init, area.ly_init = 0, 0
     area.rx_init, area.ry_init = 0, 0
