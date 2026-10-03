@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from ui.camera_panel import CameraPanelMixin
 from ui.layout_panel import LayoutPanelMixin
+from ui.scroll_host import ScrollHost
 
 _PROFILE = "switch1"
 _COLOR = "#1E88E5"
@@ -72,7 +73,9 @@ class _Host(LayoutPanelMixin):
         self.show_size = tk.StringVar(master=root, value="640x360")
         self.com_port_name = tk.StringVar(master=root, value="COM9")
 
-        self.frame_1 = ttk.Frame(root)
+        # Window と同じく、本体はスクロール入れ物の中身として作る。
+        self.scroll_host = ScrollHost(root)
+        self.frame_1 = self.scroll_host.inner
         # Window._build_ui と同じ: カメラ行 0、タブ欄が行 1〜3、ログが列 3。
         self.camera_lf = ttk.Labelframe(self.frame_1, text="Camera")
         ttk.Label(self.camera_lf, text="Camera ID").grid(padx="5", sticky="ew")
@@ -91,7 +94,7 @@ class _Host(LayoutPanelMixin):
         self.pauseButton = ttk.Button(self.frame_1, text="Pause")
         self._build_layout_widgets()
 
-        self.frame_1.pack(expand=True, fill="both", side="top")
+        self.scroll_host.pack(expand=True, fill="both", side="top")
         self.frame_1.columnconfigure(3, weight=1)
         self.frame_1.rowconfigure(1, weight=1)
         self.frame_1.rowconfigure(2, weight=1)
@@ -106,21 +109,6 @@ class _Host(LayoutPanelMixin):
 
     def _apply_content_minsize(self) -> None:
         pass
-
-
-@pytest.fixture(scope="module")
-def tk_root() -> Iterator[tk.Tk]:
-    # Tk は 1 プロセス 1 個に留める。テストごとに作り直すと Windows では
-    # 時々 "tcl_findLibrary" で作れなくなり、テストが黙って skip される。
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:  # 表示の無い環境では Tk 自体が作れない
-        pytest.skip(f"Tk unavailable: {exc}")
-    root.withdraw()
-    try:
-        yield root
-    finally:
-        root.destroy()
 
 
 @pytest.fixture

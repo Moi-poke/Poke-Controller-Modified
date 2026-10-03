@@ -41,6 +41,7 @@ class LayoutPanelMixin:
 
     root: Any
     frame_1: Any
+    scroll_host: Any
     camera_lf: Any
     preview: Any
     profile: str
@@ -307,8 +308,8 @@ class LayoutPanelMixin:
         if band is not None:
             if color:
                 band.config(background=color)
-                # frame_1 は pack 済みなので、順序を指定しないと帯が下に来る。
-                band.pack(side="top", fill="x", before=self.frame_1)
+                # 本体は pack 済みなので、順序を指定しないと帯が下に来る。
+                band.pack(side="top", fill="x", before=self.scroll_host)
             else:
                 band.pack_forget()
 

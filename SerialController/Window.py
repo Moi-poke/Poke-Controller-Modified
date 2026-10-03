@@ -42,6 +42,7 @@ from ui.command_panel import CommandPanelMixin
 from ui.layout_panel import LayoutPanelMixin
 from ui.log_panel import LogPanelMixin
 from ui.preview_clock import StopResult
+from ui.scroll_host import ScrollHost
 from ui.serial_panel import SerialPanelMixin
 
 NAME = "Poke-Controller"
@@ -52,11 +53,13 @@ VERSION = "v4.0.2 Modified"  # based on 1.0-beta3(custom by @dragonite303)
 TITLE_COMMAND_MAX = 20
 
 
-# メインウィンドウの最小サイズ。全ウィジェットが見えるよう、
-# 中身の frame_1（1280x720 要求）に合わせる。縮めすぎによる
-# 操作欄のクリップを防ぐ。
-MIN_WINDOW_WIDTH = 1280
-MIN_WINDOW_HEIGHT = 720
+# メインウィンドウの最小サイズ。中身が収まらない分はスクロールバーで届くので、
+# 全部が見える大きさは求めない。標準は操作欄が読める程度、コンパクト系は
+# 複数台を並べられる小ささまで許す。
+MIN_WINDOW_WIDTH = 640
+MIN_WINDOW_HEIGHT = 480
+MIN_COMPACT_WIDTH = 320
+MIN_COMPACT_HEIGHT = 200
 
 
 # すべてのパスをこの1点から解決する。起動する場所（カレント
@@ -263,7 +266,9 @@ class PokeControllerApp(
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        self.frame_1 = ttk.Frame(self.root)
+        # 窓が中身より小さいときはバーで届くようにする。frame_1 はその中身。
+        self.scroll_host = ScrollHost(self.root)
+        self.frame_1 = self.scroll_host.inner
         self._build_camera_frame()
         self._build_setting_tabs()
         self._build_audio_frame()
@@ -276,7 +281,7 @@ class PokeControllerApp(
         self._build_layout_widgets()
 
         self.frame_1.config(height=720, padding=5, relief="flat", width=1280)
-        self.frame_1.pack(expand=True, fill="both", side="top")
+        self.scroll_host.pack(expand=True, fill="both", side="top")
         self.frame_1.columnconfigure(3, weight=1)
         # タブ欄とログ欄の行を縦に伸ばす。カメラ行と道具行は固定。
         self.frame_1.rowconfigure(1, weight=1)
@@ -284,35 +289,16 @@ class PokeControllerApp(
         self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
     def _apply_content_minsize(self) -> None:
-        """中身の要求寸法を最小サイズにする。タブの見切れ防止。
+        """レイアウトに合わせて最小サイズを決める。
 
-        固定値だけでは背の高いタブ（コマンド等）が隠れる。実測の
-        要求寸法を下限にし、小さい画面では画面内に収まる上限で切る。
-
-        コンパクト / プレビューのレイアウトでは MIN_WINDOW_* の下限を
-        使わない。1280x720 を要求されたままでは、4 台を 1 画面に
-        並べられない（実測の要求寸法＝プレビュー＋1 行だけになる）。
-        画面サイズでの上限は従来どおり。
+        中身が収まらない分は ScrollHost のスクロールバーで届くので、中身の
+        要求寸法までは縮め止めない。標準は操作欄が読める下限、コンパクト /
+        プレビューは 4 台を 1 画面に並べられる小さい下限にする。
         """
-        try:
-            self.root.update_idletasks()
-            req_w = int(self.frame_1.winfo_reqwidth()) + 10
-            req_h = int(self.frame_1.winfo_reqheight()) + 10
-            scr_w = int(self.root.winfo_screenwidth())
-            scr_h = int(self.root.winfo_screenheight())
-        except Exception:
-            self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
-            return
         if self._layout_plan().enforce_min_window:
-            min_w = max(MIN_WINDOW_WIDTH, min(req_w, scr_w))
-            min_h = max(MIN_WINDOW_HEIGHT, min(req_h, max(720, scr_h - 80)))
-        else:
-            min_w = min(req_w, scr_w)
-            min_h = min(req_h, max(720, scr_h - 80))
-        try:
-            self.root.minsize(min_w, min_h)
-        except Exception:
             self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+        else:
+            self.root.minsize(MIN_COMPACT_WIDTH, MIN_COMPACT_HEIGHT)
 
     def _build_setting_tabs(self) -> None:
         """シリアル/コントローラ/オーディオ/コマンドのタブ枠を作る。

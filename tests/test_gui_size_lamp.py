@@ -123,18 +123,19 @@ def test_menubar_has_no_wake_setup() -> None:
 
 
 def test_window_has_minimum_size() -> None:
-    """全ウィジェット可視のため最小サイズを制限する。
+    """最小サイズは小さい下限だけ。収まらない分はスクロールバーで届く。
 
-    背の高いタブの見切れ防止に、中身の要求寸法を下限にする。
+    中身の要求寸法を下限にすると、複数台を 1 画面に並べられない。見切れは
+    ScrollHost が受け持つ（tests/test_scroll_host_contract.py）。
     """
-    from Window import PokeControllerApp
+    from Window import MIN_COMPACT_WIDTH, MIN_WINDOW_WIDTH, PokeControllerApp
 
     assert hasattr(PokeControllerApp, "_apply_content_minsize")
+    assert MIN_COMPACT_WIDTH < MIN_WINDOW_WIDTH
     src = Path("SerialController/Window.py").read_text(encoding="utf-8")
-    assert "winfo_reqwidth" in src
-    assert "winfo_reqheight" in src
     assert ".minsize(" in src
-    # 計測はプレビュー確定後でないと小さな値になる。構築時厳禁。
+    assert "ScrollHost(self.root)" in src
+    # レイアウトが確定してからでないと下限を誤る。構築時厳禁。
     assert src.index("_build_preview()") < src.index("self._apply_content_minsize()")
     build_ui = src[src.index("def _build_ui") : src.index("def _build_setting_tabs")]
     assert "self._apply_content_minsize()" not in build_ui

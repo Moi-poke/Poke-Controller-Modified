@@ -131,28 +131,9 @@ class AudioPanelMixin:
         )
         self.audio_reload_button.grid(padx="5", row=0, column=5)
 
-        ttk.Label(self.audio_lf, text="Level:").grid(padx="5", row=1, column=0)
-        ttk.Label(self.audio_lf, textvariable=self.audio_level).grid(
-            row=1, column=1, sticky="w"
-        )
-        ttk.Label(self.audio_lf, textvariable=self.audio_latency).grid(
-            row=1, column=2, columnspan=2, sticky="w"
-        )
-        self.audio_record_button = ttk.Button(
-            self.audio_lf, text="Test Rec 3s", command=self.recordAudioTest
-        )
-        self.audio_record_button.grid(padx="5", row=1, column=5)
-
-        self.audio_measure_button = ttk.Button(
-            self.audio_lf, text="遅延計測", command=self.measureLatency
-        )
-        self.audio_measure_button.grid(padx="5", row=2, column=0)
-
-        ttk.Label(self.audio_lf, textvariable=self.audio_measure_result).grid(
-            row=2, column=1, columnspan=5, sticky="w"
-        )
-
-        ttk.Label(self.audio_lf, text="Volume:").grid(padx="5", row=3, column=0)
+        # 2 行目: 音量（スライダーと値）と録音テスト。音量は頻繁に触るので、
+        # 機器選択の直下に置く。
+        ttk.Label(self.audio_lf, text="Volume:").grid(padx="5", row=1, column=0)
         self.audio_volume_scale = ttk.Scale(
             self.audio_lf,
             from_=0.0,
@@ -161,13 +142,30 @@ class AudioPanelMixin:
             command=lambda _value: self._update_volume_label(),
         )
         self.audio_volume_scale.grid(
-            padx="5", row=3, column=1, columnspan=3, sticky="ew"
+            padx="5", row=1, column=1, columnspan=3, sticky="ew"
         )
         self.audio_volume_scale.bind(
             "<ButtonRelease-1>", self._onVolumeReleased, add=""
         )
-        self.audio_volume_label = ttk.Label(self.audio_lf, text="80%")
-        self.audio_volume_label.grid(padx="5", row=3, column=4, sticky="w")
+        # 値は「100% (-0.0 dB)」まで入る幅に固定し、動かしても行が揺れないようにする。
+        self.audio_volume_label = ttk.Label(self.audio_lf, text="80%", width=15)
+        self.audio_volume_label.grid(padx="5", row=1, column=4, sticky="w")
+        self.audio_record_button = ttk.Button(
+            self.audio_lf, text="Test Rec 3s", command=self.recordAudioTest
+        )
+        self.audio_record_button.grid(padx="5", row=1, column=5)
+
+        # 3 行目: 計測系（レベル・遅延の推定と実測）を 1 行にまとめる。
+        ttk.Label(self.audio_lf, text="Level:").grid(padx="5", row=2, column=0)
+        measure = ttk.Frame(self.audio_lf)
+        measure.grid(row=2, column=1, columnspan=4, sticky="w")
+        ttk.Label(measure, textvariable=self.audio_level, width=8).pack(side="left")
+        ttk.Label(measure, textvariable=self.audio_latency).pack(side="left", padx=8)
+        ttk.Label(measure, textvariable=self.audio_measure_result).pack(side="left")
+        self.audio_measure_button = ttk.Button(
+            self.audio_lf, text="遅延計測", command=self.measureLatency
+        )
+        self.audio_measure_button.grid(padx="5", row=2, column=5)
 
         # タブの中へ載せる。タブ内ではこの枠が唯一のためpackで広げる。
         self.audio_lf.pack(fill="both", expand=True, padx=5, pady=5)
