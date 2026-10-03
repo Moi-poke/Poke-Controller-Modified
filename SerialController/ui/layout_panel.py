@@ -40,7 +40,6 @@ class LayoutPanelMixin:
 
     root: Any
     frame_1: Any
-    scroll_host: Any
     camera_lf: Any
     preview: Any
     profile: str
@@ -179,9 +178,9 @@ class LayoutPanelMixin:
         self.camera_lf.config(text="カメラ" if plan.show_camera_controls else "")
 
         # 下端の状態の 1 行。本体より先に pack して、窓が小さいときに本体より
-        # 先に詰められないようにする（スクロールの外に置く）。
+        # 先に詰められないようにする。
         if plan.show_status_bar:
-            self.status_bar.pack(side="bottom", fill="x", before=self.scroll_host)
+            self.status_bar.pack(side="bottom", fill="x", before=self.frame_1)
         else:
             self.status_bar.pack_forget()
 
@@ -224,6 +223,11 @@ class LayoutPanelMixin:
             return
         var.set(bool(visible))
         self._relayout_and_save()
+
+    def resetPaneSashes(self) -> None:
+        """仕切りを既定の位置へ戻して保存する。"""
+        self._pane_arranger.reset_sashes()
+        self._on_setting_changed()
 
     def _relayout_and_save(self) -> None:
         self._apply_layout()
@@ -357,7 +361,7 @@ class LayoutPanelMixin:
             if color:
                 band.config(background=color)
                 # 本体は pack 済みなので、順序を指定しないと帯が下に来る。
-                band.pack(side="top", fill="x", before=self.scroll_host)
+                band.pack(side="top", fill="x", before=self.frame_1)
             else:
                 band.pack_forget()
 

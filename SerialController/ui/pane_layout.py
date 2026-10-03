@@ -20,6 +20,14 @@ from typing import Any
 
 from core.pane_arrangement import Leaf, Node, Split, describe
 
+# 仕切りの見た目。Windows 標準（vista）テーマは仕切りを地の色で描くので、
+# どこを掴めばよいか分からない。色は窓の地（#F0F0F0）と 3.13:1（非テキスト
+# 要素のコントラストの目安 3:1 以上）、太さは掴みやすい 6px にする。
+# 仕切り（Sash）の太さはテーマ全体の設定なので、ログ欄の上下の仕切りも揃う。
+STYLE = "PokeCon.TPanedwindow"
+SASH_COLOR = "#7d8996"
+SASH_THICKNESS = 6
+
 
 class PaneArranger:
     """1 つの親の中で、欄を形どおりに並べ直す。"""
@@ -33,11 +41,16 @@ class PaneArranger:
         # 形ごとの仕切り位置（全長に対する割合）。組み直しても前の位置へ戻す。
         self.sash_ratios: dict[str, list[float]] = {}
         self.root_pane: ttk.PanedWindow | None = None
+        self._tree: Node | None = None
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
+        style = ttk.Style(parent)
+        style.configure(STYLE, background=SASH_COLOR)
+        style.configure("Sash", sashthickness=SASH_THICKNESS)
 
     def apply(self, tree: Node) -> None:
         """今の並びを捨てて、形どおりに並べ直す。"""
+        self._tree = tree
         self._clear()
         top = self._build(tree)
         top.grid(in_=self.parent, row=0, column=0, sticky="nsew")
@@ -49,7 +62,7 @@ class PaneArranger:
         if isinstance(node, Leaf):
             return self.widgets[node.name]
         assert isinstance(node, Split)
-        pane = ttk.PanedWindow(self.parent, orient=node.orient)
+        pane = ttk.PanedWindow(self.parent, orient=node.orient, style=STYLE)
         self._panes.append(pane)
         self._keys[str(pane)] = describe(node)
         if self.root_pane is None:
@@ -72,6 +85,17 @@ class PaneArranger:
         self._panes = []
         self._keys = {}
         self.root_pane = None
+
+    def reset_sashes(self) -> None:
+        """仕切りを既定の位置へ戻す（ドラッグできない人のための代わりの手段）。"""
+        self._panes_forget_positions()
+        if self._tree is not None:
+            self.apply(self._tree)
+
+    def _panes_forget_positions(self) -> None:
+        # 組み直しの前に控えると今の位置が残るので、先に仕切りを壊してから捨てる。
+        self._clear()
+        self.sash_ratios = {}
 
     @staticmethod
     def _length(pane: ttk.PanedWindow) -> int:

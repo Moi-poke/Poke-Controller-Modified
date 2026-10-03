@@ -95,7 +95,7 @@ def test_menubar_has_no_wake_setup() -> None:
 
 
 def test_window_has_minimum_size() -> None:
-    """最小サイズは小さい下限だけ。収まらない分はスクロールバーで届く。
+    """最小サイズは小さい下限だけ。収まらない設定タブは欄の中でスクロールする。
 
     中身の要求寸法を下限にすると、複数台を 1 画面に並べられない。見切れは
     ScrollHost が受け持つ（tests/test_scroll_host_contract.py）。
@@ -106,7 +106,9 @@ def test_window_has_minimum_size() -> None:
     assert MIN_COMPACT_WIDTH < MIN_WINDOW_WIDTH
     src = Path("SerialController/Window.py").read_text(encoding="utf-8")
     assert ".minsize(" in src
-    assert "ScrollHost(self.root)" in src
+    # 窓全体ではなく、設定タブの欄の中だけをスクロールさせる。
+    assert "ScrollHost(self.frame_1)" in src
+    assert "ScrollHost(self.root)" not in src
     # レイアウトが確定してからでないと下限を誤る。構築時厳禁。
     assert src.index("_build_preview()") < src.index("self._apply_content_minsize()")
     build_ui = src[src.index("def _build_ui") : src.index("def _build_setting_tabs")]
@@ -123,7 +125,7 @@ def test_window_puts_the_three_areas_on_draggable_panes() -> None:
     assert "PaneArranger(" in src
     for area in (
         '"preview": self.camera_lf',
-        '"tabs": self.setting_nb',
+        '"tabs": self.tabs_scroll',
         '"log": self.log_area',
     ):
         assert area in src

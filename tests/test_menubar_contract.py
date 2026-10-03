@@ -104,6 +104,7 @@ def test_the_menu_bar_uses_the_standard_desktop_headings_in_order(
         ("ファイル(F)", "キャプチャを保存", "saveCapture"),
         ("ファイル(F)", "キャプチャフォルダを開く", "OpenCaptureDir"),
         ("ファイル(F)", "終了", "exit"),
+        ("表示(V)", "仕切りを既定の位置に戻す", "resetPaneSashes"),
         ("接続(N)", "シリアルポートを再接続", "reloadSerialPort"),
         ("接続(N)", "シリアルポートを切断", "inactivateSerial"),
         ("接続(N)", "カメラを再読み込み", "openCamera"),

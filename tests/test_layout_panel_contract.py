@@ -82,15 +82,18 @@ class _Host(LayoutPanelMixin):
         self.show_tabs_pane = tk.BooleanVar(master=root, value=True)
         self.show_log_pane = tk.BooleanVar(master=root, value=True)
 
-        # Window と同じく、本体はスクロール入れ物の中身として作る。
-        self.scroll_host = ScrollHost(root)
-        self.frame_1 = self.scroll_host.inner
+        # Window と同じく、本体は窓いっぱいの枠。スクロールは設定タブの欄の中だけ。
+        self.frame_1 = ttk.Frame(root)
         # Window._build_ui と同じ: 3 つの欄を frame_1 の子として作り、仕切りに載せる。
         self.camera_lf = ttk.Labelframe(self.frame_1, text="Camera")
         ttk.Label(self.camera_lf, text="Camera ID").grid(padx="5", sticky="ew")
         self.preview = _PreviewDouble(self.camera_lf)
         self.preview.grid(column=0, columnspan=7, row=2, padx="5", pady="5")
-        self.setting_nb = ttk.Frame(self.frame_1, height=300, width=400)
+        self.tabs_scroll = ScrollHost(self.frame_1)
+        self.setting_nb = ttk.Frame(self.tabs_scroll.inner, height=300, width=400)
+        self.setting_nb.grid(row=0, column=0, sticky="nsew")
+        self.tabs_scroll.inner.rowconfigure(0, weight=1)
+        self.tabs_scroll.inner.columnconfigure(0, weight=1)
         # ログ欄の枠（ノートとツールバー）。log_panel._build_log_area と同じ形。
         self.log_area = ttk.Frame(self.frame_1)
         self.log_nb = ttk.Frame(self.log_area, width=300, height=200)
@@ -99,13 +102,13 @@ class _Host(LayoutPanelMixin):
         self.log_bar.grid(column=0, row=1, sticky="ew")
         self._pane_arranger = PaneArranger(
             self.frame_1,
-            {"preview": self.camera_lf, "tabs": self.setting_nb, "log": self.log_area},
+            {"preview": self.camera_lf, "tabs": self.tabs_scroll, "log": self.log_area},
         )
         self.startButton = ttk.Button(self.frame_1, text="Start")
         self.pauseButton = ttk.Button(self.frame_1, text="Pause")
         self._build_layout_widgets()
 
-        self.scroll_host.pack(expand=True, fill="both", side="top")
+        self.frame_1.pack(expand=True, fill="both", side="top")
         # Window も組み立て直後に 1 回適用する（起動時のレイアウト）。
         self._apply_layout()
 
@@ -170,7 +173,7 @@ def test_returning_to_standard_gives_the_tab_rows_their_height_back(
 
     # Then: タブ欄が切替前と同じ高さに戻る（行の重みを戻し忘れると、
     #       カメラ行が余りを独占してタブ欄が縮む）。
-    assert host.setting_nb.winfo_ismapped()
+    assert host.tabs_scroll.winfo_ismapped()
     assert host.setting_nb.winfo_height() == standard_tabs_h
 
 
@@ -288,7 +291,7 @@ def test_rearranging_keeps_every_area_and_status_in_place(host: _Host) -> None:
 
         # Then: 3 つの欄はどれも出たまま（並べ替えで消えない）。
         assert host.camera_lf.winfo_ismapped(), arrangement
-        assert host.setting_nb.winfo_ismapped(), arrangement
+        assert host.tabs_scroll.winfo_ismapped(), arrangement
         assert host.log_area.winfo_ismapped(), arrangement
     assert host.arrangement.get() == "log_right"
 
@@ -321,5 +324,31 @@ def test_a_collapsed_pane_stays_collapsed_across_compact_and_back(host: _Host) -
     _settle(host)
 
     # Then: 利用者が畳んだ欄は、レイアウトを往復しても畳んだまま。
-    assert not host.setting_nb.winfo_ismapped()
+    assert not host.tabs_scroll.winfo_ismapped()
     assert host.log_area.winfo_ismapped()
+
+
+def test_stack_fits_the_window_width_instead_of_scrolling_the_whole_window(
+    host: _Host,
+) -> None:
+    # Given: the stack arrangement in a window narrower than the content request.
+    host.applyArrangement("stack")
+    host.root.geometry("500x800+0+0")
+    _settle(host)
+
+    # Then: 本体は窓の幅に収まる（窓全体を横にスクロールさせない）。ログは
+    #       欄の幅で折り返し、プレビューは窓の幅を基準に中央へ置かれる。
+    root_w = host.root.winfo_width()
+    assert host.frame_1.winfo_width() <= root_w
+    assert host.log_area.winfo_width() <= root_w
+    assert host.camera_lf.winfo_width() <= root_w
+
+
+def test_a_short_tabs_pane_scrolls_inside_itself(host: _Host) -> None:
+    # Given: a window too short for the tabs area.
+    host.root.geometry("960x360+0+0")
+    _settle(host)
+
+    # Then: スクロールは設定タブの欄の中だけに出る。本体は窓の高さに収まる。
+    assert host.tabs_scroll.vbar.winfo_ismapped()
+    assert host.frame_1.winfo_height() <= host.root.winfo_height()

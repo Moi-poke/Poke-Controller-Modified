@@ -173,6 +173,10 @@ class PokeController_Menubar(tk.Menu):
                 variable=var,
                 command=self._pane_command(name, var),
             )
+        # ドラッグの代わりの手段（ドラッグできない／動かしすぎたときの戻り道）。
+        m.add_command(
+            label="仕切りを既定の位置に戻す", command=self._app_call("resetPaneSashes")
+        )
         m.add_separator()
         m.add_command(
             label="ウィンドウ 1280x720",

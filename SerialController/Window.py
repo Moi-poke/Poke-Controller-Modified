@@ -26,7 +26,7 @@ import Settings
 import WindowGeometry
 import WindowUtils
 import cv2
-from GuiAssets import CaptureArea, ControllerGUI
+from GuiAssets import CaptureArea
 from Menubar import PokeController_Menubar
 from core import CommandStats, PokeConLogger
 from core.Camera import Camera
@@ -78,7 +78,7 @@ TOOLTIPS: dict[str, str] = {
     "reloadComPort": "ポート一覧を取り直して接続し直す",
     "disconnectComPort": "シリアルポートを閉じる",
     "cb_show_serial": "送った内容をログ欄に出す（確認用）",
-    "simpleConButton": "画面上のコントローラで操作する",
+    "simpleConButton": "仮想コントローラを別ウィンドウで開く（閉じるとタブに戻る）",
     "audio_reload_button": "音声デバイスを開き直す",
     "compact_start": "コマンドを開始 / 停止 (F6 / Esc)",
     "compact_pause": "コマンドを一時停止 / 再開 (F7)",
@@ -193,7 +193,6 @@ class PokeControllerApp(
         self.baud_rate_state = "disabled"
         self.os_name = platform.system()
 
-        self.controller: ControllerGUI | None = None
         self.poke_treeview: Any = None
         self.camera: Camera | None = None
         self.audio_service = AudioService(notify_user=print)
@@ -302,9 +301,10 @@ class PokeControllerApp(
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # 窓が中身より小さいときはバーで届くようにする。frame_1 はその中身。
-        self.scroll_host = ScrollHost(self.root)
-        self.frame_1 = self.scroll_host.inner
+        # 本体は窓いっぱいの枠。窓全体はスクロールさせず、欄ごとに窓の大きさへ
+        # 合わせる（ログは折り返し、プレビューは縮む）。収まらない設定タブだけ
+        # 欄の中でスクロールする（_build_setting_tabs）。
+        self.frame_1 = ttk.Frame(self.root)
         self._build_camera_frame()
         self._build_setting_tabs()
         self._build_audio_frame()
@@ -315,7 +315,7 @@ class PokeControllerApp(
         # 3 つの欄を仕切りに載せる道具。並べ方は _apply_layout が決める。
         self._pane_arranger = PaneArranger(
             self.frame_1,
-            {"preview": self.camera_lf, "tabs": self.setting_nb, "log": self.log_area},
+            {"preview": self.camera_lf, "tabs": self.tabs_scroll, "log": self.log_area},
         )
         # レイアウト切替の部品（色の帯とコンパクトバー）。他の欄が
         # 揃った後に作る（コンパクトバーはカメラ欄の子として載せる）。
@@ -324,7 +324,7 @@ class PokeControllerApp(
         self._attach_tooltips()
 
         self.frame_1.config(height=720, padding=5, relief="flat", width=1280)
-        self.scroll_host.pack(expand=True, fill="both", side="top")
+        self.frame_1.pack(expand=True, fill="both", side="top")
         self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
     def _attach_tooltips(self) -> None:
@@ -354,7 +354,13 @@ class PokeControllerApp(
         各パネルは自分のタブへ Labelframe を載せる。カメラとログは
         タブの外に残し、常時見えるようにする。
         """
-        self.setting_nb = ttk.Notebook(self.frame_1)
+        # 背の高いタブ（コマンド等）が欄に収まらないときは、欄の中でスクロール
+        # させる。窓全体をスクロールさせると、ログやプレビューまで一緒に動く。
+        self.tabs_scroll = ScrollHost(self.frame_1)
+        self.tabs_scroll.inner.rowconfigure(0, weight=1)
+        self.tabs_scroll.inner.columnconfigure(0, weight=1)
+        self.setting_nb = ttk.Notebook(self.tabs_scroll.inner)
+        self.setting_nb.grid(row=0, column=0, sticky="nsew")
         self.tab_serial = ttk.Frame(self.setting_nb)
         self.tab_controller = ttk.Frame(self.setting_nb)
         self.tab_audio = ttk.Frame(self.setting_nb)

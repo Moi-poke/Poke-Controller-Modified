@@ -1823,7 +1823,11 @@ class ControllerGUI:
         ("HOME", "HOME", 5, 50, 270),
     )
 
-    def __init__(self, root: Any, ser: Any) -> None:
+    def __init__(self, root: Any, ser: Any, container: Any = None) -> None:
+        """container を渡すとその枠の中に組み立てる（メイン画面への埋め込み）。
+
+        渡さなければ従来どおり別ウィンドウ（Toplevel）を開く。
+        """
         self.ser = ser
         # ボタンの押しっぱなしに対応するための保持。
         #   従来は tk.Button の command= を使っていた。command は
@@ -1837,6 +1841,16 @@ class ControllerGUI:
             str, tk.Button
         ] = {}  # 表示名 -> tk.Button（見た目の反映用）
 
+        if container is not None:
+            self.window: Any = tk.Frame(container)
+            self.window.pack(anchor="nw")
+        else:
+            self._open_window(root)
+        self._build_pad()
+        logger.debug("Create GUI controller")
+
+    def _open_window(self, root: Any) -> None:
+        """別ウィンドウとして開く（従来の出し方）。"""
         self.window = tk.Toplevel(root)
         self.window.title("Switch Controller Simulator")
         # 親ウィンドウの位置から少しずらして出す。geometry の座標は
@@ -1849,6 +1863,8 @@ class ControllerGUI:
         self.window.geometry("%dx%d%+d%+d" % (600, 300, 250 + root_x, 125 + root_y))
         self.window.resizable(False, False)
 
+    def _build_pad(self) -> None:
+        """Joy-Con 2 本分のボタンを self.window の中に並べる。"""
         joycon_L_frame = tk.Frame(
             self.window, width=300, height=300, relief="flat", bg=self.JOYCON_L_COLOR
         )
@@ -1884,8 +1900,6 @@ class ControllerGUI:
                 if isinstance(button, tk.Button):
                     self.applyButtonColor(button)
 
-        logger.debug("Create GUI controller")
-
     def applyButtonSetting(self, button: Any) -> None:
         """ボタンの幅と配色をまとめて適用する。"""
         button["width"] = 7
@@ -1914,7 +1928,9 @@ class ControllerGUI:
         Leave（押したまま枠外へ出る）でも必ず解放する。これが無いと
           ボタンの上でマウスを離さなかったときに押しっぱなしが残る。
         """
-        button = tk.Button(parent, text=text, **kwargs)
+        # フォーカスを取らない。キーボード操作中に Space でボタンが押され、
+        # 意図しない入力が飛ぶのを防ぐ（マウス専用の操作盤）。
+        button = tk.Button(parent, text=text, takefocus=0, **kwargs)
         # name は行ごとの仮引数のため、束縛の遅延は起きない。
         button.bind("<ButtonPress-1>", lambda ev: self._onPress(name))
         button.bind("<ButtonRelease-1>", lambda ev: self._onRelease(name))
@@ -2085,7 +2101,9 @@ class ControllerGUI:
         self.window.bind(event, func)
 
     def protocol(self, event: str, func: Any) -> None:
-        self.window.protocol(event, func)
+        # 埋め込み（Frame）には窓の閉じるボタンが無い。
+        if isinstance(self.window, tk.Toplevel):
+            self.window.protocol(event, func)
 
     def focus_force(self) -> None:
         self.window.focus_force()

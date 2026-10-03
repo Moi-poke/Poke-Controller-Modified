@@ -17,9 +17,9 @@ import tkinter.ttk as ttk
 from typing import Any
 
 import WindowUtils
-from GuiAssets import ControllerGUI
 from loguru import logger
 from services.serial_service import SenderSpec, SerialService
+from ui.controller_dock import ControllerDock
 
 # STATUS flags の bit5=有線。SSOTは Switch-bcon の spec/protocol_v3.md。
 _STATUS_FLAG_WIRED = 0x20
@@ -81,7 +81,7 @@ class SerialPanelMixin:
     cb_left_stick_mouse: Any
     cb_right_stick_mouse: Any
     simpleConButton: Any
-    controller: Any
+    controller_dock: Any
     preview: Any
     camera_lf: Any
     applyBaudRate: Any
@@ -291,14 +291,17 @@ class SerialPanelMixin:
             column=1, row=1, padx="10", pady="5", sticky="ew"
         )
 
-        self.simpleConButton = ttk.Button(self.control_lf)
-        self.simpleConButton.config(
-            text="仮想コントローラ...", command=self.createControllerWindow
-        )
-        self.simpleConButton.grid(column=0, padx="10", pady="5", row=1, sticky="ew")
+        self.control_lf.config(text="コントローラ")
+        self.control_lf.pack(fill="x", padx=5, pady=5)
 
-        self.control_lf.config(height="200", text="コントローラ")
-        self.control_lf.pack(fill="both", expand=True, padx=5, pady=5)
+        # 仮想コントローラ。タブの中に常に置き、別ウィンドウへも出せる
+        # （ui/controller_dock.py）。送り先は開くたびに今の物を引く。
+        dock_lf = ttk.Labelframe(self.tab_controller, text="仮想コントローラ")
+        dock_lf.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+        self.controller_dock = ControllerDock(
+            self.root, dock_lf, lambda: self.serial.sender
+        )
+        self.simpleConButton = self.controller_dock.pop_button
 
     def _currentBaudRate(self) -> int:
         """Baud Rate を通常の int で返す。数値として読めないときだけ既定。
@@ -989,17 +992,14 @@ class SerialPanelMixin:
             self._kb_window_active.clear()
 
     def createControllerWindow(self) -> None:
-        if self.controller is not None:
-            self.controller.focus_force()
-            return
-        window = ControllerGUI(self.root, self.serial.sender)
-        window.protocol("WM_DELETE_WINDOW", self.closingController)
-        self.controller = window
+        """仮想コントローラを別ウィンドウで開く（タブの埋め込みから移す）。"""
+        self.controller_dock.pop_out()
 
     def closingController(self) -> None:
-        if self.controller is not None:
-            self.controller.destroy()
-            self.controller = None
+        """終了時。押しっぱなしを離してから、埋め込みも別窓も消す。"""
+        dock = getattr(self, "controller_dock", None)
+        if dock is not None:
+            dock.shutdown()
 
     def _on_keyboard_toggled(self) -> None:
         """Use Keyboard の切り替え。有効化に失敗した場合も保存する。

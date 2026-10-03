@@ -111,3 +111,50 @@ def test_rearranging_many_times_leaves_no_stale_panes(areas: _Areas) -> None:
     ]
     assert len(panes) == 2  # log_right は外側 1 + 内側 1
     assert all(areas.mapped(name) for name in ("preview", "tabs", "log"))
+
+
+def _luminance(color: str) -> float:
+    channels = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [
+        c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def test_dividers_are_thick_and_coloured_enough_to_find(areas: _Areas) -> None:
+    from ui.pane_layout import SASH_COLOR, SASH_THICKNESS, STYLE
+
+    areas.apply("log_right")
+
+    # Then: 仕切りは窓の地（#F0F0F0）と 3:1 以上の差がある色で、掴める太さがある
+    #       （非テキスト要素のコントラストの目安）。どの仕切りも同じ見た目。
+    lighter, darker = _luminance("#f0f0f0"), _luminance(SASH_COLOR)
+    assert (lighter + 0.05) / (darker + 0.05) >= 3.0
+    assert SASH_THICKNESS >= 6
+    style = ttk.Style(areas.window)
+    assert style.lookup(STYLE, "background") == SASH_COLOR
+    assert int(style.lookup("Sash", "sashthickness")) == SASH_THICKNESS
+    panes = [c for c in areas.parent.winfo_children() if isinstance(c, ttk.PanedWindow)]
+    assert panes and all(str(p.cget("style")) == STYLE for p in panes)
+
+
+def test_reset_puts_dragged_dividers_back_to_their_default_place(areas: _Areas) -> None:
+    # Given: the default divider position, then a drag far to the left.
+    areas.apply("log_right")
+    root_pane = areas.arranger.root_pane
+    assert root_pane is not None
+    default = root_pane.sashpos(0)
+    root_pane.sashpos(0, 60)
+    areas.window.update()
+    areas.apply("log_right")  # 組み直しても覚えている
+    assert areas.arranger.root_pane is not None
+    assert abs(areas.arranger.root_pane.sashpos(0) - 60) <= 2
+
+    # When: the dividers are reset (the alternative to dragging).
+    areas.arranger.reset_sashes()
+    areas.window.update()
+
+    # Then: 既定の位置へ戻り、覚えていた位置も捨てる。
+    assert areas.arranger.root_pane is not None
+    assert abs(areas.arranger.root_pane.sashpos(0) - default) <= 2
+    assert areas.arranger.sash_ratios == {}
