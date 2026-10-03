@@ -21,20 +21,6 @@ def test_menubar_view_menu_has_size_presets() -> None:
     assert "wm_aspect" in src
 
 
-def test_menubar_view_menu_leads_with_the_display_settings_dialog() -> None:
-    """表示設定は「表示」メニューの先頭。画面サイズ項目と区別して表記する。"""
-    from Menubar import PokeController_Menubar
-
-    assert hasattr(PokeController_Menubar, "OpenDisplaySettings")
-    src = Path("SerialController/Menubar.py").read_text(encoding="utf-8")
-    menu = src[src.index('label="表示"') : src.index("lockAspect(True)")]
-    assert 'label="表示設定..."' in menu, "表示設定がメニュー先頭に無い"
-    assert 'label="ウィンドウ 1280x720"' in menu
-    assert 'label="ウィンドウ 1920x1080"' in menu
-    # プレビューサイズ（Show Size）は画面から消した
-    assert "show_size_cb" not in src, "Menubar が show_size_cb を参照している"
-
-
 def test_the_preview_size_combobox_is_gone_from_the_camera_panel() -> None:
     """表示サイズ欄はダイアログへ移し、コンボボックスと確認ダイアログは無い。"""
     from ui.camera_panel import CameraPanelMixin
@@ -84,30 +70,6 @@ def test_window_moves_the_show_mode_between_the_setting_and_the_panel() -> None:
     settings = Path("SerialController/Settings.py").read_text(encoding="utf-8")
     assert 'self.show_mode = tk.StringVar(value=general.get("show_mode"))' in settings
     assert '"show_mode": self.show_mode.get()' in settings
-
-
-def test_the_reset_item_returns_the_preview_to_the_smallest_fixed_size() -> None:
-    """画面サイズのリセットはプレビューを 640x360 の固定へ戻す（コンボを触らない）。"""
-    import ast
-
-    from Menubar import PokeController_Menubar
-
-    src = Path("SerialController/Menubar.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    reset = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "ResetWindowSize"
-    )
-    calls = [
-        node
-        for node in ast.walk(reset)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func) == "self.app.applyDisplaySettings"
-    ]
-    assert len(calls) == 1, "リセットが applyDisplaySettings を 1 箇所以外で呼んでいる"
-    assert [ast.unparse(arg) for arg in calls[0].args] == ["'fixed'", "'640x360'"]
-    assert not hasattr(PokeController_Menubar, "show_size_cb")
 
 
 def test_menubar_has_no_wake_setup() -> None:

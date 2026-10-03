@@ -1,4 +1,7 @@
+import os
 import tkinter as tk
+import webbrowser
+from tkinter import messagebox
 from typing import Any
 
 import DiscordNotify
@@ -8,6 +11,19 @@ from KeyConfig import PokeKeycon
 from SerialMonitor import SerialMonitor
 from get_pokestatistics import GetFromHomeGUI
 from loguru import logger
+
+# 使い方の置き場所（ヘルプ > ドキュメント / バージョン情報）。
+DOCS_URL = "https://github.com/Moi-poke/Poke-Controller-Modified"
+
+# ヘルプ > ショートカット一覧 に出す表。キーの束縛は ui/command_panel.py の
+# _bind_keys が正。ここを変えるときはそちらと揃える。
+SHORTCUTS: tuple[tuple[str, str], ...] = (
+    ("F5", "コマンドを再読み込み"),
+    ("F6", "コマンドを開始"),
+    ("F7", "一時停止 / 再開"),
+    ("Esc", "コマンドを停止"),
+    ("Ctrl+K", "コマンドを選択"),
+)
 
 
 class PokeController_Menubar(tk.Menu):
@@ -23,62 +39,31 @@ class PokeController_Menubar(tk.Menu):
         self.input_log_config: InputLogConfig | None = None
         self.display_settings: Any | None = None
 
-        self.menu = tk.Menu(self, tearoff=False)
-        self.menu_command = tk.Menu(self, tearoff=False)
-        self.menu_view = tk.Menu(self, tearoff=False)
-        self.add(tk.CASCADE, menu=self.menu, label="メニュー")
-        self.menu.add(tk.CASCADE, menu=self.menu_command, label="コマンド")
-        self.menu.add(tk.CASCADE, menu=self.menu_view, label="表示")
-        # プレビューの表示設定（モードと固定サイズ）。ウィンドウ全体の
-        # サイズとは別の概念なので、メニューを分けて頭に置く。
-        self.menu_view.add(
-            "command",
-            command=self.OpenDisplaySettings,
-            label="表示設定...",
-        )
-        self.menu_view.add("separator")
-        # ウィンドウのレイアウト。複数台を 1 画面に並べるときに使う。
-        # ラジオボタン 1 つにまとめたいので、variable を共有して
-        # command 側だけを分ける（既定引数で取り違えないように）。
-        for value, text in (
-            ("standard", "標準"),
-            ("compact", "コンパクト（複数台向け）"),
-            ("preview", "プレビューのみ"),
-        ):
-            self.menu_view.add(
-                "radiobutton",
-                command=lambda v=value: self.app.applyLayout(v),
-                label=text,
-                value=value,
-                variable=self.app.layout_mode,
-            )
-        self.menu_view.add("separator")
-        self.menu_view.add(
-            "command",
-            command=lambda: self.applyWindowSize(1280, 720),
-            label="ウィンドウ 1280x720",
-        )
-        self.menu_view.add(
-            "command",
-            command=lambda: self.applyWindowSize(1920, 1080),
-            label="ウィンドウ 1920x1080",
-        )
-        self.menu_view.add("separator")
-        self.menu_view.add(
-            "command", command=lambda: self.lockAspect(True), label="16:9 に固定"
-        )
-        self.menu_view.add(
-            "command", command=lambda: self.lockAspect(False), label="固定を解除"
-        )
-
-        self.menu.add("separator")
-        # 「設定(dummy)」は command 未指定の未実装項目だったため、実装されるまで
-        # メニューから外す（誤クリックで無反応になるのを避ける）。
-        # self.menu.add("command", label="設定", command=self.openSettings)
-        self.menu.add("command", command=self.exit, label="終了")
+        # 見出しは一般的なデスクトップアプリの並び（OBS 等の国内向け訳と同じ）。
+        # (F) などは Alt キーから辿るための下線位置。
+        self.menu_file = self._cascade("ファイル(F)")
+        self.menu_command = self._cascade("コマンド(C)")
+        self.menu_view = self._cascade("表示(V)")
+        self.menu_connect = self._cascade("接続(N)")
+        self.menu_tools = self._cascade("ツール(T)")
+        self.menu_help = self._cascade("ヘルプ(H)")
+        # 16:9 固定の入/切。チェックで今の状態が見えるようにする。
+        self.aspect_locked = tk.BooleanVar(master=master.root, value=False)
 
         self.AssignMenuCommand()
-        # self.LineTokenSetting()
+
+    def _cascade(self, label: str) -> tk.Menu:
+        """見出しを 1 つ足す。括弧の中の英字に下線を引く。"""
+        menu = tk.Menu(self, tearoff=False)
+        self.add(tk.CASCADE, menu=menu, label=label, underline=label.index("(") + 1)
+        return menu
+
+    def _app_call(self, name: str) -> Any:
+        """app の入口を、押した時点で引く。
+
+        Window 側で作り直される部品もあるので、組み立て時に束縛しない。
+        """
+        return lambda: getattr(self.app, name)()
 
     # Window 側で再接続・再生成される値は都度参照する（古い参照を掴まないため）
     @property
@@ -106,44 +91,143 @@ class PokeController_Menubar(tk.Menu):
         return self.app.camera
 
     def AssignMenuCommand(self) -> None:
+        """全メニューの項目を並べる。
+
+        コマンド系はショートカットと同じ入口（StartCommandWithF6 など）を呼ぶ。
+        入口が分かれると、片方だけ直したときに挙動が食い違うため。
+        """
         logger.debug("Assigning menu command")
-        # self.menu_command.add(
-        #     "command", command=self.LineTokenSetting, label="LINE Token Check"
-        # )
-        self.menu_command.add(
-            "command", command=self.OpenPokeHomeCoop, label="Pokemon Home 連携"
+        call = self._app_call
+
+        m = self.menu_file
+        m.add_command(label="キャプチャを保存", command=call("saveCapture"))
+        m.add_command(label="キャプチャフォルダを開く", command=call("OpenCaptureDir"))
+        m.add_separator()
+        m.add_command(label="設定フォルダを開く", command=self.OpenSettingsDir)
+        m.add_command(label="ログフォルダを開く", command=self.OpenLogDir)
+        m.add_separator()
+        m.add_command(label="終了", command=self.exit)
+
+        m = self.menu_command
+        m.add_command(
+            label="開始", accelerator="F6", command=call("StartCommandWithF6")
         )
-        self.menu_command.add(
-            "command", command=self.OpenKeyConfig, label="キーコンフィグ"
+        m.add_command(
+            label="停止", accelerator="Esc", command=call("StopCommandWithEsc")
         )
-        self.menu_command.add("command", command=self.OpenBconSetup, label="Bcon設定")
-        self.menu_command.add(
-            "command", command=self.OpenSerialMonitor, label="シリアルモニタ"
+        m.add_command(
+            label="一時停止 / 再開",
+            accelerator="F7",
+            command=call("PauseCommandWithF7"),
         )
-        self.menu_command.add(
-            "command", command=self.OpenInputLogConfig, label="入力ログの書式"
+        m.add_command(
+            label="再読み込み", accelerator="F5", command=call("ReloadCommandWithF5")
         )
-        self.menu_command.add(
-            "command", command=self.ResetWindowSize, label="画面サイズのリセット"
+        m.add_separator()
+        m.add_command(
+            label="コマンドを選択...",
+            accelerator="Ctrl+K",
+            command=call("openCommandPalette"),
         )
-        self.menu_command.add(
-            "command",
-            command=self.open_discord_notify_setting,
-            label="Discord通知の設定",
+        m.add_command(label="コマンドフォルダを開く", command=call("OpenCommandDir"))
+        m.add_separator()
+        m.add_command(label="スクリプトの導入...", command=self.OpenScriptInstall)
+        m.add_command(label="スクリプトの削除...", command=self.OpenScriptUninstall)
+        m.add_command(label="Blocklyエディタ...", command=self.OpenBlocklyEditor)
+
+        m = self.menu_view
+        # プレビューの表示設定（モードと固定サイズ）。ウィンドウ全体の
+        # サイズとは別の概念なので、頭に置いて区切る。
+        m.add_command(label="表示設定...", command=self.OpenDisplaySettings)
+        m.add_separator()
+        # ウィンドウのレイアウト。複数台を 1 画面に並べるときに使う。
+        # variable を共有して 1 組のラジオにする。
+        for value, text in (
+            ("standard", "標準"),
+            ("compact", "コンパクト（複数台向け）"),
+            ("preview", "プレビューのみ"),
+        ):
+            m.add_radiobutton(
+                command=self._layout_command(value),
+                label=text,
+                value=value,
+                variable=self.app.layout_mode,
+            )
+        m.add_separator()
+        m.add_command(
+            label="ウィンドウ 1280x720",
+            command=lambda: self.applyWindowSize(1280, 720),
         )
-        self.menu_command.add(
-            "command", command=self.OpenScriptInstall, label="スクリプトの導入..."
+        m.add_command(
+            label="ウィンドウ 1920x1080",
+            command=lambda: self.applyWindowSize(1920, 1080),
         )
-        self.menu_command.add(
-            "command", command=self.OpenScriptUninstall, label="スクリプトの削除..."
+        m.add_checkbutton(
+            label="16:9 に固定",
+            variable=self.aspect_locked,
+            command=lambda: self.lockAspect(bool(self.aspect_locked.get())),
         )
-        self.menu_command.add(
-            "command", command=self.OpenBlocklyEditor, label="Blocklyエディタ..."
+
+        m = self.menu_connect
+        m.add_command(label="シリアルポートを再接続", command=call("reloadSerialPort"))
+        m.add_command(label="シリアルポートを切断", command=call("inactivateSerial"))
+        m.add_separator()
+        m.add_command(label="Bcon設定", command=self.OpenBconSetup)
+        m.add_command(label="シリアルモニタ...", command=self.OpenSerialMonitor)
+        m.add_separator()
+        m.add_command(label="カメラを再読み込み", command=call("openCamera"))
+        m.add_command(label="音声デバイスを再読み込み", command=call("reloadAudio"))
+
+        m = self.menu_tools
+        m.add_command(label="キーコンフィグ...", command=self.OpenKeyConfig)
+        m.add_command(label="入力ログの書式...", command=self.OpenInputLogConfig)
+        m.add_command(
+            label="Discord通知の設定...", command=self.open_discord_notify_setting
         )
-        self.menu_command.add(
-            "command",
-            command=self.OpenErrorReport,
-            label="エラー報告をコピー...",
+        m.add_command(label="Pokemon HOME 連携...", command=self.OpenPokeHomeCoop)
+
+        m = self.menu_help
+        m.add_command(label="ショートカット一覧", command=self.ShowShortcuts)
+        m.add_command(label="ドキュメント", command=self.OpenDocs)
+        m.add_separator()
+        m.add_command(label="エラー報告をコピー...", command=self.OpenErrorReport)
+        m.add_separator()
+        m.add_command(label="バージョン情報", command=self.ShowAbout)
+
+    def _layout_command(self, value: str) -> Any:
+        """レイアウト 1 つ分の command。ループ変数を取り違えないよう閉じ込める。"""
+        return lambda: self.app.applyLayout(value)
+
+    def _os_name(self) -> str:
+        import platform
+
+        return str(getattr(self.app, "os_name", platform.system()))
+
+    def OpenSettingsDir(self) -> None:
+        """設定ファイル（settings*.ini）のある場所を開く。"""
+        WindowUtils.openDirectory(WindowUtils.APP_DIR, self._os_name())
+
+    def OpenLogDir(self) -> None:
+        """ログの出力先を開く。PokeConLogger が ../log へ書くのと同じ場所。"""
+        path = os.path.normpath(os.path.join(WindowUtils.APP_DIR, os.pardir, "log"))
+        WindowUtils.openDirectory(path, self._os_name())
+
+    def ShowShortcuts(self) -> None:
+        """アプリ全体のショートカットを一覧で見せる。"""
+        lines = [f"{key}\t{text}" for key, text in SHORTCUTS]
+        messagebox.showinfo("ショートカット一覧", "\n".join(lines), parent=self.root)
+
+    def OpenDocs(self) -> None:
+        """リポジトリの README（使い方）をブラウザで開く。"""
+        webbrowser.open(DOCS_URL)
+
+    def ShowAbout(self) -> None:
+        """バージョンと配布元を出す。エラー報告や質問の前に確認するため。"""
+        version = str(getattr(self.app, "app_version", ""))
+        messagebox.showinfo(
+            "バージョン情報",
+            f"Poke-Controller Modified {version}\n{DOCS_URL}",
+            parent=self.root,
         )
 
     @staticmethod
@@ -377,11 +461,6 @@ class PokeController_Menubar(tk.Menu):
         """表示設定の窓が破棄されたときの後始末。"""
         if event.widget is self.display_settings:
             self.display_settings = None
-
-    def ResetWindowSize(self) -> None:
-        """プレビューを既定（640x360 の固定）へ戻す。保存は _on_setting_changed 経由。"""
-        logger.debug("Reset window size")
-        self.app.applyDisplaySettings("fixed", "640x360")
 
     def open_discord_notify_setting(self) -> None:
         webhook = DiscordNotify.Discord_Notify()

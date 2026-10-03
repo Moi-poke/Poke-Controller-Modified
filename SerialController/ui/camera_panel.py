@@ -750,9 +750,8 @@ class CameraPanelMixin:
         「取り消す」手順が要らない。tkmsg は同期なので、選ぶたびに出すと
         GUI スレッドがそこで止まる（描画まで止まる）。
 
-        Menubar の表示設定ダイアログと「画面サイズのリセット」の両方から
-        呼ばれるため、値の補正はここで一度だけ行う。color は表示設定の
-        ダイアログからのみ渡される（画面サイズのリセットは 2 引数のまま）。
+        Menubar の表示設定ダイアログから呼ばれる。値の補正はここで一度だけ
+        行う。color を省いた呼び出し（2 引数）では色を変えない。
         """
         self.show_mode.set(mode if mode in SHOW_MODES else DEFAULT_SHOW_MODE)
         self.show_size.set(size if size in SHOW_SIZES else DEFAULT_SHOW_SIZE)
