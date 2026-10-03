@@ -169,6 +169,7 @@ class _RecordingCanvas:
         self.image_ids: list[tuple[int, int, str]] = []
         self.config_calls: list[tuple[int, int]] = []
         self.itemconfig_calls: list[tuple[Any, dict[str, Any]]] = []
+        self.coords_calls: list[tuple[Any, tuple[Any, ...]]] = []
         self.delete_calls: list[str] = []
         self.item_calls: list[tuple[str, tuple[Any, ...]]] = []
         self.destroyed = 0
@@ -262,6 +263,16 @@ class _RecordingCanvas:
 
     def itemconfig(self, item: Any, **kwargs: Any) -> None:
         self.itemconfig_calls.append((item, kwargs))
+
+    def coords(self, item: Any, *coordinates: Any) -> tuple[Any, ...]:
+        """Move the image item, which is how a letterboxed picture is centred.
+
+        Tk answers the requested coordinates, so the double records and returns
+        them the same way. A picture that is scaled but never moved keeps its top
+        left corner at the canvas origin, so the margins land on the wrong sides.
+        """
+        self.coords_calls.append((item, coordinates))
+        return coordinates
 
     def delete(self, tag: str) -> None:
         self.delete_calls.append(tag)
@@ -720,20 +731,26 @@ def test_a_contiguous_frame_of_the_capture_size_still_composes(
 
 
 # ===========================================================================
-# The 1:1 crop/pad rule survives the guards
+# The picture is scaled into the viewport, centred, and margined in black
 # ===========================================================================
 #
-# ``test_capture_area_surface_contract.py:1422`` already pins this contract, but
+# ``test_capture_area_surface_contract.py:1422`` used to pin a 1:1 crop here,
 # through a fixture that calls ``resize`` *before* it installs a canvas
 # (``:1447`` then ``:1448``). The guards above make that ordering a no-op, which
 # is correct -- a size handed to a surface with no box must not be recorded as
 # if it had been -- so the older fixture no longer describes a state the
 # production API can produce. The contract itself is carried here as well, over
-# the real ``attach`` path, so the 1:1 rule stays pinned no matter which fixture
-# survives.
+# the real ``attach`` path: ``fit_rect`` decides where inside the viewport the
+# picture sits, ``compose`` scales to exactly that size, ``present`` moves the
+# image item there, and the Canvas background supplies the margins.
+#
+# The overlay is scaled with the picture. ``OverlayState`` carries capture
+# coordinates (0..1280, 0..720) while the Canvas is in viewport pixels, so an
+# overlay that is drawn unscaled lands in the wrong place the moment the two
+# sizes differ -- which is always.
 
 
-def test_a_capture_frame_is_painted_one_to_one_into_a_smaller_show_size(
+def test_a_capture_frame_is_scaled_down_to_fill_a_smaller_show_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: an attached surface at a show size smaller than the capture size,
@@ -745,7 +762,7 @@ def test_a_capture_frame_is_painted_one_to_one_into_a_smaller_show_size(
     width, height = _capture_size()
     assert (width, height) != show_size, (
         f"the capture size {width}x{height} equals the show size {show_size}, so "
-        "the 1:1 crop path below is never taken"
+        "the scaling path below is never taken"
     )
     frame = _contiguous_frame(width, height)
 
@@ -757,13 +774,162 @@ def test_a_capture_frame_is_painted_one_to_one_into_a_smaller_show_size(
     # either.
     assert (composed.ok, presented.ok) == (True, True), (composed, presented)
 
-    # Then: and the frame is drawn 1:1 into the top-left of the show size, never
-    # scaled, so both backends show the same picture.
+    # Then: and the whole frame is scaled into the whole box rather than
+    # cropped, so nothing of the capture is cut away.
     image = attached.photos[-1]
     assert image.size == show_size, image.size
     painted = np.asarray(image)[:, :, ::-1]
     assert painted.shape == (show_size[1], show_size[0], 3), painted.shape
-    assert np.array_equal(painted, frame[: show_size[1], : show_size[0]])
+
+    # Then: and it is placed at the origin, because 640x360 is exactly 16:9 and
+    # therefore has no margin to be offset by.
+    assert attached.canvas.coords_calls, (
+        "the image item was never moved; a scaled picture still needs to be "
+        "placed, and this one happens to belong at (0, 0)"
+    )
+    _item, coordinates = attached.canvas.coords_calls[-1]
+    assert tuple(coordinates) == (0, 0), attached.canvas.coords_calls
+
+
+def test_a_capture_frame_is_scaled_and_centred_in_a_non_sixteen_by_nine_show_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a viewport wider than 16:9 allows, so the picture fits by height and
+    # the margins are top and bottom.
+    from core.preview_renderer import OverlayState
+
+    viewport = (1000, 700)
+    attached = _attach(monkeypatch, size=viewport)
+    width, height = _capture_size()
+    frame = _contiguous_frame(width, height)
+
+    # When: a frame is composited and presented.
+    composed = attached.surface.compose(frame, OverlayState())
+    assert composed.ok is True, composed.detail
+    assert attached.surface.present().ok is True
+
+    # Then: the picture is 1000x563 -- 1000 wide, 1000*720/1280 = 562.5 rounded
+    # down -- and it is moved down to y=68, because (700-563)//2 = 68 rows of
+    # margin sit above it. Leaving the item at the origin would put every
+    # margin below the picture instead of splitting them.
+    image = attached.photos[-1]
+    assert image.size == (1000, 563), image.size
+    _item, coordinates = attached.canvas.coords_calls[-1]
+    assert tuple(coordinates) == (0, 68), attached.canvas.coords_calls
+
+    # Then: and the margin is the canvas background rather than part of the
+    # image, so the surface never pays for the bars with a bigger picture.
+    assert attached.canvas.options["background"] == "black", attached.canvas.options
+
+
+def test_the_overlay_is_scaled_with_the_picture_and_offset_by_its_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a viewport of 1000x700, whose picture is 1000x563 at y=68 -- a
+    # scale of 1000/1280 = 0.781 in x and 563/720 in y, plus a 68 row offset.
+    from core.preview_renderer import OverlayState, RectState, StickState
+
+    viewport = (1000, 700)
+    attached = _attach(monkeypatch, size=viewport)
+    width, height = _capture_size()
+    overlay = OverlayState(
+        left_stick=StickState(
+            active=True, center_x=640, center_y=360, radius=60, knob_x=660, knob_y=350
+        ),
+        guide=RectState(x0=0, y0=0, x1=1280, y1=720, visible=True),
+    )
+
+    # When: it is composited and presented.
+    composed = attached.surface.compose(_contiguous_frame(width, height), overlay)
+    assert composed.ok is True, composed.detail
+    assert attached.surface.present().ok is True
+
+    # Then: the stick ring follows the scale and the margin: 640*1000/1280 = 500,
+    # 68 + 360*563/720 = 68 + 281.5 -> 350, and the radius
+    # round(60*1000/1280) = 47. Drawn unscaled the circle would sit at (640, 360)
+    # with r=60 -- 140 px right of the stick the user is holding.
+    ring, knob, guide = attached.canvas.item_calls
+    assert ring[0] == "oval", attached.canvas.item_calls
+    assert tuple(ring[1]) == (500 - 47, 350 - 47, 500 + 47, 350 + 47)
+
+    # Then: and the knob scales with it, keeping the ring/10 relationship in the
+    # space the user can actually see: 660 -> 516, 350 -> 68+274 = 342, and
+    # 47//10 = 4.
+    assert (knob[0], tuple(knob[1])) == ("oval", (516 - 4, 342 - 4, 516 + 4, 342 + 4))
+
+    # Then: and a rect spanning the whole capture frame maps onto the whole
+    # fitted rect, which is the one case whose answer is checkable by hand:
+    # (0,0) -> (0,68) and (1280,720) -> (1000, 68+563).
+    assert (guide[0], tuple(guide[1])) == ("rectangle", (0, 68, 1000, 631))
+
+
+def test_compose_refuses_a_viewport_with_no_room_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a surface attached at a viewport of (0, 0). resize refuses it, so
+    # the fitted rect is never computed -- the state a caller that hands attach a
+    # nonsense size produces.
+    from core.preview_renderer import OverlayState
+
+    module = _photo_surface_module()
+    photos: list[Any] = []
+
+    class _PhotoImage:
+        def __init__(self, image: Any) -> None:
+            photos.append(image)
+
+    monkeypatch.setattr(module.tk, "Canvas", _RecordingCanvas)
+    monkeypatch.setattr(module.ImageTk, "PhotoImage", _PhotoImage)
+    surface = module.PhotoImageSurface(host=_HostFrame())
+    surface.attach(0, (0, 0))
+    assert surface._dest == (0, 0, 0, 0), surface._dest
+
+    # When: a perfectly good capture frame is composited into it.
+    width, height = _capture_size()
+    result = surface.compose(_contiguous_frame(width, height), OverlayState())
+
+    # Then: it is refused under its own detail and nothing is raised. cv2.resize
+    # answers a zero destination with an exception, and an exception out of
+    # compose ends the preview update path instead of skipping one frame. This
+    # is a guard added with the scaling path, not a behaviour it removed: the
+    # 1:1 crop it replaced returned a 0x0 image instead.
+    assert (result.ok, result.detail) == (False, "no_room"), result
+    assert photos == [], photos
+
+
+def test_a_capture_frame_at_the_capture_size_is_not_scaled_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a viewport of exactly the capture size, the fast path.
+    from core.preview_renderer import OverlayState, StickState
+
+    attached = _attach(monkeypatch, size=(1280, 720))
+    width, height = _capture_size()
+    overlay = OverlayState(
+        left_stick=StickState(
+            active=True, center_x=640, center_y=360, radius=60, knob_x=660, knob_y=350
+        )
+    )
+    frame = _contiguous_frame(width, height)
+
+    # When: it is composited and presented.
+    composed = attached.surface.compose(frame, overlay)
+    assert composed.ok is True, composed.detail
+    assert attached.surface.present().ok is True
+
+    # Then: the picture is the frame, unmodified and pixel for pixel, so the
+    # per-frame conversion is the only cost.
+    image = attached.photos[-1]
+    assert image.size == (width, height), image.size
+    assert np.array_equal(np.asarray(image)[:, :, ::-1], frame)
+
+    # Then: and the overlay is drawn at capture coordinates, because at 1:1 the
+    # scale is 1 and the offset 0. This is the control for the scaling test
+    # above: without it, a surface that scaled by a constant factor and nothing
+    # else would pass both.
+    ring, knob = attached.canvas.item_calls
+    assert tuple(ring[1]) == (640 - 60, 360 - 60, 640 + 60, 360 + 60), ring
+    assert tuple(knob[1]) == (660 - 6, 350 - 6, 660 + 6, 350 + 6), knob
 
 
 # ===========================================================================

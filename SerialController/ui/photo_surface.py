@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 from core.Camera import CAPTURE_SIZE
+from core.coordinates import fit_rect
 from core.preview_renderer import TK_COLORREF, OverlayState, RenderResult
 from loguru import logger
 
@@ -29,6 +30,11 @@ from loguru import logger
 _NAME_BY_COLORREF: Final[dict[int, str]] = {
     colorref: name for name, colorref in TK_COLORREF.items()
 }
+
+#: 余白の色。表示面と映像の大きさが違うとき、fit_rect の外側がこれになる。
+#: GDI 面が PatBlt(BLACKNESS) で塗るのと同じ役割である。画像項目を枠まで
+#: 大きくすると余白の分まで変換・転送になるので、余白は Canvas 側に持たせる。
+CANVAS_BACKGROUND = "black"
 
 #: host の束縛のうち Canvas へ転送してよい種類。ポインタとキーだけであり、
 #: Tk が host 自身に擎げる構造・hover・focus 系は名指ししない。除外表は
@@ -93,6 +99,9 @@ class PhotoImageSurface:
         self._canvas: Any = None
         self._image_id: Any = None
         self._size = (0, 0)
+        #: 表示面の中で映像が置かれている矩形 (x, y, w, h)。resize が
+        #: fit_rect で決める。画像項目は (x, y) に置き、w x h に縮尺する。
+        self._dest: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._photo: Any = None
         self._overlay: OverlayState = OverlayState()
         self._rebuilding = False
@@ -108,7 +117,11 @@ class PhotoImageSurface:
         _ = parent_hwnd
         try:
             canvas = tk.Canvas(
-                self._host, borderwidth=0, highlightthickness=0, cursor=""
+                self._host,
+                borderwidth=0,
+                highlightthickness=0,
+                cursor="",
+                background=CANVAS_BACKGROUND,
             )
         except tk.TclError as error:
             # 素通しにすると起動時の例外でアプリごと止まる。子窓を作れなかった
@@ -233,6 +246,7 @@ class PhotoImageSurface:
             # Tk が受け入れた後にだけ覚える。config が途中で失敗すると箱は
             # 前のままなのに _size だけ新しいと、compose が無い箱へ描く。
             self._size = (width, height)
+            self._dest = fit_rect(CAPTURE_SIZE, self._size)
         finally:
             # 作り直しの外では必ず落とす。一度でも落とさなくなると、それ以降
             # の resize が全部拒まれる。
@@ -259,42 +273,49 @@ class PhotoImageSurface:
         # （CAPTURE_SIZE）である。GDI 面の core/gdi_surface.py と同じ規則。
         # _size を相手にすると、<Configure> で表示サイズが変わった途端に
         # 生きているフレームを 1 枚も描かなくなる。
-        # 縮小も拡大もしない。寸法が違えば捨てる。
         if frame_size != CAPTURE_SIZE:
             self._note_failure(
                 "dimension_mismatch",
-                "プレビューは 1:1 しか描かないので捨てた {}x{} のまま capture={} "
-                "owned={} client={}",
+                "キャプチャ解像度でないので捨てた {}x{} のまま capture={} "
+                "owned={} client={} dest={}",
                 frame_size[0],
                 frame_size[1],
                 CAPTURE_SIZE,
                 self._size,
                 self.client_size(),
+                self._dest,
             )
             return RenderResult(
                 False, time.perf_counter_ns() - started, "dimension_mismatch"
             )
-        if frame_size == self._size:
+        dest_w, dest_h = self._dest[2], self._dest[3]
+        if dest_w <= 0 or dest_h <= 0:
+            # 表示面に 1 画素も収まる場所が無い。attach が 1 以下の大きさを受け
+            # た場合だけ（resize は 1 以下を拒否する）。cv2.resize は 0 寸法で
+            # 例外を投げるので、ここで止めないと compose から例外がプレビュー
+            # 更新の経路へ抜けて preview ごと止まる。
+            self._note_failure(
+                "no_room",
+                "表示面 {} に映像 {} を収める場所が無いので描かない stage=compose "
+                "client={}",
+                self._size,
+                CAPTURE_SIZE,
+                self.client_size(),
+            )
+            return RenderResult(False, time.perf_counter_ns() - started, "no_room")
+        if (dest_w, dest_h) == (frame_size[0], frame_size[1]):
+            # 等倍。変換だけなので毎フレームの負荷は最小。
             image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         else:
-            # 残りは黒で埋める（受け皿が大きい時）、切る（小さい時）。換算しない
-            # ので GDI 面と同じ絵になる。
-            self._note_failure(
-                "letterboxed",
-                "受け皿 {} が映像 {} と大きさ違いなので 1:1 の範囲だけ描く "
-                "stage=compose",
-                self._size,
-                frame_size,
+            # 縮小は面積平均（INTER_AREA）、拡大は線形補間で画素を補間する。
+            # 拡大に INTER_AREA を使うと同じ画素を間引いた結果になる。
+            shrinking = dest_w < frame_size[0] or dest_h < frame_size[1]
+            scaled = cv2.resize(
+                frame,
+                (dest_w, dest_h),
+                interpolation=cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR,
             )
-            height = min(frame.shape[0], self._size[1])
-            width = min(frame.shape[1], self._size[0])
-            image = Image.new("RGB", self._size)
-            image.paste(
-                Image.fromarray(
-                    cv2.cvtColor(frame[:height, :width], cv2.COLOR_BGR2RGB)
-                ),
-                (0, 0),
-            )
+            image = Image.fromarray(cv2.cvtColor(scaled, cv2.COLOR_BGR2RGB))
         self._photo = ImageTk.PhotoImage(image)
         self._overlay = overlay
         self._pending_frame = True
@@ -312,6 +333,9 @@ class PhotoImageSurface:
         if not self._pending_frame:
             return RenderResult(False, time.perf_counter_ns() - started, "no_frame")
         self._canvas.itemconfig(self._image_id, image=self._photo)
+        # 項目を fit_rect の位置に動かす。動かさないと縮尺した絵が左上に寄り、
+        # 余白が全部下と右に出る。
+        self._canvas.coords(self._image_id, self._dest[0], self._dest[1])
         self._pending_frame = False
         self._draw_overlay(self._overlay)
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
@@ -398,6 +422,41 @@ class PhotoImageSurface:
         self._logged_failures.add(detail)
         logger.warning(template, *args)
 
+    def _to_display(self, x: float, y: float) -> tuple[int, int]:
+        """キャプチャ座標 → 表示座標。映像を置いた矩形に従って換算する。
+
+        OverlayState が持つのはキャプチャ座標（0..1280, 0..720）で、Canvas は
+        表示座標（0..dest_w, 0..dest_h）に描く。換算しないと、表示面が
+        キャプチャ解像度と異なる限り全部のオーバーレイがずれ、利用者が
+        クリックした位置とまったく違う場所にスティックなどが描かれる。
+
+        原点は倍率より先に足す。先に引くと余白まで一緒に縮んでしまい、余白の
+        位置が倍率によって変わってしまう。丸めは四捨五入（``fit_rect`` と同じ
+        規則）で、中心が 0.5 だけずれる形にならないようにする。
+        """
+        dest_x, dest_y, dest_w, dest_h = self._dest
+        capture_w, capture_h = CAPTURE_SIZE
+        return (
+            dest_x + round(x * dest_w / capture_w) if capture_w else dest_x,
+            dest_y + round(y * dest_h / capture_h) if capture_h else dest_y,
+        )
+
+    def _to_display_radius(self, radius: int) -> int:
+        """キャプチャ座標での半径 → 表示座標での半径。
+
+        丸めは四捨五入。切り捨てると縮小時に半径が 1 画素ずつ縮んで、見た目は
+        一回り小さい円になる。結果が 0 のときは 1 を返す（半径 0 の円は描画側で
+        何も描かないため、「消えた」ことに気づけない）。0 以下の長さは長さが無い
+        ことをそのまま伝えるので下限の 1 を適用しない。
+        """
+        if radius <= 0:
+            return 0
+        _dest_x, _dest_y, dest_w, _dest_h = self._dest
+        capture_w, _capture_h = CAPTURE_SIZE
+        if not capture_w:
+            return 1
+        return max(1, round(radius * dest_w / capture_w))
+
     def _draw_overlay(self, overlay: OverlayState) -> None:
         # 項目は作り直さない。前回分を "overlay" タグでまとめて消す。
         self._canvas.delete("overlay")
@@ -407,51 +466,62 @@ class PhotoImageSurface:
         ):
             if not stick.active:
                 continue
-            r = stick.radius
+            r = self._to_display_radius(stick.radius)
+            # ノブ半径は「表示面で見えている外周円の 1/10」。外周と同じく換算
+            # してから 1/10 にする。キャプチャ座標で 1/10 にしてから換算する
+            # と、GDI 面と見えている大きさが食い違う。
             k = r // 10
+            center_x, center_y = self._to_display(stick.center_x, stick.center_y)
             self._canvas.create_oval(
-                stick.center_x - r,
-                stick.center_y - r,
-                stick.center_x + r,
-                stick.center_y + r,
+                center_x - r,
+                center_y - r,
+                center_x + r,
+                center_y + r,
                 outline=color,
                 tags="overlay",
             )
+            knob_x, knob_y = self._to_display(stick.knob_x, stick.knob_y)
             self._canvas.create_oval(
-                stick.knob_x - k,
-                stick.knob_y - k,
-                stick.knob_x + k,
-                stick.knob_y + k,
+                knob_x - k,
+                knob_y - k,
+                knob_x + k,
+                knob_y + k,
                 fill=color,
                 tags="overlay",
             )
         guide = overlay.guide
         if guide.visible:
+            x0, y0 = self._to_display(guide.x0, guide.y0)
+            x1, y1 = self._to_display(guide.x1, guide.y1)
             self._canvas.create_rectangle(
-                guide.x0,
-                guide.y0,
-                guide.x1,
-                guide.y1,
+                x0,
+                y0,
+                x1,
+                y1,
                 outline="red",
                 dash=(4, 4),
                 tags="overlay",
             )
         rect = overlay.img_rect
         if rect.visible:
+            outer_x0, outer_y0 = self._to_display(rect.outer.x0, rect.outer.y0)
+            outer_x1, outer_y1 = self._to_display(rect.outer.x1, rect.outer.y1)
             self._canvas.create_rectangle(
-                rect.outer.x0,
-                rect.outer.y0,
-                rect.outer.x1,
-                rect.outer.y1,
+                outer_x0,
+                outer_y0,
+                outer_x1,
+                outer_y1,
                 width=4,
                 outline="white",
                 tags="overlay",
             )
+            inner_x0, inner_y0 = self._to_display(rect.inner.x0, rect.inner.y0)
+            inner_x1, inner_y1 = self._to_display(rect.inner.x1, rect.inner.y1)
             self._canvas.create_rectangle(
-                rect.inner.x0,
-                rect.inner.y0,
-                rect.inner.x1,
-                rect.inner.y1,
+                inner_x0,
+                inner_y0,
+                inner_x1,
+                inner_y1,
                 width=2,
                 outline=self._color_name(rect.color),
                 tags="overlay",

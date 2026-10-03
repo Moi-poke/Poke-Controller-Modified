@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 import pytest
 from gdi_present_doubles import (
@@ -1623,7 +1624,7 @@ def _teardown_markers(node: ast.AST) -> list[tuple[str, str]]:
 # ===========================================================================
 
 
-def test_photo_surface_paints_the_capture_frame_into_a_smaller_show_size(
+def test_photo_surface_scales_the_whole_capture_frame_into_a_smaller_show_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: the fallback surface at the shipped show size, with ImageTk and
@@ -1658,6 +1659,9 @@ def test_photo_surface_paints_the_capture_frame_into_a_smaller_show_size(
             return None
 
         def itemconfig(self, _item: Any, **_kwargs: Any) -> None:
+            return None
+
+        def coords(self, _item: Any, *_xy: Any) -> None:
             return None
 
         def delete(self, _tag: str) -> None:
@@ -1698,11 +1702,12 @@ def test_photo_surface_paints_the_capture_frame_into_a_smaller_show_size(
     assert (composed.ok, presented.ok) == (True, True)
     assert (composed.detail, presented.detail) == ("ok", "ok")
 
-    # Then: and the frame was drawn 1:1 into the top-left of the show size,
-    # never scaled, so both backends show the same picture.
+    # Then: 映像は切り取らず、16:9 のまま表示面いっぱいへ縮小されている
+    # （縮小は面積平均）。GDI 面の StretchBlt と同じく全体が見える絵になる。
     image = built[-1]
     assert image.size == show_size
-    assert np.array_equal(np.asarray(image)[:, :, ::-1], frame[:360, :640])
+    expected = cv2.resize(frame, show_size, interpolation=cv2.INTER_AREA)
+    assert np.array_equal(np.asarray(image)[:, :, ::-1], expected)
 
 
 # ===========================================================================

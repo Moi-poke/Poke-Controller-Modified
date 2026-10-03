@@ -51,6 +51,14 @@ _PREFILL = 0x5A
 _ALPHA = 0xFF
 _SIZE = (1280, 720)
 _PARENT_HWND = 0xABCD
+# The letterbox/pillarbox margins are painted with a raster op rather than a
+# brush, so the colour does not depend on any brush ever being selected into the
+# child DC. 0x42 is BLACKNESS in wingdi.h.
+_BLACKNESS = 0x00000042
+# wingdi.h STRETCHBLTMODE: HALFTONE is the only mode that averages pixels rather
+# than dropping them, and it needs SetBrushOrgEx to stay put between frames.
+_HALFTONE = 4
+_COLORONCOLOR = 3
 # COLORREF is 0x00BBGGRR (design section 6). Only white is pinned, because it is
 # the one colour the design names; the stick and guide colours are the Tk names
 # "cyan" and "red" and the design does not fix their COLORREF encoding.
@@ -180,6 +188,31 @@ class BitBltRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class StretchBltRequest:
+    dest_dc: int
+    dest_x: int
+    dest_y: int
+    dest_w: int
+    dest_h: int
+    src_dc: int
+    src_x: int
+    src_y: int
+    src_w: int
+    src_h: int
+    rop: int
+
+
+@dataclass(frozen=True, slots=True)
+class PatBltRequest:
+    hdc: int
+    x: int
+    y: int
+    width: int
+    height: int
+    rop: int
+
+
+@dataclass(frozen=True, slots=True)
 class CreateWindowRecord:
     class_name: str
     instance: int
@@ -245,6 +278,7 @@ class RecordingGdiApi:
         prefill: int = _PREFILL,
         clip_box: tuple[int, int, int, int] = (0, 0, *_SIZE),
         bitblt_results: list[bool] | None = None,
+        stretchblt_results: list[bool] | None = None,
         get_dc_results: list[int] | None = None,
         get_pixel_results: list[int] | None = None,
         register_class_results: list[int] | None = None,
@@ -255,6 +289,7 @@ class RecordingGdiApi:
         self.bits_pixel = bits_pixel
         self.prefill = prefill
         self.bitblt_results = list(bitblt_results or [])
+        self.stretchblt_results = list(stretchblt_results or [])
         self.get_dc_results = list(get_dc_results or [])
         self.get_pixel_results = list(get_pixel_results or [])
         self.register_class_results = list(register_class_results or [])
@@ -285,6 +320,10 @@ class RecordingGdiApi:
         self.ellipse_calls: list[ShapeRequest] = []
         self.rectangle_calls: list[ShapeRequest] = []
         self.bit_blt_calls: list[BitBltRequest] = []
+        self.stretch_blt_calls: list[StretchBltRequest] = []
+        self.pat_blt_calls: list[PatBltRequest] = []
+        self.stretch_mode_calls: list[tuple[int, int]] = []
+        self.brush_org_calls: list[tuple[int, int, int]] = []
         self.pixel_calls: list[PixelRequest] = []
         self.clip_box_calls: list[int] = []
         self.client_rect_calls: list[int] = []
@@ -543,6 +582,76 @@ class RecordingGdiApi:
             return self.bitblt_results.pop(0)
         return True
 
+    def stretch_blt(
+        self,
+        dest_dc: int,
+        dest_x: int,
+        dest_y: int,
+        dest_w: int,
+        dest_h: int,
+        src_dc: int,
+        src_x: int,
+        src_y: int,
+        src_w: int,
+        src_h: int,
+        rop: int,
+    ) -> bool:
+        self._record(
+            "stretch_blt",
+            dest_dc,
+            dest_x,
+            dest_y,
+            dest_w,
+            dest_h,
+            src_dc,
+            src_x,
+            src_y,
+            src_w,
+            src_h,
+            rop,
+        )
+        self.stretch_blt_calls.append(
+            StretchBltRequest(
+                dest_dc=dest_dc,
+                dest_x=dest_x,
+                dest_y=dest_y,
+                dest_w=dest_w,
+                dest_h=dest_h,
+                src_dc=src_dc,
+                src_x=src_x,
+                src_y=src_y,
+                src_w=src_w,
+                src_h=src_h,
+                rop=rop,
+            )
+        )
+        if self.stretchblt_results:
+            return self.stretchblt_results.pop(0)
+        return True
+
+    def set_stretch_blt_mode(self, hdc: int, mode: int) -> int:
+        self._record("set_stretch_blt_mode", hdc, mode)
+        self.stretch_mode_calls.append((hdc, mode))
+        return 0
+
+    def set_brush_org_ex(self, hdc: int, x: int, y: int) -> bool:
+        self._record("set_brush_org_ex", hdc, x, y)
+        self.brush_org_calls.append((hdc, x, y))
+        return True
+
+    def pat_blt(
+        self,
+        hdc: int,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        rop: int,
+    ) -> bool:
+        self._record("pat_blt", hdc, x, y, width, height, rop)
+        self.pat_blt_calls.append(PatBltRequest(hdc, x, y, width, height, rop))
+        return True
+
     def get_pixel(self, hdc: int, x: int, y: int) -> int:
         self._record("get_pixel", hdc, x, y)
         self.pixel_calls.append(PixelRequest(hdc, x, y))
@@ -552,8 +661,13 @@ class RecordingGdiApi:
         dib = self._dib
         if dib is None or dib.bit_count != 32 or not self._blit_covered(hdc, x, y):
             return 0
+        # 子窓 DC は「どこへ blit したか」しか知らない。sentinel を back[0,0] に
+        # 書いて (dx, dy) へ出したとき、GetPixel(dx, dy) が同じ画素を返して
+        # 初めて一致と判定できる。提示位置と読み戻し位置の換算を入れないと
+        # 二つが食い違い、常に wrong_color になる。
+        origin_x, origin_y = self._last_blit_origin(hdc)
         blue, green, red, _alpha = ctypes.string_at(
-            dib.address + y * dib.stride + x * 4, 4
+            dib.address + (y - origin_y) * dib.stride + (x - origin_x) * 4, 4
         )
         return (red << 16) | (green << 8) | blue
 
@@ -663,6 +777,11 @@ class RecordingGdiApi:
     def presented_blits(self) -> list[BitBltRequest]:
         return [blit for blit in self.bit_blt_calls if blit.src_dc == self.memory_dc]
 
+    def presented_stretches(self) -> list[StretchBltRequest]:
+        return [
+            call for call in self.stretch_blt_calls if call.src_dc == self.memory_dc
+        ]
+
     def _record(self, name: str, *args: Any) -> None:
         self.calls.append(name)
         self.log.append((name, args))
@@ -682,6 +801,13 @@ class RecordingGdiApi:
             blit.dest_x <= x < blit.dest_x + blit.width
             and blit.dest_y <= y < blit.dest_y + blit.height
         )
+
+    def _last_blit_origin(self, hdc: int) -> tuple[int, int]:
+        """The dest origin of the last blit into ``hdc``, defaulting to (0, 0)."""
+        for blit in reversed(self.bit_blt_calls):
+            if blit.dest_dc == hdc:
+                return (blit.dest_x, blit.dest_y)
+        return (0, 0)
 
     def _new_handle(self) -> int:
         handle = self._next_handle
@@ -1393,17 +1519,19 @@ def test_frame_is_accepted_after_a_stretched_resize_keeps_preview_alive() -> Non
     module = _fresh_surface_module()
     api = RecordingGdiApi()
     surface = _attached(api, module)
-    blits_before = len(api.presented_blits())
+    transfers_before = len(api.presented_blits()) + len(api.presented_stretches())
 
     # When: the frame is delivered to the untouched attach-size surface.
     control = surface.compose(_frame(720, 1280), _empty_overlay())
     control_shown = surface.present()
-    control_blits = len(api.presented_blits()) - blits_before
+    control_transfers = (
+        len(api.presented_blits()) + len(api.presented_stretches()) - transfers_before
+    )
 
     # Then: it shows, so the resize below is the only variable left.
     assert (control.ok, control_shown.ok) == (True, True)
     assert control.detail == "ok"
-    assert control_blits == 1
+    assert control_transfers == 1
 
     # When: the parent stretches the child to 1600x900 -- aspect preserving, the
     # shape a user gets by making the window bigger -- and reports it.
@@ -1411,32 +1539,44 @@ def test_frame_is_accepted_after_a_stretched_resize_keeps_preview_alive() -> Non
     api.set_client_rect(stretched)
     surface.resize(stretched)
     assert surface.client_size() == stretched
-    blits_after = len(api.presented_blits())
+    transfers_after = len(api.presented_blits()) + len(api.presented_stretches())
 
     # When: the very same 1280x720 frame arrives again, unchanged.
     composed = surface.compose(_frame(720, 1280), _empty_overlay())
     presented = surface.present()
-    new_blits = len(api.presented_blits()) - blits_after
+    new_transfers = (
+        len(api.presented_blits()) + len(api.presented_stretches()) - transfers_after
+    )
 
     # Then: it is accepted and shown, so stretching the window cannot be what
-    # blanks the preview -- the DIB has to follow the client box rather than
-    # staying pinned to the size it was attached with.
+    # blanks the preview -- the picture is scaled into the new box rather than
+    # being copied 1:1 into it.
     assert composed.ok is True, (
         f"stretched resize discarded a live frame: detail={composed.detail!r} "
-        f"new_blits={new_blits}"
+        f"new_transfers={new_transfers}"
     )
     assert composed.detail == "ok"
     assert presented.ok is True
-    assert new_blits == 1
-    blits = api.presented_blits()
-    assert (blits[-1].width, blits[-1].height) == stretched
+    assert new_transfers == 1
+    stretch = api.presented_stretches()[-1]
+    assert (stretch.dest_x, stretch.dest_y, stretch.dest_w, stretch.dest_h) == (
+        0,
+        0,
+        1600,
+        900,
+    )
+    assert (stretch.src_x, stretch.src_y, stretch.src_w, stretch.src_h) == (
+        0,
+        0,
+        1280,
+        720,
+    )
 
 
 def test_frame_is_accepted_after_an_aspect_distorting_resize() -> None:
     # Given: the same surface whose client box was distorted to 1274x718, the
     # two-pixels-smaller box a window manager border leaves behind. 16:9 is not
-    # preserved and no whole-pixel scale factor exists, so neither is a rounding
-    # detail that may be waved away.
+    # preserved, so the picture cannot fill the box and something has to give.
     module = _fresh_surface_module()
     api = RecordingGdiApi()
     surface = _attached(api, module)
@@ -1446,24 +1586,38 @@ def test_frame_is_accepted_after_an_aspect_distorting_resize() -> None:
     api.set_client_rect(distorted)
     surface.resize(distorted)
     assert surface.client_size() == distorted
-    blits_after = len(api.presented_blits())
+    transfers_after = len(api.presented_blits()) + len(api.presented_stretches())
 
     # When: the unchanged 1280x720 source frame is composited into that box.
     composed = surface.compose(_frame(720, 1280), _empty_overlay())
     presented = surface.present()
-    new_blits = len(api.presented_blits()) - blits_after
+    new_transfers = (
+        len(api.presented_blits()) + len(api.presented_stretches()) - transfers_after
+    )
 
     # Then: it composes instead of reporting the size invariant, and presents
-    # across the whole new client area.
+    # into the largest 16:9 rectangle that fits -- 1274x717, one row of margin at
+    # the top and none at the bottom because the margin is an integer division.
     assert composed.ok is True, (
         f"distorting resize discarded a live frame: detail={composed.detail!r} "
-        f"new_blits={new_blits}"
+        f"new_transfers={new_transfers}"
     )
     assert composed.detail == "ok"
     assert presented.ok is True
-    assert new_blits == 1
-    blits = api.presented_blits()
-    assert (blits[-1].width, blits[-1].height) == distorted
+    assert new_transfers == 1
+    stretch = api.presented_stretches()[-1]
+    assert (stretch.dest_x, stretch.dest_y, stretch.dest_w, stretch.dest_h) == (
+        0,
+        0,
+        1274,
+        717,
+    )
+    assert (stretch.src_x, stretch.src_y, stretch.src_w, stretch.src_h) == (
+        0,
+        0,
+        1280,
+        720,
+    )
 
 
 def test_compose_issues_no_window_dc_and_no_blit() -> None:
@@ -1629,7 +1783,7 @@ def test_attach_ends_with_a_memory_dc_the_surface_can_paint_through() -> None:
     assert api.presented_blits()[-1].src_dc == api.memory_dc
 
 
-def test_a_smaller_show_size_still_paints_the_fixed_capture_frame() -> None:
+def test_a_smaller_show_size_scales_the_fixed_capture_frame_to_fill_it() -> None:
     # Given: the show size the app ships with (config.py's default, and what
     # the menu's Reset picks) and the camera's fixed capture size, which is
     # what the frames actually are. Nothing hands the show size to the camera,
@@ -1638,27 +1792,372 @@ def test_a_smaller_show_size_still_paints_the_fixed_capture_frame() -> None:
     show_size = (640, 360)
     api = RecordingGdiApi(client_size=show_size)
     surface = _attached(api, module, show_size)
+    frame = _frame(720, 1280)
 
     # When: a live 1280x720 capture frame is composited (core.Camera's
     # CAPTURE_SIZE, fixed at camera construction and never resized after).
-    composed = surface.compose(_frame(720, 1280), _empty_overlay())
+    composed = surface.compose(frame, _empty_overlay())
     presented = surface.present()
 
-    # Then: it is accepted and blitted, so a small preview box cannot be what
+    # Then: it is accepted and presented, so a small preview box cannot be what
     # blanks the preview. Sizing the expectation from the attach box instead
     # rejects every frame forever, which is indistinguishable from a dead
     # camera in the log.
     assert composed.ok is True, f"detail={composed.detail!r}"
     assert composed.detail == "ok"
     assert presented.ok is True
-    blits = api.presented_blits()
-    assert blits and (blits[-1].width, blits[-1].height) == show_size
 
-    # Then: and the frame was drawn 1:1 into the top-left of the box, so the
-    # picture is never scaled: only the part that fits was copied.
-    drawn = api.dib_bgra()[:, :, :3]
-    assert np.array_equal(drawn, _frame(720, 1280)[:360, :640])
-    assert api.dib_bgra().shape == (360, 640, 4)
+    # Then: the back buffer still holds the WHOLE capture frame at 1:1, so the
+    # overlay is drawn in capture coordinates and every future stretch reads the
+    # same buffer. Only the transfer is scaled.
+    assert api.dib_bgra().shape == (720, 1280, 4), api.dib_bgra().shape
+    assert np.array_equal(api.dib_bgra()[:, :, :3], frame)
+
+    # Then: and the transfer halves it into the whole box, rather than cropping
+    # the top-left quarter and leaving the rest blank.
+    stretches = api.presented_stretches()
+    assert len(stretches) == 1, stretches
+    call = stretches[0]
+    assert (call.dest_x, call.dest_y, call.dest_w, call.dest_h) == (0, 0, 640, 360)
+    assert (call.src_x, call.src_y, call.src_w, call.src_h) == (0, 0, 1280, 720)
+    assert call.rop == _SRCCOPY
+    assert api.stretch_mode_calls == [(api.child_dc, _HALFTONE)]
+
+
+# ===========================================================================
+# B (continued). The picture is scaled, centred and margined in black
+# ===========================================================================
+#
+# The back buffer is built once, at CAPTURE_SIZE, and is never rebuilt. The
+# viewport is a separate fact: ``fit_rect`` decides where inside it the picture
+# sits, and ``present`` is the only place that scales. Two properties are
+# load-bearing and are pinned separately below:
+#
+# * a box whose fitted rect is the whole buffer takes the one-instruction
+#   BitBlt path, because that is the shape the app runs in at 1280x720 and a
+#   halftone stretch there would cost a full-frame filter for nothing;
+# * a box that does not fit takes StretchBlt plus black margins, so a 1000x700
+#   window shows the whole 16:9 picture with bars instead of a cropped corner.
+
+
+def test_a_half_size_viewport_stretches_the_whole_buffer_in_halftone() -> None:
+    # Given: a viewport exactly half the capture size on both axes, so the
+    # fitted rect is the whole box and there is no margin at all.
+    module = _fresh_surface_module()
+    viewport = (640, 360)
+    api = RecordingGdiApi(client_size=viewport)
+    surface = _attached(api, module, viewport)
+
+    # When: one frame is composited and presented.
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    result = surface.present()
+
+    # Then: it reports success through the stretch path.
+    assert (result.ok, result.detail) == (True, "ok")
+
+    # Then: exactly one StretchBlt, whole buffer -> whole box, SRCCOPY.
+    stretches = api.presented_stretches()
+    assert len(stretches) == 1, stretches
+    call = stretches[0]
+    assert call.dest_dc == api.child_dc
+    assert (call.dest_x, call.dest_y, call.dest_w, call.dest_h) == (0, 0, 640, 360)
+    assert call.src_dc == api.memory_dc
+    assert (call.src_x, call.src_y, call.src_w, call.src_h) == (0, 0, 1280, 720)
+    assert call.rop == _SRCCOPY
+
+    # Then: HALFTONE, because a downscale that drops pixels shimmers; and the
+    # brush origin is pinned to (0, 0) because HALFTONE's pattern is anchored on
+    # it and drifts frame after frame otherwise.
+    assert api.stretch_mode_calls == [(api.child_dc, _HALFTONE)]
+    assert api.brush_org_calls == [(api.child_dc, 0, 0)]
+
+    # Then: and no margin is painted, because there is none.
+    assert api.pat_blt_calls == []
+
+
+def test_a_viewport_matching_the_capture_size_still_presents_with_blt_blt() -> None:
+    # Given: the viewport the app actually runs in at full size -- the fast path
+    # that must not be paid for with a halftone filter.
+    module = _fresh_surface_module()
+    viewport = _SIZE
+    api = RecordingGdiApi(client_size=viewport)
+    surface = _attached(api, module, viewport)
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    blits_before = len(api.presented_blits())
+
+    # When: the frame is presented.
+    result = surface.present()
+
+    # Then: one BitBlt covers the whole box, exactly as it did before scaling
+    # existed.
+    assert (result.ok, result.detail) == (True, "ok")
+    assert len(api.presented_blits()) == blits_before + 1
+    blit = api.presented_blits()[-1]
+    assert (blit.dest_x, blit.dest_y, blit.width, blit.height) == (0, 0, 1280, 720)
+
+    # Then: and no stretch, no mode change and no margin were issued at all, so
+    # an equal-size preview costs the same single blit it always cost.
+    assert api.presented_stretches() == [], api.stretch_blt_calls
+    assert api.stretch_mode_calls == []
+    assert api.brush_org_calls == []
+    assert api.pat_blt_calls == []
+
+
+def test_a_wider_viewport_paints_black_margins_around_the_fitted_rect() -> None:
+    # Given: a 1000x700 viewport, wider than 16:9 allows, so the picture fits by
+    # height and the margins are top and bottom only.
+    module = _fresh_surface_module()
+    viewport = (1000, 700)
+    api = RecordingGdiApi(client_size=viewport)
+    surface = _attached(api, module, viewport)
+
+    # When: one frame is composited and presented.
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    result = surface.present()
+
+    # Then: it succeeds, and the picture goes to (0, 68, 1000, 563) -- 700 - 563
+    # = 137 leftover rows, and an integer //2 puts all of them on top.
+    assert (result.ok, result.detail) == (True, "ok")
+    call = api.presented_stretches()[-1]
+    assert (call.dest_x, call.dest_y, call.dest_w, call.dest_h) == (0, 68, 1000, 563)
+    assert (call.src_x, call.src_y, call.src_w, call.src_h) == (0, 0, 1280, 720)
+
+    # Then: two margins are painted BLACKNESS, and only two: the left and right
+    # ones are zero-width and must not be issued at all, because PatBlt with a
+    # zero extent is at best a no-op and at worst a driver complaint.
+    assert len(api.pat_blt_calls) == 2, api.pat_blt_calls
+    top, bottom = api.pat_blt_calls
+    assert (top.hdc, top.x, top.y, top.width, top.height, top.rop) == (
+        api.child_dc,
+        0,
+        0,
+        1000,
+        68,
+        _BLACKNESS,
+    )
+    assert (bottom.hdc, bottom.x, bottom.y) == (api.child_dc, 0, 631)
+    assert (bottom.width, bottom.height, bottom.rop) == (1000, 69, _BLACKNESS)
+
+    # Then: and the margins plus the picture tile the viewport exactly, with no
+    # gap and no overlap -- otherwise a stale pixel survives at an edge.
+    covered = sum(call.height for call in api.pat_blt_calls) + call.dest_h
+    assert covered == viewport[1], (covered, viewport)
+
+
+def test_a_viewport_wider_than_sixteen_by_nine_paints_black_margins_to_the_sides() -> (
+    None
+):
+    # Given: a 1400x700 viewport, wider than 16:9 allows, so the picture fits by
+    # height and the margins are left and right.
+    module = _fresh_surface_module()
+    viewport = (1400, 700)
+    api = RecordingGdiApi(client_size=viewport)
+    surface = _attached(api, module, viewport)
+
+    # When: one frame is composited and presented.
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    assert surface.present().ok is True
+
+    # Then: the picture sits centred at (78, 0, 1244, 700): height-limited to
+    # 700 tall, 700*1280/720 = 1244 columns rounded down, and (1400-1244)//2
+    # columns left over on the left.
+    call = api.presented_stretches()[-1]
+    assert (call.dest_x, call.dest_y, call.dest_w, call.dest_h) == (78, 0, 1244, 700)
+
+    # Then: and the two side margins are painted, while the top and bottom ones
+    # -- both zero-height here -- are not.
+    assert len(api.pat_blt_calls) == 2, api.pat_blt_calls
+    left, right = api.pat_blt_calls
+    assert (left.x, left.y, left.width, left.height, left.rop) == (
+        0,
+        0,
+        78,
+        700,
+        _BLACKNESS,
+    )
+    assert (right.x, right.y, right.width, right.height, right.rop) == (
+        1322,
+        0,
+        78,
+        700,
+        _BLACKNESS,
+    )
+
+
+def test_an_enlarged_viewport_uses_coloroncolor_and_needs_no_brush_origin() -> None:
+    # Given: a viewport larger than the capture size, so the picture is scaled
+    # up and there is no dropped pixel for halftone to average.
+    module = _fresh_surface_module()
+    viewport = (1920, 1080)
+    api = RecordingGdiApi(client_size=viewport)
+    surface = _attached(api, module, viewport)
+
+    # When: one frame is composited and presented.
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    assert surface.present().ok is True
+
+    # Then: COLORONCOLOR, which is fast and has no pattern origin to keep.
+    assert api.stretch_mode_calls == [(api.child_dc, _COLORONCOLOR)]
+    assert api.brush_org_calls == []
+
+
+def test_resize_repositions_the_child_without_rebuilding_the_back_buffer() -> None:
+    # Given: an attached surface that has composited and presented a frame.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi(client_size=(640, 360))
+    surface = _attached(api, module, (640, 360))
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    assert surface.present().ok is True
+    assert len(api.dib_headers) == 1
+
+    # When: the viewport changes to a shape whose fitted rect is elsewhere.
+    surface.resize((1000, 700))
+    surface.compose(_frame(720, 1280), _empty_overlay())
+    surface.present()
+
+    # Then: the child window moved, ...
+    placed = api.window_pos_calls[-1]
+    assert (placed.x, placed.y, placed.width, placed.height) == (0, 0, 1000, 700)
+
+    # Then: and no second DIB or memory DC was made. Rebuilding the 3.7MB buffer
+    # on every <Configure> would free and reallocate it during a window drag.
+    assert len(api.dib_headers) == 1, api.dib_headers
+    assert len(api.dib_sections) == 1, api.dib_sections
+    assert len(api.compatible_dc_calls) == 1, api.compatible_dc_calls
+
+    # Then: and the next present uses the new placement, proving _dest followed
+    # the resize instead of staying pinned to the attach size.
+    call = api.presented_stretches()[-1]
+    assert (call.dest_x, call.dest_y, call.dest_w, call.dest_h) == (0, 68, 1000, 563)
+
+
+def test_resize_arms_a_repaint_so_the_new_placement_is_drawn() -> None:
+    # Given: a surface holding one presented frame, so there is a video base to
+    # redraw at the new size without a new frame from the camera.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi(client_size=(640, 360))
+    surface = _attached(api, module, (640, 360))
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+    assert surface.present().ok is True
+    assert surface.present().ok is False, "the control should have consumed the frame"
+
+    # When: the viewport changes and present is called with nothing new composed.
+    surface.resize((1000, 700))
+    result = surface.present()
+
+    # Then: the picture is re-offered at the new placement. Without this the new
+    # margins stay whatever the window manager left in them until the next
+    # capture frame arrives, which is up to 1/60 s of visibly wrong picture.
+    assert (result.ok, result.detail) == (True, "ok")
+    call = api.presented_stretches()[-1]
+    assert (call.dest_x, call.dest_y, call.dest_w, call.dest_h) == (0, 68, 1000, 563)
+
+
+def test_a_resize_to_the_viewport_it_already_has_moves_nothing() -> None:
+    # Given: an attached surface at 640x360.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi(client_size=(640, 360))
+    surface = _attached(api, module, (640, 360))
+    moves_before = len(api.window_pos_calls)
+
+    # When: the same viewport arrives again, as a <Configure> storm would.
+    for _attempt in range(3):
+        surface.resize((640, 360))
+
+    # Then: the child is not moved and no DIB is touched, so the no-op converges
+    # in one step and repeated configures cost nothing.
+    assert len(api.window_pos_calls) == moves_before, api.window_pos_calls
+    assert len(api.dib_headers) == 1, api.dib_headers
+
+
+def test_a_failed_stretch_blt_is_reported_as_stretchblt_failed() -> None:
+    # Given: a double whose StretchBlt reports failure once the self test has
+    # finished, as a driver that refuses a filter does.
+    module = _fresh_surface_module()
+    viewport = (640, 360)
+    api = RecordingGdiApi(client_size=viewport, stretchblt_results=[False])
+    surface = _attached(api, module, viewport)
+    assert surface.compose(_frame(720, 1280), _empty_overlay()).ok is True
+
+    # When: present runs and the stretch fails.
+    result = surface.present()
+
+    # Then: the failure is reported under its own detail, so an operator is not
+    # sent looking for the BitBlt path that was never taken.
+    assert (result.ok, result.detail) == (False, "stretchblt_failed")
+    assert isinstance(result.elapsed_ns, int)
+
+
+def test_the_self_test_reads_the_sentinel_back_from_where_it_was_placed() -> None:
+    # Given: a viewport whose fitted rect starts below the origin, so a self test
+    # that reads back from (0, 0) would read the black margin it never wrote.
+    module = _fresh_surface_module()
+    viewport = (1000, 700)
+    api = RecordingGdiApi(client_size=viewport, prefill=_PREFILL)
+    surface = _attached(api, module, viewport)
+
+    # Then: the one-pixel readback was moved to the picture's own origin and is
+    # read there, so the verdict is about the picture rather than the margin.
+    probe = [blit for blit in api.presented_blits() if blit.dest_dc == api.child_dc]
+    assert len(probe) == 1, probe
+    assert (probe[0].dest_x, probe[0].dest_y) == (0, 68)
+    assert (probe[0].width, probe[0].height) == (1, 1)
+    assert api.pixel_calls, "the self test read nothing back"
+    first = api.pixel_calls[0]
+    assert (first.hdc, first.x, first.y) == (api.child_dc, 0, 68)
+
+    # Then: and it still recognises its own sentinel, which is the whole point.
+    assert surface.self_test().outcome == "sentinel_matched"
+
+
+def test_compose_refuses_a_viewport_with_no_room_rather_than_scaling_to_nothing() -> (
+    None
+):
+    # Given: a surface attached at a viewport of (0, 0), which resize refuses
+    # and leave the fitted rect unknown -- the state a caller that hands attach a
+    # nonsense size produces.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi(client_size=(0, 0))
+    surface = _attached(api, module, (0, 0))
+    assert surface._dest == (0, 0, 0, 0), surface._dest
+
+    # When: a perfectly good 1280x720 capture frame is composited.
+    result = surface.compose(_frame(720, 1280), _empty_overlay())
+
+    # Then: it is refused under its own detail, never scaled to nothing. A
+    # zero-extent StretchBlt is what present would otherwise issue, and Win32
+    # answers it with a failure no operator can act on.
+    assert (result.ok, result.detail) == (False, "no_room"), result
+
+    # Then: and present has nothing staged, so the zero-extent transfer is never
+    # reached at all.
+    assert api.stretch_blt_calls == []
+    assert surface.present().detail == "no_frame"
+
+
+def test_the_presented_picture_stays_at_capture_scale_inside_the_back_buffer() -> None:
+    # Given: an attached surface whose viewport is a third of the capture size.
+    module = _fresh_surface_module()
+    viewport = (426, 240)
+    api = RecordingGdiApi(client_size=viewport)
+    surface = _attached(api, module, viewport)
+
+    # When: a frame with a recognisable overlay is composited.
+    overlay = module.OverlayState(
+        left_stick=module.StickState(
+            active=True, center_x=640, center_y=360, radius=60, knob_x=660, knob_y=350
+        )
+    )
+    assert surface.compose(_frame(720, 1280), overlay).ok is True
+
+    # Then: the stick's ellipses are still drawn at capture coordinates inside
+    # the back buffer. The GDI side scales nothing while composing, so the
+    # OverlayState contract is capture coordinates (0..1280, 0..720) and the
+    # whole buffer is scaled once at transfer time.
+    assert api.ellipse_calls, api.ellipse_calls
+    ring = api.ellipse_calls[0]
+    assert (ring.right - ring.left) - 1 == 2 * 60 + 1
+    assert api.dib_bgra().shape == (720, 1280, 4)
 
 
 def test_a_failed_memory_dc_frees_the_dib_it_had_already_created() -> None:

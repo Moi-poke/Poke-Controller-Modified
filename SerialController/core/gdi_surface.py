@@ -19,6 +19,7 @@ from typing import Any, Protocol
 import cv2
 import numpy as np
 from core.Camera import CAPTURE_SIZE
+from core.coordinates import fit_rect
 from core.preview_renderer import (
     ImgRectState,
     OverlayState,
@@ -37,6 +38,21 @@ _WS_CLIPSIBLINGS = 0x04000000
 _SWP_SHOWWINDOW = 0x0040
 _HWND_TOP = 0
 _SRCCOPY = 0x00CC0020
+# 余白を黒で埋める raster op。選択中のペンやブラシに依存せず自律して黒を書
+# くので、present で消費する GDI オブジェクトが 0 個で済む。0x42 は wingdi.h
+# の BLACKNESS。
+_BLACKNESS = 0x00000042
+# wingdi.h の STRETCHBLTMODE。HALFTONE だけが画素を間引くのではなく加重平均
+# するので縮小時にちらつかない。ただし網目の原点を DC に持つので毎フレーム
+# SetBrushOrgEx で戻す必要がある（戻さないと網目が組ごとにずれる）。
+#
+# 実機での速度は未計測。HALFTONE は 1280x720 の全画素に対するフィルタなので、
+# 縮小時の 1 フレームあたりの負荷は BitBlt 経路より高いと予想されるが、これは
+# 推測である。60fps を保てるかは実機（キャプチャボード接続環境）で測るまで
+# 確定しない。測ったらこの注記を結果で置き換えること。
+_HALFTONE = 4
+# 拡大時は画素を複写するだけなので既定の COLORONCOLOR で足りる。原点も要らない。
+_COLORONCOLOR = 3
 _PS_SOLID = 0
 _PS_DASH = 1
 _BI_RGB = 0
@@ -199,6 +215,35 @@ class GdiSurfaceApi(Protocol):
         src_dc: int,
         src_x: int,
         src_y: int,
+        rop: int,
+    ) -> bool: ...
+
+    def stretch_blt(
+        self,
+        dest_dc: int,
+        dest_x: int,
+        dest_y: int,
+        dest_w: int,
+        dest_h: int,
+        src_dc: int,
+        src_x: int,
+        src_y: int,
+        src_w: int,
+        src_h: int,
+        rop: int,
+    ) -> bool: ...
+
+    def set_stretch_blt_mode(self, hdc: int, mode: int) -> int: ...
+
+    def set_brush_org_ex(self, hdc: int, x: int, y: int) -> bool: ...
+
+    def pat_blt(
+        self,
+        hdc: int,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
         rop: int,
     ) -> bool: ...
 
@@ -422,6 +467,50 @@ class CtypesGdiApi:
         ]
         self._bit_blt.restype = ctypes.c_int
 
+        # BitBlt と同じ流儀で 11 個の引数すべてを明示する。省略すると
+        # 64 ビットハンドルが 32 ビットに切り詰められ、断続的に壊れる。
+        self._stretch_blt = gdi32.StretchBlt
+        self._stretch_blt.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        ]
+        self._stretch_blt.restype = ctypes.c_int
+
+        self._set_stretch_blt_mode = gdi32.SetStretchBltMode
+        self._set_stretch_blt_mode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self._set_stretch_blt_mode.restype = ctypes.c_int
+
+        # 最後の引数は「旧原点を書き戻す場所」で、要らなければ NULL。壊れて
+        # いると Point を書き込むので渡さない。
+        self._set_brush_org_ex = gdi32.SetBrushOrgEx
+        self._set_brush_org_ex.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+        ]
+        self._set_brush_org_ex.restype = ctypes.c_int
+
+        self._pat_blt = gdi32.PatBlt
+        self._pat_blt.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        ]
+        self._pat_blt.restype = ctypes.c_int
+
         self._destroy_window = user32.DestroyWindow
         self._destroy_window.argtypes = [ctypes.c_void_p]
         self._destroy_window.restype = ctypes.c_int
@@ -574,6 +663,47 @@ class CtypesGdiApi:
             )
         )
 
+    def stretch_blt(
+        self,
+        dest_dc: int,
+        dest_x: int,
+        dest_y: int,
+        dest_w: int,
+        dest_h: int,
+        src_dc: int,
+        src_x: int,
+        src_y: int,
+        src_w: int,
+        src_h: int,
+        rop: int,
+    ) -> bool:
+        return bool(
+            self._stretch_blt(
+                dest_dc,
+                dest_x,
+                dest_y,
+                dest_w,
+                dest_h,
+                src_dc,
+                src_x,
+                src_y,
+                src_w,
+                src_h,
+                rop,
+            )
+        )
+
+    def set_stretch_blt_mode(self, hdc: int, mode: int) -> int:
+        return int(self._set_stretch_blt_mode(hdc, mode))
+
+    def set_brush_org_ex(self, hdc: int, x: int, y: int) -> bool:
+        return bool(self._set_brush_org_ex(hdc, x, y, None))
+
+    def pat_blt(
+        self, hdc: int, x: int, y: int, width: int, height: int, rop: int
+    ) -> bool:
+        return bool(self._pat_blt(hdc, x, y, width, height, rop))
+
     def get_pixel(self, hdc: int, x: int, y: int) -> int:
         return int(self._get_pixel(hdc, x, y))
 
@@ -619,7 +749,14 @@ class GdiSurface:
         # 映像だけの base 層。compose が映像を書いてオーバーレイを描く前に
         # 撮り、recompose がここから復元する。_back の入れ替え時に無効化。
         self._base: np.ndarray[tuple[int, ...], np.dtype[np.uint8]] | None = None
+        # バックバッファの大きさ。attach で 1 度だけ CAPTURE_SIZE で作られ、
+        # resize でも作り直さない。ここが映像そのものの解像度である。
         self._size = (0, 0)
+        # 子窓（表示面・ビューポート）の大きさ。resize が受け取る size はこれ。
+        self._viewport = (0, 0)
+        # ビューポートの中で映像が置かれている矩形 (x, y, w, h)。fit_rect が
+        # 1 箇所で決めるので、描画側と座標変換側が別の答えを持てないようにする。
+        self._dest: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._rebuilding = False
         self._pending_frame = False
         self._self_test = SelfTestResult("not_run", False, (0, 0, 0, 0))
@@ -640,6 +777,12 @@ class GdiSurface:
         return self._self_test
 
     def attach(self, parent_hwnd: int, size: tuple[int, int]) -> None:
+        """子窓を `size`（表示面）で作り、バックバッファを CAPTURE_SIZE で作る。
+
+        `size` は映像の大きさではなく表示面の大きさである。映像の位置と大きさは
+        `fit_rect(CAPTURE_SIZE, size)` が決める。バックバッファは映像の解像度で
+        1 度だけ作るので、resize で 3.7MB の確保と解放を反復しない。
+        """
         global _CLASS_REGISTERED
         width, height = int(size[0]), int(size[1])
         # 画面座標が 150% DPI で仮想化されると 1:1 判断が静かに壊れる。
@@ -674,12 +817,14 @@ class GdiSurface:
         # 125Hz の Tk bind() がマウスを受け続けるよう子窓は入力を取らない。
         self._api.enable_window(child, False)
         self._child = child
-        if not self._build_back_buffer(width, height):
+        if not self._build_back_buffer(CAPTURE_SIZE[0], CAPTURE_SIZE[1]):
             # 作り損ねた窓は残さない。残しても release() で片付くだけだが、
             # 面が「窓だけ在って絵を持たない」中途半端な状態になるのを避ける。
             self._api.destroy_window(child)
             self._child = 0
             return
+        self._viewport = (width, height)
+        self._dest = fit_rect(CAPTURE_SIZE, self._viewport)
         self._place(width, height)
         self._build_static_objects()
         self._run_self_test()
@@ -692,8 +837,9 @@ class GdiSurface:
         memory DC を持たない面が以降 1 枚も描かなくなる。だから DC を持って
         いる区間の内で両方を済ませ、解放は finally で 1 回だけにする。
 
-        新しい memory DC が取れてから古い方を捨てるので、resize が失敗しても
-        旧面のまま映像を出し続けられる。
+        新しい memory DC が取れてから古い方を捨てるので、attach が失敗しても
+        旧面のまま映像を出し続けられる。attach 以外からは呼ばない: バック
+        バッファの大きさは CAPTURE_SIZE で一定なので、作り直す必要が無い。
         """
         window_dc = self._api.get_dc(self._child)
         if window_dc == 0:
@@ -772,11 +918,16 @@ class GdiSurface:
         return (int(right - left), int(bottom - top))
 
     def resize(self, size: tuple[int, int]) -> None:
-        """受け皿を新しい大きさに作り直す。子窓・DIB・memory DC を作り直す。
+        """表示面（ビューポート）を新しい大きさにし、子窓をそこへ移す。
 
-        かつては子窓の SetWindowPos だけで、受け皿の大きさは attach の時の
-        ままだった。親が伸びると受け皿と映像の大きさが食い違い、以降 1 枚も
-        合成できない状態が続いた。
+        かつては子窓と DIB をともに作り直していた。バックバッファは映像の解像度
+        （CAPTURE_SIZE）で 1 度だけ作れば足りるので、resize は子窓の配置と
+        _dest の更新だけで済む。作り直していた間は 3.7MB の確保と解放を
+        <Configure> の数だけ繰り返すことになる。
+
+        合成済みの映像があれば、次の present で新しい配置に描き直されるよう
+        _pending_frame を立てる。立てないと、新しい余白がウィンドウマネージャ
+        が置いたままの色で 1 フレーム分見える。
         """
         if self._child == 0 or self._rebuilding:
             return
@@ -784,15 +935,15 @@ class GdiSurface:
         # Tk は geom が決まる前に 1x1 の <Configure> を送ってくる。1 ピクセルの
         # 受け皿を作っても絵は出ないので、大きさが決まるまで待つ（前の箱を
         # そのまま使い、窓も動かさない）。
-        if width <= 1 or height <= 1 or (width, height) == self._size:
+        if width <= 1 or height <= 1 or (width, height) == self._viewport:
             return
         self._rebuilding = True
         try:
-            # 窓を先に動かしてから作り直す。作り直しに失敗しても、窓は新しい
-            # 箱で受け皿は旧のままなので映像は出し続けられる。
             self._place(width, height)
-            if self._build_back_buffer(width, height):
-                self._run_self_test()
+            self._viewport = (width, height)
+            self._dest = fit_rect(CAPTURE_SIZE, self._viewport)
+            if self._base is not None:
+                self._pending_frame = True
         finally:
             self._rebuilding = False
 
@@ -815,46 +966,45 @@ class GdiSurface:
         back = self._back
         frame_size = frame.shape[1::-1]
         # ここで止めないと 640x360 の frame が 1280x720 のバッファへ範囲外書
-        # き込む。縮小も拡大もせず捨てる。判定の相手は受け皿でも client で
-        # もなく、カメラが返す映像の解像度（CAPTURE_SIZE）である。受け皿や
-        # client を相手にすると、親や設定の表示サイズが変わった途端に 1 枚も
-        # 合成できなくなる。表示サイズがカメラへ渡る経路は無いので、1280x720
-        # の映像が 640x360 の枠に入るのは正常で、これは切り取りになる。
+        # き込む。判定の相手は受け皿でも client でもなく、カメラが返す映像の
+        # 解像度（CAPTURE_SIZE）である。表示面の大きさは present で換算する
+        # ので、ここで受け皿を相手にすると、表示サイズが変わった途端に 1 枚も
+        # 合成できなくなる。
         if frame_size != CAPTURE_SIZE:
             self.frames_discarded_dimension_mismatch += 1
             self._note_failure(
                 "dimension_mismatch",
-                "プレビューは 1:1 しか描かないので捨てた {}x{} のまま capture={} "
-                "owned={} client={} frames_discarded_dimension_mismatch={}",
+                "キャプチャ解像度でないので捨てた {}x{} のまま capture={} "
+                "owned={} viewport={} dest={} "
+                "frames_discarded_dimension_mismatch={}",
                 frame_size[0],
                 frame_size[1],
                 CAPTURE_SIZE,
                 self._size,
-                self.client_size(),
+                self._viewport,
+                self._dest,
                 self.frames_discarded_dimension_mismatch,
             )
             return RenderResult(
                 False, time.perf_counter_ns() - started, "dimension_mismatch"
             )
-        if frame_size == self._size:
-            cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA, dst=back)
-        else:
-            # 受け皿が映像より大きい時は余白（左上 1:1 のまま映像、
-            # 残りは DIB のままの黒）、小さい時は切れる。換算しないので映像が
-            # 引き伸ばされることはなく、伸び縮みしても絵が消えない。
+        dest_w, dest_h = self._dest[2], self._dest[3]
+        if dest_w <= 0 or dest_h <= 0:
+            # 表示面に 1 画素も収まる場所が無い。attach が 1 以下の大きさを受け
+            # た場合だけで、resize は 1 以下を拒否する。ここで描くと present が
+            # 0 幅の StretchBlt を発行し、Win32 はそれを失敗で返す。原因は
+            # 「転送が失敗した」ではなく「描く場所が無い」なので、転送系の詳細
+            # （bitblt_failed / stretchblt_failed）とは分けて返す。
             self._note_failure(
-                "letterboxed",
-                "受け皿 {} が映像 {} と大きさ違いなので 1:1 の範囲だけ描く "
-                "stage=compose",
-                self._size,
+                "no_room",
+                "表示面 {} に映像 {} を収める場所が無いので描かない stage=compose",
+                self._viewport,
                 CAPTURE_SIZE,
             )
-            height = min(frame.shape[0], self._size[1])
-            width = min(frame.shape[1], self._size[0])
-            target = back[:height, :width]
-            np.copyto(target[:, :, :3], frame[:height, :width])
-            if target.shape[2] > 3:
-                target[:, :, 3] = 0xFF
+            return RenderResult(False, time.perf_counter_ns() - started, "no_room")
+        # frame は常にバックバッファと同じ大きさなので、変換 1 経路で済む。
+        # 換算は present の StretchBlt が行うので、ここでは引伸ばさない。
+        cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA, dst=back)
         # 映像を書いた直後・オーバーレイを描く前に base を撮る。描画後にずらすと
         # 前のオーバーレイが base に焼き込み、recompose が意味を失う。
         if self._base is None or self._base.shape != back.shape:
@@ -879,25 +1029,77 @@ class GdiSurface:
                 "getdc_failed", "子窓の DC を取れず提示できない stage=present"
             )
             return RenderResult(False, time.perf_counter_ns() - started, "getdc_failed")
-        width, height = self._size
+        dest_x, dest_y, dest_w, dest_h = self._dest
+        # 等倍（表示面 == キャプチャ解像度）は BitBlt 1 回で足りる。ここに
+        # halftone を挟むと 1280x720 の全画素を毎フレームフィルタすることにな
+        # るので、この分岐は速度の速い経路である。
+        scaled = self._dest != (0, 0, *CAPTURE_SIZE)
         try:
-            copied = self._api.bit_blt(
-                child_dc, 0, 0, width, height, self._memory_dc, 0, 0, _SRCCOPY
-            )
+            if scaled:
+                self._fill_margins(child_dc, dest_x, dest_y, dest_w, dest_h)
+                mode = _HALFTONE if dest_w < self._size[0] else _COLORONCOLOR
+                self._api.set_stretch_blt_mode(child_dc, mode)
+                if mode == _HALFTONE:
+                    # HALFTONE の網目は原点を基準に置く。原点を戻さないと
+                    # present ごとに少しずつずれて shimmering する。
+                    self._api.set_brush_org_ex(child_dc, 0, 0)
+                copied = self._api.stretch_blt(
+                    child_dc,
+                    dest_x,
+                    dest_y,
+                    dest_w,
+                    dest_h,
+                    self._memory_dc,
+                    0,
+                    0,
+                    self._size[0],
+                    self._size[1],
+                    _SRCCOPY,
+                )
+            else:
+                copied = self._api.bit_blt(
+                    child_dc,
+                    0,
+                    0,
+                    self._size[0],
+                    self._size[1],
+                    self._memory_dc,
+                    0,
+                    0,
+                    _SRCCOPY,
+                )
         finally:
             self._api.release_dc(self._child, child_dc)
         self._pending_frame = False
         if not copied:
+            detail = "stretchblt_failed" if scaled else "bitblt_failed"
             self._note_failure(
-                "bitblt_failed",
-                "BitBlt が失敗して 1 枚も出ていない {}x{} stage=present",
-                width,
-                height,
+                detail,
+                "{} が失敗して 1 枚も出ていない dest={} src={} stage=present",
+                "StretchBlt" if scaled else "BitBlt",
+                self._dest,
+                self._size,
             )
-            return RenderResult(
-                False, time.perf_counter_ns() - started, "bitblt_failed"
-            )
+            return RenderResult(False, time.perf_counter_ns() - started, detail)
         return RenderResult(True, time.perf_counter_ns() - started, "ok")
+
+    def _fill_margins(self, hdc: int, x: int, y: int, width: int, height: int) -> None:
+        """映像の外側（上下と左右の余白）を黒で塗る。最大 4 矩形。
+
+        余白は毎回塗る。塗らないと前の配置の絵が残り、窓をドラッグした直後に
+        別の縦横比の絵が混ざる。幅か高さが 0 の矩形は渡さない（PatBlt は
+        何も描かないので、呼ぶだけ無駄になる）。
+        """
+        viewport_w, viewport_h = self._viewport
+        for left, top, box_w, box_h in (
+            (0, 0, viewport_w, y),
+            (0, y + height, viewport_w, viewport_h - (y + height)),
+            (0, y, x, height),
+            (x + width, y, viewport_w - (x + width), height),
+        ):
+            if box_w <= 0 or box_h <= 0:
+                continue
+            self._api.pat_blt(hdc, left, top, box_w, box_h, _BLACKNESS)
 
     def recompose(self, overlay: OverlayState) -> RenderResult:
         """合成済みの映像にだけオーバーレイを描き直す。新しい frame は要らない。
@@ -943,6 +1145,8 @@ class GdiSurface:
         self._child = 0
         self._memory_dc = 0
         self._size = (0, 0)
+        self._viewport = (0, 0)
+        self._dest = (0, 0, 0, 0)
         self._api.destroy_window(child)
         # DIB section は DC と共に死ぬ。HBITMAP にも DeleteObject すると二重解放。
         self._api.delete_dc(memory_dc)
@@ -1088,13 +1292,16 @@ class GdiSurface:
         child_dc = self._api.get_dc(self._child)
         if child_dc == 0:
             return
-        width, height = self._size
+        # 読み戻すのは映像を置いた位置。表示面に余白があるときは (0,0) が黒い余白で
+        # あり、書いた場所ではないので、そのまま読むと常に wrong_color になる。
+        # 1 画素だけ等倍で移すので StretchBlt も HALFTONE も要らない。
+        read_x, read_y = self._dest[0], self._dest[1]
         try:
             if not self._api.bit_blt(
-                child_dc, 0, 0, width, height, self._memory_dc, 0, 0, _SRCCOPY
+                child_dc, read_x, read_y, 1, 1, self._memory_dc, 0, 0, _SRCCOPY
             ):
                 return
-            pixel = self._api.get_pixel(child_dc, 0, 0)
+            pixel = self._api.get_pixel(child_dc, read_x, read_y)
             if pixel == _CLR_INVALID:
                 # 読めなかった時だけ occluder 特定に必要なのが clip 領域。
                 clip_box = self._api.get_clip_box(child_dc)

@@ -41,6 +41,8 @@ class RenderResult:
     elapsed_ns: int
     # "ok" / "no_hwnd" / "frame_not_contiguous" / "dimension_mismatch"
     # "no_frame" / "getdc_failed" / "bitblt_failed"
+    # "stretchblt_failed"（表示面がキャプチャ解像度と違う.present の転送）
+    # "no_room"（表示面に 1 画素も収まる場所が無い.compose）
     detail: str = ""
 
 
