@@ -1701,6 +1701,9 @@ def test_photo_surface_scales_the_whole_capture_frame_into_a_smaller_show_size(
         def bind(self, *_args: Any) -> tuple[str, ...]:
             return ()
 
+        def pack_propagate(self, _flag: bool) -> None:
+            return None
+
     monkeypatch.setattr(module.ImageTk, "PhotoImage", _PhotoImage)
     monkeypatch.setattr(module.tk, "Canvas", _Canvas)
     area = module.PhotoImageSurface(host=_Host())
@@ -2012,6 +2015,9 @@ def _photo_backed_area(
         ("after_cancel", widget.after_cancel),
     ):
         setattr(bare.area, name, method)
+    # attach はホストの pack 伝播を止める。素の CaptureArea は Tk を持たない
+    # ので、Frame の pack_propagate だけを何もしない形で差し替える。
+    bare.area.pack_propagate = lambda _flag: None
 
     surface = module.PhotoImageSurface(host=bare.area)
     bare.area._surface = surface

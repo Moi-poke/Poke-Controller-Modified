@@ -132,6 +132,12 @@ class PhotoImageSurface:
             print("プレビュー面を作れません。映像は表示されません。")
             return
         self._canvas = canvas
+        # Canvas の要求サイズをホストへ伝えない。resize は Canvas の要求を表示面の
+        # 実寸に合わせるので、伝播が生きているとホスト → grid → <Configure> →
+        # resize と循環し、fit 表示ではマウス押下（カーソル変更でホストが要求を
+        # 出し直す）のたびにプレビューが一瞬縮んで戻る。ホストの大きさは grid
+        # だけが決める（GDI 面の子窓が Tk の配置に関与しないのと同じ形）。
+        self._host.pack_propagate(False)
         self._canvas.pack(fill=tk.BOTH, expand=True)
         self._image_id = self._canvas.create_image(0, 0, anchor=tk.NW)
         # Canvas が破棄されたら Tk 側は TclError を投げるだけになる。破棄を

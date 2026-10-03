@@ -355,7 +355,15 @@ class _HostFrame:
         self.raised_kwargs: list[tuple[str, dict[str, Any]]] = []
         self.delivered: list[tuple[str, int, int]] = []
         self.unbind_calls: list[str] = []
+        self.pack_propagate_calls: list[bool] = []
         self._handlers: dict[str, Any] = {}
+
+    def pack_propagate(self, flag: bool | None = None) -> bool | None:
+        """Tk と同じく、引数なしは現在値を答え、引数ありは設定を記録する。"""
+        if flag is None:
+            return not self.pack_propagate_calls or self.pack_propagate_calls[-1]
+        self.pack_propagate_calls.append(bool(flag))
+        return None
 
     def bind(
         self, sequence: str | None = None, func: Any = None, add: Any = None
@@ -481,6 +489,24 @@ def _captured_log() -> Iterator[list[str]]:
 # ===========================================================================
 # resize() refuses the sizes that cannot end in a drawn frame
 # ===========================================================================
+
+
+def test_attach_stops_the_canvas_request_from_resizing_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: photo 面は resize のたびに Canvas の要求サイズを表示面の実寸に
+    # 合わせる。Canvas はホスト Frame に pack されているので、伝播が生きて
+    # いるとその要求がホストを通じて grid へ届き、配置が変わって
+    # <Configure> → resize → 要求の変更、と循環する（fit 表示でマウスを押す
+    # たびにプレビューが一瞬縮んで戻る不具合の原因）。
+    # When: 面をホストへ attach する。
+    attached = _attach(monkeypatch)
+
+    # Then: ホストの pack 伝播は止められている。ホストの大きさを決めるのは
+    # grid だけになり、GDI 面（子窓は Tk の配置に関与しない）と同じ形になる。
+    assert attached.host.pack_propagate_calls == [False], (
+        attached.host.pack_propagate_calls
+    )
 
 
 @pytest.mark.parametrize("degenerate", DEGENERATE_SIZES)
