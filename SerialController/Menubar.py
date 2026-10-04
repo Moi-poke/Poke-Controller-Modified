@@ -12,6 +12,7 @@ from SerialMonitor import SerialMonitor
 from core.pane_arrangement import ARRANGEMENTS
 from get_pokestatistics import GetFromHomeGUI
 from loguru import logger
+from ui.window_aspect import WindowAspectLock
 
 # 使い方の置き場所（ヘルプ > ドキュメント / バージョン情報）。
 DOCS_URL = "https://github.com/Moi-poke/Poke-Controller-Modified"
@@ -50,6 +51,7 @@ class PokeController_Menubar(tk.Menu):
         self.menu_help = self._cascade("ヘルプ(H)")
         # 16:9 固定の入/切。チェックで今の状態が見えるようにする。
         self.aspect_locked = tk.BooleanVar(master=master.root, value=False)
+        self._aspect_lock: WindowAspectLock | None = None
 
         self.AssignMenuCommand()
 
@@ -346,15 +348,16 @@ class PokeController_Menubar(tk.Menu):
         logger.info(f"画面サイズを{int(width)}x{int(height)}にしました。")
 
     def lockAspect(self, lock: bool) -> None:
-        """16:9 の縦横比固定を入/切する。失敗は警告のみ。"""
-        root: Any = self.root
-        try:
-            if lock:
-                root.wm_aspect(16, 9, 16, 9)
-            else:
-                root.wm_aspect("", "", "", "")
-        except Exception as e:
-            logger.warning(f"縦横比の切替に失敗しました: {e!r}")
+        """16:9 の縦横比固定を入/切する。失敗は警告のみ。
+
+        wm_aspect だけでは Windows で効かないため、ui.window_aspect に任せる。
+        入れられなかったときはチェックを外し、今の状態と食い違わせない。
+        """
+        if self._aspect_lock is None:
+            self._aspect_lock = WindowAspectLock(self.root)
+        effective = self._aspect_lock.set_enabled(lock)
+        if lock and not effective:
+            self.aspect_locked.set(False)
             return
         logger.info(f"縦横比の固定を{'有効' if lock else '解除'}にしました。")
 
