@@ -38,6 +38,14 @@ class ScrollHost(ttk.Frame):
         self.bind("<Configure>", self._relayout, add="+")
         self.inner.bind("<Configure>", self._relayout, add="+")
 
+    def relayout(self) -> None:
+        """中身の要求サイズが変わったときに呼ぶ。
+
+        中身の大きさはここで決め打ちしているため、要求サイズだけが変わっても
+        中身の <Configure> は来ない。変えた側から呼んで決め直させる。
+        """
+        self._relayout()
+
     def _relayout(self, _event: Any = None) -> None:
         """バーの要否を決め、中身の大きさとスクロール範囲を合わせる。"""
         width, height = self.winfo_width(), self.winfo_height()

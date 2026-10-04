@@ -46,6 +46,7 @@ from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
 from ui.layout_panel import LayoutPanelMixin
 from ui.log_panel import LogPanelMixin
+from ui.notebook_fit import SelectedTabHeight
 from ui.pane_layout import PaneArranger
 from ui.preview_clock import StopResult
 from ui.scroll_host import ScrollHost
@@ -376,7 +377,12 @@ class PokeControllerApp(
         # （枠だけここで作る。出し入れは _refresh_bcon_tab）。
         self._build_bcon_tab()
         self.setting_nb.bind(
-            "<<NotebookTabChanged>>", self._unfocus_setting_tab, add=""
+            "<<NotebookTabChanged>>", self._unfocus_setting_tab, add="+"
+        )
+        # 欄の高さは開いているタブで決める（一番高い Bcon タブに合わせると、
+        # 低いタブでも縦にスクロールする）。幅は全タブの最大のまま。
+        self.setting_tab_height = SelectedTabHeight(
+            self.setting_nb, on_change=self.tabs_scroll.relayout
         )
 
     def _unfocus_setting_tab(self, event: Any = None) -> None:
