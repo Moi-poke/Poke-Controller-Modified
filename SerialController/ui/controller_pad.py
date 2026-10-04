@@ -13,6 +13,7 @@ import re
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.ttk as ttk
+from collections.abc import Callable
 from typing import Any
 
 from Commands.Keys import Button, Hat
@@ -90,7 +91,13 @@ class ControllerGUI:
         ("LEFT", -1, 0, "◀"),
     )
 
-    def __init__(self, root: Any, ser: Any, container: Any = None) -> None:
+    def __init__(
+        self,
+        root: Any,
+        ser: Any,
+        container: Any = None,
+        height_limit: Callable[[], int | None] | None = None,
+    ) -> None:
         """container を渡すとその枠の中に組み立てる（メイン画面への埋め込み）。
 
         渡さなければ別ウィンドウ（Toplevel）を開く。
@@ -98,8 +105,13 @@ class ControllerGUI:
         ser には送り先そのものか、今の送り先を返す関数を渡す。送り先は起動時の
         組み立てより後に作られ、通信方式を変えると作り直されるので、埋め込みで
         長く置く場合は関数を渡し、押すたびに今の送り先を引く。
+
+        height_limit は埋め込み先で実際に見えている高さ（px）を返す関数。
+        置き場所がスクロールする欄の中だと、割り当てられた高さが見える高さを
+        超えるため、これで描く大きさを抑える（None なら制限なし）。
         """
         self._ser_source = ser
+        self._height_limit = height_limit
         # ボタンの押しっぱなしに対応するための保持。
         #   押下と解放を別々に受け取り、送信側の姿勢へ差分申告する。
         #     触っていない項目は保たれるので、他のボタンを消さない。
@@ -119,12 +131,13 @@ class ControllerGUI:
         self._ox = 0.0
         self._oy = 0.0
 
-        # 埋め込みは幅だけに合わせ、等倍より大きくしない（タブの場所を取らない）。
-        # 別窓は窓の大きさに合わせて拡縮し、上下も中央に寄せる。
+        # 埋め込みは求める広さを等倍までにし（タブの高さを押し広げない）、
+        # 与えられた場所が広ければそこいっぱいまで大きく描く。
+        # 別窓も同じく窓の大きさに合わせて拡縮し、上下も中央に寄せる。
         self._embedded = container is not None
         if container is not None:
             self.window: Any = tk.Frame(container)
-            self.window.pack(fill="x")
+            self.window.pack(fill="both", expand=True)
         else:
             self._open_window(root)
         self._build_pad()
@@ -184,7 +197,7 @@ class ControllerGUI:
             **({"bg": bg} if bg else {}),
         )
         if self._embedded:
-            self.canvas.pack(fill="x")
+            self.canvas.pack(fill="both", expand=True)
         else:
             self.canvas.pack(fill="both", expand=True, padx=8, pady=8)
         self.canvas.bind("<Configure>", self._onConfigure)
@@ -209,16 +222,18 @@ class ControllerGUI:
     def _redraw(self, width: int, height: int) -> None:
         """置き場所の広さに合わせて描き直す。縦横比を保ち、横は中央に寄せる。"""
         if self._embedded:
-            # 高さは描いた分だけにする。高さで倍率を決めると、一度縮めた後に
-            # 幅を広げても元に戻らない（低い高さに引きずられる）。
-            s = fit_scale(width, PAD_H * self._base, base=self._base, max_zoom=1.0)
-            fitted = math.ceil(PAD_H * s)
-            if int(self.canvas.cget("height")) != fitted:
+            # 求める高さは幅に合わせた等倍以下の分だけにする。狭い幅では
+            # 下に空白を求めず、広い所ではタブ全体の高さを押し広げない。
+            # 求める高さを今の高さから決めると、一度縮めた後に戻らない。
+            need = fit_scale(width, PAD_H * self._base, base=self._base, max_zoom=1.0)
+            fitted = math.ceil(PAD_H * need)
+            if int(str(self.canvas.cget("height"))) != fitted:
                 self.canvas.config(height=fitted)
-            oy = 0.0
-        else:
-            s = fit_scale(width, height, base=self._base, max_zoom=FLOATING_MAX_ZOOM)
-            oy = max(0.0, (height - PAD_H * s) / 2)
+            # 見える高さまでに抑える。ただし等倍より小さくはしない
+            # （見える所が狭すぎるときは、これまでどおりスクロールで見る）。
+            height = min(height, max(fitted, self._visibleHeight(height)))
+        s = fit_scale(width, height, base=self._base, max_zoom=FLOATING_MAX_ZOOM)
+        oy = max(0.0, (height - PAD_H * s) / 2)
         self._scale = s
         self._ox = max(0.0, (width - PAD_W * s) / 2)
         self._oy = oy
@@ -230,6 +245,25 @@ class ControllerGUI:
         for name in self._held_btn:
             self._paint(name, True)
         self._paintHat()
+
+    def _visibleHeight(self, height: int) -> int:
+        """割り当てられた高さのうち、スクロールせずに見えている分。"""
+        if self._height_limit is None:
+            return height
+        try:
+            limit = self._height_limit()
+        except tk.TclError:
+            return height
+        if limit is None:
+            return height
+        return max(1, min(height, limit))
+
+    def refit(self) -> None:
+        """見える高さが変わったとき（欄の大きさが変わった）に描き直す。"""
+        try:
+            self._redraw(self.canvas.winfo_width(), self.canvas.winfo_height())
+        except tk.TclError:
+            pass
 
     def _xy(self, x: float, y: float) -> tuple[float, float]:
         return self._ox + x * self._scale, self._oy + y * self._scale

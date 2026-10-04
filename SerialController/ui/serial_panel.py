@@ -308,9 +308,12 @@ class SerialPanelMixin:
         # 仮想コントローラ。タブの中に常に置き、別ウィンドウへも出せる
         # （ui/controller_dock.py）。送り先は開くたびに今の物を引く。
         dock_area = ttk.Frame(self.tab_controller)
-        dock_area.pack(fill="x", padx=5, pady=(0, 5))
+        dock_area.pack(fill="both", expand=True, padx=5, pady=(0, 5))
         self.controller_dock = ControllerDock(
-            self.root, dock_area, lambda: self.serial.sender
+            self.root,
+            dock_area,
+            lambda: self.serial.sender,
+            viewport=getattr(self, "tabs_scroll", None),
         )
         self.simpleConButton = self.controller_dock.pop_button
 

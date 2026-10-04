@@ -17,6 +17,7 @@ from Commands.Keys import Button, Hat
 from core.pad_layout import SHAPES
 from ui.controller_dock import ControllerDock
 from ui.controller_pad import ControllerGUI
+from ui.scroll_host import ScrollHost
 
 
 class _Sender:
@@ -201,7 +202,7 @@ def _width_of(pad: ControllerGUI, name: str) -> int:
     return int(x1 - x0)
 
 
-def test_the_embedded_pad_stays_compact_in_a_large_tab_and_shrinks_in_a_narrow_one(
+def test_the_embedded_pad_grows_into_a_large_tab_and_shrinks_in_a_narrow_one(
     area: tk.Toplevel,
 ) -> None:
     base = _width_of(_shown(area, 420, 170), "X")
@@ -209,8 +210,9 @@ def test_the_embedded_pad_stays_compact_in_a_large_tab_and_shrinks_in_a_narrow_o
     # When: the tab gives it far more room than it needs.
     roomy = _shown(area, 840, 340)
 
-    # Then: タブの中では等倍より大きくしない（場所を取りすぎない）。
-    assert _width_of(roomy, "X") == pytest.approx(base, abs=2)
+    # Then: 空いた場所を空白のまま残さず、縦横比を保って大きく描く。
+    assert _width_of(roomy, "X") > base * 1.5
+    # 求める高さは等倍の分だけ（タブ全体の高さを押し広げない）。
     assert roomy.canvas.winfo_reqheight() <= 180 * base / 28
 
     # When: the tab is narrower than the pad.
@@ -218,6 +220,66 @@ def test_the_embedded_pad_stays_compact_in_a_large_tab_and_shrinks_in_a_narrow_o
 
     # Then: 縮めて全部見せる（はみ出して横スクロールにしない）。
     assert _width_of(narrow, "X") < base * 0.6
+
+
+def test_the_docked_pad_fills_a_tall_tab_and_clicks_still_land(
+    area: tk.Toplevel,
+) -> None:
+    holder = tk.Frame(area, width=420, height=600)
+    holder.pack_propagate(False)
+    holder.pack(anchor="nw")
+    sender = _Sender()
+    dock = ControllerDock(area, holder, lambda: sender)
+    area.update()
+    pad = dock.embedded
+    assert pad is not None
+
+    # Then: 縦に余った場所まで操作盤の欄が伸びる（下に空白の帯を残さない）。
+    assert pad.canvas.winfo_height() >= 600 * 0.7
+
+    # When: X is clicked where it is drawn.
+    x, y = _centre(pad, "X")
+    _click(pad, "<ButtonPress-1>", x, y)
+
+    # Then: 伸ばしても押した所のボタンが入る。
+    assert sender.pressed == [int(Button.X)]
+    dock.shutdown()
+
+
+def test_the_docked_pad_fits_the_visible_part_of_a_scrolling_tab_area(
+    area: tk.Toplevel,
+) -> None:
+    # Given: タブ欄はスクロールする入れ物の中にあり、一番高いタブ（Bcon）に
+    #        合わせて中身が見える高さより高い。
+    area.geometry("1000x280")
+    host = ScrollHost(area)
+    host.pack(fill="both", expand=True)
+    host.inner.rowconfigure(0, weight=1)
+    host.inner.columnconfigure(0, weight=1)
+    tab = tk.Frame(host.inner)
+    tab.grid(row=0, column=0, sticky="nsew")
+    tk.Frame(host.inner, width=10, height=900).grid(row=0, column=1)
+    tk.Label(tab, text="上の設定").pack(fill="x")
+    holder = tk.Frame(tab)
+    holder.pack(fill="both", expand=True)
+    dock = ControllerDock(area, holder, lambda: _Sender(), viewport=host)
+    area.update()
+    pad = dock.embedded
+    assert pad is not None
+
+    # Then: スクロールしなくても操作盤の全体が見える（見える範囲に収めて描く）。
+    _x0, _y0, _x1, y1 = pad.canvas.bbox("all")
+    bottom = pad.canvas.winfo_rooty() + y1
+    assert bottom <= host.canvas.winfo_rooty() + host.canvas.winfo_height() + 1
+
+    # When: the window is made taller.
+    before = _width_of(pad, "X")
+    area.geometry("1000x600")
+    area.update()
+
+    # Then: 見える高さが増えた分だけ大きく描く。
+    assert _width_of(pad, "X") > before * 1.3
+    dock.shutdown()
 
 
 def test_the_floating_pad_grows_with_its_window_and_clicks_still_land(

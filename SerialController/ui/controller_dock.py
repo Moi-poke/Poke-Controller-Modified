@@ -19,22 +19,35 @@ from ui.controller_pad import ControllerGUI
 TITLE = "仮想コントローラ"
 POP_TEXT = "別ウィンドウで開く"
 BACK_TEXT = "タブに戻す"
+# 見える範囲に収めて描くとき、欄の下端との間に空ける px。
+_BOTTOM_GAP = 8
 
 
 class ControllerDock:
     """holder の中に枠を作って仮想コントローラを置き、別窓と行き来させる。"""
 
-    def __init__(self, root: Any, holder: Any, sender: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        root: Any,
+        holder: Any,
+        sender: Callable[[], Any],
+        viewport: Any = None,
+    ) -> None:
+        """viewport は holder を収めたスクロールする欄（ui.scroll_host.ScrollHost）。
+
+        渡すと、操作盤はその欄で見えている高さに収めて描く。
+        """
         self.root = root
         self.holder = holder
+        self._viewport = viewport
         # 送り先は押すたびに引く（再接続で差し替わっても古い物を掴まない）。
         self._sender = sender
         self.embedded: ControllerGUI | None = None
         self.floating: ControllerGUI | None = None
 
         self.frame = ttk.Labelframe(holder)
-        # 操作盤の高さだけを取る（タブの残りを空白で埋めない）。
-        self.frame.pack(fill="x")
+        # タブの残りの高さまで伸ばし、操作盤をそこいっぱいに描く。
+        self.frame.pack(fill="both", expand=True)
         # 出し入れのボタンは枠の見出しの横に置く。専用の行を作らず、
         # 同じボタンが「開く」と「戻す」を兼ねる（今どちらか文字で分かる）。
         title = ttk.Frame(self.frame)
@@ -47,15 +60,47 @@ class ControllerDock:
             self.frame, text="別ウィンドウで表示中", foreground="#5f6670"
         )
         self._pad_area = ttk.Frame(self.frame)
+        if viewport is not None:
+            # 欄の大きさが変わっても操作盤の割り当ては変わらない（中身は一番
+            # 高いタブに合わせて決まる）ので、欄の側の変化で描き直す。
+            # 埋め込みは出し入れで作り直すため、結び付けはここで 1 回だけ。
+            viewport.bind("<Configure>", self._refit_embedded, add="+")
         self._embed()
 
     def _embed(self) -> None:
         self._away.pack_forget()
-        self._pad_area.pack(fill="x", padx=4, pady=4)
+        self._pad_area.pack(fill="both", expand=True, padx=4, pady=4)
         self.pop_button.config(text=POP_TEXT)
         # 送り先は関数のまま渡す。埋め込みは起動時から置きっぱなしなので、
         # 組み立て時の送り先（まだ無い／作り直し前）を掴まないようにする。
-        self.embedded = ControllerGUI(self.root, self._sender, container=self._pad_area)
+        self.embedded = ControllerGUI(
+            self.root,
+            self._sender,
+            container=self._pad_area,
+            height_limit=self._visible_height if self._viewport is not None else None,
+        )
+
+    def _visible_height(self) -> int | None:
+        """操作盤の上端から、スクロールする欄の見えている下端までの高さ。
+
+        スクロール位置に左右されないよう、欄の中身の上端からの位置で測る。
+        """
+        pad = self.embedded
+        viewport = self._viewport
+        if pad is None or viewport is None:
+            return None
+        top = pad.canvas.winfo_rooty() - viewport.inner.winfo_rooty()
+        # 下端に枠の線と余白の分だけ空ける（欄の縁に貼り付けない）。
+        return int(viewport.canvas.winfo_height()) - top - _BOTTOM_GAP
+
+    def _refit_embedded(self, _event: Any = None) -> None:
+        if self.embedded is not None:
+            # 欄の配置が決まりきってから測る（並べ直しの途中の値を拾わない）。
+            self.root.after_idle(self._refit_now)
+
+    def _refit_now(self) -> None:
+        if self.embedded is not None:
+            self.embedded.refit()
 
     def toggle(self) -> None:
         """見出しのボタン。タブにあれば別窓へ、別窓にあればタブへ。"""
