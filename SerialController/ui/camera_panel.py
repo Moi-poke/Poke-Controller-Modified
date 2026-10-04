@@ -8,7 +8,9 @@ PokeControllerApp に混ぜて使う（多重継承）。状態は self 越し�
 
 from __future__ import annotations
 
+import base64
 import os
+import re
 import subprocess
 import threading
 import time
@@ -27,6 +29,7 @@ from core.display_mode import (
     layout_plan,
 )
 from loguru import logger
+from ui.combo_fit import fit_combo_width
 
 # _on_camera_opened へ渡すまでの再試行上限。mainloop は構築直後に始まるため
 # 通常は 1 回で通る。待つのは裏スレッドであり GUI は止めない。
@@ -52,6 +55,22 @@ class CameraLabelframe(ttk.Labelframe):
         self.is_use_right_stick_mouse = tk.BooleanVar()
 
 
+def _load_icon(master: Any, path: str) -> tk.PhotoImage:
+    """アイコン画像を読む。中身は Python で読み、Tk には data で渡す。
+
+    file= で渡すと Tk が自分でファイルを開く。テストの出力取り込み
+    （pytest の fd 差し替え）と重なると、まれに空の TclError で失敗した。
+    """
+    with open(path, "rb") as fh:
+        data = base64.b64encode(fh.read())
+    return tk.PhotoImage(master=master, data=data)
+
+
+def _camera_title(label: str) -> str:
+    """状態表示に出すカメラ名。末尾の識別子（' [fbad85]'）は省く。"""
+    return re.sub(r"\s*\[[^\]]*\]$", "", label).strip()
+
+
 class CameraPanelMixin:
     """カメラパネルMixin。単体では使わない。"""
 
@@ -71,11 +90,16 @@ class CameraPanelMixin:
     camera_entry: Any
     camera_id: Any
     reloadButton: Any
-    separator_1: Any
     is_show_realtime: Any
     cb_show_realtime: Any
-    separator_2: Any
     capture_f: Any
+    camera_toolbar: Any
+    camera_notice: Any
+    camera_notice_label: Any
+    camera_notice_button: Any
+    tab_camera: Any
+    tab_audio: Any
+    setting_nb: Any
     captureButton: Any
     open_folder_img: Any
     OpencaptureButton: Any
@@ -102,37 +126,52 @@ class CameraPanelMixin:
     def _build_camera_frame(self) -> None:
         self.camera_lf = CameraLabelframe(self.frame_1)
 
-        # 1 行目: カメラの選択と、よく触る操作（再読み込み・表示・キャプチャ）。
-        # FPS と描画方式は滅多に変えないので表示設定ダイアログにある。
-        self.camera_name_l = ttk.Label(self.camera_lf)
-        self.camera_name_l.config(anchor="center", text="カメラ:")
-        self.camera_name_l.grid(column=0, padx="5", row=0, sticky="ew")
-
-        # 表示名は「番号: 機器名 [識別子]」（WindowUtils.cameraLabel）。番号が
-        # 入るので、名前を出せる環境では Camera ID 欄を別に出さない。
-        self.camera_name_fromDLL = tk.StringVar()
-        self.Camera_Name = ttk.Combobox(self.camera_lf)
-        self.Camera_Name.config(state="readonly", textvariable=self.camera_name_fromDLL)
-        self.Camera_Name.grid(column=1, padx="5", row=0, sticky="ew")
-        self.Camera_Name.bind("<<ComboboxSelected>>", self.set_cameraid, add="")
-
-        self.reloadButton = ttk.Button(self.camera_lf)
-        self.reloadButton.config(text="再読み込み", command=self.openCamera)
-        self.reloadButton.grid(column=2, padx="5", row=0, sticky="ew")
-
-        self.separator_1 = ttk.Separator(self.camera_lf)
-        self.separator_1.config(orient="vertical")
-        self.separator_1.grid(column=3, row=0, sticky="ns")
+        # プレビューの上は、見ながら何度も使う操作だけにする（プレビュー表示の
+        # 入/切・キャプチャ・保存先）。カメラの選択と表示フィルタは滅多に
+        # 触らないのでカメラタブ（_build_camera_tab）へ置く。1 行に全部並べると
+        # 窓が狭いときにカメラ名が潰れて読めなかった。
+        self.camera_toolbar = ttk.Frame(self.camera_lf)
+        self.camera_toolbar.grid(
+            column=0, columnspan=9, row=0, padx="5", pady=(0, 2), sticky="ew"
+        )
 
         # プレビュー描画の入/切（切ると描画の負荷が無くなる。取り込みは続く）。
         self.is_show_realtime = tk.BooleanVar()
-        self.cb_show_realtime = ttk.Checkbutton(self.camera_lf)
+        self.cb_show_realtime = ttk.Checkbutton(self.camera_toolbar)
         self.cb_show_realtime.config(
             text="プレビュー表示",
             variable=self.is_show_realtime,
             command=self._on_setting_changed,
         )
-        self.cb_show_realtime.grid(column=4, row=0, padx="5")
+        self.cb_show_realtime.pack(side="left")
+
+        # カメラを開けないときだけ出す知らせと、選び直す場所への近道。
+        # ツールバーの中に置くので、コンパクト表示でツールバーごと隠れる。
+        self.camera_notice = ttk.Frame(self.camera_toolbar)
+        self.camera_notice_label = ttk.Label(
+            self.camera_notice, text="", foreground="#b3261e"
+        )
+        self.camera_notice_label.pack(side="left")
+        self.camera_notice_button = ttk.Button(
+            self.camera_notice, text="カメラタブを開く", command=self.selectCameraTab
+        )
+        self.camera_notice_button.pack(side="left", padx=(6, 0))
+
+        # -- キャプチャ操作（右端）
+        self.capture_f = ttk.Frame(self.camera_toolbar)
+        self.captureButton = ttk.Button(self.capture_f)
+        self.captureButton.config(text="キャプチャ", command=self.saveCapture)
+        self.captureButton.pack(side="left")
+
+        self.open_folder_img = _load_icon(
+            self.camera_lf, WindowUtils.OPEN_DIR_ICON_PATH
+        )
+        self.OpencaptureButton = ttk.Button(self.capture_f)
+        self.OpencaptureButton.config(
+            image=self.open_folder_img, command=self.OpenCaptureDir
+        )
+        self.OpencaptureButton.pack(side="left")
+        self.capture_f.pack(side="right")
 
         # 表示専用フィルタ（パラメータはiniへ保存、ON/OFFはセッションのみ）。
         # 起動時は常にOFF（不意の加工表示を避ける）。
@@ -151,46 +190,10 @@ class CameraPanelMixin:
             "mode": "gray_out",
         }
         self.filt_enabled = tk.BooleanVar(value=False)
-        self.filt_check = ttk.Checkbutton(self.camera_lf)
-        self.filt_check.config(
-            text="表示フィルタ",
-            variable=self.filt_enabled,
-            command=self.applyPreviewFilter,
-        )
-        self.filt_check.grid(column=5, row=0)
 
-        self.filt_setting_button = ttk.Button(self.camera_lf)
-        self.filt_setting_button.config(text="調整...", command=self.openFilterDialog)
-        self.filt_setting_button.grid(column=6, row=0, padx="5")
-
-        self.separator_2 = ttk.Separator(self.camera_lf)
-        self.separator_2.config(orient="vertical")
-        self.separator_2.grid(column=7, row=0, sticky="ns")
-
-        # -- キャプチャ操作
-        self.capture_f = ttk.Frame(self.camera_lf)
-        self.captureButton = ttk.Button(self.capture_f)
-        self.captureButton.config(text="キャプチャ", command=self.saveCapture)
-        self.captureButton.grid(column=0, row=0)
-
-        self.open_folder_img = tk.PhotoImage(file=WindowUtils.OPEN_DIR_ICON_PATH)
-        self.OpencaptureButton = ttk.Button(self.capture_f)
-        self.OpencaptureButton.config(
-            image=self.open_folder_img, command=self.OpenCaptureDir
-        )
-        self.OpencaptureButton.grid(column=1, row=0)
-        self.capture_f.grid(column=8, row=0, padx="5", sticky="ns")
-
-        # 2 行目: Camera ID。カメラ名を取れない環境（Linux 等）でだけ使う。
-        # 出し入れは _setup_camera_name が決める。
-        self.camera_id_label = ttk.Label(self.camera_lf)
-        self.camera_id_label.config(anchor="center", text="カメラ ID:")
-        self.camera_id_label.grid(column=0, padx="5", row=1, sticky="ew")
-
-        self.camera_entry = ttk.Entry(self.camera_lf)
+        # カメラの選択の値。選ぶ部品はカメラタブに置く（_build_camera_tab）。
+        self.camera_name_fromDLL = tk.StringVar()
         self.camera_id = tk.IntVar()
-        self.camera_entry.config(state="normal", textvariable=self.camera_id, width=6)
-        self.camera_entry.grid(column=1, padx="5", row=1, sticky="w")
 
         # FPS と描画方式の値。選ぶ画面は表示設定ダイアログ、反映は
         # applyDisplaySettings 経由の applyFps / applyRenderer。
@@ -205,6 +208,96 @@ class CameraPanelMixin:
 
         self.camera_lf.config(height=200, text="カメラ", width=200)
         # 置き場所は仕切り（ui/pane_layout.py）が決める。ここでは grid しない。
+
+    def _build_camera_tab(self) -> None:
+        """カメラタブ。カメラの選択と表示フィルタを置く。
+
+        取り込み機器の設定（カメラ・オーディオ）を隣に並べるため、
+        オーディオタブの前へ入れる。setting_nb ができた後に呼ぶ。
+        """
+        self.tab_camera = ttk.Frame(self.setting_nb)
+        self.setting_nb.insert(self.tab_audio, self.tab_camera, text="カメラ")
+        lf = ttk.Labelframe(self.tab_camera, text="カメラ")
+        lf.pack(fill="both", expand=True, padx=5, pady=5)
+        lf.columnconfigure(1, weight=1)
+
+        # 表示名は「番号: 機器名 [識別子]」（WindowUtils.cameraLabel）。番号が
+        # 入るので、名前を出せる環境では Camera ID 欄を別に出さない。
+        self.camera_name_l = ttk.Label(lf, text="カメラ: ")
+        self.camera_name_l.grid(column=0, padx="5", pady="2", row=0, sticky="w")
+        self.Camera_Name = ttk.Combobox(lf, width=16)
+        self.Camera_Name.config(state="readonly", textvariable=self.camera_name_fromDLL)
+        self.Camera_Name.grid(column=1, padx="5", pady="2", row=0, sticky="ew")
+        self.Camera_Name.bind("<<ComboboxSelected>>", self.set_cameraid, add="")
+
+        self.reloadButton = ttk.Button(lf)
+        self.reloadButton.config(text="再読み込み", command=self.reloadCameraFromTab)
+        self.reloadButton.grid(column=2, padx="5", pady="2", row=0, sticky="w")
+
+        # Camera ID。カメラ名を取れない環境（Linux 等）でだけ使う。
+        # 出し入れは _setup_camera_name が決める。
+        self.camera_id_label = ttk.Label(lf, text="カメラ ID: ")
+        self.camera_id_label.grid(column=0, padx="5", pady="2", row=1, sticky="w")
+        self.camera_entry = ttk.Entry(lf)
+        self.camera_entry.config(state="normal", textvariable=self.camera_id, width=6)
+        self.camera_entry.grid(column=1, padx="5", pady="2", row=1, sticky="w")
+
+        ttk.Label(lf, text="表示フィルタ: ").grid(
+            column=0, padx="5", pady="2", row=2, sticky="w"
+        )
+        filt_row = ttk.Frame(lf)
+        filt_row.grid(column=1, columnspan=2, padx="5", pady="2", row=2, sticky="w")
+        self.filt_check = ttk.Checkbutton(filt_row)
+        self.filt_check.config(
+            text="使う",
+            variable=self.filt_enabled,
+            command=self.applyPreviewFilter,
+        )
+        self.filt_check.pack(side="left")
+        self.filt_setting_button = ttk.Button(filt_row)
+        self.filt_setting_button.config(text="調整...", command=self.openFilterDialog)
+        self.filt_setting_button.pack(side="left", padx=(8, 0))
+
+    def selectCameraTab(self) -> None:
+        """カメラタブを開く（カメラを開けないときの近道）。"""
+        try:
+            self.setting_nb.select(self.tab_camera)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def reloadCameraFromTab(self) -> None:
+        """カメラタブの再読み込み。開けたかどうかを知らせへ反映する。"""
+        self.openCamera()
+
+    def _show_camera_state(
+        self, ok: bool, cam_id: int, *, disabled: bool = False
+    ) -> None:
+        """カメラの状態をプレビューの上の知らせと状態表示へ出す。
+
+        開けないときはプレビューが止まった絵のままになり、理由が分からない。
+        プレビューの上に理由と、選び直す場所（カメラタブ）への近道を出す。
+        """
+        notice = getattr(self, "camera_notice", None)
+        status = getattr(self, "status_camera", None)
+        if ok or disabled:
+            if notice is not None:
+                notice.pack_forget()
+            if disabled:
+                text = "カメラ: 無効"
+            else:
+                # 組み立て前（部品の無い呼び出し）でも落とさない。
+                label_var = getattr(self, "camera_name_fromDLL", None)
+                name = _camera_title(label_var.get()) if label_var is not None else ""
+                text = f"カメラ: {name or f'ID {cam_id}'}"
+        else:
+            if notice is not None:
+                self.camera_notice_label.config(
+                    text=f"⚠ カメラ（ID {cam_id}）を開けません"
+                )
+                notice.pack(side="left", padx=(12, 0))
+            text = "カメラ: 開けません"
+        if status is not None:
+            status.set(text)
 
     def _setup_camera_name(self) -> None:
         """OS ごとにカメラ名コンボボックスの扱いを切り替える。
@@ -320,6 +413,7 @@ class CameraPanelMixin:
             self.camera.destroy()
             print("カメラを無効にしました")
             logger.info("Camera is disabled")
+            self._show_camera_state(False, cam_id, disabled=True)
             return
         self._camera_open_seq = int(getattr(self, "_camera_open_seq", 0)) + 1
         thread = threading.Thread(
@@ -404,6 +498,7 @@ class CameraPanelMixin:
             return
         if current != cam_id:
             return
+        self._show_camera_state(ok, cam_id)
         if not ok:
             message = f"Camera ID {cam_id} cannot open."
             print(message)
@@ -480,6 +575,7 @@ class CameraPanelMixin:
                 self._camera_open_lock.release()
             print("カメラを無効にしました")
             logger.info("Camera is disabled")
+            self._show_camera_state(False, cam_id, disabled=True)
             return True
         self._camera_open_seq = int(getattr(self, "_camera_open_seq", 0)) + 1
         if not self._acquire_open_lock():
@@ -488,6 +584,7 @@ class CameraPanelMixin:
             opened = self.camera.openCamera(cam_id)
         finally:
             self._camera_open_lock.release()
+        self._show_camera_state(bool(opened), cam_id)
         if opened:
             return True
         message = f"Camera ID {cam_id} cannot open."
@@ -590,6 +687,7 @@ class CameraPanelMixin:
             for i, name in self.camera_dic.items()
         ]
         self.Camera_Name["values"] = self._camera_labels
+        fit_combo_width(self.Camera_Name, min_chars=16, max_chars=32)
         logger.debug(f"Camera list: {self._camera_labels}")
 
         dev_num = len(devices)

@@ -79,6 +79,7 @@ class LayoutPanelMixin:
     status_state: Any
     status_device: Any
     status_fps: Any
+    status_camera: Any
     compact_pause: Any
 
     # ------------------------------------------------------------------
@@ -136,6 +137,15 @@ class LayoutPanelMixin:
             side="left", fill="y", padx=8
         )
         ttk.Label(self.status_bar, textvariable=self.status_device).pack(side="left")
+        # 今のカメラ。カメラの選択はカメラタブにあり、プレビューの上には
+        # 出さないので、何を映しているかはここで分かるようにする。
+        # 値は camera_panel._show_camera_state が入れる。
+        if getattr(self, "status_camera", None) is None:
+            self.status_camera = tk.StringVar(value="")
+        ttk.Separator(self.status_bar, orient="vertical").pack(
+            side="left", fill="y", padx=8
+        )
+        ttk.Label(self.status_bar, textvariable=self.status_camera).pack(side="left")
         ttk.Label(self.status_bar, textvariable=self.status_fps).pack(side="right")
 
     # ------------------------------------------------------------------

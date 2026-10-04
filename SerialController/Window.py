@@ -307,6 +307,8 @@ class PokeControllerApp(
         self.frame_1 = ttk.Frame(self.root)
         self._build_camera_frame()
         self._build_setting_tabs()
+        # カメラの選択と表示フィルタはカメラタブ（タブ枠ができてから組む）。
+        self._build_camera_tab()
         self._build_audio_frame()
         self._build_serial_frame()
         self._build_control_frame()
@@ -349,6 +351,7 @@ class PokeControllerApp(
 
     def _build_setting_tabs(self) -> None:
         """シリアル/コントローラ/オーディオ/コマンドのタブ枠を作る。
+        カメラタブはオーディオの前へ _build_camera_tab が足す。
         Bcon タブは bcon 系の Transport を選んだときだけ、シリアルの隣へ出る。
 
         各パネルは自分のタブへ Labelframe を載せる。カメラとログは
