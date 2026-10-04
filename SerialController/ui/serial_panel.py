@@ -96,9 +96,6 @@ class SerialPanelMixin:
         self.com_port_label = ttk.Label(self.serial_lf)
         self.com_port_label.config(text="COMポート: ")
         self.com_port_label.grid(column=0, padx="5", pady="2", row=0, sticky="w")
-        # ポートと速度は対で決めるので、同じ行の内枠へ束ねる。
-        port_row = ttk.Frame(self.serial_lf)
-        port_row.grid(column=1, padx="5", pady="2", row=0, sticky="ew")
 
         self.com_port = tk.IntVar()
         self.com_port_name = tk.StringVar()
@@ -107,19 +104,20 @@ class SerialPanelMixin:
         # com_port_label は上の Label ウィジェットが使っているため別名にする。
         self.com_port_text = tk.StringVar()
         self._com_port_map: dict[str, str] = {}
-        self.com_port_cb = ttk.Combobox(port_row)
+        self.com_port_cb = ttk.Combobox(self.serial_lf)
         self.com_port_cb.config(
-            state="readonly", textvariable=self.com_port_text, width=20
+            state="readonly", textvariable=self.com_port_text, width=16
         )
-        self.com_port_cb.pack(side="left", fill="x", expand=True)
+        self.com_port_cb.grid(column=1, padx="5", pady="2", row=0, sticky="ew")
         self.com_port_cb.bind("<<ComboboxSelected>>", self.onComPortSelected, add="")
 
-        self.baud_rate_label = ttk.Label(port_row)
+        # 行を分けて 1 行の幅を抑える（同じ行に並べると最も幅を取る行になる）。
+        self.baud_rate_label = ttk.Label(self.serial_lf)
         self.baud_rate_label.config(text="ボーレート: ")
-        self.baud_rate_label.pack(side="left", padx=(8, 0))
+        self.baud_rate_label.grid(column=0, padx="5", pady="2", row=1, sticky="w")
 
         self.baud_rate = tk.StringVar()
-        self.baud_rate_cb = ttk.Combobox(port_row)
+        self.baud_rate_cb = ttk.Combobox(self.serial_lf)
         # values の int 群は実行時に文字列化される。注釈だけの問題のため無視する。
         self.baud_rate_cb.config(  # type: ignore[call-overload]
             justify="right",
@@ -128,12 +126,12 @@ class SerialPanelMixin:
             values=WindowUtils.BAUD_RATE_VALUES,
             width=6,
         )
-        self.baud_rate_cb.pack(side="left")
+        self.baud_rate_cb.grid(column=1, padx="5", pady="2", row=1, sticky="w")
         self.baud_rate_cb.bind("<<ComboboxSelected>>", self.applyBaudRate, add="")
 
         # 最後の行: 接続の操作と表示の切替。値の列に揃えて置く。
         actions = ttk.Frame(self.serial_lf)
-        actions.grid(column=1, padx="5", pady=(6, 2), row=5, sticky="w")
+        actions.grid(column=1, padx="5", pady=(6, 2), row=7, sticky="w")
         self.reloadComPort = ttk.Button(actions)
         self.reloadComPort.config(text="再接続", command=self.reloadSerialPort)
         self.reloadComPort.pack(side="left")
@@ -143,26 +141,27 @@ class SerialPanelMixin:
         self.disconnectComPort.pack(side="left", padx=(5, 0))
 
         self.is_show_serial = tk.BooleanVar()
-        self.cb_show_serial = ttk.Checkbutton(actions)
+        # 操作ボタンと同じ行に並べると最も幅を取る行になるので、次の行へ。
+        self.cb_show_serial = ttk.Checkbutton(self.serial_lf)
         self.cb_show_serial.config(
             text="送信内容を表示",
             variable=self.is_show_serial,
             command=self._on_setting_changed,
         )
-        self.cb_show_serial.pack(side="left", padx=(12, 0))
+        self.cb_show_serial.grid(column=1, padx="5", pady="2", row=8, sticky="w")
 
         # 通信方式の選択。
         #   候補は通信方式の一覧から引く。ここに名前を
         #     書き並べない（実装を足したのに画面に出ない、を防ぐ）。
         self.transport_label = ttk.Label(self.serial_lf)
         self.transport_label.config(text="通信方式: ")
-        self.transport_label.grid(column=0, padx="5", pady="2", row=1, sticky="w")
+        self.transport_label.grid(column=0, padx="5", pady="2", row=2, sticky="w")
 
         self.transport_cb = ttk.Combobox(self.serial_lf)
         self.transport_cb.config(
-            state="readonly", textvariable=self.transport_name, width=20
+            state="readonly", textvariable=self.transport_name, width=16
         )
-        self.transport_cb.grid(column=1, padx="5", pady="2", row=1, sticky="ew")
+        self.transport_cb.grid(column=1, padx="5", pady="2", row=2, sticky="ew")
         self.transport_cb.bind("<<ComboboxSelected>>", self.applyTransport, add="")
 
         # 入力の優先付けの選択。候補は送信側の許可値から
@@ -170,13 +169,13 @@ class SerialPanelMixin:
         #   挙動で、script を選ぶと実行中の手操作を断る。
         self.arbitration_label = ttk.Label(self.serial_lf)
         self.arbitration_label.config(text="入力調停: ")
-        self.arbitration_label.grid(column=0, padx="5", pady="2", row=3, sticky="w")
+        self.arbitration_label.grid(column=0, padx="5", pady="2", row=5, sticky="w")
 
         self.arbitration_cb = ttk.Combobox(self.serial_lf)
         self.arbitration_cb.config(
-            state="readonly", textvariable=self.arbitration_mode, width=20
+            state="readonly", textvariable=self.arbitration_mode, width=16
         )
-        self.arbitration_cb.grid(column=1, padx="5", pady="2", row=3, sticky="ew")
+        self.arbitration_cb.grid(column=1, padx="5", pady="2", row=5, sticky="ew")
         self.arbitration_cb.bind("<<ComboboxSelected>>", self.applyArbitration, add="")
 
         # プレイヤーランプ（bcon の PLAYER_INFO を省スペース表示）と振動。
@@ -184,9 +183,9 @@ class SerialPanelMixin:
         # bcon のときだけ出す「状態」行に束ねる（通信方式の行の右へ足すと
         # 横幅が伸び、狭いタブ欄で横スクロールになる）。
         self.bcon_status_label = ttk.Label(self.serial_lf, text="状態: ")
-        self.bcon_status_label.grid(column=0, padx="5", pady="2", row=4, sticky="w")
+        self.bcon_status_label.grid(column=0, padx="5", pady="2", row=6, sticky="w")
         self.bcon_status = ttk.Frame(self.serial_lf)
-        self.bcon_status.grid(column=1, padx="5", pady="2", row=4, sticky="w")
+        self.bcon_status.grid(column=1, padx="5", pady="2", row=6, sticky="w")
         self.player_lamp_label = ttk.Label(self.bcon_status)
         self.player_lamp_label.config(text="LED: ")
         self.player_lamp_label.pack(side="left")
@@ -224,10 +223,10 @@ class SerialPanelMixin:
         # bcon接続時のみ有効。
         self.bcon_wired_label = ttk.Label(self.serial_lf)
         self.bcon_wired_label.config(text="接続方式: ")
-        self.bcon_wired_label.grid(column=0, padx="5", pady="2", row=2, sticky="w")
+        self.bcon_wired_label.grid(column=0, padx="5", pady="2", row=3, sticky="w")
 
         self.bcon_row = ttk.Frame(self.serial_lf)
-        self.bcon_row.grid(column=1, padx="5", pady="2", row=2, sticky="ew")
+        self.bcon_row.grid(column=1, padx="5", pady="2", row=3, sticky="ew")
 
         self.bcon_wired = tk.StringVar(value="無線")
         self.bcon_wired_rb_wireless = ttk.Radiobutton(
@@ -247,19 +246,20 @@ class SerialPanelMixin:
         )
         self.bcon_wired_rb_wired.pack(side="left")
 
-        self.bcon_emulate_label = ttk.Label(self.bcon_row)
+        # 種別は有線/無線と同じ行に並べると幅を取るので、自分の行へ。
+        self.bcon_emulate_label = ttk.Label(self.serial_lf)
         self.bcon_emulate_label.config(text="種別: ")
-        self.bcon_emulate_label.pack(side="left", padx=(8, 0))
+        self.bcon_emulate_label.grid(column=0, padx="5", pady="2", row=4, sticky="w")
 
         self.bcon_emulate = tk.StringVar(value="Pro Controller")
-        self.bcon_emulate_cb = ttk.Combobox(self.bcon_row)
+        self.bcon_emulate_cb = ttk.Combobox(self.serial_lf)
         self.bcon_emulate_cb.config(
             state="readonly",
             textvariable=self.bcon_emulate,
             width=14,
             values=("Pro Controller", "Joy-Con (L)", "Joy-Con (R)"),
         )
-        self.bcon_emulate_cb.pack(side="left", fill="x", expand=True)
+        self.bcon_emulate_cb.grid(column=1, padx="5", pady="2", row=4, sticky="w")
         self.bcon_emulate_cb.bind("<<ComboboxSelected>>", self.applyBconEmulate, add="")
         # 値の列を伸ばし、広い窓では長いポート名・機器名を省略せずに出す。
         self.serial_lf.columnconfigure(1, weight=1)
@@ -528,6 +528,8 @@ class SerialPanelMixin:
             self.bcon_status,
             self.bcon_wired_label,
             self.bcon_row,
+            self.bcon_emulate_label,
+            self.bcon_emulate_cb,
         )
 
     def _refresh_bcon_rows(self) -> None:

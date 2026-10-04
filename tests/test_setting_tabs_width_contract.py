@@ -16,8 +16,9 @@ import pytest
 from ui.audio_panel import AudioPanelMixin
 from ui.serial_panel import SerialPanelMixin
 
-# ログを右に置いた 1300px 幅の窓で、タブ欄に残る幅（約 800px）より十分小さく。
-MAX_TAB_WIDTH = 520
+# ログを右に置いた窓や 4 つ並べた小さな窓でも横スクロールにならないよう、
+# コマンドタブ（一番細い欄）と同じ程度まで詰める。
+MAX_TAB_WIDTH = 340
 
 
 class _Bcon:
