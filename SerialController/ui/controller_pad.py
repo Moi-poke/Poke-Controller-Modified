@@ -22,9 +22,12 @@ from core.pad_layout import (
     PAD_H,
     PAD_W,
     SHAPES,
+    STICK_SIDES,
+    STICK_TAP_SLOP,
     PadShape,
     fit_scale,
     hit_test,
+    stick_value,
 )
 from loguru import logger
 
@@ -104,6 +107,13 @@ class ControllerGUI:
         self._held_hat: set = set()  # 押している向き（"UP" など）
         # マウスで押さえている的（1 本のポインタで押せるのは 1 つ）。
         self._pointer: str | None = None
+        # 左ボタンで掴んでいるスティック（掴んだ点と、動かしたかどうか）。
+        #   動かさずに離せば押し込み 1 回、動かせば倒す操作として扱う。
+        self._grab: dict[str, Any] | None = None
+        # 右ボタンで押さえている押し込み（長押し用）。
+        self._held_click: str | None = None
+        # 送ったスティックの座標（0〜255）。頭の描画と中立へ戻す判断に使う。
+        self._stick_xy: dict[str, tuple[int, int]] = {"L": (128, 128), "R": (128, 128)}
         # 論理座標 → 画面座標の倍率とずらし（_redraw で決まる）。
         self._scale = 1.0
         self._ox = 0.0
@@ -182,8 +192,11 @@ class ControllerGUI:
         self.canvas.bind("<B1-Motion>", self._pointerMove)
         self.canvas.bind("<ButtonRelease-1>", self._pointerUp)
         # 押さえたまま窓の外へ出たら離す（枠外で指を離しても残さない）。
-        self.canvas.bind("<Leave>", self._pointerUp)
+        self.canvas.bind("<Leave>", self._pointerLeave)
         self.canvas.bind("<Motion>", self._hover)
+        # 右ボタンはスティックの押し込みを押さえている間だけ保つ（長押し用）。
+        self.canvas.bind("<ButtonPress-3>", self._holdClickDown)
+        self.canvas.bind("<ButtonRelease-3>", self._holdClickUp)
         self._redraw(width, height)
 
     # ------------------------------------------------------------------
@@ -272,12 +285,13 @@ class ControllerGUI:
                 width=max(1, round(1.5 * self._scale)), tags=key,
             )  # fmt: skip
         elif shape.kind == "stick":
-            # 外側の溝と、押し込めるスティックの頭。
+            # 外側の溝。頭は倒した向きへずらして描くので別に描く。
             self._oval(
                 shape.cx, shape.cy, shape.w / 2, fill=self.STICK_RING,
                 outline=self.BODY_EDGE, tags=key,
             )  # fmt: skip
-            self._oval(shape.cx, shape.cy, shape.w * 0.34, **face)
+            self._draw_knob(shape)
+            return
         else:
             self._oval(shape.cx, shape.cy, shape.w / 2, **face)
         if shape.label:
@@ -286,6 +300,24 @@ class ControllerGUI:
             if shape.kind == "circle" and shape.w < 28:
                 px = 15
             self._text(shape.cx, shape.cy, shape.label, px, key)
+
+    def _draw_knob(self, shape: PadShape) -> None:
+        """スティックの頭。送った座標の向きへ、溝の中でずらして描く。"""
+        name = shape.name
+        self.canvas.delete(f"knob:{name}")
+        x, y = self._stick_xy[STICK_SIDES[name]]
+        radius = shape.w * 0.34
+        travel = shape.w / 2 - radius
+        cx = shape.cx + (x - 128) / 127.5 * travel
+        cy = shape.cy + (y - 128) / 127.5 * travel
+        tags = ("key", f"key:{name}", f"knob:{name}")
+        # 押し込み中も倒している間も光らせる（操作中だと目で分かるように）。
+        held = name in self._held_btn or (x, y) != (128, 128)
+        self._oval(
+            cx, cy, radius, fill=self.BUTTON_ACTIVE_BG if held else self.KEY,
+            outline=self.KEY_EDGE, tags=(*tags, f"face:{name}"),
+        )  # fmt: skip
+        self._text(cx, cy, shape.label, self._LABEL_PX["stick"], tags)
 
     def _draw_dpad(self, shape: PadShape) -> None:
         """十字キー。4 本の腕を別々に塗れるようにし、斜めは 2 本を光らせる。"""
@@ -340,6 +372,10 @@ class ControllerGUI:
         if name is None:
             return
         self._pointerUp()
+        if name in STICK_SIDES:
+            # スティックは離すまで、押し込みか倒す操作か決まらない。
+            self._grab = {"name": name, "x": event.x, "y": event.y, "moved": False}
+            return
         self._pointer = name
         self._onPress(name)
 
@@ -349,6 +385,9 @@ class ControllerGUI:
         十字キーの上で向きを変えたときは、いったん中立へ戻さず新しい向きへ
         切り替える（実機の十字キーを指で転がすのと同じ）。
         """
+        if self._grab is not None:
+            self._dragStick(event)
+            return
         current = self._pointer
         if current is None:
             return
@@ -365,13 +404,97 @@ class ControllerGUI:
         self._pointerUp()
 
     def _pointerUp(self, _event: Any = None) -> None:
+        grab, self._grab = self._grab, None
+        if grab is not None:
+            if grab["moved"]:
+                self._neutralStick(STICK_SIDES[grab["name"]])
+            else:
+                self._tapClick(grab["name"])
         current, self._pointer = self._pointer, None
         if current is not None:
             self._onRelease(current)
 
+    def _pointerLeave(self, event: Any) -> None:
+        # スティックを倒している途中は、盤の外まで引っ張っても倒したままにする
+        # （外まで引くほうが倒し切りやすい）。離した時点で中立へ戻す。
+        if self._grab is None:
+            self._pointerUp(event)
+
+    # ------------------------------------------------------------------
+    # スティック
+    # ------------------------------------------------------------------
+    # 左ドラッグで倒し、離すと中立へ戻る。動かさずに離せば押し込みを 1 回。
+    # 押し込みを長く保ちたいときは右ボタンで押さえる。
+
+    # 押し込み 1 回の長さ（ms）。Switch が 1 フレーム以上拾える長さにする。
+    TAP_MS = 100
+
+    def _dragStick(self, event: Any) -> None:
+        grab = self._grab
+        assert grab is not None
+        dx = (event.x - grab["x"]) / self._scale
+        dy = (event.y - grab["y"]) / self._scale
+        if not grab["moved"] and math.hypot(dx, dy) < STICK_TAP_SLOP:
+            return
+        grab["moved"] = True
+        self._setStick(grab["name"], stick_value(dx, dy))
+
+    def _setStick(self, name: str, xy: tuple[int, int], *, final: bool = False) -> None:
+        """スティックの座標を申告して送り、頭を描き直す。同じ値は送らない。"""
+        side = STICK_SIDES[name]
+        if self._stick_xy[side] == xy and not final:
+            return
+        self._stick_xy[side] = xy
+        shape = next(s for s in SHAPES if s.name == name)
+        try:
+            self._draw_knob(shape)
+        except tk.TclError:
+            pass
+        # 中立へ戻すときは確認を待たず必ず再照会する（CaptureArea と同じ）。
+        ser = live_sender(self.ser, _force_refresh=final)
+        if ser is None:
+            return
+        # 送り主は操作画面。スティックは調停の対象外なので常に受理される。
+        set_stick = getattr(ser, "setStick", None)
+        send_posture = getattr(ser, "sendPosture", None)
+        if callable(set_stick) and callable(send_posture):
+            if set_stick(side, xy[0], xy[1], source="gui"):
+                send_posture(source="gui")
+        if final:
+            # 中立が間引きで保留されると倒したまま残る。区切りで送り切る。
+            flush = getattr(ser, "flushPending", None)
+            if callable(flush):
+                flush()
+
+    def _neutralStick(self, side: str) -> None:
+        name = next(n for n, s in STICK_SIDES.items() if s == side)
+        self._setStick(name, (128, 128), final=True)
+
+    def _tapClick(self, name: str) -> None:
+        """押し込みを 1 回。押してから TAP_MS 後に離す（GUI を止めない）。"""
+        self._onPress(name)
+        self.canvas.after(self.TAP_MS, lambda: self._onRelease(name))
+
+    def _holdClickDown(self, event: Any) -> None:
+        name = self._hit(event.x, event.y)
+        if name is None or name not in STICK_SIDES:
+            return
+        self._holdClickUp()
+        self._held_click = name
+        self._onPress(name)
+
+    def _holdClickUp(self, _event: Any = None) -> None:
+        name, self._held_click = self._held_click, None
+        if name is not None:
+            self._onRelease(name)
+
     def _hover(self, event: Any) -> None:
-        """押せる所の上だけ指のカーソルにする（どこが押せるか分かるように）。"""
-        cursor = "hand2" if self._hit(event.x, event.y) else ""
+        """押せる所の上だけ指のカーソルにする（どこが押せるか分かるように）。
+
+        スティックの上は「動かせる」印のカーソルにして、倒せることを示す。
+        """
+        name = self._hit(event.x, event.y)
+        cursor = "" if name is None else "fleur" if name in STICK_SIDES else "hand2"
         if str(self.canvas.cget("cursor")) != cursor:
             self.canvas.config(cursor=cursor)
 
@@ -535,6 +658,11 @@ class ControllerGUI:
         窓を閉じるときや切断時に必ず呼ぶ。押しっぱなしのまま閉じると、
           解放が届かず Switch 側でボタンが押されたままになる。
         """
+        self._grab = None
+        self._held_click = None
+        for side, xy in list(self._stick_xy.items()):
+            if xy != (128, 128):
+                self._neutralStick(side)
         for name in list(self._held_btn):
             self._releaseButton(name)
         for name in list(self.HAT_NAME2DIRS):

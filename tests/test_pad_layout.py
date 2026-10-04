@@ -16,8 +16,10 @@ from core.pad_layout import (
     PAD_H,
     PAD_W,
     SHAPES,
+    STICK_REACH,
     fit_scale,
     hit_test,
+    stick_value,
 )
 
 _BUTTONS = [
@@ -127,3 +129,32 @@ def test_fit_scale_follows_the_space_but_keeps_the_aspect_and_a_cap() -> None:
     # タブに埋め込むときは等倍まで（max_zoom=1）。別窓は大きくできる。
     assert fit_scale(PAD_W * 10, PAD_H * 10, base=1.0, max_zoom=1.0) == 1.0
     assert fit_scale(PAD_W * 3, PAD_H * 3, base=1.0, max_zoom=3.0) == 3.0
+
+
+@pytest.mark.parametrize(
+    ("dx", "dy", "expected"),
+    [
+        # 中心は中立。
+        (0, 0, (128, 128)),
+        # 右へ倒し切る / 上へ倒し切る（画面座標は y が下向き、値は上が 0）。
+        (STICK_REACH, 0, (255, 128)),
+        (0, -STICK_REACH, (128, 0)),
+        (-STICK_REACH, 0, (0, 128)),
+        (0, STICK_REACH, (128, 255)),
+        # 外まで引っ張っても倒し切り止まり（値の範囲を超えない）。
+        (STICK_REACH * 5, 0, (255, 128)),
+        # 半分だけ倒す。
+        (STICK_REACH / 2, 0, (191, 128)),
+    ],
+)
+def test_stick_value_turns_the_drag_offset_into_0_to_255_coordinates(
+    dx: float, dy: float, expected: tuple[int, int]
+) -> None:
+    assert stick_value(dx, dy) == expected
+
+
+def test_stick_value_keeps_diagonals_inside_the_circle() -> None:
+    # Then: 斜めに引っ張り切っても、円の外（両軸とも端）にはならない。
+    x, y = stick_value(STICK_REACH * 3, -STICK_REACH * 3)
+    assert math.hypot(x - 128, y - 128) <= 128
+    assert x > 200 and y < 55

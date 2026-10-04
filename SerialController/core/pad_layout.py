@@ -107,6 +107,29 @@ def hit_test(x: float, y: float) -> str | None:
     return None
 
 
+# スティックを倒し切るまでのドラッグ量（論理座標）。スティックの外周の半径と同じ。
+STICK_REACH: Final[float] = 26.0
+# 押し込み（クリック）とドラッグを分ける動きのしきい値（論理座標）。
+STICK_TAP_SLOP: Final[float] = 3.0
+# スティックの名前（押し込みのボタン名）から、どちら側のスティックか。
+STICK_SIDES: Final[dict[str, str]] = {"LCLICK": "L", "RCLICK": "R"}
+
+
+def stick_value(dx: float, dy: float) -> tuple[int, int]:
+    """中心からのドラッグ量（画面座標、y は下向き）を 0〜255 の座標にする。
+
+    倒し量は STICK_REACH で 1 に飽和させ、向きは保つ（斜めでも円の内側）。
+    計算と丸め（int）はプレビュー上のマウス操作（CaptureArea._stickXY）と揃える。
+    """
+    dist = math.hypot(dx, dy)
+    if dist == 0:
+        return 128, 128
+    mag = min(1.0, dist / STICK_REACH)
+    x = int(128 + mag * 127.5 * dx / dist)
+    y = int(128 + mag * 127.5 * dy / dist)
+    return max(0, min(255, x)), max(0, min(255, y))
+
+
 def fit_scale(
     width: float, height: float, *, base: float, max_zoom: float = MAX_ZOOM
 ) -> float:

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 from collections.abc import Iterator
 from typing import Any
@@ -25,6 +26,8 @@ class _Sender:
         self.pressed: list[int] = []
         self.released: list[int] = []
         self.hats: list[int | None] = []
+        self.sticks: list[tuple[str, int, int]] = []
+        self.flushed = 0
 
     def isOpened(self) -> bool:
         return True
@@ -44,6 +47,13 @@ class _Sender:
     def releaseHat(self, source: str = "") -> bool:
         self.hats.append(None)
         return True
+
+    def setStick(self, stick: str, x: int, y: int, source: str = "") -> bool:
+        self.sticks.append((stick, x, y))
+        return True
+
+    def flushPending(self) -> None:
+        self.flushed += 1
 
     def __getattr__(self, name: str) -> Any:
         return lambda *args, **kwargs: True
@@ -310,3 +320,107 @@ def test_the_docked_controller_uses_the_sender_created_after_it(
 
     # Then: 作り直した送り先へ届く。
     assert rebuilt.pressed
+
+
+def _face_centre(pad: ControllerGUI, name: str) -> tuple[float, float]:
+    x0, y0, x1, y1 = pad.canvas.coords(pad.canvas.find_withtag(f"face:{name}")[0])
+    return (x0 + x1) / 2, (y0 + y1) / 2
+
+
+def test_dragging_a_stick_tilts_it_and_letting_go_returns_it_to_neutral(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    x, y = _centre(pad, "LCLICK")
+    knob = _face_centre(pad, "LCLICK")
+    far = pad.canvas.winfo_width() // 3
+
+    # When: the left stick is dragged far to the right.
+    _click(pad, "<ButtonPress-1>", x, y)
+    _click(pad, "<B1-Motion>", x + far, y)
+
+    # Then: 左スティックが右へ倒し切りで送られ、頭も右へずれて見える。
+    #       ボタンとしての押し込み（LCLICK）は入らない。
+    assert sender.sticks[-1] == ("L", 255, 128)
+    assert _face_centre(pad, "LCLICK")[0] > knob[0] + 3
+    assert not sender.pressed
+
+    # When: the pointer leaves the pad while still dragging.
+    _click(pad, "<Leave>", x + far, y)
+
+    # Then: 外まで引っ張っても倒したまま（離すまで戻さない）。
+    assert sender.sticks[-1] == ("L", 255, 128)
+
+    # When: released (even outside the stick).
+    _click(pad, "<ButtonRelease-1>", x + far, y)
+
+    # Then: 中立へ戻して送り切る（倒したまま残さない）。頭も中央へ戻る。
+    assert sender.sticks[-1] == ("L", 128, 128)
+    assert sender.flushed >= 1
+    assert _face_centre(pad, "LCLICK") == pytest.approx(knob, abs=1)
+
+
+def test_the_right_stick_sends_the_right_side(area: tk.Toplevel) -> None:
+    pad = _shown(area)
+    x, y = _centre(pad, "RCLICK")
+    _click(pad, "<ButtonPress-1>", x, y)
+    _click(pad, "<B1-Motion>", x, y - pad.canvas.winfo_height())
+
+    # Then: 右スティックを上へ倒し切り。左は触らない。
+    assert pad.ser.sticks[-1] == ("R", 128, 0)
+    assert all(side == "R" for side, _x, _y in pad.ser.sticks)
+
+
+def test_clicking_a_stick_without_moving_taps_the_stick_press(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    x, y = _centre(pad, "RCLICK")
+
+    # When: the stick is clicked without dragging.
+    _click(pad, "<ButtonPress-1>", x, y)
+    _click(pad, "<ButtonRelease-1>", x, y)
+
+    # Then: 押し込みが 1 回入る（Switch が拾える長さだけ押してから離す）。
+    assert sender.pressed == [int(Button.RCLICK)]
+    area.after(250, lambda: None)
+    time.sleep(0.25)
+    area.update()
+    assert sender.released == [int(Button.RCLICK)]
+    # 倒してはいないので、スティックの値は送らない。
+    assert not [s for s in sender.sticks if s[1:] != (128, 128)]
+
+
+def test_right_button_holds_the_stick_press_until_released(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    x, y = _centre(pad, "LCLICK")
+
+    # When: right button is held on the stick.
+    _click(pad, "<ButtonPress-3>", x, y)
+
+    # Then: 離すまで押し込みっぱなし（長押しが要る場面用）。
+    assert sender.pressed == [int(Button.LCLICK)] and not sender.released
+    _click(pad, "<ButtonRelease-3>", x, y)
+    assert sender.released == [int(Button.LCLICK)]
+
+
+def test_closing_the_pad_while_a_stick_is_tilted_returns_it_to_neutral(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    x, y = _centre(pad, "LCLICK")
+    _click(pad, "<ButtonPress-1>", x, y)
+    _click(pad, "<B1-Motion>", x, y + pad.canvas.winfo_height())
+    assert sender.sticks[-1] == ("L", 128, 255)
+
+    # When: the pad is torn down mid-drag (popped out / app closing).
+    pad.destroy()
+
+    # Then: 倒したまま Switch 側に残さない。
+    assert sender.sticks[-1] == ("L", 128, 128)
