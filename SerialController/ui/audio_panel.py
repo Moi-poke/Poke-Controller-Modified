@@ -16,8 +16,12 @@ from typing import Any
 
 from core.AudioCapture import audio_available, parse_display
 from loguru import logger
+from ui.combo_fit import fit_combo_width
 
 METER_INTERVAL_MS = 200
+# 機器名は長い（'22: HDMI/Line In (2- Live Gamer EXTREME 3) [est. 12ms]'）。
+# 全部入る幅にするとタブを押し広げるので上限で止め、伸びる列で見せる。
+_DEVICE_FIT = {"min_chars": 16, "max_chars": 20}
 
 
 def format_volume_label(value: Any) -> str:
@@ -166,7 +170,9 @@ class AudioPanelMixin:
             logger.warning(f"音声出力の列挙に失敗しました: {e}")
             outputs = []
         self.audio_input_cb["values"] = inputs
+        fit_combo_width(self.audio_input_cb, **_DEVICE_FIT)
         self.audio_output_cb["values"] = outputs
+        fit_combo_width(self.audio_output_cb, **_DEVICE_FIT)
         self._start_probe()
 
     def _start_probe(self) -> None:
@@ -222,6 +228,7 @@ class AudioPanelMixin:
             outputs = self.audio_service.cached_outputs()
             if inputs:
                 self.audio_input_cb["values"] = inputs
+                fit_combo_width(self.audio_input_cb, **_DEVICE_FIT)
                 self._restore_selection(
                     self.audio_input_cb,
                     self.audio_input_name,
@@ -230,6 +237,7 @@ class AudioPanelMixin:
                 )
             if outputs:
                 self.audio_output_cb["values"] = outputs
+                fit_combo_width(self.audio_output_cb, **_DEVICE_FIT)
                 self._restore_selection(
                     self.audio_output_cb,
                     self.audio_output_name,

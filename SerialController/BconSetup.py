@@ -487,24 +487,39 @@ class BconSetup:
         body.pack(fill=tk.BOTH, expand=True)
         self._body = body
 
-        # タブは横長で縦が足りないため、操作列とログ列を左右に分ける。
+        # タブでは操作列と情報列を、幅が足りれば左右に、足りなければ縦に並べる
+        # （_reflow_columns）。常に左右だと 800px 前後を要し、タブ欄の要求幅が
+        # 一番広いタブで決まるため、他のタブを開いていても横スクロールが出た。
         # 別窓は従来どおり縦積み（同じ親へ積む＝列を分けない）。
+        self._two_columns: bool | None = None
         if embedded:
             col_ops = ttk.Frame(body)
-            col_ops.pack(side=tk.LEFT, fill=tk.Y, anchor=tk.N)
             col_info = ttk.Frame(body)
-            col_info.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16, 0))
+            # 要求幅は狭い方（縦積み）の幅に固定し、実際の幅で並べ方を決める。
+            # 中身から要求幅を決めさせると、左右に並べた広さが要求として残り、
+            # 窓を狭めても縦積みへ戻れない。
+            body.grid_propagate(False)
+            body.columnconfigure(1, weight=1)
+            body.bind("<Configure>", lambda _e: self._reflow_columns(), add="+")
         else:
             col_ops = col_info = body
+        self._col_ops = col_ops
+        self._col_info = col_info
 
         ttk.Label(
             col_ops,
             text=(
-                "前提: シリアルが開いていること（開→HELLO→live開始の順を守る）。\n"
-                "接続ボタンは STATE を止めて HELLO を送り、通ってから起こす。\n"
-                "W1有線・W0無線は約500ms後に再起動する。復帰後は再HELLOから。"
+                # 単語の途中で折り返さないよう、区切りのよい所で改行しておく。
+                "前提: シリアルが開いていること\n"
+                "（開→HELLO→live開始の順を守る）。\n"
+                "接続ボタンは STATE を止めて HELLO を送り、\n"
+                "通ってから起こす。\n"
+                "W1有線・W0無線は約500ms後に再起動する。\n"
+                "復帰後は再HELLOから。"
             ),
             justify=tk.LEFT,
+            # 長い 1 行が列の幅を決めないよう、ボタン 3 つ分の幅で折り返す。
+            wraplength="240p" if embedded else 0,
         ).pack(anchor=tk.W, pady=(0, 8))
 
         row0 = ttk.Frame(col_ops)
@@ -593,16 +608,21 @@ class BconSetup:
 
         row5 = ttk.Frame(col_info)
         row5.pack(fill=tk.X, pady=2)
-        ttk.Label(row5, text="色(RRGGBB)").pack(side=tk.LEFT)
+        ttk.Label(row5, text="色(RRGGBB)").pack(side=tk.LEFT, anchor=tk.N)
         self._colors: list[Any] = []
         color_entries: list[Any] = []
+        # タブでは 4 欄を 2x2 に並べる（横 1 列だと情報列で最も幅を取る）。
+        slots = ttk.Frame(row5)
+        slots.pack(side=tk.LEFT)
+        per_row = 2 if embedded else len(COLOR_SLOT_NAMES)
         for index, (slot, default) in enumerate(zip(COLOR_SLOT_NAMES, COLOR_DEFAULTS)):
-            ttk.Label(row5, text=slot).pack(
-                side=tk.LEFT, padx=(6 if index == 0 else 2, 0)
+            r, c = divmod(index, per_row)
+            ttk.Label(slots, text=slot).grid(
+                row=r, column=c * 2, padx=(6 if c == 0 else 2, 0), sticky=tk.W
             )
             var = tk.StringVar(value=default)
-            entry = ttk.Entry(row5, width=8, textvariable=var)
-            entry.pack(side=tk.LEFT, padx=2)
+            entry = ttk.Entry(slots, width=8, textvariable=var)
+            entry.grid(row=r, column=c * 2 + 1, padx=2, pady=1)
             self._colors.append(var)
             color_entries.append(entry)
         if embedded:
@@ -665,14 +685,57 @@ class BconSetup:
         self._log = tk.Text(
             col_info,
             height=8 if embedded else 16,
-            width=60 if embedded else 72,
+            # タブでは列の幅に合わせて伸びるので、要求幅は小さくしておく。
+            width=36 if embedded else 72,
             state=tk.DISABLED,
         )
         self._log.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        if embedded:
+            self._reflow_columns()
 
         self._poll()
         # 既に bcon で繋がっていれば、窓を開いた時点から実況を受ける。
         self._bind_player_info(getattr(self._current_sender(), "transport", None))
+
+    def _reflow_columns(self) -> None:
+        """タブの幅に合わせて、操作列と情報列を左右に並べるか縦に積むか決める。"""
+        body, ops, info = self._body, self._col_ops, self._col_info
+        if ops is info:
+            return
+        try:
+            gap = 16
+            ow, oh = ops.winfo_reqwidth(), ops.winfo_reqheight()
+            iw, ih = info.winfo_reqwidth(), info.winfo_reqheight()
+            two = body.winfo_width() >= ow + gap + iw + 16
+            if two != self._two_columns:
+                self._two_columns = two
+                if two:
+                    # grid は前の指定（columnspan）を引き継ぐので明示して戻す。
+                    ops.grid(row=0, column=0, columnspan=1, sticky=tk.NW)
+                    info.grid(
+                        row=0, column=1, columnspan=1, sticky=tk.NSEW,
+                        padx=(gap, 0), pady=0,
+                    )  # fmt: skip
+                    body.rowconfigure(0, weight=1)
+                    body.rowconfigure(1, weight=0)
+                else:
+                    ops.grid(row=0, column=0, columnspan=2, sticky=tk.NW)
+                    info.grid(
+                        row=1, column=0, columnspan=2, sticky=tk.NSEW, padx=0,
+                        pady=(gap, 0),
+                    )  # fmt: skip
+                    body.rowconfigure(0, weight=0)
+                    body.rowconfigure(1, weight=1)
+            # padding=8 の上下左右の分を足す。
+            height = max(oh, ih) if two else oh + gap + ih
+            width, height = max(ow, iw) + 16, height + 16
+            if (int(str(body.cget("width"))), int(str(body.cget("height")))) != (
+                width,
+                height,
+            ):
+                body.configure(width=width, height=height)
+        except tk.TclError:
+            pass
 
     # -- 画面まわり ------------------------------------------------------
     # WakeSetup と同一規律である。作業は別スレッド、画面更新だけ after()、
@@ -1205,6 +1268,10 @@ class BconSetup:
             return
         if getattr(self, "_embedded", False):
             self._follow_sender()
+            # 中身の大きさが変わったら求める大きさも直す。body の要求幅は手で
+            # 決めているので、中身が育っても知らせは来ない（列は横いっぱいに
+            # 広げてあり、列の実寸も変わらない）。巡回のついでに測り直す。
+            self._reflow_columns()
         batch: list[Any] = []
         try:
             while len(batch) < BCON_FLUSH_MAX:

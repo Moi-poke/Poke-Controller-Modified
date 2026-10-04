@@ -19,6 +19,7 @@ from typing import Any
 import WindowUtils
 from loguru import logger
 from services.serial_service import SenderSpec, SerialService
+from ui.combo_fit import fit_combo_width
 from ui.controller_dock import ControllerDock
 
 # STATUS flags の bit5=有線。SSOTは Switch-bcon の spec/protocol_v3.md。
@@ -261,6 +262,7 @@ class SerialPanelMixin:
         )
         self.bcon_emulate_cb.grid(column=1, padx="5", pady="2", row=4, sticky="w")
         self.bcon_emulate_cb.bind("<<ComboboxSelected>>", self.applyBconEmulate, add="")
+        fit_combo_width(self.bcon_emulate_cb, min_chars=8, max_chars=20)
         # 値の列を伸ばし、広い窓では長いポート名・機器名を省略せずに出す。
         self.serial_lf.columnconfigure(1, weight=1)
 
@@ -339,6 +341,8 @@ class SerialPanelMixin:
         self._com_port_map = {label: device for device, label in ports}
         labels = [label for _, label in ports] or [WindowUtils.COM_PORT_NOT_FOUND]
         self.com_port_cb["values"] = labels
+        # 実際の名前が切れずに入る幅にする（USB 変換器の名前は長い）。
+        fit_combo_width(self.com_port_cb, min_chars=12, max_chars=32)
 
         # 抜き差ししても選び直さずに済むよう、同じデバイスがあれば残す
         target = None
@@ -430,6 +434,7 @@ class SerialPanelMixin:
         """選択欄の候補を登録簿から組み直し、現在値を選ぶ。"""
         names = self.serial.list_transports()
         self.transport_cb.config(values=names)
+        fit_combo_width(self.transport_cb, min_chars=12, max_chars=32)
         current = self._selectedTransportName()
         self.transport_name.set(current)
         # 選択値が決まった今が Bcon タブを出す最初の機会
@@ -462,6 +467,7 @@ class SerialPanelMixin:
     def _refreshArbitrationChoices(self) -> None:
         """選択欄の候補を許可値から組み直し、現在値を選ぶ。"""
         self.arbitration_cb.config(values=list(self.serial.arbitration_modes()))
+        fit_combo_width(self.arbitration_cb, min_chars=12, max_chars=32)
         mode = self.serial.resolve_arbitration(
             self.settings.arbitration_mode.get(), logger=logger
         )
