@@ -78,7 +78,7 @@ TOOLTIPS: dict[str, str] = {
     "reloadComPort": "ポート一覧を取り直して接続し直す",
     "disconnectComPort": "シリアルポートを閉じる",
     "cb_show_serial": "送った内容をログ欄に出す（確認用）",
-    "simpleConButton": "仮想コントローラを別ウィンドウで開く（閉じるとタブに戻る）",
+    "simpleConButton": "仮想コントローラを別ウィンドウへ出す／タブに戻す",
     "audio_reload_button": "音声デバイスを開き直す",
     "compact_start": "コマンドを開始 / 停止 (F6 / Esc)",
     "compact_pause": "コマンドを一時停止 / 再開 (F7)",

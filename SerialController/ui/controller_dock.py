@@ -14,42 +14,55 @@ import tkinter.ttk as ttk
 from collections.abc import Callable
 from typing import Any
 
-from GuiAssets import ControllerGUI
+from ui.controller_pad import ControllerGUI
+
+TITLE = "仮想コントローラ"
+POP_TEXT = "別ウィンドウで開く"
+BACK_TEXT = "タブに戻す"
 
 
 class ControllerDock:
-    """タブの枠（holder）に仮想コントローラを置き、別窓と行き来させる。"""
+    """holder の中に枠を作って仮想コントローラを置き、別窓と行き来させる。"""
 
     def __init__(self, root: Any, holder: Any, sender: Callable[[], Any]) -> None:
         self.root = root
         self.holder = holder
-        # 送り先は開くたびに引く（再接続で差し替わっても古い物を掴まない）。
+        # 送り先は押すたびに引く（再接続で差し替わっても古い物を掴まない）。
         self._sender = sender
         self.embedded: ControllerGUI | None = None
         self.floating: ControllerGUI | None = None
 
-        bar = ttk.Frame(holder)
-        bar.pack(fill="x", anchor="nw")
-        self.pop_button = ttk.Button(
-            bar, text="別ウィンドウで開く", command=self.pop_out
+        self.frame = ttk.Labelframe(holder)
+        # 操作盤の高さだけを取る（タブの残りを空白で埋めない）。
+        self.frame.pack(fill="x")
+        # 出し入れのボタンは枠の見出しの横に置く。専用の行を作らず、
+        # 同じボタンが「開く」と「戻す」を兼ねる（今どちらか文字で分かる）。
+        title = ttk.Frame(self.frame)
+        ttk.Label(title, text=TITLE).pack(side="left")
+        self.pop_button = ttk.Button(title, text=POP_TEXT, command=self.toggle)
+        self.pop_button.pack(side="left", padx=(8, 0))
+        self.frame.config(labelwidget=title)
+        # 別窓で出している間だけ見せる 1 行の案内。操作盤の場所は畳む。
+        self._away = ttk.Label(
+            self.frame, text="別ウィンドウで表示中", foreground="#5f6670"
         )
-        self.pop_button.pack(side="left")
-        # 別窓で出している間だけ見せる案内と戻り道。
-        self._away = ttk.Frame(holder)
-        ttk.Label(self._away, text="別ウィンドウで表示中").pack(side="left")
-        ttk.Button(self._away, text="ここに戻す", command=self.close_floating).pack(
-            side="left", padx=8
-        )
-        self._pad_area = ttk.Frame(holder)
-        self._pad_area.pack(fill="both", expand=True, anchor="nw", pady=(4, 0))
+        self._pad_area = ttk.Frame(self.frame)
         self._embed()
 
     def _embed(self) -> None:
         self._away.pack_forget()
-        self.pop_button.state(["!disabled"])
+        self._pad_area.pack(fill="x", padx=4, pady=4)
+        self.pop_button.config(text=POP_TEXT)
         # 送り先は関数のまま渡す。埋め込みは起動時から置きっぱなしなので、
         # 組み立て時の送り先（まだ無い／作り直し前）を掴まないようにする。
         self.embedded = ControllerGUI(self.root, self._sender, container=self._pad_area)
+
+    def toggle(self) -> None:
+        """見出しのボタン。タブにあれば別窓へ、別窓にあればタブへ。"""
+        if self.floating is None:
+            self.pop_out()
+        else:
+            self.close_floating()
 
     def pop_out(self) -> None:
         """別ウィンドウで開く。既に開いていれば前に出すだけ。"""
@@ -60,8 +73,9 @@ class ControllerDock:
             # 押しっぱなしを離してから消す（destroy が解放まで行う）。
             self.embedded.destroy()
             self.embedded = None
-        self.pop_button.state(["disabled"])
-        self._away.pack(fill="x", anchor="nw", before=self._pad_area)
+        self._pad_area.pack_forget()
+        self._away.pack(anchor="w", padx=8, pady=4)
+        self.pop_button.config(text=BACK_TEXT)
         self.floating = ControllerGUI(self.root, self._sender)
         self.floating.protocol("WM_DELETE_WINDOW", self.close_floating)
 

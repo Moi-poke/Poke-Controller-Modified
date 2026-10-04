@@ -12,8 +12,10 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from GuiAssets import ControllerGUI
+from Commands.Keys import Button, Hat
+from core.pad_layout import SHAPES
 from ui.controller_dock import ControllerDock
+from ui.controller_pad import ControllerGUI
 
 
 class _Sender:
@@ -22,6 +24,7 @@ class _Sender:
     def __init__(self) -> None:
         self.pressed: list[int] = []
         self.released: list[int] = []
+        self.hats: list[int | None] = []
 
     def isOpened(self) -> bool:
         return True
@@ -32,6 +35,14 @@ class _Sender:
 
     def releaseButtons(self, buttons: list[int], source: str = "") -> bool:
         self.released.extend(buttons)
+        return True
+
+    def holdHat(self, value: int, source: str = "") -> bool:
+        self.hats.append(value)
+        return True
+
+    def releaseHat(self, source: str = "") -> bool:
+        self.hats.append(None)
         return True
 
     def __getattr__(self, name: str) -> Any:
@@ -69,33 +80,160 @@ def test_a_container_builds_the_controller_inside_it_without_a_new_window(
 
     pad = ControllerGUI(area, _Sender(), container=holder)
 
-    # Then: 新しい窓は開かず、渡した枠の中にボタンが並ぶ。
+    # Then: 新しい窓は開かず、渡した枠の中に 1 枚の絵としてボタンが並ぶ。
     assert len(_toplevels(area)) == before
     assert pad.window.master is holder
-    assert pad._buttons
+    assert isinstance(pad.canvas, tk.Canvas)
+    for shape in SHAPES:
+        assert pad.canvas.find_withtag(f"key:{shape.name}"), shape.name
 
 
 def test_controller_buttons_never_take_keyboard_focus(area: tk.Toplevel) -> None:
     pad = ControllerGUI(area, _Sender(), container=tk.Frame(area))
 
     # Then: キーボード操作中に Space でボタンが押されて入力が飛ばないよう、
-    #       ボタンはフォーカスを取らない。
-    assert all(str(b.cget("takefocus")) == "0" for b in pad._buttons.values())
+    #       操作盤はフォーカスを取らない。
+    assert str(pad.canvas.cget("takefocus")) == "0"
 
 
-def test_destroying_an_embedded_controller_releases_held_buttons(
+def _shown(area: tk.Toplevel, width: int = 0, height: int = 0) -> ControllerGUI:
+    """枠に入れて表示まで済ませた操作盤。width/height で置き場所の広さを決める。"""
+    holder = tk.Frame(area, width=width, height=height)
+    if width and height:
+        # 指定の広さのまま置く（窓の幅に引き伸ばさない）。
+        holder.pack_propagate(False)
+        holder.pack(anchor="nw")
+    else:
+        holder.pack(fill="both", expand=True)
+    pad = ControllerGUI(area, _Sender(), container=holder)
+    area.update()
+    return pad
+
+
+def _centre(pad: ControllerGUI, name: str) -> tuple[int, int]:
+    """描いた的の中心（画面座標）。描画結果から測る。"""
+    x0, y0, x1, y1 = pad.canvas.bbox(f"key:{name}")
+    return (x0 + x1) // 2, (y0 + y1) // 2
+
+
+def _click(pad: ControllerGUI, sequence: str, x: int, y: int) -> None:
+    pad.canvas.event_generate(sequence, x=x, y=y)
+
+
+def test_the_embedded_pad_needs_at_most_half_the_old_window_area(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    base = float(area.winfo_fpixels("1i")) / 96.0
+
+    # Then: 旧 UI（600x300 の窓）の半分以下の場所しか求めない。
+    need = pad.canvas.winfo_reqwidth() * pad.canvas.winfo_reqheight()
+    assert need <= 600 * 300 / 2 * base * base
+
+
+def test_clicking_a_drawn_button_presses_it_until_the_mouse_is_released(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    x, y = _centre(pad, "A")
+    face = pad.canvas.find_withtag("face:A")[0]
+    idle = pad.canvas.itemcget(face, "fill")
+
+    # When: the A button drawn on the pad is pressed.
+    _click(pad, "<ButtonPress-1>", x, y)
+
+    # Then: 押している間は A が入り、見た目も変わる（押しっぱなしが目で分かる）。
+    assert sender.pressed == [int(Button.A)] and not sender.released
+    assert pad.canvas.itemcget(face, "fill") != idle
+
+    # When: released.
+    _click(pad, "<ButtonRelease-1>", x, y)
+
+    # Then: 離した時点で離す。色も戻る。
+    assert sender.released == [int(Button.A)]
+    assert pad.canvas.itemcget(face, "fill") == idle
+
+
+def test_dragging_off_a_pressed_button_releases_it(area: tk.Toplevel) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    x, y = _centre(pad, "B")
+    _click(pad, "<ButtonPress-1>", x, y)
+
+    # When: the mouse is dragged away from B with the button still down.
+    _click(pad, "<B1-Motion>", 2, pad.canvas.winfo_height() - 2)
+
+    # Then: 枠外で指を離しても押しっぱなしが残らない。
+    assert sender.released == [int(Button.B)]
+
+
+def test_sliding_across_the_dpad_switches_direction_and_corners_are_diagonals(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    x0, y0, x1, y1 = pad.canvas.bbox("key:DPAD")
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    arm = (x1 - x0) // 3
+
+    # When: up is pressed, then the pointer slides to the up-right corner.
+    _click(pad, "<ButtonPress-1>", cx, cy - arm)
+    _click(pad, "<B1-Motion>", cx + arm, cy - arm)
+    _click(pad, "<ButtonRelease-1>", cx + arm, cy - arm)
+
+    # Then: 上 → 右上 → 離す、の順に十字キーが送られる（旧 UI の斜めボタンの代わり）。
+    assert sender.hats == [int(Hat.TOP), int(Hat.TOP_RIGHT), None]
+
+
+def _width_of(pad: ControllerGUI, name: str) -> int:
+    x0, _y0, x1, _y1 = pad.canvas.bbox(f"key:{name}")
+    return int(x1 - x0)
+
+
+def test_the_embedded_pad_stays_compact_in_a_large_tab_and_shrinks_in_a_narrow_one(
+    area: tk.Toplevel,
+) -> None:
+    base = _width_of(_shown(area, 420, 170), "X")
+
+    # When: the tab gives it far more room than it needs.
+    roomy = _shown(area, 840, 340)
+
+    # Then: タブの中では等倍より大きくしない（場所を取りすぎない）。
+    assert _width_of(roomy, "X") == pytest.approx(base, abs=2)
+    assert roomy.canvas.winfo_reqheight() <= 180 * base / 28
+
+    # When: the tab is narrower than the pad.
+    narrow = _shown(area, 210, 170)
+
+    # Then: 縮めて全部見せる（はみ出して横スクロールにしない）。
+    assert _width_of(narrow, "X") < base * 0.6
+
+
+def test_the_floating_pad_grows_with_its_window_and_clicks_still_land(
     area: tk.Toplevel,
 ) -> None:
     sender = _Sender()
-    pad = ControllerGUI(area, sender, container=tk.Frame(area))
-    pad._onPress("A")
-    assert sender.pressed
+    pad = ControllerGUI(area, sender)
+    area.update()
+    before = _width_of(pad, "X")
 
-    # When: the embedded controller is torn down (e.g. popped out).
+    # When: the floating window is enlarged.
+    pad.window.geometry("900x380")
+    area.update()
+
+    # Then: 別窓では窓に合わせて大きく描く（縦横比は保つ）。
+    x0, y0, x1, y1 = pad.canvas.bbox("key:X")
+    assert x1 - x0 > before * 1.3
+    assert (x1 - x0) == pytest.approx(y1 - y0, abs=2)
+
+    # When: the enlarged X is clicked.
+    x, y = _centre(pad, "X")
+    _click(pad, "<ButtonPress-1>", x, y)
+
+    # Then: 大きくしても押した所のボタンが入る。
+    assert sender.pressed == [int(Button.X)]
     pad.destroy()
-
-    # Then: 押しっぱなしは必ず離してから消える（Switch 側に残らない）。
-    assert sender.released == sender.pressed
 
 
 def test_the_dock_pops_out_to_a_window_and_returns_when_it_closes(
@@ -108,19 +246,28 @@ def test_the_dock_pops_out_to_a_window_and_returns_when_it_closes(
     # Given: 最初はタブの中に埋め込まれている。
     assert _placement(dock) == "embedded"
 
-    # When: popped out.
-    dock.pop_out()
+    # When: popped out with the header button.
+    dock.pop_button.invoke()
     area.update()
 
-    # Then: 別窓に移り、タブには「戻す」案内だけが残る。
+    # Then: 別窓に移り、同じボタンが「戻す」に変わる（行を増やさない）。
     assert _placement(dock) == "floating"
     assert isinstance(getattr(dock.floating, "window", None), tk.Toplevel)
+    assert "戻す" in str(dock.pop_button.cget("text"))
 
-    # When: the floating window is closed.
-    dock.close_floating()
+    # When: the same button is pressed again.
+    dock.pop_button.invoke()
     area.update()
 
     # Then: タブへ戻る。
+    assert _placement(dock) == "embedded"
+    assert "別ウィンドウ" in str(dock.pop_button.cget("text"))
+
+    # When: popped out, then the floating window is closed by its title bar.
+    dock.pop_out()
+    dock.close_floating()
+
+    # Then: やはりタブへ戻る。
     assert _placement(dock) == "embedded"
 
 

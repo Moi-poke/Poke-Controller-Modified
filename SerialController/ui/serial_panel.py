@@ -271,7 +271,7 @@ class SerialPanelMixin:
             variable=self.is_use_keyboard,
             command=self._on_keyboard_toggled,
         )
-        self.cb_use_keyboard.grid(column=0, padx="10", pady="5", sticky="ew")
+        self.cb_use_keyboard.grid(column=0, row=0, padx="10", pady="5", sticky="ew")
 
         self.cb_left_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_left_stick_mouse.config(
@@ -287,8 +287,9 @@ class SerialPanelMixin:
             variable=self.camera_lf.is_use_right_stick_mouse,
             command=self._on_right_stick_toggled,
         )
+        # 3 つとも 1 行に並べる（2 行目に 1 つだけ置くと、空いた欄が増えるだけ）。
         self.cb_right_stick_mouse.grid(
-            column=1, row=1, padx="10", pady="5", sticky="ew"
+            column=2, row=0, padx="10", pady="5", sticky="ew"
         )
 
         self.control_lf.config(text="コントローラ")
@@ -296,10 +297,10 @@ class SerialPanelMixin:
 
         # 仮想コントローラ。タブの中に常に置き、別ウィンドウへも出せる
         # （ui/controller_dock.py）。送り先は開くたびに今の物を引く。
-        dock_lf = ttk.Labelframe(self.tab_controller, text="仮想コントローラ")
-        dock_lf.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+        dock_area = ttk.Frame(self.tab_controller)
+        dock_area.pack(fill="x", padx=5, pady=(0, 5))
         self.controller_dock = ControllerDock(
-            self.root, dock_lf, lambda: self.serial.sender
+            self.root, dock_area, lambda: self.serial.sender
         )
         self.simpleConButton = self.controller_dock.pop_button
 
