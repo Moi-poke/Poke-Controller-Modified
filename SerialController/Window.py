@@ -45,6 +45,7 @@ from ui.bcon_panel import BconPanelMixin
 from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
 from ui.layout_panel import LayoutPanelMixin
+from ui.live_resize import ResizeFreeze
 from ui.log_panel import LogPanelMixin
 from ui.notebook_fit import SelectedTabHeight
 from ui.pane_layout import PaneArranger
@@ -179,6 +180,9 @@ class PokeControllerApp(
         # _build_ui 時点では canvas が最終寸法になっていないため、
         # ここで測り直す（早すぎると小さな値で無意味になる）。
         self._apply_content_minsize()
+        # 窓の縁をドラッグしている間は中身を並べ直さない（部品の多い画面で
+        # 1 段ごとに全部を動かすと、ドラッグが 8fps 前後まで落ちる）。
+        self._resize_freeze = ResizeFreeze(self.root, self.frame_1)
         # 描画ループの開始は寸法確定の後にする。PreviewClock は after_idle の
         # 自己再予約チェーンで動き、update_idletasks() は idle queue が空に
         # なるまで戻らないため、先に起こすとここで無限に回って mainloop に
@@ -567,6 +571,9 @@ class PokeControllerApp(
                 pass
         self._display_after_id = None
         self._sash_after_id = None
+        freeze = getattr(self, "_resize_freeze", None)
+        if freeze is not None:
+            freeze.cleanup()
 
     def _continue_exit(self) -> None:
         if not self._exit_requested:
