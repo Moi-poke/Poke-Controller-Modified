@@ -53,27 +53,24 @@ def snap_client(width: int, height: int, *, minimum: Size) -> Size:
     return _from_width(width, minimum)
 
 
-def locked_client(edge: int, proposed: Size, previous: Size, minimum: Size) -> Size:
+def locked_client(edge: int, proposed: Size, minimum: Size) -> Size:
     """ドラッグ中の中身の寸法を 16:9 にする。
 
-    左右の縁は幅、上下の縁は高さに合わせる。角はドラッグで大きく動いた向き
-    （16:9 の比で比べる）に合わせる。片方に固定すると、もう片方へ引いたときに
-    窓が動かない。
+    左右の縁は幅、上下の縁は高さに合わせる。角はマウスの位置に一番近い
+    16:9 の大きさ（16:9 の対角線へ投影した点）にする。角で「幅と高さの
+    どちらが大きく動いたか」を毎回選ぶと、斜めに引いたときに数 px ごとに
+    基準が入れ替わり、窓がガタガタと跳ねた。
     """
     width, height = proposed
     if edge in (LEFT, RIGHT):
         return _from_width(width, minimum)
     if edge in (TOP, BOTTOM):
         return _from_height(height, minimum)
-    prev_w, prev_h = previous
-    if abs(width - prev_w) * RATIO_H >= abs(height - prev_h) * RATIO_W:
-        return _from_width(width, minimum)
-    return _from_height(height, minimum)
+    k = (width * RATIO_W + height * RATIO_H) / (RATIO_W**2 + RATIO_H**2)
+    return _from_width(round(k * RATIO_W), minimum)
 
 
-def locked_rect(
-    edge: int, rect: Rect, frame: Size, previous: Size, minimum: Size
-) -> Rect:
+def locked_rect(edge: int, rect: Rect, frame: Size, minimum: Size) -> Rect:
     """WM_SIZING の枠（外形）を、中身が 16:9 になる枠へ直す。
 
     frame は外形と中身の差（タイトルバー・メニュー・縁の分）。
@@ -81,7 +78,7 @@ def locked_rect(
     left, top, right, bottom = rect
     frame_w, frame_h = frame
     proposed = (right - left - frame_w, bottom - top - frame_h)
-    width, height = locked_client(edge, proposed, previous, minimum)
+    width, height = locked_client(edge, proposed, minimum)
     outer_w, outer_h = width + frame_w, height + frame_h
     # 掴んだ側だけを動かし、反対側の縁は元の位置に残す。
     if edge in _LEFT_SIDE:

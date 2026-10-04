@@ -199,7 +199,6 @@ class WindowAspectLock:
             edge,
             (rect.left, rect.top, rect.right, rect.bottom),
             frame,
-            previous=(inner.right, inner.bottom),
             minimum=self._minimum,
         )
         rect.left, rect.top, rect.right, rect.bottom = left, top, right, bottom

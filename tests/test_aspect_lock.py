@@ -38,7 +38,7 @@ def test_any_drag_keeps_the_client_area_at_16_to_9(edge: int) -> None:
     # When: the user drags an edge to an arbitrary, non-16:9 size.
     proposed = _rect_for(1100, 450)
 
-    rect = locked_rect(edge, proposed, FRAME, previous=(800, 450), minimum=(1, 1))
+    rect = locked_rect(edge, proposed, FRAME, minimum=(1, 1))
 
     # Then: 中身は 16:9（整数に丸めた 1px 以内）。
     width, height = _client(rect)
@@ -46,7 +46,7 @@ def test_any_drag_keeps_the_client_area_at_16_to_9(edge: int) -> None:
 
 
 def test_dragging_the_right_edge_sets_the_height_from_the_width() -> None:
-    rect = locked_rect(RIGHT, _rect_for(1120, 450), FRAME, (800, 450), (1, 1))
+    rect = locked_rect(RIGHT, _rect_for(1120, 450), FRAME, (1, 1))
 
     # Then: 横に広げた分だけ下へ伸びる。左上は動かない。
     assert _client(rect) == (1120, 630)
@@ -55,7 +55,7 @@ def test_dragging_the_right_edge_sets_the_height_from_the_width() -> None:
 
 def test_dragging_the_bottom_edge_sets_the_width_from_the_height() -> None:
     # Given: 下の縁だけを引き下げた（幅は元のまま）。
-    rect = locked_rect(BOTTOM, _rect_for(800, 630), FRAME, (800, 450), (1, 1))
+    rect = locked_rect(BOTTOM, _rect_for(800, 630), FRAME, (1, 1))
 
     # Then: 高さに合わせて幅が広がる（下の縁のドラッグが打ち消されない）。
     assert _client(rect) == (1120, 630)
@@ -65,7 +65,7 @@ def test_dragging_the_bottom_edge_sets_the_width_from_the_height() -> None:
 def test_dragging_the_left_edge_keeps_the_right_edge_in_place() -> None:
     proposed = (100 - 320, 100, 100 + 800 + FRAME[0], 100 + 450 + FRAME[1])
 
-    rect = locked_rect(LEFT, proposed, FRAME, (800, 450), (1, 1))
+    rect = locked_rect(LEFT, proposed, FRAME, (1, 1))
 
     # Then: 掴んだ左の縁が指に付いて動き、右の縁は動かない。
     assert rect[0] == 100 - 320
@@ -75,26 +75,29 @@ def test_dragging_the_left_edge_keeps_the_right_edge_in_place() -> None:
 
 def test_dragging_the_top_left_corner_keeps_the_bottom_right_corner() -> None:
     right, bottom = 100 + 800 + FRAME[0], 100 + 450 + FRAME[1]
-    proposed = (100 - 320, 100 - 10, right, bottom)
+    proposed = (100 - 320, 100 - 180, right, bottom)
 
-    rect = locked_rect(TOPLEFT, proposed, FRAME, (800, 450), (1, 1))
+    rect = locked_rect(TOPLEFT, proposed, FRAME, (1, 1))
 
-    # Then: 反対の角（右下）は動かず、大きく動いた向き（横）に合わせる。
+    # Then: 反対の角（右下）は動かず、マウスに付いて広がる。
     assert (rect[2], rect[3]) == (right, bottom)
     assert _client(rect) == (1120, 630)
 
 
-def test_a_mostly_vertical_corner_drag_follows_the_height() -> None:
+def test_a_mostly_vertical_corner_drag_still_grows_the_window() -> None:
     # Given: 右下の角を、ほとんど真下へ引いた。
-    rect = locked_rect(BOTTOMRIGHT, _rect_for(810, 630), FRAME, (800, 450), (1, 1))
+    rect = locked_rect(BOTTOMRIGHT, _rect_for(810, 630), FRAME, (1, 1))
 
-    # Then: 大きく動いた向き（縦）に合わせる（縦に引いたのに縮まない）。
-    assert _client(rect) == (1120, 630)
+    # Then: 縦に引いた分も効いて大きくなる（横の動きが小さくても止まらない）。
+    width, height = _client(rect)
+    assert width > 810
+    assert height > 450
+    assert abs(width * 9 - height * 16) <= 16
 
 
 def test_the_locked_size_never_goes_below_the_minimum() -> None:
     # When: dragged far smaller than the window's minimum size.
-    rect = locked_rect(BOTTOMLEFT, _rect_for(100, 50), FRAME, (800, 450), (640, 300))
+    rect = locked_rect(BOTTOMLEFT, _rect_for(100, 50), FRAME, (640, 300))
 
     # Then: 最小寸法の両方を満たす一番小さい 16:9 で止まる。
     width, height = _client(rect)
@@ -107,3 +110,22 @@ def test_snapping_on_enable_keeps_the_width_and_fixes_the_height() -> None:
     # Then: 有効にした瞬間は今の幅を保ち、高さを 16:9 に合わせる。
     assert snap_client(1280, 900, minimum=(1, 1)) == (1280, 720)
     assert snap_client(800, 300, minimum=(640, 480)) == (854, 480)
+
+
+def test_a_diagonal_corner_drag_grows_smoothly_without_jumping_back() -> None:
+    # Given: 右下の角を斜めに引いている。Windows はマウスの位置から作った枠を
+    #        数 px ずつ送ってくる（マウスの軌跡は 16:9 から少しずれ、揺れる）。
+    size = (800, 450)
+    sizes = [size]
+    for i in range(1, 60):
+        wobble = 3 if i % 2 else -3
+        cursor = (800 + 8 * i + wobble, 450 + 5 * i - wobble)
+        rect = locked_rect(BOTTOMRIGHT, _rect_for(*cursor), FRAME, (1, 1))
+        size = _client(rect)
+        sizes.append(size)
+
+    # Then: 大きさは引くにつれて単調に増え、途中で跳ね戻らない（ガタつかない）。
+    widths = [w for w, _h in sizes]
+    assert widths == sorted(widths)
+    steps = [b - a for a, b in zip(widths, widths[1:], strict=False)]
+    assert max(steps) <= 16
