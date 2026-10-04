@@ -90,17 +90,22 @@ class CommandPanelMixin:
         self.Commands_2_f = ttk.Frame(self.command_lf)
 
         self.Command_nb = ttk.Notebook(self.Commands_f)
+        # ページは枠にして、選択欄はその中へ 1 行の高さで置く。選択欄を
+        # ページそのものにすると、ページの広さいっぱいに縦横へ引き伸ばされる。
+        # ページの順（0: Python、1: MCU）は index で引く処理が頼っている。
+        py_page = ttk.Frame(self.Command_nb, padding=5)
         self.py_name = tk.StringVar()
-        self.py_cb = ttk.Combobox(self.Command_nb)
+        self.py_cb = ttk.Combobox(py_page)
         self.py_cb.config(state="readonly", textvariable=self.py_name)
-        self.py_cb.pack(side="top")
-        self.Command_nb.add(self.py_cb, padding="5", text="Python コマンド")
+        self.py_cb.pack(side="top", fill="x")
+        self.Command_nb.add(py_page, text="Python コマンド")
 
+        mcu_page = ttk.Frame(self.Command_nb, padding=5)
         self.mcu_name = tk.StringVar()
-        self.mcu_cb = ttk.Combobox(self.Command_nb)
+        self.mcu_cb = ttk.Combobox(mcu_page)
         self.mcu_cb.config(state="readonly", textvariable=self.mcu_name)
-        self.mcu_cb.pack(side="top")
-        self.Command_nb.add(self.mcu_cb, padding="5", text="MCU コマンド")
+        self.mcu_cb.pack(side="top", fill="x")
+        self.Command_nb.add(mcu_page, text="MCU コマンド")
 
         # 検索とタグの絞り込み。コマンドの Notebook の真上へ置く。
         # 探す→選ぶ が上から下へ並ぶので、視線が戻らない。
@@ -142,7 +147,8 @@ class CommandPanelMixin:
 
         # Notebook より先に pack して、絞り込みを上の段に置く。
         self.filter_f.pack(fill="x", expand=False, padx="5", pady="2", side="top")
-        self.Command_nb.pack(fill="both", expand=True, padx="5", pady="5", side="top")
+        # 中身は 1 行なので縦には伸ばさない（伸ばすと下に空白の箱ができる）。
+        self.Command_nb.pack(fill="x", padx="5", pady="5", side="top")
 
         # タブを切り替えたら、そのタブ側の一覧へ絞り込みをかけ直す。
         self.Command_nb.bind(
@@ -165,12 +171,9 @@ class CommandPanelMixin:
         )
         self.pauseButton.grid(column=2, padx="5", pady="5", row=1, sticky="ew")
 
-        self.Commands_f.pack(
-            fill="both", expand=True, padx="5", pady="5", anchor=tk.E, side="top"
-        )
-        self.Commands_2_f.pack(
-            fill="none", expand=True, padx=5, pady=5, anchor=tk.E, side="top"
-        )
+        # 選ぶ→開始 が上から下へ続くよう、ボタンは選択欄のすぐ下の右端へ。
+        self.Commands_f.pack(fill="x", padx="5", pady=(5, 0), side="top")
+        self.Commands_2_f.pack(padx=5, pady=(0, 5), anchor=tk.E, side="top")
         self.command_lf.config(height="200", text="コマンド")
         self.command_lf.pack(fill="both", expand=True, padx=5, pady=5)
 
