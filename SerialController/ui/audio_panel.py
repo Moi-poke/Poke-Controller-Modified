@@ -73,45 +73,52 @@ class AudioPanelMixin:
         self.audio_level = tk.StringVar(value="--")
         self.audio_latency = tk.StringVar(value="推定 --")
 
-        ttk.Label(self.audio_lf, text="入力:").grid(padx="5", row=0, column=0)
+        # 項目名｜値｜補助の 3 列の縦並び。横 1 行に入出力を並べると 870px
+        # 前後を要し、ログを右に置く配置では常に横スクロールが出ていた。
+        ttk.Label(self.audio_lf, text="入力:").grid(
+            padx="5", pady="2", row=0, column=0, sticky="w"
+        )
         self.audio_input_cb = ttk.Combobox(
             self.audio_lf,
             textvariable=self.audio_input_name,
-            width=28,
+            width=20,
             state="readonly",
         )
-        self.audio_input_cb.grid(padx="5", row=0, column=1, sticky="ew")
+        self.audio_input_cb.grid(padx="5", pady="2", row=0, column=1, sticky="ew")
         self.audio_input_cb.bind(
             "<<ComboboxSelected>>", self._onAudioInputSelected, add=""
         )
+        # 再読み込みは機器の一覧に効くので、機器選択の行の右に置く。
+        self.audio_reload_button = ttk.Button(
+            self.audio_lf, text="再読み込み", command=self.reloadAudio
+        )
+        self.audio_reload_button.grid(padx="5", pady="2", row=0, column=2, sticky="w")
 
-        ttk.Label(self.audio_lf, text="出力:").grid(padx="5", row=0, column=2)
+        ttk.Label(self.audio_lf, text="出力:").grid(
+            padx="5", pady="2", row=1, column=0, sticky="w"
+        )
         self.audio_output_cb = ttk.Combobox(
             self.audio_lf,
             textvariable=self.audio_output_name,
-            width=28,
+            width=20,
             state="readonly",
         )
-        self.audio_output_cb.grid(padx="5", row=0, column=3, sticky="ew")
+        self.audio_output_cb.grid(padx="5", pady="2", row=1, column=1, sticky="ew")
         self.audio_output_cb.bind(
             "<<ComboboxSelected>>", self._onAudioOutputSelected, add=""
         )
-
+        # モニター（入力を出力へ流す）は出力の行の右に置く。
         ttk.Checkbutton(
             self.audio_lf,
             text="モニター",
             variable=self.audio_monitor,
             command=self._onMonitorToggled,
-        ).grid(padx="5", row=0, column=4)
+        ).grid(padx="5", pady="2", row=1, column=2, sticky="w")
 
-        self.audio_reload_button = ttk.Button(
-            self.audio_lf, text="再読み込み", command=self.reloadAudio
+        # 音量（スライダーと値）。音量は頻繁に触るので、機器選択の直下に置く。
+        ttk.Label(self.audio_lf, text="音量:").grid(
+            padx="5", pady="2", row=2, column=0, sticky="w"
         )
-        self.audio_reload_button.grid(padx="5", row=0, column=5)
-
-        # 2 行目: 音量（スライダーと値）。音量は頻繁に触るので、
-        # 機器選択の直下に置く。
-        ttk.Label(self.audio_lf, text="音量:").grid(padx="5", row=1, column=0)
         self.audio_volume_scale = ttk.Scale(
             self.audio_lf,
             from_=0.0,
@@ -119,29 +126,28 @@ class AudioPanelMixin:
             variable=self.audio_volume,
             command=lambda _value: self._update_volume_label(),
         )
-        self.audio_volume_scale.grid(
-            padx="5", row=1, column=1, columnspan=3, sticky="ew"
-        )
+        self.audio_volume_scale.grid(padx="5", pady="2", row=2, column=1, sticky="ew")
         self.audio_volume_scale.bind(
             "<ButtonRelease-1>", self._onVolumeReleased, add=""
         )
         # 値は「100% (-0.0 dB)」まで入る幅に固定し、動かしても行が揺れないようにする。
         self.audio_volume_label = ttk.Label(self.audio_lf, text="80%", width=15)
-        self.audio_volume_label.grid(padx="5", row=1, column=4, sticky="w")
+        self.audio_volume_label.grid(padx="5", pady="2", row=2, column=2, sticky="w")
 
-        # 3 行目: 計測系（レベル・遅延の推定と実測）を 1 行にまとめる。
-        ttk.Label(self.audio_lf, text="レベル:").grid(padx="5", row=2, column=0)
+        # 計測系（レベル・遅延の推定と実測）を 1 行にまとめる。
+        ttk.Label(self.audio_lf, text="レベル:").grid(
+            padx="5", pady="2", row=3, column=0, sticky="w"
+        )
         measure = ttk.Frame(self.audio_lf)
-        measure.grid(row=2, column=1, columnspan=4, sticky="w")
+        measure.grid(padx="5", pady="2", row=3, column=1, columnspan=2, sticky="w")
         ttk.Label(measure, textvariable=self.audio_level, width=8).pack(side="left")
         ttk.Label(measure, textvariable=self.audio_latency).pack(side="left", padx=8)
 
         # タブの中へ載せる。タブ内ではこの枠が唯一のためpackで広げる。
         self.audio_lf.pack(fill="both", expand=True, padx=5, pady=5)
-        # 入出力コンボのある列にだけ重みを付け、枠が広がった分を吸わせる。
-        # 無いと width=28 文字で頭打ちになり、長い機器名が省略表示になる。
+        # 機器名の列にだけ重みを付け、枠が広がった分を吸わせる。
+        # 無いと width=20 文字で頭打ちになり、長い機器名が省略表示になる。
         self.audio_lf.columnconfigure(1, weight=1)
-        self.audio_lf.columnconfigure(3, weight=1)
 
     def _refreshAudioDevices(self) -> None:
         """入出力の候補を流し込む。速い列挙を即出しし、開ける物だけ裏で絞る。
