@@ -46,6 +46,13 @@ live 送出を再開する。`HELLO` の前に `STATE` を流さな
 baud の探索・切替は公開 API の `baud_hunt` と
 `set_baud_index` が担い、画面上のボタンは無い。
 
+`baud_hunt` は候補 rate ごとに、まず短い `HELLO` で確定済みかを
+見て、返らなければ `NEUTRAL` を 5ms 間隔で 0.7 秒流す（呼び水）。
+Pico は未確定のあいだ各 rate に 150ms ずつ留まり、同じ滞在中に
+有効 frame が 2 連続で届いたときだけ確定するため、`HELLO` の単発
+（0.5 秒毎）では永久に確定しない（2026-10-05 実機で 0/5）。
+実機確認は `tools/bcon_hunt_probe.py`（BREAK→`baud_hunt`→STATUS）。
+
 ## BconSetup画面の使い方
 
 メイン画面の「**Bcon**」タブ（「シリアル」の隣）だ。タブは
