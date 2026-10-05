@@ -60,6 +60,17 @@ EMULATE_ROLE_NAMES = ("Pro Controller", "Joy-Con (L)", "Joy-Con (R)")
 # 移すときも値はそのまま持っていく。
 LIVE_INTERVAL_S = 1.0 / 120.0
 
+# baud huntの呼び水。Picoは未確定のあいだ各rateに150ms (HUNT_DWELL_MS) ずつ
+# 留まり、同じ滞在中に有効frameが2連続で届いたときだけ確定する。HELLOの
+# 単発 (0.5s毎) では2連続が揃わず永久に確定しないため、候補rateごとに
+# NEUTRALを短い間隔で流して巡回1周 (4slot×150ms=600ms) を覆う。
+# NEUTRALは確定済みのPicoに届いても全解放するだけで、hunt中はSTATEも
+# 抑えているため副作用にならない。
+HUNT_PRIME_S = 0.7
+HUNT_PRIME_GAP_S = 0.005
+# 既に同じrateで確定済みなら呼び水は要らない。最初の確認だけ短く待つ。
+HUNT_QUICK_HELLO_S = 0.15
+
 # 姿勢空間（Keys.Button・Senderの持つ姿勢・PicoのS行）からwire空間
 # （Modified行の<btn-hex>）へのbit写像。添字が姿勢bit・値がwire bit。
 # bcon_mapping._WIRE_TO_VIIPERの添字に合わせる。Keys.Buttonの並び
@@ -1442,6 +1453,17 @@ class BconTransport(Transport):
             self._logger.debug(f"request_statusで例外: {e!r}", exc_info=True)
             return None
 
+    def _prime_hunt(self, seconds: float = HUNT_PRIME_S) -> None:
+        """現rateでNEUTRALを短い間隔で流し、hunt中のPicoを確定させる。
+
+        失敗は捨てる (確定の確認は呼び側のHELLOが行う)。例外は投げない。
+        """
+        end = time.perf_counter() + max(0.0, float(seconds))
+        while time.perf_counter() < end:
+            if not self._send_session_frame(T_NEUTRAL, b"", "bcon:HUNT"):
+                return
+            time.sleep(HUNT_PRIME_GAP_S)
+
     def baud_hunt(
         self,
         candidates: list[int] | tuple[int, ...] | None = None,
@@ -1449,6 +1471,8 @@ class BconTransport(Transport):
     ) -> int | None:
         """baudをlast-good先頭＋降順sweepで探し2連続有効でlockする。
 
+        各候補ではまず短いHELLOで確定済みかを見て、返らなければNEUTRALの
+        呼び水 (_prime_hunt) でhunt中のPicoを確定させてからHELLOで確かめる。
         candidates無しはBAUD表の降順（last-goodを先頭へ）。0-4の小さな
         値は表index、それ以外はbps値として読む。hunt中はSTATE送出を
         抑える（send_rowは捨てる。HELLO等の会話は通す）。lock・失敗の
@@ -1533,8 +1557,11 @@ class BconTransport(Transport):
                             continue
                         with self._lock:
                             self._parser = BconParser()
-                        if not self.hello(timeout=per, quiet=True):
-                            continue
+                        quick = min(per, HUNT_QUICK_HELLO_S)
+                        if not self.hello(timeout=quick, quiet=True):
+                            self._prime_hunt()
+                            if not self.hello(timeout=per, quiet=True):
+                                continue
                         if not self.hello(timeout=per, quiet=True):
                             continue
                         with self._lock:
