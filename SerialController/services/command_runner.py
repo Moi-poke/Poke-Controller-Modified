@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import traceback
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
-from core import CommandStats
+from core import CommandHistory, CommandStats
 from loguru import logger
 
 # 停止を頼んでから、戻って来ないかを見に行く間隔(ms)。
@@ -120,6 +122,16 @@ class CommandRunner:
         self._diag_profile = ""
         # 後始末の理由。手動停止・打切り・完了のいずれか。開始で戻す。
         self._end_reason = "完了"
+        # 実行履歴の受け先。set_history で渡さなければ履歴は残さない。
+        # Window が組み立て後に渡す。開始・終了の成否は変えない。
+        self.history_dirty = False
+        self._history: list[Any] | None = None
+        self._kind_of: Callable[[Any], str] | None = None
+        self._now: Callable[[], datetime] = datetime.now
+        self._monotonic: Callable[[], float] = time.monotonic
+        # 実行中の履歴の行と開始時刻。終わったら None へ戻す。
+        self._hist_entry: CommandHistory.HistoryEntry | None = None
+        self._hist_t0 = 0.0
 
     # -- 読み取り -----------------------------------------------------------
 
@@ -181,6 +193,67 @@ class CommandRunner:
                 end(str(reason))
         except Exception:
             logger.debug("走行記録の終了に失敗", exc_info=True)
+
+    def set_history(
+        self,
+        entries: list[Any],
+        kind_of: Callable[[Any], str],
+        now: Callable[[], datetime] = datetime.now,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """実行履歴の受け先を渡す。Window が組み立て後に呼ぶ。
+
+        呼ばれなければ履歴機能は全く動かず、従来の挙動と完全に同じ。
+        時計を外から渡せるのは、検証で時刻を固定するため。
+        """
+        self._history = entries
+        self._kind_of = kind_of
+        self._now = now
+        self._monotonic = monotonic
+
+    @property
+    def current_history_entry(self) -> CommandHistory.HistoryEntry | None:
+        """実行中の履歴の行。空きなら None。
+
+        履歴タブが削除・全消去の対象から外すのに使う。
+        """
+        return self._hist_entry
+
+    def _hist_begin(self, command: Any, cmd_name: str) -> None:
+        """履歴へ実行中の行を 1 件積む。受け先が無ければ何もしない。"""
+        entries = self._history
+        kind_of = self._kind_of
+        if entries is None or kind_of is None:
+            return
+        # 時計を先に読む。ここで落ちても行は増えない（増やした後だと
+        # 取り返しが付かない）。種別判定の失敗も同じく行を増やさない。
+        kind = kind_of(command)
+        tick = self._monotonic()
+        entry = CommandHistory.begin(entries, kind, cmd_name, self._now())
+        self._hist_entry = entry
+        self._hist_t0 = tick
+        self.history_dirty = True
+
+    def _hist_finish(self, finished: Any, reason: str) -> None:
+        """実行中の履歴の行を閉じる。行が無ければ何もしない。
+
+        終了理由が完了でも、コマンド側が失敗印（_history_failed）を
+        残していればエラーにする。所要秒は開始時との差。
+        """
+        entry = self._hist_entry
+        if entry is None:
+            return
+        result = str(reason)
+        if result == "完了" and bool(getattr(finished, "_history_failed", False)):
+            result = CommandHistory.RESULT_ERROR
+        try:
+            elapsed: float | None = self._monotonic() - self._hist_t0
+        except Exception:
+            logger.debug("履歴の所要秒を測れませんでした", exc_info=True)
+            elapsed = None
+        CommandHistory.finish(entry, result, elapsed)
+        self._hist_entry = None
+        self.history_dirty = True
 
     # -- 開始・停止 ---------------------------------------------------------
 
@@ -289,6 +362,12 @@ class CommandRunner:
         # 回数まで「実行回数」に混ざる。ファイルへ書くのは終了時に1回だけ。
         CommandStats.record(self._stats, cmd_name)
         self.stats_dirty = True
+        # 履歴は開始できたあとで積む。失敗した回まで残ると見た目が嘘になる。
+        # 履歴の失敗で実行は壊さない（種別判定が落ちても走り続ける）。
+        try:
+            self._hist_begin(command, cmd_name)
+        except Exception:
+            logger.error(traceback.format_exc())
         # 走行記録は開始の確定後に始める。失敗作の記録は残さない。
         self._end_reason = "完了"
         self._diag_begin(cmd_name)
@@ -679,6 +758,9 @@ class CommandRunner:
         # あるため。状態の復元は冪等なので通す。
         already_idle = self._state == "idle"
 
+        # 履歴を閉じるために要る。None にする前に退避する。
+        finished = self._running
+
         self._state = "idle"
         self._stop_waited = 0
         self._running = None
@@ -692,6 +774,11 @@ class CommandRunner:
             # すでに戻っている＝別経路で後始末済み。一覧の作り直しを
             # 二重に走らせても実害は無いが、選択の復元が二度動くため省く。
             return
+        try:
+            # 履歴は理由がまだ有効なうちに閉じる。失敗しても後始末は続ける。
+            self._hist_finish(finished, self._end_reason)
+        except Exception:
+            logger.error(traceback.format_exc())
         try:
             # 走行記録は後始末の確定時に1回だけ閉じる。二重呼び出しは
             # already_idle で弾かれるため、ここへ来るのは1回だけ。

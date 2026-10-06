@@ -132,6 +132,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
         # postProcess が永久に呼ばれないため Window は実行中のまま固まり、
         # しかもワーカー内の未捕捉例外は stderr へ出るのでログ欄にも出ない。
         try:
+            self._history_failed = False
             self.__post_init__()
 
             if self.keys is None:
@@ -148,6 +149,7 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             print("-- finished successfully. --")
             logger.info("Command finished successfully")
         except Exception:
+            self._history_failed = True
             print("例外が発生しました。")
             print("--------------------------------")
 

@@ -28,7 +28,7 @@ import WindowUtils
 import cv2
 from GuiAssets import CaptureArea
 from Menubar import PokeController_Menubar
-from core import CommandStats, PokeConLogger
+from core import CommandHistory, CommandStats, PokeConLogger
 from core.Camera import Camera
 from core.display_mode import DEFAULT_LAYOUT
 from core.pane_arrangement import (
@@ -44,6 +44,7 @@ from ui.audio_panel import AudioPanelMixin
 from ui.bcon_panel import BconPanelMixin
 from ui.camera_panel import CameraPanelMixin
 from ui.command_panel import CommandPanelMixin
+from ui.history_panel import HistoryPanelMixin
 from ui.layout_panel import LayoutPanelMixin
 from ui.live_resize import ResizeFreeze
 from ui.log_panel import LogPanelMixin
@@ -109,6 +110,7 @@ class PokeControllerApp(
     SerialPanelMixin,
     BconPanelMixin,
     CommandPanelMixin,
+    HistoryPanelMixin,
     LogPanelMixin,
     LayoutPanelMixin,
 ):
@@ -240,6 +242,10 @@ class PokeControllerApp(
         self._palette: Any = None
         # 使用履歴（実行回数 / 最終実行日時）。書き出しは終了時に1回だけ
         self.command_stats: dict[str, dict] = CommandStats.load(self.profile)
+        # 実行履歴（1 回の実行 = 1 行）。履歴タブに新しい順で出す。
+        self.command_history: list[CommandHistory.HistoryEntry] = CommandHistory.load(
+            self.profile
+        )
         # 実行の状態機械。タイマーは root.after で GUI スレッドへ回し、
         # 見た目の反映は合図（_apply_runner_state）で受ける。
         self.runner = CommandRunner(
@@ -253,6 +259,8 @@ class PokeControllerApp(
         # 走行記録の受け先。SerialService が担い、runner が開始・終了で呼ぶ。
         # 記録の失敗で実行は壊さない（runner・service 側で握る）。
         self.runner.set_diag(self.serial, self.profile)
+        # 履歴の受け先。開始・終了で 1 行ずつ積む。渡さなければ残さない。
+        self.runner.set_history(self.command_history, self._commandKind)
         self._closing = False
         self._exit_requested = False
         self._exit_phase = "idle"
@@ -318,6 +326,7 @@ class PokeControllerApp(
         self._build_serial_frame()
         self._build_control_frame()
         self._build_command_frame()
+        self._build_history_frame()
         self._build_log_area()
         # 3 つの欄を仕切りに載せる道具。並べ方は _apply_layout が決める。
         self._pane_arranger = PaneArranger(
@@ -355,7 +364,7 @@ class PokeControllerApp(
             self.root.minsize(MIN_COMPACT_WIDTH, MIN_COMPACT_HEIGHT)
 
     def _build_setting_tabs(self) -> None:
-        """シリアル/コントローラ/オーディオ/コマンドのタブ枠を作る。
+        """シリアル/コントローラ/オーディオ/コマンド/履歴のタブ枠を作る。
         カメラタブはオーディオの前へ _build_camera_tab が足す。
         Bcon タブは bcon 系の Transport を選んだときだけ、シリアルの隣へ出る。
 
@@ -373,10 +382,12 @@ class PokeControllerApp(
         self.tab_controller = ttk.Frame(self.setting_nb)
         self.tab_audio = ttk.Frame(self.setting_nb)
         self.tab_command = ttk.Frame(self.setting_nb)
+        self.tab_history = ttk.Frame(self.setting_nb)
         self.setting_nb.add(self.tab_serial, text="シリアル")
         self.setting_nb.add(self.tab_controller, text="コントローラ")
         self.setting_nb.add(self.tab_audio, text="オーディオ")
         self.setting_nb.add(self.tab_command, text="コマンド")
+        self.setting_nb.add(self.tab_history, text="履歴")
         # Bcon タブは Transport が bcon 系のときだけ「シリアル」の隣へ足す
         # （枠だけここで作る。出し入れは _refresh_bcon_tab）。
         self._build_bcon_tab()
@@ -651,6 +662,10 @@ class PokeControllerApp(
             logger.warning(f"終了時の設定保存に失敗しました: {exc}")
         if self.runner.stats_dirty:
             CommandStats.save(self.command_stats, self.profile)
+        # 履歴も終わりに1回だけ書く。終了の検証用の偽物には履歴が無い
+        # ことがあるため、 getattr で見て無ければ書かない（落とさない）。
+        if getattr(self.runner, "history_dirty", False):
+            CommandHistory.save(getattr(self, "command_history", []), self.profile)
 
     def _stop_audio(self) -> None:
         try:

@@ -19,7 +19,7 @@ import TagEditor
 import WindowUtils
 from Commands import McuCommandBase, PythonCommandBase
 from GuiAssets import CaptureAreaProxy
-from core import CommandStats, CommandTags, Utility as util
+from core import CommandHistory, CommandStats, CommandTags, Utility as util
 from core.CommandLoader import CommandLoader
 from core.CommandTags import TAG_ALL
 from loguru import logger
@@ -80,6 +80,8 @@ class CommandPanelMixin:
     com_port: Any
     com_port_name: Any
     OpenCommandDir: Any
+    refresh_history_view: Any
+    update_history_buttons: Any
     _currentBaudRate: Any
     _on_setting_changed: Any
     _update_title: Any
@@ -390,6 +392,48 @@ class CommandPanelMixin:
         )
         return "break"
 
+    def _commandKind(self, command: Any) -> str:
+        """履歴用の種別。MCU コマンドだけ区別し、あとは Python 扱いにする。
+
+        runner が履歴の行へ付ける印。表示名への変換は kind_label が行う。
+        """
+        if isinstance(command, McuCommandBase.McuCommand):
+            return CommandHistory.KIND_MCU
+        return CommandHistory.KIND_PYTHON
+
+    def selectCommandByName(self, kind: str, name: str) -> bool:
+        """履歴から選び直す。表示を合わせて選ぶだけ（実行しない）。
+
+        実行中は選べない（いま走っている表示と食い違うため）。絞り込みで
+        一覧から外れていると選べないので、パレットと同じ条件で先に解除
+        する。選べたら True。_runFromPalette の振る舞いは変えない。
+        """
+        if self.runner.is_busy():
+            return False
+        combo = self.py_cb
+        if kind == CommandHistory.KIND_MCU:
+            self.Command_nb.select(1)
+            combo = self.mcu_cb
+        else:
+            self.Command_nb.select(0)
+
+        # 絞り込みで一覧から外れていると選べないので、先に解除する。
+        # 検索欄に文字が残ったままだと、実行後の一覧が空に見えて戸惑う。
+        if self.search_name.get() or self.tag_name.get() != TAG_ALL:
+            self.clearCommandFilter()
+
+        # 素の名前 → いまの表示名。表示名は使用履歴で変わるため毎回引き直す
+        relabel = {n: lb for lb, n in self._shown_names.get(combo, {}).items()}
+        label = relabel.get(name)
+        if label is None:
+            print(f"コマンドが見つかりません: {name}")
+            logger.warning(f"Command not found in the list: {name}")
+            return False
+
+        combo.set(label)
+        self.assignCommand()
+        return True
+
     def _runFromPalette(self, name: str) -> None:
         """パレットで選ばれたコマンドを一覧へ反映してから実行する。
 
@@ -643,6 +687,10 @@ class CommandPanelMixin:
             self.pauseButton["state"] = "disabled"
             self._paused = False
             self._running_command = ""
+        # 履歴タブの実行・停止も同じ状態に合わせる。running→stopping は
+        # 一覧の作り直しの合図が来ないため、ここで見直さないと停止が
+        # 押せたまま残る。
+        self.update_history_buttons()
         self._update_title()
 
     def _refresh_after_run(self) -> None:
@@ -650,9 +698,11 @@ class CommandPanelMixin:
 
         走行中は選択を動かさないため見送っていた分を、空いた時点で
         実際の履歴に合わせる。失敗時の通知は runner 側が行う。
+        履歴タブも同じ合図で作り直す（件数と missing 表示のため）。
         """
         self._refreshTagChoices()
         self.applyCommandFilter()
+        self.refresh_history_view()
 
     def reloadCommands(self) -> None:
         """リロード後も同じコマンドが選ばれた状態に戻す。
@@ -681,6 +731,8 @@ class CommandPanelMixin:
         self.assignCommand()
         print("Finished reloading command modules.")
         logger.info("Reloaded commands.")
+        # 一覧の顔ぶれが変わると履歴の missing 表示も変わるため作り直す。
+        self.refresh_history_view()
 
     def startPlay(self, *event: Any) -> None:
         """選択中のコマンドを開始する。

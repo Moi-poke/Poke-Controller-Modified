@@ -40,7 +40,7 @@ core/  …… GUI 非依存の純粋ロジック（tkinter・アプリ層の imp
 GUI 層（[`Window.py`](../SerialController/Window.py)・[`GuiAssets.py`](../SerialController/GuiAssets.py)・[`Settings.py`](../SerialController/Settings.py) ほか）は [`core/`](../SerialController/core) の利用者。
 [`Window.py`](../SerialController/Window.py) は起動の組立・設定の出し入れ・終了処理だけを持ち、画面の
 部品ごとの手順は [`ui/`](../SerialController/ui) の Mixin（`camera_panel` / `serial_panel` /
-`command_panel` / `log_panel` / `audio_panel` / `bcon_panel`）に分かれる。`bcon_panel` は
+`command_panel` / `history_panel` / `log_panel` / `audio_panel` / `bcon_panel`）に分かれる。`history_panel` は実行履歴の一覧・再実行のタブを持ち、`bcon_panel` は
 通信方式が bcon 系のときだけ「シリアル」の隣へ Bcon タブ（中身は `BconSetup`）を出し入れする。Mixin は `self` 越しに触る
 属性を宣言しておく（mypy のため）。[`ui/`](../SerialController/ui) から `Window` 本体の import は
 禁止（循環になる）。実行の手順は [`services/`](../SerialController/services)（`command_runner.py`: 起動・
