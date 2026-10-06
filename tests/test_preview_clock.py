@@ -2019,3 +2019,66 @@ def test_stop_event_is_signaled_before_waitable_timer_cancel(
     finally:
         if runtime.has_live_resources():
             _close_native_runtime(runtime)
+
+
+def test_realign_dispatches_once_and_reanchors_without_changing_fps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: 60fps で動いている高分解能クロック
+    root = FakeRoot()
+    events: list[str] = []
+    runtime = FakeNativeRuntime(events=events)
+    monkeypatch.setattr(
+        preview_clock, "_create_native_runtime", lambda **_kwargs: runtime
+    )
+    clock = preview_clock.PreviewClock(root, _dispatch_with_label(events), 60, 200)
+    clock.start()
+    start_events = events.copy()
+    generation = int(clock.health_snapshot()["generation"])
+
+    # When: 位相の据え直しを要求する
+    clock.realign()
+
+    # Then: その場で 1 回描き、同じ fps のまま worker の期限を据え直す
+    assert events == [*start_events, "control:realign", "dispatch"]
+    assert runtime.controls[-1].kind is preview_clock._ControlKind.REALIGN
+    assert runtime.controls[-1].configured_fps == 60
+    # 据え直し前に発行済みの tick は旧世代として捨てられる
+    assert clock.health_snapshot()["generation"] == generation + 1
+
+
+def test_realign_in_after_fallback_dispatches_and_restarts_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: 高分解能タイマーが使えず after() で動いているクロック
+    root = FakeRoot()
+
+    def fail_factory(**_kwargs: Any) -> FakeNativeRuntime:
+        raise preview_clock._PreviewClockError("injected high-resolution init failure")
+
+    monkeypatch.setattr(preview_clock, "_create_native_runtime", fail_factory)
+    calls: list[str] = []
+    clock = preview_clock.PreviewClock(
+        root, _dispatch_with_label(calls, "tick"), 60, 200
+    )
+    clock.start()
+    pending_before = set(root.callbacks) - root.cancelled
+
+    # When: 位相の据え直しを要求する
+    clock.realign()
+
+    # Then: その場で 1 回描き、予約済みの after は取り消して取り直す
+    assert calls == ["tick", "tick"]
+    assert pending_before <= root.cancelled
+    assert set(root.callbacks) - root.cancelled
+    clock.stop()
+
+
+def test_realign_when_stopped_does_nothing() -> None:
+    # Given: まだ start していないクロック
+    calls: list[str] = []
+    clock = preview_clock.PreviewClock(FakeRoot(), _dispatch_with_label(calls), 60, 200)
+    # When: 据え直しを要求しても
+    clock.realign()
+    # Then: 描画も予約もしない
+    assert calls == []

@@ -33,6 +33,7 @@ from Commands.PythonCommandBase import PythonCommand
 from core.Camera import CAPTURE_SIZE
 from core.coordinates import CoordinateMapper, fit_rect
 from core.gdi_surface import GdiSurface
+from core.preview_phase import PhaseLock
 from core.preview_renderer import (
     TK_COLORREF,
     BadgeState,
@@ -386,6 +387,9 @@ class CaptureArea(tk.Frame):
         self._configured_fps = _validated_preview_fps(fps)
         self.next_frames = 1000.0 / self._configured_fps
         self._preview_clock: preview_clock.PreviewClock | None = None
+        # 取込と表示の位相が重なって取りこぼすのを防ぐ（core/preview_phase.py）
+        self._phase_lock = PhaseLock(round(1e9 / self._configured_fps))
+        self._realign_after_id: str | None = None
         self._camera_observation: dict[str, int] = {
             "camera_read_count": 0,
             "camera_frame_present_count": 0,
@@ -632,6 +636,9 @@ class CaptureArea(tk.Frame):
             return
         self._capturing = True
         self._preview_stop_requested = False
+        phase_lock = getattr(self, "_phase_lock", None)
+        if phase_lock is not None:
+            phase_lock.reset()
         self._preview_clock = preview_clock.PreviewClock(
             self.winfo_toplevel(),
             self._dispatch_tick,
@@ -644,7 +651,7 @@ class CaptureArea(tk.Frame):
         """描画ループを止め、clock の停止結果を返す。"""
         self._capturing = False
         self._preview_stop_requested = True
-        for name in ("_rect_after_id", "_select_after_id"):
+        for name in ("_rect_after_id", "_select_after_id", "_realign_after_id"):
             after_id = getattr(self, name, None)
             if after_id is not None:
                 setattr(self, name, None)
@@ -690,6 +697,8 @@ class CaptureArea(tk.Frame):
                     self._stat_draw_ms = self._stat_draw_ms * 0.9 + draw_ms * 0.1
                 if draw_ms > self._stat_draw_max_ms:
                     self._stat_draw_max_ms = draw_ms
+                if frame is not None and seq is not None:
+                    self._trackPhase(seq)
             return preview_clock.DispatchResult(
                 schedule="active" if showing else "idle"
             )
@@ -698,6 +707,40 @@ class CaptureArea(tk.Frame):
             return preview_clock.DispatchResult(
                 schedule="active" if showing else "idle"
             )
+
+    def _trackPhase(self, seq: int) -> None:
+        """この tick の観測を位相合わせへ渡し、要れば据え直しを予約する。
+
+        公開時刻は readFrameWithTiming からしか取れない。_readLatest とは別の
+        読み取りなので、その間に次のフレームが届いて seq がずれたら、この
+        tick では判断しない。公開時刻を持たないカメラ（共有メモリ版）では
+        何もしない。描画時間の計測には含めない。
+        """
+        phase_lock = getattr(self, "_phase_lock", None)
+        reader = getattr(self.camera, "readFrameWithTiming", None)
+        if phase_lock is None or not callable(reader):
+            return
+        try:
+            _frame, timed_seq, _t_capture_ns, t_ready_ns = reader()
+            if int(timed_seq) != seq:
+                return
+            delay_ns = phase_lock.observe(time.perf_counter_ns(), seq, int(t_ready_ns))
+        except Exception as exc:
+            logger.debug(f"位相合わせの観測を取れませんでした: {exc}")
+            return
+        if delay_ns is None or getattr(self, "_realign_after_id", None) is not None:
+            return
+        delay_ms = max(1, math.ceil(delay_ns / 1_000_000))
+        self._realign_after_id = self.after(delay_ms, self._realignPreview)
+
+    def _realignPreview(self) -> None:
+        """予約した瞬間に 1 回描き、表示クロックをそこから刻み直す。"""
+        self._realign_after_id = None
+        clock = self._preview_clock
+        if clock is None or not self._capturing or self._preview_stop_requested:
+            return
+        logger.debug("表示 tick の位相をカメラに合わせ直しました")
+        clock.realign()
 
     def _allocBuffers(self) -> None:
         """描画の作業バッファと停止中画像を確保する（キャプチャ解像度で固定）。
@@ -981,6 +1024,9 @@ class CaptureArea(tk.Frame):
             return
         self._configured_fps = fps_value
         self.next_frames = 1000.0 / fps_value
+        phase_lock = getattr(self, "_phase_lock", None)
+        if phase_lock is not None:
+            phase_lock.set_period(round(1e9 / fps_value))
         if self._preview_clock is not None:
             self._preview_clock.set_fps(fps_value)
         logger.info(f"FPS set to {fps_value} (interval {self.next_frames:.1f} ms)")

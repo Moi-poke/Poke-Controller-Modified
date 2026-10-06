@@ -98,6 +98,7 @@ class _ControlKind(StrEnum):
     SET_FPS = "set_fps"
     ACTIVE = "active"
     IDLE = "idle"
+    REALIGN = "realign"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1799,6 +1800,41 @@ class PreviewClock:
                     self._last_schedule == "active",
                 )
             case _ClockState.AFTER:
+                self._fallback_deadline_s = None
+                self._reschedule_fallback()
+            case (
+                _ClockState.STOPPED
+                | _ClockState.STARTING_NATIVE
+                | _ClockState.STOPPING
+                | _ClockState.TEARDOWN_PENDING
+                | _ClockState.FAILED
+            ):
+                pass
+            case unreachable:
+                assert_never(unreachable)
+
+    def realign(self) -> None:
+        """周期は変えずに、今ここで 1 回描いてから次の期限を据え直す。
+
+        取込と表示の位相が重なると取りこぼしが増えるので、呼び出し側
+        （core/preview_phase.py の判断）が位相の良い瞬間に呼ぶ。worker は
+        control を受けた時刻 + 1 周期へ期限を取り直す（SET_FPS と同じ経路）。
+        据え直し前に発行済みの tick は世代を進めて捨てる。
+        """
+        self._assert_owner()
+        if self._dispatch_in_flight:
+            return
+        match self._state:
+            case _ClockState.HIGH_RESOLUTION:
+                self._generation += 1
+                self._invalidate_generation(clear_only=True)
+                self._send_control(
+                    _ControlKind.REALIGN,
+                    self._last_schedule == "active",
+                )
+                self._invoke_dispatch()
+            case _ClockState.AFTER:
+                self._invoke_dispatch()
                 self._fallback_deadline_s = None
                 self._reschedule_fallback()
             case (
