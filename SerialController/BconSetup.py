@@ -62,6 +62,7 @@ from core.transport.bcon_protocol import (
     T_PLAYER_INFO,
     T_RUMBLE,
 )
+from ui.tooltip import Tooltip
 
 BCON_WINDOW_TITLE = "Switch-Bcon設定"
 
@@ -506,164 +507,235 @@ class BconSetup:
         self._col_ops = col_ops
         self._col_info = col_info
 
+        # 短い案内だけ外に置く。詳しい注意は各ボタンの吹き出しへ移した
+        # （長い1行が列の幅を決めないよう短く保つ）。
         ttk.Label(
             col_ops,
-            text=(
-                # 単語の途中で折り返さないよう、区切りのよい所で改行しておく。
-                "前提: シリアルが開いていること\n"
-                "（開→HELLO→live開始の順を守る）。\n"
-                "接続ボタンは STATE を止めて HELLO を送り、\n"
-                "通ってから起こす。\n"
-                "W1有線・W0無線は約500ms後に再起動する。\n"
-                "復帰後は再HELLOから。"
-            ),
+            text="シリアルを開いてから「接続」を押してください。",
             justify=tk.LEFT,
-            # 長い 1 行が列の幅を決めないよう、ボタン 3 つ分の幅で折り返す。
             wraplength="240p" if embedded else 0,
         ).pack(anchor=tk.W, pady=(0, 8))
+        # 実行中は全ボタンを止める。止めた旨の表示だけ別に置く。
+        self._busy_label = ttk.Label(col_ops, text="")
+        self._busy_label.pack(anchor=tk.W)
 
-        row0 = ttk.Frame(col_ops)
-        row0.pack(fill=tk.X, pady=2)
+        grp_connect = ttk.LabelFrame(col_ops, text="接続", padding=8)
+        grp_connect.pack(fill=tk.X, pady=(0, 8))
+        grp_connect.columnconfigure(0, weight=1, uniform="btn")
+        grp_connect.columnconfigure(1, weight=1, uniform="btn")
         self._btn_connect = ttk.Button(
-            row0, text="接続(HELLO→開始)", command=self._on_connect
+            grp_connect,
+            text="接続（HELLO→開始）",
+            command=self._on_connect,
         )
-        self._btn_connect.pack(side=tk.LEFT, padx=2)
+        self._btn_connect.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky=tk.EW,
+            padx=2,
+            pady=2,
+        )
+        self._btn_status = ttk.Button(
+            grp_connect,
+            text="状態確認",
+            command=self._on_status,
+        )
+        self._btn_status.grid(row=1, column=0, sticky=tk.EW, padx=2, pady=2)
+        self._btn_ping = ttk.Button(
+            grp_connect,
+            text="疎通確認（PING）",
+            command=self._on_ping,
+        )
+        self._btn_ping.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
 
-        row1 = ttk.Frame(col_ops)
-        row1.pack(fill=tk.X, pady=2)
-        ttk.Label(row1, text="取込秒数").pack(side=tk.LEFT)
+        grp_pair = ttk.LabelFrame(
+            col_ops,
+            text="無線ペアリング（無線モードのみ）",
+            padding=8,
+        )
+        grp_pair.pack(fill=tk.X, pady=(0, 8))
+        for column in range(4):
+            grp_pair.columnconfigure(column, weight=1, uniform="btn")
+        ttk.Label(grp_pair, text="取込").grid(
+            row=0,
+            column=0,
+            sticky=tk.W,
+            padx=2,
+            pady=2,
+        )
         self._seconds = tk.IntVar(value=15)
-        ttk.Spinbox(row1, from_=1, to=60, width=4, textvariable=self._seconds).pack(
-            side=tk.LEFT, padx=4
+        ttk.Spinbox(
+            grp_pair,
+            from_=1,
+            to=60,
+            width=4,
+            textvariable=self._seconds,
+        ).grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        ttk.Label(grp_pair, text="秒").grid(
+            row=0,
+            column=2,
+            sticky=tk.W,
+            padx=2,
+            pady=2,
         )
-        self._btn_cap = ttk.Button(row1, text="取込開始", command=self._on_capture)
-        self._btn_cap.pack(side=tk.LEFT, padx=4)
-
-        row2 = ttk.Frame(col_ops)
-        row2.pack(fill=tk.X, pady=2)
-        self._btn_beacon = ttk.Button(row2, text="BEACON再生", command=self._on_beacon)
-        self._btn_beacon.pack(side=tk.LEFT, padx=2)
-        self._btn_status = ttk.Button(row2, text="状態確認", command=self._on_status)
-        self._btn_status.pack(side=tk.LEFT, padx=2)
-        self._btn_ping = ttk.Button(row2, text="疎通(PING)", command=self._on_ping)
-        self._btn_ping.pack(side=tk.LEFT, padx=2)
-
-        row3 = ttk.Frame(col_ops)
-        row3.pack(fill=tk.X, pady=2)
-        self._btn_winfo = ttk.Button(row3, text="W表示", command=self._on_wired_show)
-        self._btn_winfo.pack(side=tk.LEFT, padx=2)
-        self._btn_w0 = ttk.Button(row3, text="W0無線", command=self._on_wired_off)
-        self._btn_w0.pack(side=tk.LEFT, padx=2)
-        self._btn_w1 = ttk.Button(row3, text="W1有線", command=self._on_wired_on)
-        self._btn_w1.pack(side=tk.LEFT, padx=2)
-
-        row_em = ttk.Frame(col_ops)
-        row_em.pack(fill=tk.X, pady=2)
-        ttk.Label(row_em, text="種別").pack(side=tk.LEFT)
-        self._btn_e0 = ttk.Button(
-            row_em, text="E0 ProCon", command=lambda: self._on_emulate_set(0)
+        self._btn_cap = ttk.Button(
+            grp_pair,
+            text="取込開始",
+            command=self._on_capture,
         )
-        self._btn_e0.pack(side=tk.LEFT, padx=2)
-        self._btn_e1 = ttk.Button(
-            row_em, text="E1 JoyL", command=lambda: self._on_emulate_set(1)
+        self._btn_cap.grid(row=0, column=3, sticky=tk.EW, padx=2, pady=2)
+        self._btn_beacon = ttk.Button(
+            grp_pair,
+            text="保存した入力を再生",
+            command=self._on_beacon,
         )
-        self._btn_e1.pack(side=tk.LEFT, padx=2)
-        self._btn_e2 = ttk.Button(
-            row_em, text="E2 JoyR", command=lambda: self._on_emulate_set(2)
+        self._btn_beacon.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky=tk.EW,
+            padx=2,
+            pady=2,
         )
-        self._btn_e2.pack(side=tk.LEFT, padx=2)
-
-        row_bootsel = ttk.Frame(col_ops)
-        row_bootsel.pack(fill=tk.X, pady=2)
-        self._btn_bootsel = ttk.Button(
-            row_bootsel, text="BOOTSEL再起動", command=self._on_bootsel
-        )
-        self._btn_bootsel.pack(side=tk.LEFT, padx=2)
         self._btn_reconnect = ttk.Button(
-            row_bootsel, text="再接続を試す", command=self._on_reconnect
+            grp_pair,
+            text="再接続を試す",
+            command=self._on_reconnect,
         )
-        self._btn_reconnect.pack(side=tk.LEFT, padx=2)
-
-        row_baud = ttk.Frame(col_info)
-        row_baud.pack(fill=tk.X, pady=2)
-        ttk.Label(row_baud, text="baud").pack(side=tk.LEFT)
-        self._baud_var = tk.StringVar(value=BAUD_DISPLAY_LABELS[BAUD_DEFAULT_INDEX])
-        self._baud_cb = ttk.Combobox(
-            row_baud,
-            width=8,
-            state="readonly",
-            textvariable=self._baud_var,
-            values=[BAUD_DISPLAY_LABELS[i] for i in sorted(BAUD_TABLE)],
+        self._btn_reconnect.grid(
+            row=1,
+            column=2,
+            columnspan=2,
+            sticky=tk.EW,
+            padx=2,
+            pady=2,
         )
-        self._baud_cb.pack(side=tk.LEFT, padx=4)
-        self._btn_baud = ttk.Button(row_baud, text="実行", command=self._on_baud)
-        self._btn_baud.pack(side=tk.LEFT, padx=4)
 
-        row4 = ttk.Frame(col_info)
-        row4.pack(fill=tk.X, pady=2)
-        self._btn_clear = ttk.Button(row4, text="X破棄", command=self._on_clear)
-        self._btn_clear.pack(side=tk.LEFT, padx=2)
-        self._btn_keys = ttk.Button(row4, text="K鍵削除", command=self._on_delete_keys)
-        self._btn_keys.pack(side=tk.LEFT, padx=2)
-
-        row5 = ttk.Frame(col_info)
-        row5.pack(fill=tk.X, pady=2)
-        ttk.Label(row5, text="色(RRGGBB)").pack(side=tk.LEFT, anchor=tk.N)
-        self._colors: list[Any] = []
-        color_entries: list[Any] = []
-        # タブでは 4 欄を 2x2 に並べる（横 1 列だと情報列で最も幅を取る）。
-        slots = ttk.Frame(row5)
-        slots.pack(side=tk.LEFT)
-        per_row = 2 if embedded else len(COLOR_SLOT_NAMES)
-        for index, (slot, default) in enumerate(zip(COLOR_SLOT_NAMES, COLOR_DEFAULTS)):
-            r, c = divmod(index, per_row)
-            ttk.Label(slots, text=slot).grid(
-                row=r, column=c * 2, padx=(6 if c == 0 else 2, 0), sticky=tk.W
-            )
-            var = tk.StringVar(value=default)
-            entry = ttk.Entry(slots, width=8, textvariable=var)
-            entry.grid(row=r, column=c * 2 + 1, padx=2, pady=1)
-            self._colors.append(var)
-            color_entries.append(entry)
-        if embedded:
-            row5_tail = ttk.Frame(col_info)
-            row5_tail.pack(fill=tk.X, pady=2)
-        else:
-            row5_tail = row5
-        self._color_canvas = tk.Canvas(
-            row5_tail, width=96, height=20, highlightthickness=0
+        grp_mode = ttk.LabelFrame(
+            col_ops,
+            text="動作モード（変更すると再起動）",
+            padding=8,
         )
-        self._color_canvas.pack(side=tk.LEFT, padx=4)
-        self._color_items: list[int] = []
-        for index in range(4):
-            left = 2 + index * 24
-            self._color_items.append(
-                self._color_canvas.create_rectangle(
-                    left, 2, left + 20, 18, fill="#000000", outline="#4D4D4D"
-                )
-            )
-        for entry, var in zip(color_entries, self._colors):
-            entry.bind("<KeyRelease>", lambda _e: self._refresh_color_preview())
-            var.trace_add("write", lambda *_a: self._refresh_color_preview())
-        self._btn_color = ttk.Button(row5_tail, text="色変更", command=self._on_color)
-        self._btn_color.pack(side=tk.LEFT, padx=4)
-        self._refresh_color_preview()
-        if embedded:
-            # タブは起動時に作られ、線が開く前から居る。開いた後で最初に
-            # 表示された時に問う（別窓は従来どおり開いた時に問う）。
-            self.window.bind("<Map>", self._on_tab_mapped, add="+")
-        else:
-            self._query_color_on_open()
+        grp_mode.pack(fill=tk.X, pady=(0, 8))
+        for column in (1, 2, 3):
+            grp_mode.columnconfigure(column, weight=1, uniform="btn")
+        ttk.Label(grp_mode, text="接続方式").grid(
+            row=0,
+            column=0,
+            sticky=tk.W,
+            padx=2,
+            pady=2,
+        )
+        self._btn_w1 = ttk.Button(
+            grp_mode,
+            text="有線にする",
+            command=self._on_wired_on,
+        )
+        self._btn_w1.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._btn_w0 = ttk.Button(
+            grp_mode,
+            text="無線にする",
+            command=self._on_wired_off,
+        )
+        self._btn_w0.grid(row=0, column=2, sticky=tk.EW, padx=2, pady=2)
+        self._btn_winfo = ttk.Button(
+            grp_mode,
+            text="現在の方式",
+            command=self._on_wired_show,
+        )
+        self._btn_winfo.grid(row=0, column=3, sticky=tk.EW, padx=2, pady=2)
+        ttk.Label(grp_mode, text="種別").grid(
+            row=1,
+            column=0,
+            sticky=tk.W,
+            padx=2,
+            pady=2,
+        )
+        self._btn_e0 = ttk.Button(
+            grp_mode,
+            text="Pro Con",
+            command=lambda: self._on_emulate_set(0),
+        )
+        self._btn_e0.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._btn_e1 = ttk.Button(
+            grp_mode,
+            text="Joy-Con L",
+            command=lambda: self._on_emulate_set(1),
+        )
+        self._btn_e1.grid(row=1, column=2, sticky=tk.EW, padx=2, pady=2)
+        self._btn_e2 = ttk.Button(
+            grp_mode,
+            text="Joy-Con R",
+            command=lambda: self._on_emulate_set(2),
+        )
+        self._btn_e2.grid(row=1, column=3, sticky=tk.EW, padx=2, pady=2)
+        ttk.Label(
+            grp_mode,
+            text="切替後は約0.5秒で再起動します。"
+            "復帰したら「接続」からやり直してください。",
+            justify=tk.LEFT,
+            wraplength="240p" if embedded else 0,
+        ).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=2, pady=2)
 
-        row_player = ttk.Frame(col_info)
-        row_player.pack(fill=tk.X, pady=2)
-        ttk.Label(row_player, text="プレイヤーLED").pack(side=tk.LEFT)
+        # 取り消せない操作だけ集める。他のボタンはここへ置かない
+        # （押し間違いを防ぐための隔離であり、処理は何も変えない）。
+        grp_danger = ttk.LabelFrame(
+            col_ops,
+            text="保守（取り消せない操作）",
+            padding=8,
+        )
+        grp_danger.pack(fill=tk.X, pady=(0, 8))
+        grp_danger.columnconfigure(0, weight=1, uniform="btn")
+        grp_danger.columnconfigure(1, weight=1, uniform="btn")
+        self._btn_bootsel = ttk.Button(
+            grp_danger,
+            text="BOOTSEL再起動",
+            command=self._on_bootsel,
+        )
+        self._btn_bootsel.grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky=tk.EW,
+            padx=2,
+            pady=2,
+        )
+        self._btn_clear = ttk.Button(
+            grp_danger,
+            text="取込を破棄",
+            command=self._on_clear,
+        )
+        self._btn_clear.grid(row=1, column=0, sticky=tk.EW, padx=2, pady=2)
+        self._btn_keys = ttk.Button(
+            grp_danger,
+            text="ペア鍵を全削除",
+            command=self._on_delete_keys,
+        )
+        self._btn_keys.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
+
+        grp_state = ttk.LabelFrame(
+            col_info,
+            text="コントローラ状態",
+            padding=8,
+        )
+        grp_state.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(grp_state, text="プレイヤーLED").grid(
+            row=0,
+            column=0,
+            sticky=tk.W,
+            padx=2,
+            pady=2,
+        )
         # PLAYER_INFO のLEDはbit0=LED1..bit3=LED4。実機は縦4灯で
         # LED1が最下段・LED4が最上段。ここは左からLED1..LED4の横並びで出す。
         self._lamp_canvas = tk.Canvas(
-            row_player, width=120, height=30, highlightthickness=0
+            grp_state,
+            width=120,
+            height=30,
+            highlightthickness=0,
         )
-        self._lamp_canvas.pack(side=tk.LEFT, padx=4)
+        self._lamp_canvas.grid(row=0, column=1, sticky=tk.W, padx=2, pady=2)
         self._lamp_items: list[int] = []
         for index in range(4):
             left = 4 + index * 30
@@ -677,19 +749,171 @@ class BconSetup:
                     outline="#4D4D4D",
                 )
             )
-        self._imu_label = ttk.Label(row_player, text="IMU: 未受信")
-        self._imu_label.pack(side=tk.LEFT, padx=(8, 0))
-        self._vib_label = ttk.Label(row_player, text="振動: 未受信")
-        self._vib_label.pack(side=tk.LEFT, padx=4)
+        self._imu_label = ttk.Label(grp_state, text="IMU: 未受信")
+        self._imu_label.grid(row=1, column=0, sticky=tk.W, padx=2, pady=2)
+        self._vib_label = ttk.Label(grp_state, text="振動: 未受信")
+        self._vib_label.grid(row=1, column=1, sticky=tk.W, padx=2, pady=2)
 
-        self._log = tk.Text(
+        grp_color = ttk.LabelFrame(
             col_info,
+            text="本体色（RRGGBB）",
+            padding=8,
+        )
+        grp_color.pack(fill=tk.X, pady=(0, 8))
+        self._colors: list[Any] = []
+        color_entries: list[Any] = []
+        # タブでは 4 欄を 2x2 に並べる（横 1 列だと情報列で最も幅を取る）。
+        slots = ttk.Frame(grp_color)
+        slots.grid(row=0, column=0, columnspan=2, sticky=tk.EW, padx=2, pady=2)
+        per_row = 2 if embedded else len(COLOR_SLOT_NAMES)
+        for index, (slot, default) in enumerate(zip(COLOR_SLOT_NAMES, COLOR_DEFAULTS)):
+            r, c = divmod(index, per_row)
+            ttk.Label(slots, text=slot).grid(
+                row=r,
+                column=c * 2,
+                padx=(6 if c == 0 else 2, 0),
+                sticky=tk.W,
+            )
+            var = tk.StringVar(value=default)
+            entry = ttk.Entry(slots, width=8, textvariable=var)
+            entry.grid(row=r, column=c * 2 + 1, padx=2, pady=1)
+            self._colors.append(var)
+            color_entries.append(entry)
+        self._color_canvas = tk.Canvas(
+            grp_color,
+            width=96,
+            height=20,
+            highlightthickness=0,
+        )
+        self._color_canvas.grid(row=1, column=0, sticky=tk.W, padx=2, pady=2)
+        self._color_items: list[int] = []
+        for index in range(4):
+            left = 2 + index * 24
+            self._color_items.append(
+                self._color_canvas.create_rectangle(
+                    left, 2, left + 20, 18, fill="#000000", outline="#4D4D4D"
+                )
+            )
+        for entry, var in zip(color_entries, self._colors):
+            entry.bind("<KeyRelease>", lambda _e: self._refresh_color_preview())
+            var.trace_add("write", lambda *_a: self._refresh_color_preview())
+        self._btn_color = ttk.Button(
+            grp_color,
+            text="色を送る",
+            command=self._on_color,
+        )
+        self._btn_color.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._refresh_color_preview()
+        if embedded:
+            # タブは起動時に作られ、線が開く前から居る。開いた後で最初に
+            # 表示された時に問う（別窓は従来どおり開いた時に問う）。
+            self.window.bind("<Map>", self._on_tab_mapped, add="+")
+        else:
+            self._query_color_on_open()
+
+        grp_baud = ttk.LabelFrame(col_info, text="通信速度", padding=8)
+        grp_baud.pack(fill=tk.X, pady=(0, 8))
+        grp_baud.columnconfigure(1, weight=1)
+        ttk.Label(grp_baud, text="baud").grid(
+            row=0,
+            column=0,
+            sticky=tk.W,
+            padx=2,
+            pady=2,
+        )
+        self._baud_var = tk.StringVar(value=BAUD_DISPLAY_LABELS[BAUD_DEFAULT_INDEX])
+        self._baud_cb = ttk.Combobox(
+            grp_baud,
+            width=8,
+            state="readonly",
+            textvariable=self._baud_var,
+            values=[BAUD_DISPLAY_LABELS[i] for i in sorted(BAUD_TABLE)],
+        )
+        self._baud_cb.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._btn_baud = ttk.Button(
+            grp_baud,
+            text="速度を変更",
+            command=self._on_baud,
+        )
+        self._btn_baud.grid(row=0, column=2, sticky=tk.EW, padx=2, pady=2)
+
+        grp_log = ttk.LabelFrame(col_info, text="ログ", padding=8)
+        grp_log.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        log_frame = ttk.Frame(grp_log)
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+        self._log = tk.Text(
+            log_frame,
             height=8 if embedded else 16,
             # タブでは列の幅に合わせて伸びるので、要求幅は小さくしておく。
             width=36 if embedded else 72,
             state=tk.DISABLED,
         )
-        self._log.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        self._log.grid(row=0, column=0, sticky=tk.NSEW)
+        log_scroll = ttk.Scrollbar(
+            log_frame, orient=tk.VERTICAL, command=self._log.yview
+        )
+        log_scroll.grid(row=0, column=1, sticky=tk.NS)
+        self._log.configure(yscrollcommand=log_scroll.set)
+
+        # ボタン面から外した用語と注意は吹き出しへ移す（面の文言を短く保つ）。
+        Tooltip(
+            self._btn_connect,
+            "STATE を止めて HELLO を送り、通ったら live を起こす。",
+        )
+        Tooltip(
+            self._btn_status,
+            "STATUS_REQ を送り、flags と PLAYER_INFO を読む。",
+        )
+        Tooltip(self._btn_ping, "PING を送り、PONG の往復時間を見る。")
+        Tooltip(
+            self._btn_cap,
+            "CAPTURE_START。指定秒数だけ実機コントローラの入力を取り込み保存する。",
+        )
+        Tooltip(
+            self._btn_beacon,
+            "BEACON_START。保存済みの入力を再生する。成否は PLAYER_INFO の保存済みで判断する。",
+        )
+        Tooltip(
+            self._btn_reconnect,
+            "待機中の Pico に Switch への再接続を試させる（T_RECONNECT）。",
+        )
+        Tooltip(
+            self._btn_w1,
+            "WIRED_MODE=1。USB 直結（無線は止まる）。約0.5秒後に再起動。",
+        )
+        Tooltip(
+            self._btn_w0,
+            "WIRED_MODE=0。Bluetooth。約0.5秒後に再起動。",
+        )
+        Tooltip(
+            self._btn_winfo,
+            "STATUS の有線フラグを見て、今の方式を表示する。",
+        )
+        Tooltip(self._btn_e0, "EMULATE_MODE=0。再起動後に反映。")
+        Tooltip(self._btn_e1, "EMULATE_MODE=1。再起動後に反映。")
+        Tooltip(self._btn_e2, "EMULATE_MODE=2。再起動後に反映。")
+        Tooltip(
+            self._btn_bootsel,
+            "BOOTSEL へ入る。再起動後は COM が外れる。",
+        )
+        Tooltip(
+            self._btn_clear,
+            "KEY_DELETE。BEACON 相当と Classic 鍵を破棄する。Switch 側の登録解除も必要。",
+        )
+        Tooltip(
+            self._btn_keys,
+            "KEY_DELETE。Pico 側のリンク鍵を全削除する。Switch 側の登録解除も必要。",
+        )
+        Tooltip(
+            self._btn_color,
+            "COLOR_SET。4欄の色を送る。再接続後に反映。",
+        )
+        Tooltip(
+            self._btn_baud,
+            "選んだ速度へ切り替える。失敗時は元の速度へ戻る。",
+        )
         if embedded:
             self._reflow_columns()
 
@@ -777,6 +1001,7 @@ class BconSetup:
             self._btn_connect,
             self._btn_cap,
             self._btn_beacon,
+            self._btn_reconnect,
             self._btn_status,
             self._btn_ping,
             self._btn_winfo,
@@ -792,6 +1017,10 @@ class BconSetup:
             self._btn_color,
         ):
             btn.configure(state=state)
+        # 実行中の表示だけ別に置く。__new__素体の検査は持たないため getattr。
+        label = getattr(self, "_busy_label", None)
+        if label is not None:
+            label.configure(text="実行中…" if busy else "")
 
     def _append(self, text: str) -> None:
         try:
@@ -1476,7 +1705,7 @@ class BconSetup:
         pre_status（送出前のSTATUS写し）があれば前後差分で今回の可否を
         判定する。差分が無ければ粘着扱いで受け付け扱いにする。有線中の
         CAPTURE / BEACON は 0x10 / 0x11 で拒否されるため、有線なら
-        W0無線＋再起動の案内を添える。
+        「無線にする」＋再起動の案内を添える。
         """
         try:
             request = getattr(transport, "request_status", None)
@@ -1537,9 +1766,11 @@ class BconSetup:
                 return
         note = f"{what}は拒否されました（{describe_bcon_errcode(errcode)}）。"
         if wired and errcode in (0x10, 0x11):
-            note += "有線中のため拒否されます。先にW0無線へ切り替え、再起動後に再HELLOからやり直してください。"
+            note += "有線中のため拒否されます。先に「無線にする」で切り替え、再起動後に「接続」からやり直してください。"
         if what == "BEACON" and errcode == 0x11:
-            note += "前提: W0無線起動・Switch未接続・取込窓内でのHOME長押しが必要です"
+            note += (
+                "前提: 無線モードで起動・Switch未接続・取込窓内でのHOME長押しが必要です"
+            )
         note += format_status_block(status)
         self._queue.put(("log", note))
 
@@ -1586,7 +1817,7 @@ class BconSetup:
                 (
                     "log",
                     f"CAPTURE_START {seconds}s を送ります。範囲外は送りません。"
-                    "前提: W0無線起動・Switch未接続・取込窓内でのHOME長押しが必要です",
+                    "前提: 無線モードで起動・Switch未接続・取込窓内でのHOME長押しが必要です",
                 )
             )
             # 送出前の写しを先に取る。線に触れない。口が無ければNone。
@@ -1765,7 +1996,7 @@ class BconSetup:
                     "有線へ切り替えました。Flash保存・約500ms後自発再起動します。"
                     "再起動中のSTATE送出は止め、復帰後に再HELLOからやり直してください。"
                     "有線起動では無線一式を上げません。有線中の取込・BEACON要求は"
-                    "0x10 / 0x11 で拒否されます。撮り直し・再生はW0無線＋再起動が必要です。",
+                    "0x10 / 0x11 で拒否されます。撮り直し・再生は「無線にする」＋再起動が必要です。",
                 )
             )
 
@@ -1943,8 +2174,8 @@ class BconSetup:
             transport = self._require_bcon()
             if transport is None:
                 return
-            # X破棄は BEACON無効化相当である。bcon に破棄専用フレームは無く、
-            # 最も近い KEY_DELETE（Classic鍵全削除）で賄う。K鍵削除と同じ線を
+            # 「取込を破棄」は BEACON無効化相当である。bcon に破棄専用フレームは無く、
+            # 最も近い KEY_DELETE（Classic鍵全削除）で賄う。「ペア鍵を全削除」と同じ線を
             # 送るが、案内は破棄側に寄せる。
             if not send_config_frame(transport, T_KEY_DELETE, b""):
                 self._queue.put(("log", "送信に失敗しました。"))

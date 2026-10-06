@@ -643,11 +643,11 @@ def test_player_info_rebinds_on_transport_replace_and_skips_legacy() -> None:
 @pytest.mark.parametrize(
     ("post_errcode", "post_flags", "expect_w0", "expect_type_name", "what"),
     [
-        # 有線中0x10→W0無線の案内あり。
+        # 有線中0x10→「無線にする」の案内あり。
         pytest.param(0x10, 0x20, True, "CAPTURE", "取込", id="wired-0x10"),
-        # 有線中0x11→W0無線の案内あり。
+        # 有線中0x11→「無線にする」の案内あり。
         pytest.param(0x11, 0x20, True, "BEACON", "BEACON", id="wired-0x11"),
-        # 無線ならW0文なし。
+        # 無線なら案内なし。
         pytest.param(0x10, 0x00, False, "CAPTURE", "取込", id="wireless-0x10"),
     ],
 )
@@ -700,11 +700,11 @@ def test_config_result_detects_fresh_reject(
     assert expect_type_name in text
     # describe_bcon_errcodeの説明文を保つ（直書きにしない）。
     assert describe_bcon_errcode(post_errcode) in text
-    # 有線中の0x10/0x11だけW0無線への案内を添える。
+    # 有線中の0x10/0x11だけ「無線にする」ボタンへの案内を添える。
     if expect_w0:
-        assert "W0無線" in text
+        assert "「無線にする」" in text
     else:
-        assert "W0" not in text
+        assert "無線にする" not in text
     # STATUS全体を末尾に添える。
     assert text.endswith(format_status_block(post_status))
     # pre起点の新規検出であること: post側の値（err_drop=6・last_seq=11）が載る。
