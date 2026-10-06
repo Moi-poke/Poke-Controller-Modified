@@ -26,6 +26,24 @@ from ui.controller_dock import ControllerDock
 _STATUS_FLAG_WIRED = 0x20
 
 
+#: 文字を打つ部品の Tk クラス名。ここにフォーカスがある間は、打鍵を
+#: コントローラーへ送らない（検索語がボタン操作として Switch へ届く）。
+_TEXT_INPUT_CLASSES = frozenset(
+    {"Entry", "TEntry", "Spinbox", "TSpinbox", "TCombobox", "Text"}
+)
+
+
+def _is_text_input(widget: Any) -> bool:
+    """文字を打てる状態の入力欄か。読み取り専用・無効なら False。"""
+    try:
+        if widget is None or widget.winfo_class() not in _TEXT_INPUT_CLASSES:
+            return False
+        state = str(widget.cget("state"))
+    except (tk.TclError, AttributeError):
+        return False
+    return state not in ("disabled", "readonly")
+
+
 class SerialPanelMixin:
     """シリアルパネルMixin。単体では使わない。"""
 
@@ -976,7 +994,12 @@ class SerialPanelMixin:
 
         部品間の移動でも来るが、立てるだけなので無害。実体が無い
         ときの作り直し（切断後の復帰用）は従来どおり残す。
+        文字入力欄（ログの検索欄など）に入ったときは下ろす。打った
+        文字がそのままコントローラーの操作として送られてしまうため。
         """
+        if _is_text_input(getattr(event, "widget", None)):
+            self._kb_window_active.clear()
+            return
         self._kb_window_active.set()
         if self.serial.keyboard is not None:
             return
@@ -1002,7 +1025,8 @@ class SerialPanelMixin:
     def _syncKeyboardFocus(self) -> None:
         """遅延判定：いま窓内のどこにも無ければ下ろす。"""
         try:
-            focused = self.root.focus_get() is not None
+            widget = self.root.focus_get()
+            focused = widget is not None and not _is_text_input(widget)
         except Exception:
             focused = False
         if focused:
