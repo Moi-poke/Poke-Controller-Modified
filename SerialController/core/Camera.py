@@ -624,6 +624,7 @@ class Camera:
         read_avg = 0.0  # read() 所要時間の指数移動平均(秒)
         slow = 0  # 想定(interval)の2倍以上かかった回数
         frames = 0
+        due: float | None = None  # 次の取込の期限（積み上げ式）
 
         while not stop_event.is_set():
             # 旧世代は即座に抜ける（次 open の新デバイスを読まない）。
@@ -682,6 +683,7 @@ class Camera:
                     if interval > READ_FAILURE_FLOOR_S
                     else READ_FAILURE_FLOOR_S
                 )
+                due = None  # 復帰後に溜まった期限ぶん連射しない
                 if stop_event.wait(floor):
                     break
                 continue
@@ -695,10 +697,20 @@ class Camera:
 
             # read がカメラ周期ぶん待っている場合、その上さらに待つと
             # 取りこぼす。カメラのほうが速いときだけ差分を待つ。
+            # 期限は「前回の期限 + interval」で積み上げる。「今回の開始 +
+            # interval」だと待機の寝過ごし（Windows で 1ms 前後）が毎周期
+            # 足され、fps=60 が 57fps 程度に落ちていた（実測 2026-10-04）。
             if read_avg < interval:
-                rest = interval - (time.perf_counter() - started)
+                due = started + interval if due is None else due + interval
+                now = time.perf_counter()
+                # 大きく遅れたら基準を取り直す。追いつこうと連射しない。
+                if due < now - interval:
+                    due = now
+                rest = due - now
                 if rest > 0 and stop_event.wait(rest):
                     break
+            else:
+                due = None
 
         logger.debug("Camera thread stopped")
 
