@@ -150,6 +150,15 @@ class PokeControllerApp(
 
         # 標準出力をログエリアにリダイレクト
         sys.stdout = LogPane.QueueStdoutRedirector(self.logArea)
+        # logger の ERROR 以上もログ欄へ（ファイルにしか出ず、画面では
+        # 「止まった」としか分からなかった失敗を見せる）。print と同じ
+        # 失敗を二重に出す箇所は logger.bind(gui=False) で外す。
+        logger.add(
+            LogPane.logger_sink,
+            level="ERROR",
+            format="{message}",
+            filter=lambda record: record["extra"].get("gui", True),
+        )
         self._display_after_id: Any = self.logArea.after(
             LogPane.FLUSH_INTERVAL_MS, self.display_text
         )
@@ -453,6 +462,8 @@ class PokeControllerApp(
 
         # 入力ログの表示。settings.ini の [Input Log] enabled と対にする
         self.show_input_log.set(self.settings.input_log_enabled.get())
+        # ログ欄の表示（時刻・折り返し・まとめ・集約）。[Log View] と対にする
+        self._load_log_view_settings(self.settings)
         # 表示フィルタのパラメータ（ON/OFFは持たず起動時は常にOFF）。
         self._applyFilterSettings()
 
@@ -735,6 +746,7 @@ class PokeControllerApp(
         self.settings.filt_upper_v.set(int(filt["upper"][2]))
         self.settings.filt_mode.set(str(filt["mode"]))
         self.settings.input_log_enabled.set(self.show_input_log.get())
+        self._store_log_view_settings(self.settings)
         # 通信方式。起動引数で一時的に替えている場合も、
         #   画面に出ている値＝実際に使っている値なのでそのまま保存する。
         self.settings.transport_name.set(self.transport_name.get())

@@ -6,7 +6,6 @@ import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -60,10 +59,22 @@ def _state(step, host):
     }
 
 
-def _reset_to_top(host, root):
-    for area in _areas(host):
-        area.see("1.0")
+def _to_bottom(host, root):
+    for view in (host.logView, host.pinView, host.inputView):
+        view.scroll_to_end()
     root.update_idletasks()
+
+
+def _reset_to_top(host, root):
+    # 利用者が上へ読みに行く操作を、各欄が見えている状態で行う
+    # （入力欄は別タブ。見えていない欄は人がスクロールできない）。
+    for index, area in enumerate(_areas(host)):
+        host.log_nb.select(1 if index == 2 else 0)
+        root.update()
+        area.see("1.0")
+        root.update()
+    host.log_nb.select(0)
+    root.update()
 
 
 def _append(host, root, logpane, step, sentinels):
@@ -107,7 +118,15 @@ def _teardown(root, host):
 
 
 def _assert_end(areas, sentinels, label):
-    for area, sentinel in zip(areas, sentinels):
+    # 入力欄は別タブにある。見えていない Text の yview は測れないので、
+    # 利用者と同じくタブを開いてから確かめる。
+    for index, (area, sentinel) in enumerate(zip(areas, sentinels)):
+        notebook = area.master
+        while notebook is not None and notebook.winfo_class() != "TNotebook":
+            notebook = notebook.master
+        assert notebook is not None, "ログ欄のノートが見つかりません"
+        notebook.select(1 if index == 2 else 0)
+        area.update()
         assert sentinel in area.get("1.0", "end-1c")
         assert area.yview()[1] >= 0.999, f"{label} yview={area.yview()[1]:.6f}"
 
@@ -124,12 +143,14 @@ def _run_scenario(scenario, host, root, logpane, rows):
     match scenario:
         case 0:
             sentinels = ("primary-sentinel", "sub-sentinel", "input-sentinel")
-            _reset_to_top(host, root)
-            rows.append(_state("above-bottom", host))
+            # 末尾で読んでいる間は追従する（上へ読みに行った場合は case 1）。
+            _to_bottom(host, root)
+            rows.append(_state("at-bottom", host))
             rows.append(_append(host, root, logpane, "after-queued-append", sentinels))
             _assert_end(areas, sentinels, "follow-on")
         case 1:
-            host.log_autoscroll.set(False)
+            # 追従の切り替えは人が操作する物ではなくなった（2026-10）。
+            # 上へ読みに行けば止まり、新着ボタン（scroll_to_end）で戻る。
             off = ("off-primary", "off-sub", "off-input")
             resume = ("resume-primary", "resume-sub", "resume-input")
             _reset_to_top(host, root)
@@ -138,7 +159,9 @@ def _run_scenario(scenario, host, root, logpane, rows):
             after = _append(host, root, logpane, "after-follow-off", off)
             rows.append(after)
             _assert_preserved(before, after)
-            host.log_autoscroll.set(True)
+            for view in (host.logView, host.pinView, host.inputView):
+                view.scroll_to_end()
+            root.update_idletasks()
             rows.append(_append(host, root, logpane, "after-follow-on", resume))
             _assert_end(areas, resume, "resume-to-bottom")
         case 2:
@@ -152,7 +175,7 @@ def _run_scenario(scenario, host, root, logpane, rows):
             logpane.trim(host.logArea)
             host.logArea.configure(state="disabled")
             assert int(host.logArea.index("end-1c").split(".")[0]) == logpane.MAX_LINES
-            _reset_to_top(host, root)
+            _to_bottom(host, root)
             sentinels = ("adjacent-primary", "adjacent-sub", "adjacent-input")
             rows.append(_append(host, root, logpane, "clear-append-trim", sentinels))
             _assert_end(areas, sentinels, "adjacent-controls")
@@ -172,30 +195,19 @@ def _child_main() -> int:
     host = None
     status, error = "failed", ""
     try:
-        import LogPane
-        from ui.log_panel import LogPanelMixin
+        from log_view_support import make_host, pump, reset_queues
 
-        LogPane.text_queue = LogPane.DropOldestQueue()
-        LogPane.sub_log_queue = LogPane.DropOldestQueue()
-        LogPane.input_log_queue = LogPane.DropOldestQueue()
+        LogPane = reset_queues()
         root = tk.Tk()
         root.geometry("700x500+0+0")
-        areas = []
-        for label in ("text", "sub", "input"):
-            area = tk.Text(root, width=80, height=10, wrap="none")
-            area.pack(fill="both", expand=True)
-            area.insert("end", "".join(f"{label}-{i}\n" for i in range(100)))
-            area.configure(state="disabled")
-            areas.append(area)
-        host = SimpleNamespace()
-        host.logArea, host.subLogArea, host.inputLogArea = areas
-        host.log_autoscroll = tk.BooleanVar(master=root, value=True)
-        host.show_input_log = tk.BooleanVar(master=root, value=True)
-        host._closing, host._display_after_id = False, None
-        host.serial = SimpleNamespace(is_open=lambda: False)
+        host = make_host(root)
         host.cancelled_after_ids = []
-        host.display_text = lambda: LogPanelMixin.display_text(host)
-        host._log_video_stats = lambda: None
+        # 各欄を1画面より長くしておく（上へ読みに行ける状態にする）。
+        for i in range(100):
+            LogPane.text_queue.put(f"text-{i}\n")
+            LogPane.sub_log_queue.put(f"sub-{i}\n")
+            LogPane.input_log_queue.put(f"input-{i}\n")
+        pump(host, root)
         _run_scenario(scenario, host, root, LogPane, rows)
         status = "passed"
     except BaseException as exc:  # noqa: BLE001 - child evidence boundary

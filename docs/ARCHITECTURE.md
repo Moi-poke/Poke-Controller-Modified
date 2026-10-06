@@ -97,6 +97,9 @@ import しない。逆向きの依存は [`tools/check_core.py`](../tools/check_
 
 `loguru` でファイル（`log/`）と標準出力へ出す。GUI のログ欄は
 キュー経由で描画する（ワーカースレッドから widget を触らない）。
+ERROR 以上は GUI のログ欄にも流す（`LogPane.logger_sink`）。print と
+二重になる箇所は `logger.bind(gui=False)` でファイルだけに残す。
+ログ欄の形と各部の役割は [LOG_VIEW.md](LOG_VIEW.md)。
 
 ## 検証の考え方
 

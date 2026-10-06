@@ -118,6 +118,18 @@ def default_sections() -> dict[str, dict[str, Any]]:
             # 空なら書式ごとの既定に従う（command は RELEASE のみ）。
             "actions": "",
         },
+        "Log View": {
+            # ログ欄の表示。絞り込み（どの水準を出すか）は保存しない
+            # （次の起動で「行が出ない」と迷わせないため）。
+            # 各行の先頭に時刻（時:分:秒.ミリ秒）を出す
+            "show_time": True,
+            # 長い行を欄の幅で折り返す（False なら横スクロール）
+            "wrap": True,
+            # 同じ行の連続を1行にまとめて「×N」を添える
+            "group_similar": True,
+            # エラーと警告を下の欄（結果とエラー）にも集める
+            "collect_problems": True,
+        },
         "Transport": {
             # 通信方式のプリセット名。Transport.py の登録簿にある名前。
             # 組み込みは legacy_text（従来と同じテキスト行）・switch-bcon。

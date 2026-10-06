@@ -93,9 +93,29 @@ text_queue: queue.Queue = DropOldestQueue()
 # 溢れてもコマンドの出力は失われないようにする。
 input_log_queue: queue.Queue = DropOldestQueue()
 
-# 副ログ（ログタブの下側）用のキュー。print と混ぜないことで、
-# 「残しておきたい結果」が通常の進捗表示に押し流されないようにする。
-sub_log_queue: queue.Queue = DropOldestQueue()
+
+class ResultForwardQueue(DropOldestQueue):
+    """print2 の受け口。中身は持たず、水準「結果」の行として text_queue へ回す。
+
+    結果は上の欄（時系列）と下の欄（残す一覧）の両方に出す。キューを
+    別に持つと、取り出しの周期（200ms）の中で print との前後が崩れ、
+    下の欄から上の欄へ飛んだ先が実際の時点とずれる。print と同じ
+    キューへ同じ順で入れれば、前後は書いた順のまま保たれる。
+    行き先は put の時点の text_queue（テストで差し替えても追従する）。
+    """
+
+    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
+        if isinstance(item, str):
+            from core.log_model import entries_for
+
+            for entry in entries_for(item, "result", "all"):
+                text_queue.put(entry)
+        else:
+            text_queue.put(item)
+
+
+# 副ログ（print2）の受け口。PythonCommandBase._subLogQueue が参照する名前。
+sub_log_queue: queue.Queue = ResultForwardQueue()
 
 
 def queues_idle_hint() -> bool:
@@ -124,6 +144,24 @@ def queues_idle_hint() -> bool:
             except Exception:
                 return False
     return True
+
+
+class StampedLine(str):
+    """書かれた時刻を持つ文字列。比較や連結は普通の str と同じ。
+
+    ログ欄の時刻は「画面に出た時刻」ではなく「書かれた時刻」にしたい。
+    描画は 200ms ごとにまとめて行うので、取り出した時点で時刻を付けると
+    最大 200ms ずれ、print2 や logger（書いた時点で時刻を持つ）と前後が
+    食い違って見える。str の派生にしておけば、キューの中身を文字列として
+    扱う既存の受け手はそのまま動く。
+    """
+
+    ts: float
+
+    def __new__(cls, text: str, ts: float) -> StampedLine:
+        obj = super().__new__(cls, text)
+        obj.ts = ts
+        return obj
 
 
 class QueueStdoutRedirector:
@@ -176,8 +214,9 @@ class QueueStdoutRedirector:
                     self._partial = ""
             if not self._partial:
                 self._partial_since = None
+        now = time.time()
         for line in lines:
-            self.buffer.put(line)
+            self.buffer.put(StampedLine(line, now))
 
     def flush(self) -> None:
         # 改行なしで残った部分行を出す。無ければ何もしない。
@@ -186,7 +225,7 @@ class QueueStdoutRedirector:
             pending, self._partial = self._partial, ""
             self._partial_since = None
         if pending:
-            self.buffer.put(pending)
+            self.buffer.put(StampedLine(pending, time.time()))
 
 
 def emitInputLog(text: str) -> None:
@@ -196,7 +235,7 @@ def emitInputLog(text: str) -> None:
     ウィジェットを触ってはいけない（tkinter はスレッドセーフでない）。
     キューへ入れるだけにして、描画は GUI スレッドが行う。
     """
-    input_log_queue.put(text + "\n")
+    input_log_queue.put(StampedLine(text + "\n", time.time()))
 
 
 def trim(area: tk.Text) -> None:
@@ -243,6 +282,46 @@ def flushQueue(q: queue.Queue, area: tk.Text, autoscroll: bool = True) -> None:
     if autoscroll:
         area.see("end")
     area.configure(state="disabled")
+
+
+def drain(q: queue.Queue, limit: int = FLUSH_MAX_LINES) -> tuple[list[Any], int]:
+    """キューから最大 limit 件を取り出す。(取り出した物, 捨てた件数) を返す。
+
+    中身は文字列（print・print2・入力ログ）か LogEntry（logger など、
+    水準が決まっている物）。どちらで来ても描画側（ui/log_panel.py）が
+    LogEntry へそろえる。
+    """
+    items: list[Any] = []
+    while len(items) < limit:
+        try:
+            items.append(q.get_nowait())
+        except queue.Empty:
+            break
+    dropped = q.take_dropped() if isinstance(q, DropOldestQueue) else 0
+    return items, dropped
+
+
+def logger_sink(message: Any) -> None:
+    """loguru の出力先。ERROR 以上をログ欄（上の欄）へ流す。
+
+    従来、コマンドの実行基盤（services/command_runner.py 等）で起きた
+    失敗は logger.error でファイルにしか出ず、画面では「止まった」こと
+    しか分からなかった。水準つきで流し、下の欄へも集める。
+    どのスレッドから呼ばれてもよい（キューへ入れるだけ）。例外は出さない。
+    """
+    try:
+        from core.log_model import entries_for
+
+        record = message.record
+        level = "error" if record["level"].no >= 40 else "warning"
+        text = str(record["message"])
+        exc = record["exception"]
+        if exc is not None and exc.type is not None:
+            text += f"\n{exc.type.__name__}: {exc.value}"
+        for entry in entries_for(text, level, "first", record["time"].timestamp()):
+            text_queue.put(entry)
+    except Exception:
+        pass
 
 
 def clearAreas(areas: list) -> None:

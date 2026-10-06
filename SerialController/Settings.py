@@ -109,6 +109,17 @@ class GuiSettings:
             value=input_log.get("actions", fallback="")
         )
 
+        # ログ欄の表示（時刻・折り返し・まとめ・下の欄への集約）
+        log_view = self.setting["Log View"]
+        self.log_show_time = tk.BooleanVar(value=log_view.getboolean("show_time"))
+        self.log_wrap = tk.BooleanVar(value=log_view.getboolean("wrap"))
+        self.log_group_similar = tk.BooleanVar(
+            value=log_view.getboolean("group_similar")
+        )
+        self.log_collect_problems = tk.BooleanVar(
+            value=log_view.getboolean("collect_problems")
+        )
+
         # 通信方式（Transport）のプリセット。
         # 名前だけを持つ。実装の対応表は Transport.py の登録簿にある。
         # 知らない名前でも黙って直さない。ここは設定ファイルの内容を
@@ -363,6 +374,14 @@ class GuiSettings:
                 "enabled": self.input_log_enabled.get(),
                 "log_stick_change": self.input_log_stick_change.get(),
                 "actions": self.input_log_actions.get(),
+            }
+        )
+        self.setting["Log View"] = self._str_values(
+            {
+                "show_time": self.log_show_time.get(),
+                "wrap": self.log_wrap.get(),
+                "group_similar": self.log_group_similar.get(),
+                "collect_problems": self.log_collect_problems.get(),
             }
         )
         self.setting["Transport"] = {

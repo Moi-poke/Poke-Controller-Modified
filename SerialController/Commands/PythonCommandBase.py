@@ -154,7 +154,11 @@ class PythonCommand(CommandBase.Command, OperateMixin, DialogMixin):
             print("--------------------------------")
 
             print(traceback.format_exc(limit=self.traceback_limit))
-            logger.error(traceback.format_exc(limit=self.traceback_limit))
+            # 画面には直前の print で出したので、ファイルにだけ残す
+            # （logger の ERROR はログ欄へも流れるため、二重になる）。
+            logger.bind(gui=False).error(
+                traceback.format_exc(limit=self.traceback_limit)
+            )
             print("--------------------------------")
 
             # ここで finish() を呼ぶと self.keys.ser を触るため、
