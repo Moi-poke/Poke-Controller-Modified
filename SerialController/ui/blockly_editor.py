@@ -184,6 +184,7 @@ def _run_state(since: int) -> dict[str, Any]:
             "error": "",
             "errorBlock": "",
             "logs": [],
+            "vars": [],
         }
     else:
         state = trial.session.snapshot(since)

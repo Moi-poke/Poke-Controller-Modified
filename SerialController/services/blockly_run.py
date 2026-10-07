@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import builtins
 import collections
+import sys
 import threading
 from typing import Any
 
@@ -36,6 +37,15 @@ MAX_LOG_LINES = 500
 
 #: 読み込み時のモジュール名（トレースバックに出る）。
 _MODULE_NAME = "pokecon_blockly_trial"
+
+#: 変数欄に出す件数の上限（名前順で先頭から）。
+_VARS_MAX = 50
+
+#: 変数の表示値（repr）の上限文字数。超えたら末尾に … を付ける。
+_VARS_REPR_MAX = 80
+
+#: 変数欄に出せる値の型（命令・型・関数・モジュール等は出さない）。
+_VARS_TYPES = (bool, int, float, str, list, tuple, dict)
 
 
 class TrialSession:
@@ -62,6 +72,8 @@ class TrialSession:
         self.result = ""
         self.error = ""
         self.error_block = ""
+        #: 変数の今の値（表示用の文字列）。目印を通るたびに丸ごと差し替える。
+        self.variables: dict[str, str] = {}
         #: 目印を通るたびに呼ぶ（検証用の差し口）。
         self.on_step: Any = None
         self._lock = threading.Lock()
@@ -115,6 +127,7 @@ class TrialSession:
             "error": self.error,
             "errorBlock": self.error_block,
             "logs": [list(item) for item in self.logs_since(int(since))],
+            "vars": [[name, self.variables[name]] for name in sorted(self.variables)],
         }
 
     # -- 作業スレッドから呼ばれる ---------------------------------------------
@@ -122,6 +135,15 @@ class TrialSession:
     def step(self, cmd: Any, block_id: Any) -> None:
         """目印の本体。今のブロックを記録し、止まる指示があれば止まる。"""
         self.block_id = str(block_id)
+        try:
+            caller = sys._getframe(1)
+        except ValueError:
+            caller = None
+        if caller is not None:
+            try:
+                self._refresh_variables(caller.f_globals, caller.f_locals)
+            finally:
+                del caller
         hook = self.on_step
         if hook is not None:
             hook(self.block_id)
@@ -137,6 +159,38 @@ class TrialSession:
             gate()
         else:
             cmd.checkIfAlive()
+
+    def _refresh_variables(
+        self, f_globals: dict[Any, Any], f_locals: dict[Any, Any]
+    ) -> None:
+        """呼び出し元（do やサブルーチン）の変数を集めて丸ごと差し替える。
+
+        読み手のスレッドは代入の前後どちらかを見るだけのため錠は要らない。
+        集める処理で例外が出ても実行は止めない（前回の値のままにする）。
+        """
+        try:
+            raw: dict[str, Any] = {}
+            for source in (f_globals, f_locals):
+                for name, value in source.items():
+                    if not isinstance(name, str):
+                        continue
+                    if name.startswith("_") or name == "self":
+                        continue
+                    if value is None or isinstance(value, _VARS_TYPES):
+                        raw[name] = value
+            shown: dict[str, str] = {}
+            for name in sorted(raw)[:_VARS_MAX]:
+                try:
+                    text = repr(raw[name])
+                except Exception:
+                    continue
+                if len(text) > _VARS_REPR_MAX:
+                    text = text[:_VARS_REPR_MAX] + "…"
+                shown[name] = text
+            self.variables = shown
+        except Exception:
+            # 表示のための収集で実行を止めない（前回の値のまま）。
+            pass
 
 
 def build_trial_class(
