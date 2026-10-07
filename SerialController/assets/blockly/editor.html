@@ -16,7 +16,19 @@
 :root {
   --bg: #f4f5f7; --panel: #fff; --line: #d6d9de; --text: #1f2328; --muted: #5c636b;
   --accent: #1a66d2; --accent-ink: #fff; --warn: #9a5b00; --err: #b3261e; --err-bg: #fdecea;
+  --hover: #eef2f7; --select: #e8f0fe; --accent-hover: #1557b3; --kbd-bg: #fafafa; --dim-hi: #fff3cd;
 }
+/* 暗い配色（⋯メニューの切替・画面設定・OS の設定で選ぶ）。ブロックの色は変えない。 */
+html[data-theme="dark"] {
+  --bg: #1b1e22; --panel: #24282e; --line: #4d545e; --text: #e8eaed; --muted: #b3b9c1;
+  --accent: #8ab4f8; --accent-ink: #062e5f; --warn: #fbbc04; --err: #f28b82; --err-bg: #3c1f1d;
+  --hover: #31363d; --select: #35465e; --accent-hover: #aecbfa; --kbd-bg: #31363d; --dim-hi: #5a4a00;
+}
+/* 右欄は元から暗いため、ダーク時は境目が分かるよう枠線だけ足す。 */
+html[data-theme="dark"] #previewwrap { border-left: 1px solid var(--line); }
+html[data-theme="dark"] #previewwrap .panehead { border-bottom-color: var(--line); }
+/* 実行中の緑文字は暗い背景では沈むため、ダーク時は明るい緑にする。 */
+html[data-theme="dark"] #runstate.is-running { color: #6fbf73; }
 html, body { height: 100%; margin: 0; }
 body {
   display: flex; flex-direction: column; color: var(--text); background: var(--bg);
@@ -27,10 +39,10 @@ button {
   min-height: 30px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--panel); cursor: pointer; white-space: nowrap;
 }
-button:hover { background: #eef2f7; }
+button:hover { background: var(--hover); }
 button:disabled { opacity: 0.5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
-button.primary:hover { background: #1557b3; }
+button.primary:hover { background: var(--accent-hover); }
 button.icon { min-width: 32px; padding: 3px 6px; font-size: 15px; }
 input, select { min-height: 28px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); box-sizing: border-box; }
 button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, #splitter:focus-visible, pre:focus-visible {
@@ -82,7 +94,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 #moremenu[hidden] { display: none; }
 #moremenu button { text-align: left; width: 100%; }
-kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: #fafafa; font-size: 12px; }
+kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--kbd-bg); font-size: 12px; }
 #statusline { display: flex; gap: 12px; align-items: baseline; min-height: 20px; padding: 3px 12px; background: var(--bg); border-bottom: 1px solid var(--line); white-space: pre-line; }
 #status { color: var(--text); }
 #stemerror { color: var(--err); font-weight: 600; }
@@ -110,7 +122,7 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #quickbtn:focus-visible, #quickinput:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #quicklist { margin-top: 6px; max-height: 320px; overflow: auto; }
 #quicklist .qrow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
-#quicklist .qrow.on { background: #e8f0fe; outline: 2px solid var(--accent); outline-offset: -2px; }
+#quicklist .qrow.on { background: var(--select); outline: 2px solid var(--accent); outline-offset: -2px; }
 #quicklist .qdot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; background: #999; }
 #quicklist .qlab { flex: 1 1 auto; }
 #quicklist .qcat { color: var(--muted); font-size: 12px; white-space: nowrap; }
@@ -126,7 +138,7 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #newdialoghint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
 #newcards { display: flex; flex-direction: column; gap: 6px; }
 .newcard { text-align: left; white-space: normal; padding: 6px 10px; }
-.newcard.on { background: #e8f0fe; outline: 2px solid var(--accent); outline-offset: -2px; }
+.newcard.on { background: var(--select); outline: 2px solid var(--accent); outline-offset: -2px; }
 .newcard .newname { font-weight: 600; display: block; }
 .newcard .newmeta { color: var(--muted); font-size: 12px; display: block; }
 #newdialogerror { min-height: 1.2em; color: var(--muted); font-size: 12px; white-space: pre-line; }
@@ -175,8 +187,8 @@ button.run:hover { background: #17793a; }
 #legacy .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 0; }
 .blocklyToolboxCategory { padding: 3px 0; }
 #capmodal { display: none; position: fixed; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; overflow: auto; }
-#capmodalbox { background: #fff; margin: 2vh auto; padding: 12px; width: fit-content; max-width: 96vw; border-radius: 8px; }
-#capbigimg { max-width: 90vw; max-height: 66vh; border: 1px solid #999; cursor: crosshair; }
+#capmodalbox { background: var(--panel); margin: 2vh auto; padding: 12px; width: fit-content; max-width: 96vw; border-radius: 8px; }
+#capbigimg { max-width: 90vw; max-height: 66vh; border: 1px solid var(--line); cursor: crosshair; }
 .caphandle { position: absolute; width: 8px; height: 8px; background: #f00; border: 1px solid #fff; display: none; }
 .capdim { position: absolute; background: rgba(0,0,0,0.65); color: #fff; font-size: 11px; padding: 1px 4px; display: none; pointer-events: none; white-space: nowrap; }
 </style>
@@ -214,12 +226,14 @@ button.run:hover { background: #17793a; }
 <button id="fit" role="menuitem" title="すべてのブロックが見えるように表示">全体表示</button>
 <button id="capget" role="menuitem" title="キャプチャから画像テンプレを切り出して保存">📷 テンプレ作成</button>
 <button id="del" role="menuitem" title="選んだ保存物（.py と編集データ）を削除">削除</button>
+<button id="themetoggle" role="menuitemcheckbox" aria-checked="false" title="暗い配色と明るい配色を切り替え（設定は保存されます）">🌙 ダークテーマ</button>
 <details id="help">
 <summary role="menuitem" title="使い方の説明を開く">使い方</summary>
 <div class="helpbody">
 <ul>
 <li>「プログラム」ブロックの中に操作を並べて保存します（<kbd>Ctrl</kbd>+<kbd>S</kbd>）。保存するとPokeConのコマンド一覧に約1秒で出ます。</li>
 <li>⋯ メニューに整列・全体表示・テンプレ作成・削除・使い方があります。</li>
+<li>⋯ メニューの「🌙 ダークテーマ」で暗い配色にできます（選んだ状態は保存され、次回も保たれます）。</li>
 <li>プログラムの外に置いたブロックは灰色になり、実行されません。つなぎ直すと元に戻ります。</li>
 <li>元に戻す <kbd>Ctrl</kbd>+<kbd>Z</kbd>／やり直し <kbd>Ctrl</kbd>+<kbd>Y</kbd>／複製 <kbd>Ctrl</kbd>+<kbd>C</kbd>→<kbd>Ctrl</kbd>+<kbd>V</kbd>／削除 <kbd>Delete</kbd>。右クリックでも操作できます。</li>
 <li>ブロックの右クリックで「このブロックだけ試す」「ここから下を試す」「ここで止める（区切り）」が使えます。「▶ ここまで実行」はプログラム全体を走らせ、そのブロックの手前で1回だけ止めます（繰り返しの中でも2回目以降は止まりません）。</li>
@@ -271,7 +285,7 @@ button.run:hover { background: #17793a; }
 </div>
 <div class="row">
 <span id="capwrap" style="position: relative; display: none;">
-<img id="capimg" alt="キャプチャ" style="max-width: 320px; max-height: 180px; border: 1px solid #999; cursor: crosshair;">
+<img id="capimg" alt="キャプチャ" style="max-width: 320px; max-height: 180px; border: 1px solid var(--line); cursor: crosshair;">
 <div id="caprect" style="position: absolute; border: 2px solid #f00; display: none; pointer-events: none;"></div>
 </span>
 <label>保存名 <input id="capname" value="" placeholder="例: mark"></label>
@@ -282,7 +296,7 @@ button.run:hover { background: #17793a; }
 <!-- 上部の仮想スティック区画は非表示（ブロック内蔵パッドへ移行）。DOMは残す。 -->
 <div id="bar4" style="padding: 0 8px 8px; display: none; gap: 8px; align-items: center; flex-wrap: wrap;">
 <span>スティック</span>
-<span id="stickpad" style="position: relative; display: inline-block; width: 120px; height: 120px; border: 1px solid #999; border-radius: 50%; background: #f4f4f4; cursor: crosshair; touch-action: none;">
+<span id="stickpad" style="position: relative; display: inline-block; width: 120px; height: 120px; border: 1px solid var(--line); border-radius: 50%; background: var(--panel); cursor: crosshair; touch-action: none;">
 <span id="stickdot" style="position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #06c; left: 54px; top: 54px; pointer-events: none;"></span>
 </span>
 <label>L/R <select id="stickside"><option value="LEFT">L</option><option value="RIGHT">R</option></select></label>
@@ -295,7 +309,7 @@ button.run:hover { background: #17793a; }
 <div id="capmodalbox">
 <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
 <span id="capmodalhint">範囲を選択してください（枠内ドラッグで移動・赤い点で大きさ変更・数値でも指定可）</span>
-<span id="capmodelabel" style="color: #666;"></span>
+<span id="capmodelabel" style="color: var(--muted);"></span>
 <button id="capmodalclose">× 閉じる</button>
 </div>
 <div id="capblockrow" style="display: none; gap: 8px; align-items: center; margin-bottom: 8px;">
@@ -321,17 +335,17 @@ button.run:hover { background: #17793a; }
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">y <input id="capy" type="number" step="1" style="width: 5em;"><input id="capry" type="range" min="0" value="0" style="width: 90px;"></span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">幅 <input id="capw" type="number" step="1" style="width: 5em;"><input id="caprw" type="range" min="0" value="0" style="width: 90px;"></span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">高さ <input id="caph" type="number" step="1" style="width: 5em;"><input id="caprh" type="range" min="0" value="0" style="width: 90px;"></span>
-<span style="color: #666; white-space: nowrap;">（実画像の画素・マウスでも上下可）</span>
+<span style="color: var(--muted); white-space: nowrap;">（実画像の画素・マウスでも上下可）</span>
 <span style="display: inline-flex; gap: 8px; align-items: center; white-space: nowrap;"><button id="capretake">取り直す</button><button id="capok">確定</button><button id="capcancel">キャンセル</button></span>
 <span id="capmodalstatus" role="status" aria-live="polite"></span>
 </div>
 <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
-<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">テンプレ <select id="capmatchtpl"></select><span id="capmatchsize" style="color: #666;"></span></span>
+<span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">テンプレ <select id="capmatchtpl"></select><span id="capmatchsize" style="color: var(--muted);"></span></span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">しきい値 <input id="capth" type="number" step="0.01" min="0" max="1" value="0.7" style="width: 5em;"><input id="caprth" type="range" min="0" max="1" step="0.01" value="0.7" style="width: 120px;"></span>
 <label style="white-space: nowrap;"><input type="checkbox" id="capgray" checked> グレー</label>
 <label style="white-space: nowrap;"><input type="checkbox" id="caproionly"> 赤枠内のみ</label>
 <span id="capmatchstatus" role="status" aria-live="polite"></span>
-<span id="capmatchcrop" style="color: #666;"></span>
+<span id="capmatchcrop" style="color: var(--muted);"></span>
 </div>
 <div id="capfiltrow" style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
 <span>色フィルタ <select id="capfilt_mode"><option value="off">OFF</option><option value="gray_out">対象外グレー</option><option value="mask">白黒</option></select></span>
@@ -343,12 +357,12 @@ button.run:hover { background: #17793a; }
 <span>S上限 <input id="caps2" type="number" min="0" max="255" value="255"></span>
 <span>V上限 <input id="capv2" type="number" min="0" max="255" value="255"></span>
 <span>割合 <input id="capratio" type="number" min="0" max="1" step="0.01" value="0.6"></span>
-<span id="capfiltratio" style="color:#666;"></span>
+<span id="capfiltratio" style="color:var(--muted);"></span>
 </div>
 <div><img id="capfiltimg" alt="フィルタ" style="max-width:90vw;max-height:30vh;border:1px solid #999;display:none;"></div>
 <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
 <label>画像ファイル <input id="capupload" type="file" accept="image/*"></label>
-<span id="capuploadname" style="color: #666;"></span>
+<span id="capuploadname" style="color: var(--muted);"></span>
 </div>
 <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
 <label>保存名 <input id="capmodalname" value="" placeholder="例: mark"></label>
@@ -887,7 +901,7 @@ button.run:hover { background: #17793a; }
     var el = document.getElementById('status');
     if (!el) { return; }
     el.textContent = s;
-    el.style.color = isErr ? '#b3261e' : '';
+    el.style.color = isErr ? 'var(--err)' : '';
     el.style.fontWeight = isErr ? '600' : 'normal';
   }
   // Blocklyの描画域を入れ物の大きさへ合わせ直す（コード欄の開閉・幅変更時）。
@@ -1354,7 +1368,7 @@ button.run:hover { background: #17793a; }
   // 項目は表示順。help は details のため summary が対象（無ければ details 自身）。
   function moreItems() {
     var items = [];
-    ['cleanup', 'fit', 'capget', 'del'].forEach(function (id) {
+    ['cleanup', 'fit', 'capget', 'del', 'themetoggle'].forEach(function (id) {
       var el = byId(id);
       if (el) { items.push(el); }
     });
@@ -1463,6 +1477,79 @@ button.run:hover { background: #17793a; }
   on('redo', 'click', function () { try { ws.undo(true); } catch (e) { /* 続ける */ } });
   on('cleanup', 'click', function () { moreClose(false); try { ws.cleanUp(); } catch (e) { /* 続ける */ } });
   on('fit', 'click', function () { moreClose(false); try { ws.zoomToFit(); } catch (e) { /* 続ける */ } });
+  // ---- ダークテーマ（VS Code・MakeCode の切替に相当） ----
+  // 画面の色は CSS 変数で決まるため、html の data-theme で切り替える。
+  // Blockly 側は pokecon-dark テーマを作って ws.setTheme で当てる
+  // （描画なしで setTheme が無い検証スタブでは飛ばす）。ブロックの色は変えない。
+  // 選んだ状態は画面設定に保存し、無ければ OS の設定に従う。
+  var themeName = 'light';
+  var pokeconDarkTheme = null;
+  function darkTheme() {
+    if (pokeconDarkTheme) { return pokeconDarkTheme; }
+    try {
+      if (Blockly && Blockly.Theme && typeof Blockly.Theme.defineTheme === 'function' &&
+          Blockly.Themes && Blockly.Themes.Classic) {
+        pokeconDarkTheme = Blockly.Theme.defineTheme('pokecon-dark', {
+          base: Blockly.Themes.Classic,
+          componentStyles: {
+            workspaceBackgroundColour: '#1b1e22',
+            toolboxBackgroundColour: '#24282e',
+            toolboxForegroundColour: '#e8eaed',
+            flyoutBackgroundColour: '#2b3038',
+            flyoutForegroundColour: '#e8eaed',
+            flyoutOpacity: 1,
+            scrollbarColour: '#5f686f',
+            insertionMarkerColour: '#8ab4f8',
+            cursorColour: '#8ab4f8',
+          },
+        });
+        return pokeconDarkTheme;
+      }
+    } catch (e) { /* 作れなくても画面の配色だけは変える */ }
+    return null;
+  }
+  function themePreferred() {
+    var saved = readPref('theme', '');
+    if (saved === 'dark' || saved === 'light') { return saved; }
+    var dark = false;
+    try {
+      dark = !!(window.matchMedia &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches);
+    } catch (e) { dark = false; }
+    return dark ? 'dark' : 'light';
+  }
+  function applyTheme(name, skipSave) {
+    themeName = (name === 'dark') ? 'dark' : 'light';
+    var dark = themeName === 'dark';
+    try {
+      var de = document.documentElement;
+      if (de && typeof de.setAttribute === 'function') {
+        if (dark) { de.setAttribute('data-theme', 'dark'); }
+        else if (typeof de.removeAttribute === 'function') { de.removeAttribute('data-theme'); }
+      }
+    } catch (e) { /* 最小DOMでは data-theme を保てない */ }
+    var t = byId('themetoggle');
+    if (t && typeof t.setAttribute === 'function') {
+      try { t.setAttribute('aria-checked', dark ? 'true' : 'false'); } catch (e) { /* 続ける */ }
+    }
+    try {
+      if (ws && typeof ws.setTheme === 'function') {
+        if (dark) {
+          var th = darkTheme();
+          if (th) { ws.setTheme(th); }
+        } else if (Blockly && Blockly.Themes && Blockly.Themes.Classic) {
+          ws.setTheme(Blockly.Themes.Classic);
+        }
+      }
+    } catch (e) { /* テーマを当てられなくても続ける */ }
+    if (!skipSave) { writePref('theme', themeName); }
+  }
+  // 数値欄の強調色。明るい方は従来の薄黄色のまま（既存の検証が値を見る）、
+  // ダーク時は変数で暗い黄色にする。
+  function dimHiColor() { return themeName === 'dark' ? 'var(--dim-hi)' : '#fff3cd'; }
+  on('themetoggle', 'click', function () {
+    applyTheme(themeName === 'dark' ? 'light' : 'dark');
+  });
   // ---- クイック追加（名前で探して入れる） ----
   // 打鍵だけで組み立てるための小さな窓。判定（候補・検索・挿入）は
   // pokecon_quick.js（Blockly.PokeconQuick）に寄せ、ここは開閉と表示だけを持つ。
@@ -2169,7 +2256,7 @@ button.run:hover { background: #17793a; }
   function capSetStatus(s, isErr) {
     var el = document.getElementById('capstatus');
     el.textContent = s;
-    el.style.color = isErr ? '#c00' : '#333';
+    el.style.color = isErr ? 'var(--err)' : 'var(--text)';
     el.style.fontWeight = isErr ? 'bold' : 'normal';
     // 切出し区画は折りたたみ内のため、失敗（カメラ無し等）は状態行にも出す。
     if (isErr) { setStatus(s, true); }
@@ -2294,7 +2381,7 @@ button.run:hover { background: #17793a; }
   function capModalSetStatus(s, isErr) {
     var el = document.getElementById('capmodalstatus');
     el.textContent = s;
-    el.style.color = isErr ? '#c00' : '#333';
+    el.style.color = isErr ? 'var(--err)' : 'var(--text)';
     el.style.fontWeight = isErr ? 'bold' : 'normal';
   }
   function capHideHandles() {
@@ -2311,7 +2398,7 @@ button.run:hover { background: #17793a; }
   };
   function capHiDim(ids) {
     DIM_IDS.forEach(function (id) {
-      document.getElementById(id).style.background = ids.indexOf(id) !== -1 ? '#fff3cd' : '';
+      document.getElementById(id).style.background = ids.indexOf(id) !== -1 ? dimHiColor() : '';
     });
   }
   function capModalDraw() {
@@ -2642,7 +2729,7 @@ button.run:hover { background: #17793a; }
   function capMatchSetStatus(s, isErr) {
     var el = document.getElementById('capmatchstatus');
     el.textContent = s;
-    el.style.color = isErr ? '#c00' : '#333';
+    el.style.color = isErr ? 'var(--err)' : 'var(--text)';
     el.style.fontWeight = isErr ? 'bold' : 'normal';
   }
   function capMatchDraw(rect, matched) {
@@ -3173,7 +3260,7 @@ button.run:hover { background: #17793a; }
       var el = document.getElementById('stickstatus');
       if (!el) { return; }
       el.textContent = s;
-      el.style.color = isErr ? '#c00' : '#333';
+      el.style.color = isErr ? 'var(--err)' : 'var(--text)';
       el.style.fontWeight = isErr ? 'bold' : 'normal';
     }
     function normAngle(a) {
@@ -3324,6 +3411,9 @@ button.run:hover { background: #17793a; }
     var w = parseInt(readPref('codeWidth', ''), 10);
     if (!isNaN(w)) { setPaneWidth(w); }
     if (readPref('code', '0') === '1') { setPreviewVisible(true); }
+    // テーマは保存があればそれを、無ければ OS の設定を使う。
+    // 保存は起動時には書かない（読んだだけでは控えを汚さない）。
+    applyTheme(themePreferred(), true);
   })();
   if (typeof ResizeObserver === 'function') {
     try { new ResizeObserver(resizeWorkspace).observe(byId('ws')); } catch (e) { /* 続ける */ }
