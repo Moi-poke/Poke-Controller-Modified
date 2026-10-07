@@ -109,6 +109,210 @@
       });
     },
 
+    // 組立中の問題一覧（VS Code の「問題」パネル相当）。
+    // 戻り値は [{level, message, blockId}]（error を先、同じ重さは
+    // ワークスペースの並び順）。手で無効にしたブロックとその中は数えない。
+    // 文言は保存前の検査（editor.html の doSave・validateCropsLocal）と同じ
+    // 言い回しにする（保存を押したときと食い違わないように）。
+    problems: function (ws) {
+      var errors = [];
+      var warns = [];
+      var all = [];
+      try {
+        all = ws.getAllBlocks(false) || [];
+      } catch (e) {
+        all = [];
+      }
+      // 手で無効にしたブロックと、その中（包む側が無効）は数えない。
+      // 包む側は getSurroundParent でたどる（文・値の入れ子用）。
+      function chainActive(b) {
+        for (
+          var p = b;
+          p;
+          p = typeof p.getSurroundParent === "function" ? p.getSurroundParent() : null
+        ) {
+          try {
+            if (!p.isEnabled()) {
+              return false;
+            }
+          } catch (e) {
+            return false;
+          }
+        }
+        return true;
+      }
+      // 画像未選択は既存の判定を使い、無効な分だけ除く。
+      var missingTpl = {};
+      PokeconEditor.blocksMissingTemplate(ws).forEach(function (b) {
+        if (b && chainActive(b)) {
+          missingTpl[b.id] = true;
+        }
+      });
+      // 浮きの先頭。手で無効にした塊は除くが、自動で灰色にした分
+      // （ORPHAN_REASON）は「外にある」警告の対象に残す。
+      var orphanIds = {};
+      PokeconEditor.orphanBlocks(ws).forEach(function (top) {
+        var on = false;
+        try {
+          on = top.isEnabled();
+        } catch (e) {
+          on = false;
+        }
+        if (!on) {
+          var auto = false;
+          try {
+            auto =
+              typeof top.hasDisabledReason === "function" &&
+              top.hasDisabledReason(ORPHAN_REASON);
+          } catch (e) {
+            auto = false;
+          }
+          if (!auto) {
+            return;
+          }
+        }
+        orphanIds[top.id] = true;
+      });
+      // 定義名の集計（無効な定義は数えない）。呼出・重複の判定に使う。
+      var defCount = {};
+      all.forEach(function (b) {
+        if (!b || b.type !== "pokecon_sub_def" || !chainActive(b)) {
+          return;
+        }
+        var name = "";
+        try {
+          name = String(b.getFieldValue("NAME") || "");
+        } catch (e) {
+          name = "";
+        }
+        if (!name) {
+          return;
+        }
+        defCount[name] = (defCount[name] || 0) + 1;
+      });
+      var dupSeen = {};
+      // 範囲欄の規則は editor.html の validateCropsLocal と同じ
+      // （空は全体で正常・x1,y1,x2,y2・x2>x1・y2>y1）。
+      var CROP_RE = /^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/;
+      var programsSeen = 0;
+      all.forEach(function (b) {
+        if (!b) {
+          return;
+        }
+        if (orphanIds[b.id]) {
+          warns.push({
+            level: "warn",
+            message: "プログラムの外にあるため実行されません（つなぎ直すと実行されます）",
+            blockId: b.id,
+          });
+        }
+        if (!chainActive(b)) {
+          return;
+        }
+        if (b.type === "pokecon_program") {
+          programsSeen++;
+          if (programsSeen > 1) {
+            errors.push({
+              level: "error",
+              message: "「プログラム」は1個までにしてください",
+              blockId: b.id,
+            });
+          } else {
+            var head = null;
+            try {
+              var input = typeof b.getInput === "function" ? b.getInput("DO") : null;
+              head = input && input.connection ? input.connection.targetBlock() : null;
+            } catch (e) {
+              head = null;
+            }
+            if (!head) {
+              warns.push({
+                level: "warn",
+                message: "プログラムの中身が空です（操作を並べてください）",
+                blockId: b.id,
+              });
+            }
+          }
+          return;
+        }
+        if (missingTpl[b.id]) {
+          errors.push({
+            level: "error",
+            message: "画像を選んでいません（ブロックの画像欄で選んでください）",
+            blockId: b.id,
+          });
+        }
+        var hasCrop = false;
+        try {
+          hasCrop = typeof b.getField === "function" && !!b.getField("CROP");
+        } catch (e) {
+          hasCrop = false;
+        }
+        if (hasCrop) {
+          var crop = "";
+          try {
+            var raw = b.getFieldValue("CROP");
+            crop = String(raw == null ? "" : raw).trim();
+          } catch (e) {
+            crop = "";
+          }
+          if (crop) {
+            var m = crop.match(CROP_RE);
+            if (!m || !(+m[3] > +m[1] && +m[4] > +m[2])) {
+              errors.push({
+                level: "error",
+                message: "範囲（CROP）の書式が正しくありません（例: 10,20,110,120）",
+                blockId: b.id,
+              });
+            }
+          }
+        }
+        if (b.type === "pokecon_sub_call" || b.type === "pokecon_sub_call_value") {
+          var called = "";
+          try {
+            called = String(b.getFieldValue("NAME") || "");
+          } catch (e) {
+            called = "";
+          }
+          if (called && !defCount[called]) {
+            errors.push({
+              level: "error",
+              message: "未定義のサブルーチンです: self." + called + "()",
+              blockId: b.id,
+            });
+          }
+          return;
+        }
+        if (b.type === "pokecon_sub_def") {
+          var defined = "";
+          try {
+            defined = String(b.getFieldValue("NAME") || "");
+          } catch (e) {
+            defined = "";
+          }
+          // 同名のうち2個目以降だけ出す（1個目は正しい置き場所のため）。
+          if (defined && defCount[defined] > 1) {
+            dupSeen[defined] = (dupSeen[defined] || 0) + 1;
+            if (dupSeen[defined] > 1) {
+              errors.push({
+                level: "error",
+                message: "サブルーチン名が重複しています: " + defined,
+                blockId: b.id,
+              });
+            }
+          }
+        }
+      });
+      if (!programsSeen) {
+        errors.unshift({
+          level: "error",
+          message: "「プログラム」ブロックがありません（置いて、その中に操作を並べてください）",
+          blockId: null,
+        });
+      }
+      return errors.concat(warns);
+    },
+
     // 試し実行のコード。各ブロックの手前に目印（本体の services/blockly_run が
     // 差し込む関数）を置き、実行中のブロックを光らせ・区切りで止められるようにする。
     // opts.blockId があればそのブロック（only なら単独、無ければ後続も）だけを
