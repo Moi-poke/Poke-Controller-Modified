@@ -188,6 +188,170 @@ def list_blockly(app_dir: str | Path) -> list[str]:
     return sorted(p.name[: -len(".blockly.json")] for p in base.glob("*.blockly.json"))
 
 
+#: 作例（ギャラリー）の接頭辞。`Commands/PythonCommands/` 内の
+#: `BlocklySample*.blockly.json`（同名 `.py` と対のもの）を作例として扱う。
+SAMPLE_PREFIX = "BlocklySample"
+
+#: 作例の説明の上限（文字数）。超えた分は `…` で丸める。
+SAMPLE_SUMMARY_MAX = 40
+
+
+def _sample_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """ワークスペースJSON内の実ブロックを文書順に集める（影は除く）。"""
+    tops = data.get("blocks")
+    if not isinstance(tops, dict) or not isinstance(tops.get("blocks"), list):
+        return []
+    found: list[dict[str, Any]] = []
+
+    def _walk(block: object) -> None:
+        if not isinstance(block, dict):
+            return
+        found.append(block)
+        inputs = block.get("inputs")
+        if isinstance(inputs, dict):
+            for slot in inputs.values():
+                if isinstance(slot, dict) and isinstance(slot.get("block"), dict):
+                    _walk(slot["block"])
+        nxt = block.get("next")
+        if isinstance(nxt, dict) and isinstance(nxt.get("block"), dict):
+            _walk(nxt["block"])
+
+    for top in tops["blocks"]:
+        _walk(top)
+    return found
+
+
+def _sample_word(block_type: str) -> str | None:
+    """ブロック種から説明用の短い語を返す。説明に要らない種は None。"""
+    if block_type in ("pokecon_program", "pokecon_comment"):
+        return None
+    if block_type.startswith(("pokecon_press", "pokecon_hold", "pokecon_stick")):
+        return "押す"
+    if block_type.startswith("pokecon_vision"):
+        return "画像認識"
+    if block_type.startswith("pokecon_audio"):
+        return "音検知"
+    if block_type in {
+        "controls_repeat",
+        "controls_repeat_ext",
+        "controls_whileUntil",
+        "controls_for",
+        "controls_forEach",
+        "controls_flow_statements",
+    }:
+        return "繰り返し"
+    if block_type == "controls_if" or block_type.startswith("logic_"):
+        return "条件分岐"
+    if block_type.startswith("variables_"):
+        return "変数"
+    if block_type.startswith(("math_", "text")):
+        return "計算"
+    if block_type == "pokecon_wait":
+        return "待ち"
+    if block_type in {"pokecon_print", "pokecon_screenshot", "pokecon_discord"}:
+        return "出力"
+    if block_type.startswith("pokecon_dialog"):
+        return "設定入力"
+    if block_type.startswith("pokecon_sub"):
+        return "サブルーチン"
+    if block_type == "pokecon_elapsed":
+        return "時間制限"
+    if block_type == "pokecon_finish":
+        return "終了"
+    return None
+
+
+def _shorten_summary(text: str) -> str:
+    """説明文を上限に丸める（超えたら末尾を `…` にする）。"""
+    s = text.strip()
+    if len(s) > SAMPLE_SUMMARY_MAX:
+        return s[: SAMPLE_SUMMARY_MAX - 1] + "…"
+    return s
+
+
+def _sample_summary(blocks: list[dict[str, Any]]) -> str:
+    """作例の説明を作る。先頭のコメントがあればその1行目、無ければ
+    使っているブロックの種類から短く作る（最大40文字）。"""
+    program = next((b for b in blocks if b.get("type") == "pokecon_program"), None)
+    if program is not None:
+        # 先頭＝プログラムの DO の最初のブロック。注釈だけが目的のため、
+        # コメント以外の先頭では種類からの合成に落とす。
+        node = program.get("inputs")
+        if isinstance(node, dict):
+            slot = node.get("DO")
+            first = slot.get("block") if isinstance(slot, dict) else None
+            if isinstance(first, dict) and first.get("type") == "pokecon_comment":
+                fields = first.get("fields")
+                text = fields.get("TEXT") if isinstance(fields, dict) else None
+                if isinstance(text, str) and text.strip():
+                    return _shorten_summary(text.strip().splitlines()[0])
+    words: list[str] = []
+    for block in blocks:
+        word = _sample_word(str(block.get("type", "")))
+        if word is not None and word not in words:
+            words.append(word)
+    if not words:
+        return "ブロックの組み合わせ"
+    return _shorten_summary("・".join(words))
+
+
+def _sample_tags(program: dict[str, Any] | None) -> list[str]:
+    """プログラム欄の TAGS 欄（カンマ区切り）を配列にする。"""
+    if program is None:
+        return []
+    fields = program.get("fields")
+    raw = fields.get("TAGS") if isinstance(fields, dict) else None
+    if isinstance(raw, list):
+        return [str(t).strip() for t in raw if str(t).strip()]
+    if not isinstance(raw, str):
+        return []
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def list_samples(app_dir: str | Path) -> list[dict[str, Any]]:
+    """作例の一覧を保存名順で返す。壊れた作例は飛ばす（例外を外へ出さない）。"""
+    base = Path(app_dir) / PurePosixPath(PY_DIR_REL).as_posix()
+    if not base.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for json_path in sorted(base.glob(f"{SAMPLE_PREFIX}*.blockly.json")):
+        stem = json_path.name[: -len(".blockly.json")]
+        try:
+            # `.py` と対になっていない作例は一覧に出さない（実行できないため）。
+            if not json_path.with_name(f"{stem}.py").is_file():
+                continue
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            blocks = [b for b in _sample_blocks(data) if isinstance(b.get("type"), str)]
+            if not blocks:
+                continue
+            program = next(
+                (b for b in blocks if b.get("type") == "pokecon_program"), None
+            )
+            name = stem
+            if program is not None:
+                fields = program.get("fields")
+                raw_name = fields.get("NAME") if isinstance(fields, dict) else None
+                if isinstance(raw_name, str) and raw_name.strip():
+                    name = raw_name.strip()
+            out.append(
+                {
+                    "stem": stem,
+                    "name": name,
+                    "tags": _sample_tags(program),
+                    "blocks": len(blocks),
+                    "summary": _sample_summary(blocks),
+                }
+            )
+        except Exception as e:
+            # 壊れた作例は飛ばす（一覧全体を壊さない）。
+            logger.warning(f"作例を飛ばします: {stem}: {e}")
+            continue
+    out.sort(key=lambda d: str(d["stem"]))
+    return out
+
+
 @dataclass
 class LoadResult:
     """読み込みの結果。statusは ok / failed。"""

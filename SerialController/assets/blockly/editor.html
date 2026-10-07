@@ -105,6 +105,22 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #quicklist .qlab { flex: 1 1 auto; }
 #quicklist .qcat { color: var(--muted); font-size: 12px; white-space: nowrap; }
 #quicklist .qempty { padding: 8px; color: var(--muted); }
+/* 作例ギャラリー（新規→作例の窓）。画面上部中央に重ね、作例をカードで出す。 */
+#newdialog {
+  display: none; position: fixed; left: 50%; top: 12px; transform: translateX(-50%);
+  width: min(480px, 92vw); max-height: 80vh; overflow: auto; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); z-index: 950;
+}
+#newdialog h2 { margin: 2px 0 4px; font-size: 14px; }
+#newdialoghint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+#newcards { display: flex; flex-direction: column; gap: 6px; }
+.newcard { text-align: left; white-space: normal; padding: 6px 10px; }
+.newcard.on { background: #e8f0fe; outline: 2px solid var(--accent); outline-offset: -2px; }
+.newcard .newname { font-weight: 600; display: block; }
+.newcard .newmeta { color: var(--muted); font-size: 12px; display: block; }
+#newdialogerror { min-height: 1.2em; color: var(--muted); font-size: 12px; white-space: pre-line; }
+#newdialogerror.is-err { color: var(--err); font-weight: 600; }
 #main { flex: 1 1 auto; display: flex; min-height: 0; }
 #ws { flex: 1 1 auto; min-width: 0; min-height: 320px; position: relative; }
 #splitter { display: none; flex: 0 0 6px; cursor: col-resize; background: var(--line); }
@@ -205,6 +221,15 @@ button.run:hover { background: #17793a; }
 <div id="quick" role="dialog" aria-label="ブロックを探す" style="display: none;">
 <input id="quickinput" role="combobox" aria-controls="quicklist" aria-expanded="false" autocomplete="off" spellcheck="false" placeholder="例: おす・まつ・くりかえし">
 <div id="quicklist" role="listbox" aria-label="候補"></div>
+</div>
+<div id="newdialog" role="dialog" aria-modal="true" aria-labelledby="newdialogtitle" style="display: none;">
+<div id="newdialogbox">
+<h2 id="newdialogtitle">作例から始める</h2>
+<p id="newdialoghint">作例を下敷きにして新しいコマンドを作ります。選ぶと新しい名前で開きます（保存するまで別のコマンドにはなりません）。</p>
+<div id="newcards"></div>
+<p id="newdialogerror" role="status" aria-live="polite"></p>
+<div><button id="newdialogclose">閉じる</button></div>
+</div>
 </div>
 <div id="saveerrors" role="alert" tabindex="-1"></div>
 <main id="main">
@@ -880,22 +905,199 @@ button.run:hover { background: #17793a; }
       try { ws.scrollCenter(); } catch (e) { /* 続ける */ }
     }).catch(function (e) { setStatus('開けません: ' + e, true); });
   });
-  // 新規：初期形（プログラム1個）から始める。
+  // ---- 作例ギャラリー（新規→作例の窓） ----
+  // 「新規」を押すと作例の窓を出し、空のプログラムか作例を選んで始める。
+  // 作例は新しいコマンドとして開く（対応先なし・未保存扱い）。
+  var newSamples = [];
+  var newSel = 0;
+  var newCards = [];
+  var newReturnTo = null;
+  // 作例の保存名から新しい保存名を作る（BlocklySampleVision → MyVision）。
+  // 同名があれば末尾に 2,3… を付ける（保存時の上書き確認に頼らず先にずらす）。
+  function galleryStemFor(sampleStem) {
+    var base = String(sampleStem || '').replace(/^BlocklySample/, '') || 'Sample';
+    var cand = 'My' + base;
+    var n = 2;
+    while (stemExists(cand)) { cand = 'My' + base + n; n++; }
+    return cand;
+  }
+  function newClearList(list) {
+    // 実DOMでは子を外す。検証スタブでは options 配列で子を持つため掃除する。
+    try { if (list.options) { list.options.length = 0; } } catch (e) { /* 続ける */ }
+    try { list.textContent = ''; } catch (e) { /* 続ける */ }
+    try { while (list.firstChild) { list.removeChild(list.firstChild); } } catch (e) { /* 続ける */ }
+  }
+  function newSelect(i) {
+    if (!newCards.length) { return; }
+    newSel = ((i % newCards.length) + newCards.length) % newCards.length;
+    var list = byId('newcards');
+    newCards.forEach(function (card, idx) {
+      try { card.className = 'newcard' + (idx === newSel ? ' on' : ''); } catch (e) { /* 続ける */ }
+      try { card.setAttribute('aria-selected', idx === newSel ? 'true' : 'false'); } catch (e) { /* 続ける */ }
+    });
+    // 検証スタブの focus は何も残さないため、選択位置を属性にも書く。
+    try { if (list) { list.setAttribute('data-sel', String(newSel)); } } catch (e) { /* 続ける */ }
+    try { newCards[newSel].focus(); } catch (e) { /* 続ける */ }
+  }
+  function newClose(refocus) {
+    var box = byId('newdialog');
+    if (box && box.style) { try { box.style.display = 'none'; } catch (e) { /* 続ける */ } }
+    if (refocus && newReturnTo && typeof newReturnTo.focus === 'function') {
+      try { newReturnTo.focus(); } catch (e) { /* 続ける */ }
+    }
+    newReturnTo = null;
+  }
+  function newSetError(s, isErr) {
+    var el = byId('newdialogerror');
+    if (!el) { return; }
+    el.textContent = s || '';
+    try { el.className = isErr ? 'is-err' : ''; } catch (e) { /* 続ける */ }
+  }
+  // カード1枚を作る。見出し・説明は textContent で入れる
+  // （利用者の入力やファイル名を innerHTML に連結しない）。
+  function newCard(label, meta, stem, choose) {
+    var card = null;
+    try { card = document.createElement('button'); } catch (e) { return null; }
+    if (!card) { return null; }
+    try {
+      card.className = 'newcard';
+      card.setAttribute('data-stem', stem);
+      card.setAttribute('data-label', label);
+      card.setAttribute('aria-selected', 'false');
+      var nm = document.createElement('span');
+      nm.className = 'newname';
+      nm.textContent = label;
+      card.appendChild(nm);
+      if (meta) {
+        var mt = document.createElement('span');
+        mt.className = 'newmeta';
+        mt.textContent = meta;
+        card.appendChild(mt);
+      }
+      card.addEventListener('click', choose);
+    } catch (e) { /* 飾りの失敗では窓を保つ */ }
+    return card;
+  }
+  function newRender() {
+    var list = byId('newcards');
+    if (!list) { return; }
+    newClearList(list);
+    newCards = [];
+    newSel = 0;
+    var empty = newCard('空のプログラムから作る', '何もない所から始める（従来の新規と同じ）', '', function () { newChooseByStem(''); });
+    if (empty) { try { list.appendChild(empty); } catch (e) { /* 続ける */ } newCards.push(empty); }
+    newSamples.forEach(function (s) {
+      var stem = (s && s.stem) || '';
+      if (!stem) { return; }
+      var tags = (s && s.tags && s.tags.length) ? '［' + s.tags.join('・') + '］' : '';
+      var meta = (s.summary || '') + (tags ? ' ' + tags : '') + '（' + s.blocks + 'ブロック）';
+      var card = newCard(s.name || stem, meta, stem, (function (st) {
+        return function () { newChooseByStem(st); };
+      })(stem));
+      if (card) { try { list.appendChild(card); } catch (e) { /* 続ける */ } newCards.push(card); }
+    });
+    newSelect(0);
+  }
+  // 作例を選んだときの取込。/load で中身を読み、新しいコマンドとして開く。
+  function newChooseByStem(stem) {
+    if (!stem) {
+      // 空のプログラム：従来の「新規」と同じ初期形。
+      if (!E) { ws.clear(); }
+      else { loadState(E.defaultState()); }
+      currentStem = null;
+      var stemEl = byId('stem');
+      if (stemEl) { stemEl.value = 'MyBlock'; }
+      setStemError('');
+      setSaveErrors([]);
+      markClean();
+      saveDraftNow();
+      renderPreview();
+      setStatus('新しいコマンドを作ります。「プログラム」の中に操作を並べてください', false);
+      newClose(false);
+      return;
+    }
+    var sample = null;
+    newSamples.forEach(function (s) { if (s && s.stem === stem && !sample) { sample = s; } });
+    var sampleName = (sample && sample.name) || stem;
+    // 候補取得を待ってから開く（開いた直後から画像欄の候補が最新になるように）。
+    refreshTemplates().then(function () {
+      return fetch('./load?stem=' + encodeURIComponent(stem));
+    }).then(function (r) {
+      return r.json();
+    }).then(function (j) {
+      if (!j.ok) {
+        newSetError(j.message || '開けません', true);
+        setStatus(j.message || '開けません', true);
+        return;
+      }
+      loadState(JSON.parse(j.workspaceJson));
+      var input = byId('stem');
+      if (input) { input.value = galleryStemFor(stem); }
+      // 新しいコマンドとして開く（対応先なし）。同名があれば保存時に確かめる。
+      currentStem = null;
+      setStemError('');
+      setSaveErrors([]);
+      markClean('');
+      checkDirty();
+      saveDraftNow();
+      renderPreview();
+      try { ws.scrollCenter(); } catch (e) { /* 続ける */ }
+      setStatus('作例「' + sampleName + '」を元に新しく作ります（保存すると別のコマンドになります）', false);
+      newClose(false);
+      var stemBox = byId('stem');
+      try { if (stemBox && typeof stemBox.focus === 'function') { stemBox.focus(); } } catch (e) { /* 続ける */ }
+    }).catch(function (e) {
+      newSetError('開けません: ' + e, true);
+      setStatus('開けません: ' + e, true);
+    });
+  }
+  function newOpen() {
+    try {
+      newReturnTo = (typeof document !== 'undefined' && document.activeElement) || null;
+    } catch (e) { newReturnTo = null; }
+    var box = byId('newdialog');
+    if (!box) { return; }
+    // 先に空の窓を出してから作例を取りに行く（取得に失敗しても空では始められる）。
+    newSamples = [];
+    newRender();
+    newSetError('', false);
+    if (box.style) { try { box.style.display = 'block'; } catch (e) { /* 続ける */ } }
+    newSelect(0);
+    fetch('./samples').then(function (r) { return r.json(); }).then(function (j) {
+      if (box.style && box.style.display === 'none') { return; }
+      newSamples = (j && j.samples) || [];
+      newRender();
+      if (!newSamples.length) {
+        newSetError((j && j.message) || '作例がありません', false);
+      } else {
+        newSetError('', false);
+      }
+      newSelect(0);
+    }).catch(function (e) {
+      if (box.style && box.style.display === 'none') { return; }
+      newSamples = [];
+      newRender();
+      newSetError('作例を読めません: ' + e, true);
+      newSelect(0);
+    });
+  }
+  on('newdialog', 'keydown', function (ev) {
+    if (!ev) { return; }
+    var box = byId('newdialog');
+    if (!box || !box.style || box.style.display !== 'block') { return; }
+    if (ev.key === 'Escape') { if (ev.preventDefault) { ev.preventDefault(); } newClose(true); }
+    else if (ev.key === 'ArrowDown' || ev.key === 'ArrowRight') { if (ev.preventDefault) { ev.preventDefault(); } newSelect(newSel + 1); }
+    else if (ev.key === 'ArrowUp' || ev.key === 'ArrowLeft') { if (ev.preventDefault) { ev.preventDefault(); } newSelect(newSel - 1); }
+    else if (ev.key === 'Home') { if (ev.preventDefault) { ev.preventDefault(); } newSelect(0); }
+    else if (ev.key === 'End') { if (ev.preventDefault) { ev.preventDefault(); } newSelect(newCards.length - 1); }
+  });
+  on('newdialogclose', 'click', function () { newClose(true); });
+  // 新規：未保存の確認は今のまま先に出し、作例の窓から始める。
   on('newws', 'click', function () {
     if (dirty && !window.confirm('保存していない変更を捨てて新しく作りますか？')) {
       return;
     }
-    if (!E) { ws.clear(); return; }
-    loadState(E.defaultState());
-    currentStem = null;
-    var stemEl = byId('stem');
-    if (stemEl) { stemEl.value = 'MyBlock'; }
-    setStemError('');
-    setSaveErrors([]);
-    markClean();
-    saveDraftNow();
-    renderPreview();
-    setStatus('新しいコマンドを作ります。「プログラム」の中に操作を並べてください', false);
+    newOpen();
   });
   // ---- 「⋯」メニュー（整列・全体表示・テンプレ作成・削除・使い方） ----
   // よく使う操作だけを上段に残し、残りはここへ畳む。項目の id は従来の

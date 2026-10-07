@@ -319,6 +319,14 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             }
             self._reply(True, res.message, extra)
             return
+        if path == "/samples":
+            # 作例ギャラリー用。壊れていても空の一覧で返す（編集は続けられる）。
+            try:
+                samples = blockly_save.list_samples(WindowUtils.APP_DIR)
+            except Exception:
+                samples = []
+            self._reply(True, "", {"samples": samples})
+            return
         if path == "/run/state":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             try:
