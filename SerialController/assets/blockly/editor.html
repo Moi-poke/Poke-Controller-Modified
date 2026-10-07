@@ -211,6 +211,7 @@ button.run:hover { background: #17793a; }
 <li>サブルーチンは定義ブロックを置き、「呼ぶ」の名前欄で選びます。定義の名前を変えると呼出も追従します。</li>
 <li>編集中の内容はこのブラウザに自動で控えられ、閉じても次回に復元されます（保存とは別です）。</li>
 <li>「＋ ブロックを探す」（<kbd>Ctrl</kbd>+<kbd>K</kbd>）で名前から探して追加できます（例: おす・まつ・くりかえし）。↑↓で選び <kbd>Enter</kbd> で選択中のブロックの後ろへ入れます。</li>
+<li>「よく使う形」分類に定番の組み合わせがあります（例: Aを10回押す・時間切れで終了）。ドラッグして中の数・ボタンを変えて使います。</li>
 </ul>
 </div>
 </details>
@@ -350,6 +351,19 @@ button.run:hover { background: #17793a; }
   var TOOLBOX = {
     kind: 'categoryToolbox',
     contents: [
+      // 定番の組み合わせ（ドラッグ1回で動く形）。値の穴は実体の数ブロック
+      // 入りで、画像は未選択（置いた後に選ぶ）。変数「回数」は置くと作られる。
+      { kind: 'category', name: 'よく使う形', colour: '45', contents: [
+        { kind: 'label', text: 'ドラッグして中の数・ボタンを変えて使う' },
+        { kind: 'block', type: 'controls_repeat_ext', inputs: { TIMES: { block: { type: 'math_number', fields: { NUM: 10 } } }, DO: { block: { type: 'pokecon_press', fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.5 } } } } },
+        { kind: 'block', type: 'pokecon_press_rep', fields: { TARGET: 'Button.A', COUNT: 10, DURATION: 0.1, INTERVAL: 0.1, WAIT: 0.1 } },
+        { kind: 'block', type: 'pokecon_vision_press_until', fields: { TEMPLATE: '', TARGET: 'Button.A', TIMEOUT: 10 } },
+        { kind: 'block', type: 'pokecon_vision_wait_appear', fields: { TEMPLATE: '', TIMEOUT: 10 }, next: { block: { type: 'pokecon_press', fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 } } } },
+        { kind: 'block', type: 'controls_if', extraState: { hasElse: true }, inputs: { IF0: { block: { type: 'pokecon_vision_contains', fields: { TEMPLATE: '' } } }, DO0: { block: { type: 'pokecon_press', fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 } } }, ELSE: { block: { type: 'pokecon_press', fields: { BUTTON: 'B', DURATION: 0.1, WAIT: 0.1 } } } } },
+        { kind: 'block', type: 'controls_if', inputs: { IF0: { block: { type: 'logic_compare', fields: { OP: 'GT' }, inputs: { A: { block: { type: 'pokecon_elapsed' } }, B: { block: { type: 'math_number', fields: { NUM: 3600 } } } } } }, DO0: { block: { type: 'pokecon_finish' } } } },
+        { kind: 'block', type: 'variables_set', fields: { VAR: { id: '回数', name: '回数' } }, inputs: { VALUE: { block: { type: 'math_number', fields: { NUM: 0 } } } }, next: { block: { type: 'controls_repeat_ext', inputs: { TIMES: { block: { type: 'math_number', fields: { NUM: 10 } } }, DO: { block: { type: 'math_change', fields: { VAR: { id: '回数', name: '回数' } }, inputs: { DELTA: { block: { type: 'math_number', fields: { NUM: 1 } } } }, next: { block: { type: 'pokecon_print', fields: { KIND: 'print' }, inputs: { TEXT: { block: { type: 'variables_get', fields: { VAR: { id: '回数', name: '回数' } } } } } } } } } } } } },
+        { kind: 'block', type: 'pokecon_press', fields: { BUTTON: 'HOME', DURATION: 0.1, WAIT: 1 }, next: { block: { type: 'pokecon_press', fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 1 } } } },
+      ] },
       { kind: 'category', name: '基本操作', colour: '160', contents: [
         { kind: 'block', type: 'pokecon_press' },
         { kind: 'block', type: 'pokecon_stick' },

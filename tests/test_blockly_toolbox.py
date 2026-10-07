@@ -50,6 +50,7 @@ def test_toolbox_is_split_into_purpose_named_categories() -> None:
     names = re.findall(r"kind: 'category', name: '([^']+)'", src)
     # Then: 目的別の8分類が順に並び、色が付いている
     assert names == [
+        "よく使う形",
         "基本操作",
         "流れ",
         "画像認識",
