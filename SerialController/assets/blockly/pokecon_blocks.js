@@ -920,6 +920,96 @@
   // 保存値が候補に無くても、読込で黙って別の値へ書き換えない
   // （存在しない画像は保存時の参照検査が止める）。空は未選択の意味。
   var TEMPLATE_UNSET_LABEL = "（画像を選ぶ）";
+  // 画像欄の縮小画像グリッド用判定（描画なしの純粋部。node vmで検証する）。
+  // テンプレ画像は数十枚あり名前だけでは区別しにくいため、フォルダ見出しと
+  // 縮小画像の並びから選ぶ。絞り込み・URL生成もここに寄せる。
+  var IMAGES_BARE_FOLDER = "（直下）";
+  function imageFolderOf(name) {
+    var s = String(name);
+    var slash = s.indexOf("/");
+    return slash === -1 ? IMAGES_BARE_FOLDER : s.slice(0, slash);
+  }
+  function imageLabelOf(name) {
+    var base = String(name);
+    var slash = base.lastIndexOf("/");
+    if (slash !== -1) {
+      base = base.slice(slash + 1);
+    }
+    var dot = base.lastIndexOf(".");
+    if (dot > 0) {
+      base = base.slice(0, dot);
+    }
+    return base;
+  }
+  function normImageText(s) {
+    var t = String(s == null ? "" : s);
+    try {
+      t = t.normalize("NFKC");
+    } catch (e) {
+      /* 正規化できなくても絞り込みは続ける */
+    }
+    return t.toLowerCase();
+  }
+  var PokeconImages = {
+    // 画像名の一覧をフォルダごと（最初の / まで。無ければ「（直下）」）に
+    // まとめる。フォルダ順は名前順で「（直下）」を最後、中身も名前順。
+    // query があれば名前の部分一致（空白区切りの全語を含む）で絞り、
+    // 空になったフォルダは出さない。
+    group: function (names, query) {
+      var list = Array.isArray(names) ? names : [];
+      var words = normImageText(query)
+        .split(/\s+/)
+        .filter(function (w) {
+          return w;
+        });
+      var byFolder = {};
+      list.forEach(function (n) {
+        if (typeof n !== "string" || !n) {
+          return;
+        }
+        if (words.length) {
+          var hay = normImageText(n);
+          var hit = words.every(function (w) {
+            return hay.indexOf(w) !== -1;
+          });
+          if (!hit) {
+            return;
+          }
+        }
+        var f = imageFolderOf(n);
+        if (!byFolder[f]) {
+          byFolder[f] = [];
+        }
+        byFolder[f].push({ name: n, label: imageLabelOf(n) });
+      });
+      var folders = Object.keys(byFolder).sort();
+      // 「（直下）」は名前順の先頭に来がちなため最後へ寄せる。
+      var bare = folders.indexOf(IMAGES_BARE_FOLDER);
+      if (bare !== -1) {
+        folders.splice(bare, 1);
+        folders.push(IMAGES_BARE_FOLDER);
+      }
+      return folders.map(function (f) {
+        byFolder[f].sort(function (a, b) {
+          if (a.name < b.name) {
+            return -1;
+          }
+          if (a.name > b.name) {
+            return 1;
+          }
+          return 0;
+        });
+        return { folder: f, items: byFolder[f] };
+      });
+    },
+    thumbUrl: function (name) {
+      return (
+        "./template_image?name=" +
+        encodeURIComponent(String(name == null ? "" : name))
+      );
+    },
+  };
+  Blockly.PokeconImages = PokeconImages;
   class TemplateField extends Blockly.FieldDropdown {
     constructor(value) {
       super(function () {
@@ -955,6 +1045,223 @@
     getText_() {
       var v = this.getValue();
       return v ? String(v) : TEMPLATE_UNSET_LABEL;
+    }
+    // 縮小画像の並びから選ぶ。描画（DropDownDiv）が無い環境では標準の一覧に落とす。
+    showEditor_(e) {
+      var DDD = Blockly.DropDownDiv;
+      if (
+        !DDD ||
+        typeof document === "undefined" ||
+        !document.createElement
+      ) {
+        try {
+          return super.showEditor_(e);
+        } catch (err) {
+          // 描画なしの検証環境では従来の一覧も開けないため何もしない。
+          return;
+        }
+      }
+      var field = this;
+      var current = this.getValue() ? String(this.getValue()) : "";
+      var all =
+        typeof Blockly.PokeconTemplates !== "undefined" &&
+        Array.isArray(Blockly.PokeconTemplates)
+          ? Blockly.PokeconTemplates.slice()
+          : [];
+      DDD.clearContent();
+      var content = DDD.getContentDiv();
+      var wrap = document.createElement("div");
+      wrap.className = "pokeconImgPicker";
+      wrap.setAttribute("role", "dialog");
+      wrap.setAttribute("aria-label", "テンプレ画像を選ぶ");
+      wrap.style.cssText =
+        "width:min(560px,90vw);max-height:420px;display:flex;flex-direction:column;" +
+        "background:var(--panel,#fff);color:var(--text,#1f2328);" +
+        "font:13px/1.4 'Segoe UI','Yu Gothic UI',sans-serif;";
+      var search = document.createElement("input");
+      search.type = "search";
+      search.setAttribute("placeholder", "画像を検索");
+      search.setAttribute("aria-label", "画像を検索");
+      search.style.cssText = "margin:8px 8px 4px;";
+      var list = document.createElement("div");
+      list.setAttribute("role", "listbox");
+      list.setAttribute("aria-label", "テンプレ画像の一覧");
+      list.style.cssText =
+        "overflow:auto;padding:4px 8px 8px;max-height:360px;";
+      wrap.appendChild(search);
+      wrap.appendChild(list);
+      // 矢印キー移動の対象（先頭の未選択・画像・末尾の切り出しを一直線にたどる）。
+      var focusables = [];
+      function pick(name) {
+        field.setValue(name);
+        DDD.hideIfOwner(field, true);
+      }
+      function optionButton(text, name, on) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = text;
+        b.setAttribute("role", "option");
+        b.setAttribute("aria-selected", on ? "true" : "false");
+        // 選択中は枠を太くする（色だけに頼らない）。
+        b.style.cssText =
+          "display:block;width:100%;text-align:left;padding:6px 8px;border-radius:6px;cursor:pointer;" +
+          "border:" + (on ? "2px" : "1px") + " solid " +
+          (on ? "var(--accent,#1a66d2)" : "var(--line,#d6d9de)") + ";" +
+          "background:" + (on ? "#e8f0fe" : "var(--panel,#fff)") + ";";
+        if (name != null) {
+          b.setAttribute("data-name", name);
+        }
+        b.addEventListener("click", function () {
+          if (name == null) {
+            // 末尾の切り出し項目：窓を閉じてそのブロック用の切り出し窓を開く。
+            DDD.hideIfOwner(field, true);
+            var src = field.getSourceBlock();
+            if (
+              src &&
+              typeof Blockly.PokeconOpenBlockModal === "function"
+            ) {
+              Blockly.PokeconOpenBlockModal(src.id);
+            }
+            return;
+          }
+          pick(name);
+        });
+        focusables.push(b);
+        return b;
+      }
+      function render() {
+        // 一覧だけ作り直す（検索欄の焦点を奪わないため）。
+        while (list.firstChild) {
+          list.removeChild(list.firstChild);
+        }
+        focusables = [];
+        var groups = PokeconImages.group(all, search.value);
+        list.appendChild(
+          optionButton(TEMPLATE_UNSET_LABEL, "", current === ""),
+        );
+        if (!groups.length) {
+          var empty = document.createElement("div");
+          empty.textContent = "見つかりません";
+          empty.style.cssText =
+            "padding:12px 4px;color:var(--muted,#5c636b);";
+          list.appendChild(empty);
+        }
+        groups.forEach(function (g) {
+          var head = document.createElement("h3");
+          head.textContent = g.folder;
+          head.style.cssText =
+            "margin:8px 0 4px;font-size:12px;color:var(--muted,#5c636b);font-weight:600;";
+          list.appendChild(head);
+          var grid = document.createElement("div");
+          grid.style.cssText =
+            "display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px;";
+          g.items.forEach(function (it) {
+            var on = it.name === current;
+            var b = document.createElement("button");
+            b.type = "button";
+            b.title = it.name;
+            b.setAttribute("role", "option");
+            b.setAttribute("aria-selected", on ? "true" : "false");
+            // 選択中は枠を太くする（色だけに頼らない）。
+            b.style.cssText =
+              "display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px;border-radius:6px;cursor:pointer;" +
+              "border:" + (on ? "2px" : "1px") + " solid " +
+              (on ? "var(--accent,#1a66d2)" : "var(--line,#d6d9de)") + ";" +
+              "background:" + (on ? "#e8f0fe" : "var(--panel,#fff)") + ";";
+            b.setAttribute("data-name", it.name);
+            var img = document.createElement("img");
+            img.loading = "lazy";
+            img.alt = "";
+            img.width = 96;
+            img.height = 72;
+            img.src = PokeconImages.thumbUrl(it.name);
+            img.style.cssText =
+              "width:96px;max-width:100%;height:72px;object-fit:contain;" +
+              "background:#f4f5f7;border:1px solid var(--line,#d6d9de);border-radius:4px;";
+            // 読み込めない画像は灰色の枠と名前だけにする（壊れ表示を出さない）。
+            img.addEventListener("error", function () {
+              img.style.display = "none";
+              b.style.background = "#e9eaec";
+            });
+            var cap = document.createElement("span");
+            cap.textContent = it.label;
+            cap.style.cssText =
+              "max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;";
+            b.appendChild(img);
+            b.appendChild(cap);
+            b.addEventListener("click", function () {
+              pick(it.name);
+            });
+            grid.appendChild(b);
+            focusables.push(b);
+          });
+          list.appendChild(grid);
+        });
+        list.appendChild(
+          optionButton("📷 新しく切り出す…", null, false),
+        );
+      }
+      search.addEventListener("input", render);
+      // 選択肢のボタン上でのEnterは押下として扱われる（選んで閉じる）。
+      // 検索欄でのEnterは先頭の画像を選び、矢印キーで一覧内を移動する。
+      wrap.addEventListener("keydown", function (ev) {
+        var k = String(ev.key || "");
+        if (k === "Escape") {
+          ev.preventDefault();
+          DDD.hideIfOwner(field, true);
+          return;
+        }
+        var active = null;
+        try {
+          active = document.activeElement;
+        } catch (err) {
+          active = null;
+        }
+        if (k === "Enter" && active === search) {
+          var first = null;
+          for (var i = 0; i < focusables.length; i++) {
+            if (focusables[i].getAttribute("data-name")) {
+              first = focusables[i];
+              break;
+            }
+          }
+          if (first) {
+            ev.preventDefault();
+            first.click();
+          }
+          return;
+        }
+        var move = 0;
+        if (k === "ArrowRight" || k === "ArrowDown") {
+          move = 1;
+        } else if (k === "ArrowLeft" || k === "ArrowUp") {
+          move = -1;
+        }
+        if (!move) {
+          return;
+        }
+        var at = focusables.indexOf(active);
+        if (at === -1) {
+          return;
+        }
+        ev.preventDefault();
+        var next = Math.min(
+          focusables.length - 1,
+          Math.max(0, at + move),
+        );
+        focusables[next].focus();
+      });
+      render();
+      content.appendChild(wrap);
+      DDD.setColour("#ffffff", "#d6d9de");
+      DDD.showPositionedByField(this, function () {});
+      setTimeout(function () {
+        try {
+          search.focus();
+        } catch (err) {
+          /* 焦点が移せなくても選べる */
+        }
+      }, 0);
     }
   }
   Blockly.fieldRegistry.register("field_template", TemplateField);
