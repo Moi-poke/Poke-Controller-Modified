@@ -151,7 +151,8 @@
       // 浮きの先頭。手で無効にした塊は除くが、自動で灰色にした分
       // （ORPHAN_REASON）は「外にある」警告の対象に残す。
       var orphanIds = {};
-      PokeconEditor.orphanBlocks(ws).forEach(function (top) {        var on = false;
+      PokeconEditor.orphanBlocks(ws).forEach(function (top) {
+        var on = false;
         try {
           on = top.isEnabled();
         } catch (e) {
@@ -474,54 +475,72 @@
 
     // 生成コードと行ごとの出どころ（MakeCodeの対応表示に相当）。
     // 戻り値は { code, lines }。code は通常の生成と1文字も違わない。
+    // 各文ブロックのコードを開始・終了の印（コメント行）で囲んで生成し、
+    // 印を取り除きながら持ち主を積み下ろしする。前後で囲むため、入れ子の
+    // 後の else: や return・def の行も外側の持ち主へ正しく戻る（「次の印
+    // まで同じ ID」だと直前の内側ブロックの行になってしまう）。
+    // 印は STATEMENT_PREFIX/SUFFIX ではなく scrub_ で足す。controls_if や
+    // break は前置きの印を自前で出し（break は外側の繰り返しの分まで）、
+    // SUFFIX があると controls_if が else: pass を足し、印があると
+    // addLoopTrap が空の本体に印を入れて pass が消える。どれも通常の生成と
+    // 食い違うか、開始と終了の数が合わなくなる。scrub_ は文ブロックごとに
+    // 1回、自身のコードを受けて次のブロックをつなぐ前に呼ばれるので、
+    // そこで囲めば必ず対になる。
     // 印はコメント行のため、生成器の import 判定（codeOnly はコメントを
     // 除いてから調べる）には影響しない。プログラム・サブルーチン定義の
-    // 自身には印を入れない（trialCode と同じく suppressPrefixSuffix を
-    // 一時的に立てる）。生成後は印の設定を必ず元へ戻す。
+    // 自身は囲まない（中身の行だけが持ち主を持つ）。生成後は scrub_ を
+    // 必ず元へ戻す。
     codeMap: function (ws, gen) {
-      var MARK = "# @@pokecon:%1@@\n";
-      var MARK_RE = /^[ \t]*# @@pokecon:(?:"([^"]+)"|'([^']+)')@@[ \t]*$/;
-      var prevPrefix = gen.STATEMENT_PREFIX;
-      var suppressed = [];
+      var START = "# @@pokecon:%1@@\n";
+      var END = "# @@/pokecon:%1@@\n";
+      var MARK_RE = /^[ \t]*# @@(\/?)pokecon:(?:"([^"]+)"|'([^']+)')@@[ \t]*$/;
+      var OUTER = { pokecon_program: true, pokecon_sub_def: true };
+      var hadOwnScrub = Object.prototype.hasOwnProperty.call(gen, "scrub_");
+      var prevScrub = gen.scrub_;
       var marked = "";
       try {
-        ws.getTopBlocks(false).forEach(function (t) {
-          if (t.type === "pokecon_program" || t.type === "pokecon_sub_def") {
-            suppressed.push([t, t.suppressPrefixSuffix]);
-            t.suppressPrefixSuffix = true;
+        gen.scrub_ = function (block, code, thisOnly) {
+          // 値ブロック（出力つき）は文の一部なので囲まない。
+          if (
+            typeof code === "string" &&
+            !block.outputConnection &&
+            !OUTER[block.type]
+          ) {
+            code = gen.injectId(START, block) + code + gen.injectId(END, block);
           }
-        });
-        gen.STATEMENT_PREFIX = MARK;
+          return prevScrub.call(gen, block, code, thisOnly);
+        };
         marked = gen.workspaceToCode(ws);
       } finally {
-        // 戻しは1つずつ握る（途中で落ちても印を残さない）。
         try {
-          gen.STATEMENT_PREFIX = prevPrefix;
+          if (hadOwnScrub) {
+            gen.scrub_ = prevScrub;
+          } else {
+            delete gen.scrub_;
+          }
         } catch (e) {
           /* 戻せなくても続ける */
         }
-        suppressed.forEach(function (pair) {
-          try {
-            pair[0].suppressPrefixSuffix = pair[1];
-          } catch (e) {
-            /* 消えたブロックは戻せない */
-          }
-        });
       }
-      // 印の行を取り除きながら、直後に続く行へ今の ID を割り当てる。
-      // 印は文ブロックごとに入るため、入れ子の中の行は内側の ID になる。
-      // 空行はどのブロックにも属さない扱いにする。
+      // 開始の印で持ち主を積み、終了の印で下ろす。各行は今いちばん内側の
+      // 持ち主のもの。空行はどのブロックにも属さない扱いにする。
       var out = [];
       var ids = [];
-      var cur = null;
+      var stack = [];
       marked.split("\n").forEach(function (ln) {
         var m = ln.match(MARK_RE);
         if (m) {
-          cur = m[1] || m[2] || null;
+          if (m[1]) {
+            stack.pop();
+          } else {
+            stack.push(m[2] || m[3] || null);
+          }
           return;
         }
         out.push(ln);
-        ids.push(/^[ \t]*$/.test(ln) ? null : cur);
+        ids.push(
+          /^[ \t]*$/.test(ln) || !stack.length ? null : stack[stack.length - 1]
+        );
       });
       return { code: out.join("\n"), lines: ids };
     },

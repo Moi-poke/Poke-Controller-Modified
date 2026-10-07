@@ -116,7 +116,9 @@ const before = Blockly.Python.STATEMENT_PREFIX;
 const m = E.codeMap(ws, Blockly.Python);
 const plain = Blockly.Python.workspaceToCode(ws);
 const after = Blockly.Python.STATEMENT_PREFIX;
-done({{ code: m.code, lines: m.lines, plain,
+const ownScrub = Object.prototype.hasOwnProperty.call(Blockly.Python, 'scrub_');
+const allIds = ws.getAllBlocks(false).map((b) => b.id);
+done({{ code: m.code, lines: m.lines, plain, ownScrub, allIds,
         before: before == null ? null : String(before),
         after: after == null ? null : String(after) }});
 """
@@ -133,6 +135,12 @@ def test_every_bundled_sample_maps_to_exactly_the_same_code_it_would_generate() 
         assert out["code"] == out["plain"], name
         assert len(out["lines"]) == len(out["code"].split("\n")), name
         compile(out["code"], name, "exec")
+        # Then: 持ち主のIDは読込後のブロックだけで、空振り（全行None）が無い
+        # （作例の欄にIDが無いため、生成IDも含む読込後のID集合と照合する）
+        known = set(out["allIds"])
+        owned = [lid for lid in out["lines"] if lid is not None]
+        assert owned, name
+        assert all(lid in known for lid in owned), name
 
 
 def test_press_repeat_wait_and_print_lines_point_at_the_blocks_that_made_them() -> None:
@@ -147,12 +155,175 @@ def test_press_repeat_wait_and_print_lines_point_at_the_blocks_that_made_them() 
         return ids[next(k for k, line in enumerate(rows) if sub in line)]
 
     # Then: 文の行は生んだブロック、import・class・def はどこにも属さない
+    assert out["code"] == out["plain"]
+    assert len(ids) == len(rows)
     assert owner("self.press(") == "p1"
     assert owner("for ") == "r1"
     assert owner("self.wait(") == "w1"
     assert owner("hello") == "pr1"
     assert owner("from Commands") is None
     assert owner("class BlocklyCmd") is None
+    assert owner("def do") is None
+
+
+def _if_else_then_sub() -> dict[str, Any]:
+    """もし{押すA}でなければ{押すB}→呼ぶ、とサブルーチン定義{押すX}の組み立て。"""
+    state = _program(
+        {
+            "type": "controls_if",
+            "id": "IF",
+            "extraState": {"hasElse": True},
+            "inputs": {
+                "IF0": {"block": {"type": "logic_boolean", "fields": {"BOOL": "TRUE"}}},
+                "DO0": {"block": _press("a", "A")},
+                "ELSE": {"block": _press("b", "B")},
+            },
+            "next": {
+                "block": {
+                    "type": "pokecon_sub_call",
+                    "id": "c1",
+                    "fields": {"NAME": "go"},
+                }
+            },
+        }
+    )
+    state["blocks"]["blocks"].append(
+        {
+            "type": "pokecon_sub_def",
+            "id": "S",
+            "x": 0,
+            "y": 400,
+            "fields": {"NAME": "go", "ARGS": ""},
+            "inputs": {"DO": {"block": _press("x", "X")}},
+        }
+    )
+    return state
+
+
+def test_structural_lines_after_a_nested_block_go_back_to_their_real_owner() -> None:
+    """else: は if ブロック、サブルーチンの def 行はどこにも属さないこと。"""
+    # Given: もし…でなければ…→呼ぶ と、別のサブルーチン定義
+    out = _codemap(_if_else_then_sub())
+    rows = out["code"].split("\n")
+    ids = out["lines"]
+
+    def owner(sub: str) -> Any:
+        return ids[next(k for k, line in enumerate(rows) if sub in line)]
+
+    # When/Then: 入れ子の後の構造の行は、直前の内側ブロックを引き継がない
+    assert out["code"] == out["plain"]
+    assert len(ids) == len(rows)
+    assert owner("if ") == "IF"
+    assert owner("else:") == "IF"
+    assert owner("Button.B") == "b"
+    assert owner("self.go(") == "c1"
+    assert owner("def go(") is None
+    assert owner("Button.X") == "x"
+
+
+def test_subroutine_return_line_belongs_to_no_body_block() -> None:
+    """戻り値つきサブルーチンの return 行が、本体の最後のブロックを指さないこと。"""
+    # Given: 本体が もし{押すA}、戻り値 1 のサブルーチン
+    state = _if_else_then_sub()
+    sub = state["blocks"]["blocks"][1]
+    sub["inputs"]["DO"] = {
+        "block": {
+            "type": "controls_if",
+            "id": "IF2",
+            "inputs": {
+                "IF0": {"block": {"type": "logic_boolean", "fields": {"BOOL": "TRUE"}}},
+                "DO0": {"block": _press("a2", "A")},
+            },
+        }
+    }
+    sub["inputs"]["RETURN"] = {"block": {"type": "math_number", "fields": {"NUM": 1}}}
+    out = _codemap(state)
+    rows = out["code"].split("\n")
+    # When: return 行の持ち主を調べる
+    k = next(k for k, line in enumerate(rows) if line.strip() == "return 1")
+    # Then: 本体のどのブロックにも属さない
+    assert out["code"] == out["plain"]
+    assert len(out["lines"]) == len(rows)
+    assert out["lines"][k] is None
+
+
+def test_empty_loop_bodies_still_map_to_exactly_the_plain_code() -> None:
+    """中身の無い繰り返しでも、対応付けの文字列が通常生成と一致すること。"""
+    # Given: 中身の無い 繰り返し(2) と ずっと繰り返す
+    state = _program(
+        {
+            "type": "controls_repeat_ext",
+            "id": "r1",
+            "inputs": {
+                "TIMES": {"block": {"type": "math_number", "fields": {"NUM": 2}}}
+            },
+            "next": {
+                "block": {
+                    "type": "controls_whileUntil",
+                    "id": "w1",
+                    "fields": {"MODE": "WHILE"},
+                    "inputs": {
+                        "BOOL": {
+                            "block": {
+                                "type": "logic_boolean",
+                                "fields": {"BOOL": "TRUE"},
+                            }
+                        }
+                    },
+                }
+            },
+        }
+    )
+    # When: 対応付けを取る
+    out = _codemap(state)
+    # Then: 空の本体の pass も含めて通常生成と同じで、Python として正しい
+    assert out["code"] == out["plain"]
+    compile(out["code"], "empty_loops", "exec")
+    rows = out["code"].split("\n")
+    passes = [k for k, line in enumerate(rows) if line.strip() == "pass"]
+    assert passes
+    # Then: 空本体の pass は生成順にそれぞれの繰り返しの持ち主になる
+    assert [out["lines"][k] for k in passes] == ["r1", "w1"]
+
+
+def test_break_inside_a_loop_keeps_later_lines_on_their_own_blocks() -> None:
+    """繰り返し{押すA→抜ける}→押すB で、抜けると後続の行がずれないこと。"""
+    # Given: 抜ける（break）は外側の繰り返しの印まで自前で出すブロック
+    state = _program(
+        {
+            "type": "controls_repeat_ext",
+            "id": "r1",
+            "inputs": {
+                "TIMES": {"block": {"type": "math_number", "fields": {"NUM": 2}}},
+                "DO": {
+                    "block": _press(
+                        "a",
+                        "A",
+                        {
+                            "type": "controls_flow_statements",
+                            "id": "brk",
+                            "fields": {"FLOW": "BREAK"},
+                        },
+                    )
+                },
+            },
+            "next": {"block": _press("b", "B")},
+        }
+    )
+    out = _codemap(state)
+    rows = out["code"].split("\n")
+    ids = out["lines"]
+
+    def owner(sub: str) -> Any:
+        return ids[next(k for k, line in enumerate(rows) if sub in line)]
+
+    # When/Then: 各行は生んだブロックを指し、def 行はどこにも属さない
+    assert out["code"] == out["plain"]
+    assert len(ids) == len(rows)
+    assert owner("for ") == "r1"
+    assert owner("Button.A") == "a"
+    assert owner("break") == "brk"
+    assert owner("Button.B") == "b"
     assert owner("def do") is None
 
 
@@ -165,6 +336,7 @@ def test_codemap_leaves_the_generator_exactly_as_it_found_it() -> None:
     assert out["after"] == out["before"]
     assert "@@pokecon" not in out["plain"]
     assert out["code"] == out["plain"]
+    assert out["ownScrub"] is False
 
 
 def test_preview_rows_carry_block_ids_and_clicking_a_row_selects_that_block() -> None:
