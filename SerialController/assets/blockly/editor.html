@@ -79,6 +79,11 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #previewwrap .tab { background: transparent; border-color: transparent; color: #a8adb5; font-weight: 600; }
 #previewwrap .tab.on { background: #3a3d43; border-color: #4a4e55; color: #fff; }
 #runlog { display: none; flex: 1 1 auto; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.5 Consolas, "Cascadia Mono", "MS Gothic", monospace; white-space: pre-wrap; }
+#runvars { display: none; margin: 0; padding: 8px 12px; overflow: auto; font: 12px/1.5 Consolas, "Cascadia Mono", "MS Gothic", monospace; background: #232428; color: #e6e6e6; border-bottom: 1px solid #111; max-height: 40%; }
+#runvars table { border-collapse: collapse; width: 100%; margin-top: 4px; }
+#runvars td { border: 1px solid #4a4e55; padding: 2px 6px; word-break: break-all; }
+/* 変わった値は色だけでなく太字でも示す（短い強調は次の更新で消える）。 */
+#runvars .changed { background: #5a4a00; font-weight: 700; }
 button.run { background: #1e8e3e; border-color: #1e8e3e; color: #fff; font-weight: 600; }
 button.run:hover { background: #17793a; }
 #runstate { font-size: 12px; color: var(--muted); }
@@ -153,6 +158,7 @@ button.run:hover { background: #17793a; }
 <aside id="previewwrap" aria-label="生成コード">
 <div class="panehead"><button id="tabcode" class="tab on" aria-pressed="true">生成コード</button><button id="tablog" class="tab" aria-pressed="false">実行ログ</button><span id="previewstatus" role="status" aria-live="polite"></span><button id="previewcopy" title="生成コードをクリップボードへ">コピー</button></div>
 <pre id="preview" tabindex="0" aria-label="生成コードのプレビュー"></pre>
+<div id="runvars" aria-label="試し実行の変数"></div>
 <pre id="runlog" tabindex="0" aria-label="試し実行のログ"></pre>
 </aside>
 </main>
@@ -918,7 +924,7 @@ button.run:hover { background: #17793a; }
   // 本体（services/blockly_run）が各ブロックの手前の目印で「いまどこか」を
   // 記録し、ここは約0.15秒ごとに様子を取りに行って光らせる。止める・進める
   // は本体のコマンドの一時停止を使うため、本体の一時停止ボタンとも揃う。
-  var run = { active: false, paused: false, runId: 0, seq: 0, timer: null, warned: [], failures: 0 };
+  var run = { active: false, paused: false, runId: 0, seq: 0, timer: null, warned: [], failures: 0, prevVars: {}, changedAt: {}, pauseNotified: false };
   // 様子を取れない回数の上限（0.6秒おき・約6秒）。超えたら諦めて知らせる。
   var RUN_POLL_MAX_FAILURES = 10;
   // 区切り（ブレークポイント）。保存物には入れない（この画面の間だけ）。
@@ -963,9 +969,10 @@ button.run:hover { background: #17793a; }
   }
   function showPaneTab(which) {
     var code = which !== 'log';
-    var pre = byId('preview'), log = byId('runlog');
+    var pre = byId('preview'), log = byId('runlog'), varsBox = byId('runvars');
     if (pre && pre.style) { pre.style.display = code ? '' : 'none'; }
     if (log && log.style) { log.style.display = code ? 'none' : 'block'; }
+    if (varsBox && varsBox.style) { varsBox.style.display = code ? 'none' : 'block'; }
     [['tabcode', code], ['tablog', !code]].forEach(function (pair) {
       var t = byId(pair[0]);
       if (!t) { return; }
@@ -985,6 +992,60 @@ button.run:hover { background: #17793a; }
       try { el.scrollTop = el.scrollHeight; } catch (e) { /* 続ける */ }
       setStatus('試し実行中: ' + lines[lines.length - 1][1], false);
     }
+  }
+  // 変数欄の更新。受け取ったたびに作り直し、前回から変わった行に changed を付ける。
+  // 終わっても最後の値は残し、次の実行開始で消す。検証スタブの最小DOMでも
+  // 落ちないよう byId・createElement・appendChild だけを使う。
+  // 強調は約2秒保つ（次の取りに行ぎで値が同じでもすぐには消さない）。
+  var RUNVARS_CHANGED_MS = 2000;
+  function updateRunVars(vars) {
+    var box = byId('runvars');
+    if (!box) { return; }
+    var list = vars || [];
+    var prev = run.prevVars || {};
+    var now = Date.now();
+    if (!run.changedAt) { run.changedAt = {}; }
+    var cur = {};
+    list.forEach(function (pair) {
+      if (pair && pair.length >= 2) { cur[String(pair[0])] = String(pair[1]); }
+    });
+    Object.keys(cur).forEach(function (name) {
+      if (prev[name] !== undefined && prev[name] !== cur[name]) {
+        run.changedAt[name] = now;
+      }
+    });
+    try { box.textContent = ''; } catch (e) { /* 続ける */ }
+    try { box.innerHTML = ''; } catch (e) { /* 続ける */ }
+    try { if (box.options) { box.options.length = 0; } } catch (e) { /* 続ける */ }
+    try { while (box.firstChild) { box.removeChild(box.firstChild); } } catch (e) { /* 続ける */ }
+    var head = document.createElement('div');
+    head.textContent = '変数';
+    box.appendChild(head);
+    if (!list.length) {
+      var empty = document.createElement('div');
+      empty.textContent = '（まだ変数はありません）';
+      box.appendChild(empty);
+    } else {
+      var table = document.createElement('table');
+      list.forEach(function (pair) {
+        if (!pair || pair.length < 2) { return; }
+        var name = String(pair[0]), val = String(pair[1]);
+        var tr = document.createElement('tr');
+        if (run.changedAt[name] !== undefined && (now - run.changedAt[name]) < RUNVARS_CHANGED_MS) {
+          tr.className = 'changed';
+          try { tr.setAttribute('class', 'changed'); } catch (e) { /* 続ける */ }
+        }
+        var tdN = document.createElement('td');
+        tdN.textContent = name;
+        var tdV = document.createElement('td');
+        tdV.textContent = val;
+        tr.appendChild(tdN);
+        tr.appendChild(tdV);
+        table.appendChild(tr);
+      });
+      box.appendChild(table);
+    }
+    run.prevVars = cur;
   }
   function postJson(url, body) {
     return fetch(url, {
@@ -1018,6 +1079,10 @@ button.run:hover { background: #17793a; }
     if (log) { log.textContent = ''; }
     run.seq = 0;
     run.failures = 0;
+    run.prevVars = {};
+    run.changedAt = {};
+    run.pauseNotified = false;
+    updateRunVars([]);
     setStatus('試し実行を始めています…', false);
     postJson('./run', { code: r.code, breakpoints: breakpointList() }).then(function (j) {
       if (!j.ok) {
@@ -1048,9 +1113,22 @@ button.run:hover { background: #17793a; }
         return;
       }
       appendRunLog(s.logs);
+      updateRunVars(s.vars);
       if (s.running) {
         lightBlock(s.blockId);
         setRunUi(true, s.paused);
+        if (s.paused) {
+          // 一時停止中は変数欄のありかを状態行で1回だけ知らせる。
+          // コード欄が閉じていれば開いて実行ログタブにする。
+          if (!run.pauseNotified) {
+            run.pauseNotified = true;
+            setStatus('⏸ 一時停止中：変数は右の『実行ログ』タブで確認できます', false);
+            if (!previewOn) { setPreviewVisible(true); }
+            showPaneTab('log');
+          }
+        } else {
+          run.pauseNotified = false;
+        }
         run.timer = setTimeout(pollRun, 150);
         return;
       }
@@ -1071,6 +1149,8 @@ button.run:hover { background: #17793a; }
   function finishRun(s) {
     lightBlock(null);
     setRunUi(false, false);
+    run.pauseNotified = false;
+    // 変数の最後の値は残す（次の実行開始で消す）。
     var result = s.result || '終了';
     if (result === 'エラー') {
       var msg = s.error || '（本体のログ欄を確認してください）';
