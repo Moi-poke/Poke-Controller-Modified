@@ -319,3 +319,30 @@ def test_editor_shows_a_guide_when_there_are_no_vars() -> None:
     # Then: 案内文が出る
     joined = " ".join(res["got"]["kids"] + [c[0] for c in res["got"]["cells"]])
     assert "まだ変数はありません" in joined
+
+
+def test_a_huge_list_does_not_slow_every_step() -> None:
+    """大きなリスト（10万件）を持っていても、ブロックごとの変数の集め直しが重くならないこと。"""
+    session = make_session()
+    big = list(range(100_000))
+    text = "x" * 200_000
+
+    class _Cmd:
+        def _gate(self) -> None:
+            pass
+
+    def caller() -> None:
+        # 呼び出し元のローカルに大きな値がある状態で目印を通す
+        _ = (big, text)
+        for i in range(200):
+            session.step(_Cmd(), f"b{i}")
+
+    started = time.perf_counter()
+    caller()
+    elapsed = time.perf_counter() - started
+    shown = dict(session.snapshot()["vars"])
+    # Then: 200 回通っても速い（丸ごと repr すると秒単位になる）
+    assert elapsed < 0.5, elapsed
+    # Then: 表示は切り詰められ、末尾が …
+    assert shown["big"].endswith("…") and len(shown["big"]) <= 81
+    assert shown["text"].endswith("…") and len(shown["text"]) <= 81

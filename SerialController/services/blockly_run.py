@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import builtins
 import collections
+import reprlib
 import sys
 import threading
 from typing import Any
@@ -46,6 +47,13 @@ _VARS_REPR_MAX = 80
 
 #: 変数欄に出せる値の型（命令・型・関数・モジュール等は出さない）。
 _VARS_TYPES = (bool, int, float, str, list, tuple, dict)
+
+#: 表示用の短い repr。上限（_VARS_REPR_MAX）より少し多めに作ってから切る。
+_SHORT_REPR = reprlib.Repr()
+# 件数で省略されるときは必ず上限を超える長さにし、切り方（末尾 …）を一本化する。
+_SHORT_REPR.maxlist = _SHORT_REPR.maxtuple = _SHORT_REPR.maxdict = 40
+_SHORT_REPR.maxstring = _SHORT_REPR.maxother = _VARS_REPR_MAX + 20
+_SHORT_REPR.maxlevel = 3
 
 
 class TrialSession:
@@ -181,7 +189,9 @@ class TrialSession:
             shown: dict[str, str] = {}
             for name in sorted(raw)[:_VARS_MAX]:
                 try:
-                    text = repr(raw[name])
+                    # 丸ごと repr すると大きなリスト・文字列でブロックごとに重くなる
+                    # （10万件で1回数ms）。件数・文字数を先に絞った表示を作る。
+                    text = _SHORT_REPR.repr(raw[name])
                 except Exception:
                     continue
                 if len(text) > _VARS_REPR_MAX:
