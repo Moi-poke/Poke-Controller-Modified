@@ -162,6 +162,14 @@ button.run:hover { background: #17793a; }
 .blocklyHighlighted > .blocklyPath { fill-opacity: 1 !important; stroke: #ffb300 !important; stroke-width: 4px !important; filter: drop-shadow(0 0 6px rgba(255, 179, 0, 0.9)); }
 .pokecon-bp > .blocklyPath { stroke: #d93025 !important; stroke-width: 3px !important; stroke-dasharray: 6 3; }
 #preview { flex: 1 1 auto; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.5 Consolas, "Cascadia Mono", "MS Gothic", monospace; white-space: pre; tab-size: 4; }
+/* 生成コードの行ごとの表示。押せる行は手の形、選んだブロックの行は
+   背景＋左の縦線＋太字で示す（色だけに頼らない）。空行は高さを保つ。 */
+#preview .codeline { display: block; white-space: pre; padding: 0 4px; margin-left: -4px; border-left: 3px solid transparent; }
+#preview .codeline:empty::before { content: "\00a0"; }
+#preview .codeline[data-block] { cursor: pointer; }
+#preview .codeline[data-block]:hover { background: #2f3136; }
+#preview .codeline.sel { background: #3d4a63; border-left-color: var(--accent); font-weight: 600; }
+#preview .codeline:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #legacy { padding: 2px 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 #legacy summary { cursor: pointer; padding: 2px 0; }
 #legacy .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 0; }
@@ -644,12 +652,117 @@ button.run:hover { background: #17793a; }
     if (!pythonGenerator) { return ''; }
     try { return pythonGenerator.workspaceToCode(ws); } catch (e) { return ''; }
   }
+  // 生成コード欄の行要素（行き来用）。renderPreview が作り直す。
+  var previewRows = [];
+  // いま選ばれているブロック（強調の追従用。SELECTED事象で保つ）。
+  var previewSelId = null;
+  // 子の掃除。検証スタブは options 配列で子を持つため両方触る。
+  function clearPreview(pre) {
+    previewRows = [];
+    try { if (pre.options) { pre.options.length = 0; } } catch (e) { /* 続ける */ }
+    try { pre.textContent = ''; } catch (e) { /* 続ける */ }
+    try { while (pre.firstChild) { pre.removeChild(pre.firstChild); } } catch (e) { /* 続ける */ }
+  }
+  // 行を押したら、そのブロックを選んで真ん中へ出す。
+  function previewGoto(id) {
+    if (!id) { return; }
+    var b = null;
+    try { b = ws.getBlockById(id); } catch (e) { b = null; }
+    if (!b) { return; }
+    try { if (typeof b.select === 'function') { b.select(); } } catch (e) { /* 続ける */ }
+    try { if (typeof ws.centerOnBlock === 'function') { ws.centerOnBlock(id); } } catch (e) { /* 続ける */ }
+  }
+  // 行1つを作る。中身は textContent で入れ、利用者の入力は連結しない。
+  function previewRow(ln, id) {
+    var row = null;
+    try { row = document.createElement('div'); } catch (e) { row = null; }
+    if (!row) { return null; }
+    try {
+      row.className = 'codeline';
+      row.textContent = ln;
+      // 出どころの保持は data-block が正本。検証スタブには
+      // getAttribute が無いため、内部判定用に手元にも持つ。
+      if (id) {
+        row.setAttribute('data-block', id);
+        row.pokeconBlockId = id;
+        row.setAttribute('tabindex', '0');
+        row.setAttribute('role', 'button');
+      }
+      row.setAttribute('aria-current', 'false');
+    } catch (e) { /* 飾りの失敗では行を保つ */ }
+    if (id) {
+      (function (bid) {
+        row.addEventListener('click', function () { previewGoto(bid); });
+        row.addEventListener('keydown', function (ev) {
+          if (!ev) { return; }
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            if (ev.preventDefault) { ev.preventDefault(); }
+            previewGoto(bid);
+          }
+        });
+      })(id);
+    }
+    return row;
+  }
+  // 選んだブロックの行を強調し、最初の行が見えるように寄せる。
+  // 選択が外れたら強調を消す。
+  function applyPreviewSelection(id) {
+    if (!previewRows.length) { return; }
+    var first = null;
+    previewRows.forEach(function (row) {
+      var bid = null;
+      try { bid = row.pokeconBlockId || null; } catch (e) { bid = null; }
+      var onOff = !!(id && bid && bid === id);
+      try { row.className = onOff ? 'codeline sel' : 'codeline'; } catch (e) { /* 続ける */ }
+      try {
+        if (typeof row.setAttribute === 'function') {
+          row.setAttribute('aria-current', onOff ? 'true' : 'false');
+        }
+      } catch (e) { /* 続ける */ }
+      if (onOff && !first) { first = row; }
+    });
+    if (first) {
+      try {
+        if (typeof first.scrollIntoView === 'function') {
+          first.scrollIntoView({ block: 'nearest' });
+        }
+      } catch (e) { /* 描画なしでも続ける */ }
+    }
+  }
   function renderPreview() {
     var pre = byId('preview');
     var st = byId('previewstatus');
     if (!pre) { return; }
     var code = previewCode();
-    pre.textContent = code || '（ブロックを置くとここに生成コードが出ます）';
+    // 対応付けは E.codeMap に寄せる。取れない・一致しないときは
+    // 従来どおり文字列だけで出す（見た目とコピーは保つ）。
+    var map = null;
+    if (E && typeof E.codeMap === 'function' && pythonGenerator) {
+      try { map = E.codeMap(ws, pythonGenerator); } catch (e) { map = null; }
+    }
+    if (!map || map.code !== code) {
+      map = {
+        code: code,
+        lines: code.split('\n').map(function () { return null; }),
+      };
+    }
+    clearPreview(pre);
+    if (!code) {
+      var empty = previewRow('（ブロックを置くとここに生成コードが出ます）', null);
+      // 空の案内は対応付けの対象外のため、手元の行一覧には入れない。
+      if (empty) { try { pre.appendChild(empty); } catch (e) { /* 続ける */ } }
+    } else {
+      var rows = code.split('\n');
+      rows.forEach(function (ln, i) {
+        var row = previewRow(ln, (map.lines && map.lines[i]) || null);
+        // 強調の追従は手元の行一覧で付ける（子の走査では検証スタブと実DOMで差が出るため）。
+        if (row) { previewRows.push(row); try { pre.appendChild(row); } catch (e) { /* 続ける */ } }
+      });
+    }
+    // 検証スタブでは textContent が子とは別の欄のため、鏡として持つ
+    // （実DOMの pre には options が無く、この分岐には入らない）。
+    try { if (pre.options) { pre.textContent = code; } } catch (e) { /* 続ける */ }
+    applyPreviewSelection(previewSelId);
     if (st) {
       var n = code ? code.replace(/\n+$/, '').split('\n').length : 0;
       st.textContent = code ? n + '行（保存される内容）' : '';
@@ -888,6 +1001,12 @@ button.run:hover { background: #17793a; }
     } else if (id) {
       lastTplBlockId = null;
     }
+    // 生成コード欄の強調の追従。選んだブロックの行を光らせ、外れたら消す。
+    // 描画なしの検証では select()・getSvgRoot() が無いため、事象のIDだけを見る。
+    // 検証スタブは最後の登録だけ覚えるため、テンプレ欄の記憶と束ねて
+    // 登録は1つにする（分けると記憶か強調のどちらかが届かなくなる）。
+    previewSelId = e.newElementId || null;
+    applyPreviewSelection(previewSelId);
   });
   // 選択中→記憶の順でテンプレ欄つきブロックを探す。needCrop が真のときは
   // 範囲欄も必須にする（ブロック用modal向け）。
