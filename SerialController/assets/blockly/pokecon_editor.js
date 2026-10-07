@@ -232,6 +232,162 @@
         },
       };
     },
+
+    // 記録した手順を pokecon_press ブロックの並びにして挿入する。
+    // steps は [{target, duration, wait}]（services/blockly_record の形）。
+    // target は Button.A / Hat.TOP / Direction.UP の形で、BUTTON 欄の書式に
+    // 合わせる（ボタンだけ素の名 A、方向は Hat./Direction. のまま）。
+    // 挿入位置は、選択中の文ブロックがあればその直後（元の後続は最後の
+    // 新ブロックの後ろへつけ直す）、無ければプログラムの DO の末尾、
+    // プログラムが無ければ空いている所。全体を1つの取り消し単位にする。
+    // 作ったブロックの配列を返す（描画なしで検証できる）。
+    insertSteps: function (ws, steps, selected) {
+      var made = [];
+      if (!steps || !steps.length) {
+        return made;
+      }
+      var Ev = Blockly.Events;
+      var prevGroup = Ev && typeof Ev.getGroup === "function" ? Ev.getGroup() : null;
+      if (Ev && typeof Ev.setGroup === "function") {
+        Ev.setGroup(true);
+      }
+      try {
+        steps.forEach(function (s) {
+          var b = ws.newBlock("pokecon_press");
+          var target = String((s && s.target) || "A");
+          // ボタンだけ素の名（Button.A → A）、方向はそのまま。
+          var field = target;
+          if (target.indexOf("Button.") === 0) {
+            field = target.slice(7);
+          }
+          try {
+            b.setFieldValue(field, "BUTTON");
+          } catch (e) {
+            try {
+              b.setFieldValue("A", "BUTTON");
+            } catch (e2) {
+              /* 欄が無ければそのまま */
+            }
+          }
+          ["DURATION", "WAIT"].forEach(function (name) {
+            var key = name === "DURATION" ? "duration" : "wait";
+            var v = s ? Number(s[key]) : NaN;
+            if (!isFinite(v)) {
+              return;
+            }
+            try {
+              b.setFieldValue(String(v), name);
+            } catch (e) {
+              /* 欄が無ければそのまま */
+            }
+          });
+          try {
+            if (typeof b.initSvg === "function") {
+              b.initSvg();
+            }
+            if (typeof b.render === "function") {
+              b.render();
+            }
+          } catch (e) {
+            /* 描画なしの検証では無視する */
+          }
+          made.push(b);
+        });
+        for (var i = 0; i + 1 < made.length; i++) {
+          try {
+            made[i].nextConnection.connect(made[i + 1].previousConnection);
+          } catch (e) {
+            /* つながなければ単体で置く */
+          }
+        }
+        var first = made[0];
+        var last = made[made.length - 1];
+        var anchor =
+          selected && !selected.isShadow && !selected.isShadow() &&
+          typeof selected.getNextBlock === "function" &&
+          (selected.previousConnection || selected.nextConnection) &&
+          !selected.outputConnection &&
+          selected.type !== "pokecon_program"
+            ? selected
+            : null;
+        if (anchor) {
+          // 選択中の直後。元の後続は最後の新ブロックの後ろへつけ直す。
+          var tail = null;
+          try {
+            tail = anchor.getNextBlock();
+          } catch (e) {
+            tail = null;
+          }
+          try {
+            anchor.nextConnection.connect(first.previousConnection);
+          } catch (e) {
+            /* つながなければ単体で置く */
+          }
+          if (tail) {
+            try {
+              last.nextConnection.connect(tail.previousConnection);
+            } catch (e) {
+              /* つながなければ単体で置く */
+            }
+          }
+          return made;
+        }
+        var programs = [];
+        try {
+          programs = (ws.getTopBlocks(false) || []).filter(function (b) {
+            return b.type === "pokecon_program";
+          });
+        } catch (e) {
+          programs = [];
+        }
+        if (programs.length) {
+          var input = null;
+          try {
+            input = programs[0].getInput("DO");
+          } catch (e) {
+            input = null;
+          }
+          var conn = input ? input.connection : null;
+          var head = null;
+          try {
+            head = conn ? conn.targetBlock() : null;
+          } catch (e) {
+            head = null;
+          }
+          if (!head) {
+            try {
+              conn.connect(first.previousConnection);
+            } catch (e) {
+              /* つながなければ単体で置く */
+            }
+          } else {
+            var end = head;
+            try {
+              while (end.getNextBlock()) {
+                end = end.getNextBlock();
+              }
+              end.nextConnection.connect(first.previousConnection);
+            } catch (e) {
+              /* つながなければ単体で置く */
+            }
+          }
+          return made;
+        }
+        // プログラムが無ければ空いている所へ置く（互いにはつなぐ）。
+        var baseX = 80;
+        var baseY = 80;
+        try {
+          first.moveBy(baseX, baseY);
+        } catch (e) {
+          /* 位置が動かせなくても続ける */
+        }
+        return made;
+      } finally {
+        if (Ev && typeof Ev.setGroup === "function") {
+          Ev.setGroup(prevGroup);
+        }
+      }
+    },
   };
 
   // 繰り返しの外へ出てしまう「中断・次へ」。試す範囲（target 以下、only でなければ

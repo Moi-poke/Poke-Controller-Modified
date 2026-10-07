@@ -32,6 +32,7 @@ from services import (
     blockly_capture,
     blockly_color,
     blockly_match,
+    blockly_record,
     blockly_run,
     blockly_save,
     blockly_templates,
@@ -105,6 +106,10 @@ _TRIAL: _Trial | None = None
 _RUN_IDS = itertools.count(1)
 #: 区切り（ブレークポイント）の既定。次の実行にも引き継ぐ。
 _BREAKPOINTS: frozenset[str] = frozenset()
+
+#: 本体の操作の記録（マクロ記録）。送信線（host.serial.sender.transport）に
+#: 付けて PRESS/RELEASE を溜める。付け外しは GUI スレッドで行う。
+_RECORDER = blockly_record.Recorder()
 
 
 def _set_run_host(host: Any) -> None:
@@ -599,6 +604,18 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             print(res.message)
             self._reply(res.status == "saved", res.message, {"warnings": res.warnings})
             return
+        if urllib.parse.urlsplit(self.path).path == "/record/start":
+            payload = self._read_json()
+            if payload is None:
+                return
+            self._start_record()
+            return
+        if urllib.parse.urlsplit(self.path).path == "/record/stop":
+            payload = self._read_json()
+            if payload is None:
+                return
+            self._stop_record()
+            return
         self.send_error(404)
 
     def _start_trial(self, payload: dict[str, Any]) -> None:
@@ -680,6 +697,67 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             return
         self._reply(True, "")
 
+    def _start_record(self) -> None:
+        """本体の送信線に記録を付ける（マクロ記録の開始）。"""
+        host = _RUN_HOST
+        if host is None:
+            self._reply(
+                False,
+                "本体と繋がっていないため記録できません（本体で操作してから試してください）",
+            )
+            return
+
+        def _attach() -> tuple[bool, str]:
+            if _RECORDER.recording:
+                return (False, "既に記録中です（止めてから始めてください）")
+            serial = getattr(host, "serial", None)
+            sender = getattr(serial, "sender", None)
+            transport = getattr(sender, "transport", None)
+            if transport is None:
+                return (
+                    False,
+                    "送信線が無いため記録できません（シリアルに接続してから試してください）",
+                )
+            if not _RECORDER.start(transport):
+                return (False, "この通信方式では記録できません（送信行を作らないため）")
+            return (True, "記録を始めました（本体で操作してください）")
+
+        try:
+            ok, message = _call_on_gui(_attach)
+        except Exception as e:
+            self._reply(False, f"本体が応答しません: {e}")
+            return
+        self._reply(ok, message)
+
+    def _stop_record(self) -> None:
+        """記録を外し、手順を返す（マクロ記録の停止）。"""
+        host = _RUN_HOST
+        if host is None:
+            self._reply(
+                False,
+                "本体と繋がっていないため記録できません（本体で操作してから試してください）",
+            )
+            return
+
+        def _detach() -> tuple[bool, list[dict[str, Any]]]:
+            was = _RECORDER.recording
+            steps = _RECORDER.stop()
+            return (was, steps if isinstance(steps, list) else [])
+
+        try:
+            was_recording, steps = _call_on_gui(_detach)
+        except Exception as e:
+            self._reply(False, f"本体が応答しません: {e}")
+            return
+        if not was_recording:
+            self._reply(False, "記録していません（記録ボタンで始めてください）")
+            return
+        self._reply(
+            True,
+            f"{len(steps)} 個の操作を記録しました",
+            {"steps": steps},
+        )
+
     def _reply(
         self, ok: bool, message: str, extra: dict[str, Any] | None = None
     ) -> None:
@@ -748,8 +826,16 @@ def _stop_server() -> None:
     GUIスレッドを固めないよう shutdown/close だけここで行い、
     join は短命のdaemon番兵に任せる（serve側もdaemonのため
     万一残っても放置でよい）。
+
+    記録が付きっぱなしにならないよう、ここで記録中なら外す。
+    エディタの窓を閉じたときに受け口の多重起動で残らないようにする。
     """
     global _server, _thread
+    try:
+        # 送信線の聞き手を外すだけなので、どのスレッドからでもよい。
+        _RECORDER.stop()
+    except Exception:
+        pass
     server, _server = _server, None
     if server is not None:
         server.shutdown()

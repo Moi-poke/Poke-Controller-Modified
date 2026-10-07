@@ -30,6 +30,7 @@ _ASSETS = (
     "pokecon_blocks.js",
     "pokecon_capture.js",
     "pokecon_editor.js",
+    "pokecon_quick.js",
 )
 
 _PRELUDE = """\

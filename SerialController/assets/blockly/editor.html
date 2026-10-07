@@ -11,6 +11,7 @@
 <script src="./pokecon_blocks.js"></script>
 <script src="./pokecon_capture.js"></script>
 <script src="./pokecon_editor.js"></script>
+<script src="./pokecon_quick.js"></script>
 <style>
 :root {
   --bg: #f4f5f7; --panel: #fff; --line: #d6d9de; --text: #1f2328; --muted: #5c636b;
@@ -64,6 +65,22 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #stemerror:empty { display: none; }
 #saveerrors { display: none; margin: 6px 10px 0; padding: 8px 12px; border: 1px solid var(--err); border-radius: 6px; background: var(--err-bg); color: var(--err); white-space: pre-line; }
 #saveerrors.show { display: block; }
+/* クイック追加の窓。画面上部中央に重ね、分類の色印つきで行を出す。 */
+#quick {
+  display: none; position: fixed; left: 50%; top: 12px; transform: translateX(-50%);
+  width: min(420px, 90vw); padding: 8px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); z-index: 900;
+}
+#quickinput { width: 100%; box-sizing: border-box; }
+#quickbtn:focus-visible, #quickinput:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#quicklist { margin-top: 6px; max-height: 320px; overflow: auto; }
+#quicklist .qrow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+#quicklist .qrow.on { background: #e8f0fe; outline: 2px solid var(--accent); outline-offset: -2px; }
+#quicklist .qdot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; background: #999; }
+#quicklist .qlab { flex: 1 1 auto; }
+#quicklist .qcat { color: var(--muted); font-size: 12px; white-space: nowrap; }
+#quicklist .qempty { padding: 8px; color: var(--muted); }
 #main { flex: 1 1 auto; display: flex; min-height: 0; }
 #ws { flex: 1 1 auto; min-width: 0; min-height: 320px; position: relative; }
 #splitter { display: none; flex: 0 0 6px; cursor: col-resize; background: var(--line); }
@@ -81,6 +98,8 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #runlog { display: none; flex: 1 1 auto; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.5 Consolas, "Cascadia Mono", "MS Gothic", monospace; white-space: pre-wrap; }
 button.run { background: #1e8e3e; border-color: #1e8e3e; color: #fff; font-weight: 600; }
 button.run:hover { background: #17793a; }
+#recbtn.recording { background: #b3261e; border-color: #b3261e; color: #fff; font-weight: 600; }
+#recbtn.recording:hover { background: #8f1d17; }
 #runstate { font-size: 12px; color: var(--muted); }
 #runstate.is-running { color: #1e8e3e; font-weight: 600; }
 #runstate.is-paused { color: var(--warn); font-weight: 600; }
@@ -117,6 +136,7 @@ button.run:hover { background: #17793a; }
 <button id="pausebtn" class="icon" disabled title="一時停止" aria-label="一時停止">⏸</button>
 <button id="stepbtn" class="icon" disabled title="1つ進む（次のブロックの手前で止める）" aria-label="1つ進む">⏭</button>
 <button id="stopbtn" class="icon" disabled title="停止" aria-label="停止">⏹</button>
+<button id="recbtn" title="本体で押した操作を記録し、押すブロックの並びにして挿入する">● 記録</button>
 <span id="runstate" role="status" aria-live="polite"></span>
 </div>
 <div class="grp">
@@ -124,6 +144,7 @@ button.run:hover { background: #17793a; }
 <button id="redo" class="icon" title="やり直し (Ctrl+Y)" aria-label="やり直し">↷</button>
 <button id="cleanup" title="ブロックの塊を縦に整列">整列</button>
 <button id="fit" title="すべてのブロックが見えるように表示">全体表示</button>
+<button id="quickbtn" title="ブロックを探す (Ctrl+K)">＋ ブロックを探す</button>
 </div>
 <div class="grp">
 <button id="capget" title="キャプチャから画像テンプレを切り出して保存">📷 テンプレ作成</button>
@@ -140,12 +161,17 @@ button.run:hover { background: #17793a; }
 <li>変数は「変数」分類の「変数の作成…」で作ります。「設定数値」で受けた値は同じ名前の変数で使えます。</li>
 <li>サブルーチンは定義ブロックを置き、「呼ぶ」の名前欄で選びます。定義の名前を変えると呼出も追従します。</li>
 <li>編集中の内容はこのブラウザに自動で控えられ、閉じても次回に復元されます（保存とは別です）。</li>
+<li>「＋ ブロックを探す」（<kbd>Ctrl</kbd>+<kbd>K</kbd>）で名前から探して追加できます（例: おす・まつ・くりかえし）。↑↓で選び <kbd>Enter</kbd> で選択中のブロックの後ろへ入れます。</li>
 </ul>
 </div>
 </details>
 </div>
 </header>
 <div id="statusline"><span id="stemerror" role="alert"></span><span id="status" role="status" aria-live="polite"></span></div>
+<div id="quick" role="dialog" aria-label="ブロックを探す" style="display: none;">
+<input id="quickinput" role="combobox" aria-controls="quicklist" aria-expanded="false" autocomplete="off" spellcheck="false" placeholder="例: おす・まつ・くりかえし">
+<div id="quicklist" role="listbox" aria-label="候補"></div>
+</div>
 <div id="saveerrors" role="alert" tabindex="-1"></div>
 <main id="main">
 <div id="ws"></div>
@@ -633,6 +659,14 @@ button.run:hover { background: #17793a; }
   var lastTplBlockId = null;
   var SELECTED_TYPE =
     (Blockly.Events && Blockly.Events.SELECTED) || 'selected';
+  // 選択の記憶（クイック追加の挿入先）。getSelected() が描画なしで空のときの
+  // fallback。検証スタブは最後の登録だけ覚えるため、テンプレ欄の記憶より
+  // 先に登録する（汚れ検知の注記と同じ順序の約束）。
+  var quickLastId = null;
+  ws.addChangeListener(function (e) {
+    if (!e || e.type !== SELECTED_TYPE) { return; }
+    if (e.newElementId) { quickLastId = e.newElementId; }
+  });
   ws.addChangeListener(function (e) {
     if (!e || e.type !== SELECTED_TYPE) { return; }
     var id = e.newElementId || null;
@@ -808,6 +842,172 @@ button.run:hover { background: #17793a; }
   on('redo', 'click', function () { try { ws.undo(true); } catch (e) { /* 続ける */ } });
   on('cleanup', 'click', function () { try { ws.cleanUp(); } catch (e) { /* 続ける */ } });
   on('fit', 'click', function () { try { ws.zoomToFit(); } catch (e) { /* 続ける */ } });
+  // ---- クイック追加（名前で探して入れる） ----
+  // 打鍵だけで組み立てるための小さな窓。判定（候補・検索・挿入）は
+  // pokecon_quick.js（Blockly.PokeconQuick）に寄せ、ここは開閉と表示だけを持つ。
+  var Q = (typeof Blockly !== 'undefined' && Blockly.PokeconQuick) || null;
+  var quickEntries = null;
+  var quickOpen = false;
+  var quickSel = 0;
+  var quickShown = [];
+  var quickReturnTo = null;
+  // 選択の記憶（quickLastId）はテンプレ欄の記憶より先に登録済み。
+  // 検証スタブは最後の登録だけ覚えるため、ここでは登録しない。
+  function quickEntriesOnce() {
+    if (!quickEntries && Q) {
+      try { quickEntries = Q.index(TOOLBOX); } catch (e) { quickEntries = []; }
+    }
+    return quickEntries || [];
+  }
+  function quickSelected() {
+    var t = null;
+    try { t = (typeof Blockly.getSelected === 'function') ? Blockly.getSelected() : null; } catch (e) { t = null; }
+    if (!t && quickLastId) {
+      try { t = ws.getBlockById(quickLastId); } catch (e) { t = null; }
+    }
+    return (t && t.workspace === ws) ? t : null;
+  }
+  function quickSetExpanded(v) {
+    var input = byId('quickinput');
+    if (input && typeof input.setAttribute === 'function') {
+      try { input.setAttribute('aria-expanded', v ? 'true' : 'false'); } catch (e) { /* 続ける */ }
+    }
+  }
+  function quickClearList(list) {
+    // 実DOMでは子を外す。firstChild の無い最小DOMでは何もしない。
+    try {
+      while (list.firstChild) { list.removeChild(list.firstChild); }
+    } catch (e) { /* 続ける */ }
+    try { list.textContent = ''; } catch (e) { /* 続ける */ }
+  }
+  function quickRender() {
+    var list = byId('quicklist');
+    var input = byId('quickinput');
+    if (!list || !input) { return; }
+    quickClearList(list);
+    var q = '';
+    try { q = input.value; } catch (e) { q = ''; }
+    var hits = [];
+    try { hits = Q ? Q.search(quickEntriesOnce(), q, 12) : []; } catch (e) { hits = []; }
+    quickShown = hits;
+    if (quickSel >= hits.length) { quickSel = Math.max(0, hits.length - 1); }
+    if (!hits.length) {
+      quickSel = 0;
+      var empty = null;
+      try { empty = document.createElement('div'); } catch (e) { empty = null; }
+      if (empty) {
+        // 空にすると「壊れた」と思われるため、別の言い方を添えて出す。
+        empty.textContent = '見つかりません。別の言い方（例: おす・まつ・くりかえし）を試してください';
+        try { empty.className = 'qempty'; } catch (e2) { /* 続ける */ }
+        try { list.appendChild(empty); } catch (e2) { /* 続ける */ }
+      }
+      quickSetExpanded(false);
+      return;
+    }
+    quickSetExpanded(true);
+    hits.forEach(function (entry, i) {
+      var row = null;
+      try { row = document.createElement('div'); } catch (e) { row = null; }
+      if (!row) { return; }
+      (function (idx, ent) {
+        try {
+          row.className = 'qrow' + (idx === quickSel ? ' on' : '');
+          row.setAttribute('role', 'option');
+          row.setAttribute('data-type', ent.type);
+          row.setAttribute('aria-selected', idx === quickSel ? 'true' : 'false');
+          var dot = document.createElement('span');
+          dot.className = 'qdot';
+          if (ent.colour && dot.style) {
+            dot.style.background = 'hsl(' + ent.colour + ', 45%, 55%)';
+          }
+          var lab = document.createElement('span');
+          lab.className = 'qlab';
+          lab.textContent = ent.label;
+          var cat = document.createElement('span');
+          cat.className = 'qcat';
+          cat.textContent = ent.category;
+          row.appendChild(dot);
+          row.appendChild(lab);
+          row.appendChild(cat);
+          row.addEventListener('click', function () { quickChoose(idx); });
+        } catch (e) { /* 行が出なくても窓は保つ */ }
+        try { list.appendChild(row); } catch (e) { /* 続ける */ }
+      })(i, entry);
+    });
+  }
+  function quickMove(d) {
+    if (!quickShown.length) { return; }
+    quickSel = (quickSel + d + quickShown.length) % quickShown.length;
+    quickRender();
+  }
+  function quickChoose(idx) {
+    var entry = quickShown[idx];
+    if (!entry || !Q) { return; }
+    var made = null;
+    try { made = Q.insert(ws, entry, quickSelected()); } catch (e) { made = null; }
+    if (!made) { setStatus('追加できませんでした', true); return; }
+    quickClose(false);
+    try { if (typeof made.select === 'function') { made.select(); } } catch (e) { /* 続ける */ }
+    try {
+      // 作ったブロックを選択状態にする（描画なしでは事象で知らせる）。
+      var ev = new Blockly.Events.Selected(null, made.id, ws.id);
+      ev.newElementId = made.id;
+      ev.workspaceId = ws.id;
+      Blockly.Events.fire(ev);
+    } catch (e) { /* 選択は飾りのため落としても続ける */ }
+    setStatus('追加しました: ' + entry.label, false);
+    try { if (typeof ws.centerOnBlock === 'function') { ws.centerOnBlock(made.id); } } catch (e) { /* 続ける */ }
+  }
+  function quickOpenFn() {
+    if (!Q) { setStatus('クイック追加の準備ができていません', true); return; }
+    quickEntriesOnce();
+    quickSel = 0;
+    try {
+      quickReturnTo = (typeof document !== 'undefined' && document.activeElement) || null;
+    } catch (e) { quickReturnTo = null; }
+    var box = byId('quick');
+    var input = byId('quickinput');
+    if (!box || !input) { return; }
+    if (box.style) { try { box.style.display = 'block'; } catch (e) { /* 続ける */ } }
+    quickOpen = true;
+    try { input.value = ''; } catch (e) { /* 続ける */ }
+    quickRender();
+    try { input.focus(); } catch (e) { /* 続ける */ }
+  }
+  function quickClose(refocus) {
+    quickOpen = false;
+    var box = byId('quick');
+    if (box && box.style) { try { box.style.display = 'none'; } catch (e) { /* 続ける */ } }
+    quickSetExpanded(false);
+    if (refocus && quickReturnTo && typeof quickReturnTo.focus === 'function') {
+      try { quickReturnTo.focus(); } catch (e) { /* 続ける */ }
+    }
+    quickReturnTo = null;
+  }
+  on('quickbtn', 'click', function () {
+    if (quickOpen) { quickClose(true); } else { quickOpenFn(); }
+  });
+  on('quickinput', 'input', function () { quickSel = 0; quickRender(); });
+  // 入力欄の中での ↑↓・Enter・Esc。window の共用 keydown へも届くが、
+  // ここで先に処理する（入力欄の中での移動・確定のため）。
+  on('quickinput', 'keydown', function (ev) {
+    if (!quickOpen) { return; }
+    if (ev.key === 'ArrowDown') { if (ev.preventDefault) { ev.preventDefault(); } quickMove(1); }
+    else if (ev.key === 'ArrowUp') { if (ev.preventDefault) { ev.preventDefault(); } quickMove(-1); }
+    else if (ev.key === 'Enter') { if (ev.preventDefault) { ev.preventDefault(); } quickChoose(quickSel); }
+    else if (ev.key === 'Escape') { if (ev.preventDefault) { ev.preventDefault(); } quickClose(true); }
+  });
+  try {
+    // 窓の外を押したら閉じる。最小DOMスタブには窓口が無いため諦める。
+    document.addEventListener('click', function (ev) {
+      if (!quickOpen) { return; }
+      var box = byId('quick');
+      var t = ev && ev.target;
+      if (t && t === byId('quickbtn')) { return; }
+      if (box && typeof box.contains === 'function' && t && box.contains(t)) { return; }
+      quickClose(false);
+    });
+  } catch (e) { /* 続ける */ }
   on('del', 'click', function () {
     var sel = document.getElementById('files');
     var stem = sel.value;
@@ -936,7 +1136,9 @@ button.run:hover { background: #17793a; }
   function setRunUi(active, paused) {
     run.active = !!active;
     run.paused = !!(active && paused);
-    var map = { runbtn: run.active, pausebtn: !run.active, stepbtn: !run.active, stopbtn: !run.active };
+    // 記録中は実行を押せず、試し実行中は記録を押せない（同時には走らせない）。
+    var recActive = (typeof rec !== 'undefined' && rec) ? !!rec.active : false;
+    var map = { runbtn: run.active || recActive, pausebtn: !run.active, stepbtn: !run.active, stopbtn: !run.active, recbtn: run.active };
     Object.keys(map).forEach(function (id) { var el = byId(id); if (el) { el.disabled = map[id]; } });
     var pb = byId('pausebtn');
     if (pb) {
@@ -996,6 +1198,7 @@ button.run:hover { background: #17793a; }
   // opts: {} で全体、{blockId, only} で一部だけ。
   function startTrial(opts) {
     if (run.active) { setStatus('試し実行中です（止めてから試してください）', true); return; }
+    if (typeof rec !== 'undefined' && rec && rec.active) { setStatus('記録中です（止めてから試してください）', true); return; }
     if (!E || !pythonGenerator) { setStatus('試し実行の準備ができていません', true); return; }
     var r;
     try {
@@ -1096,6 +1299,71 @@ button.run:hover { background: #17793a; }
   on('pausebtn', 'click', function () { runControl(run.paused ? 'resume' : 'pause'); });
   on('stepbtn', 'click', function () { runControl('step'); });
   on('stopbtn', 'click', function () { runControl('stop'); });
+  // ---- 操作の記録（本体で押した操作を押すブロックの並びにする） ----
+  // 本体で実際に押した操作（送信線へ出た入力）を記録し、止めたときに
+  // pokecon_press ブロックの並びにして挿入する。同時押しの再現はしない。
+  var rec = { active: false };
+  function setRecUi(active) {
+    rec.active = !!active;
+    var btn = byId('recbtn');
+    if (btn) {
+      btn.textContent = rec.active ? '■ 記録を止める' : '● 記録';
+      try { btn.className = rec.active ? 'recording' : ''; } catch (e) { /* 続ける */ }
+      btn.disabled = run.active;
+    }
+    var runbtn = byId('runbtn');
+    if (runbtn) { runbtn.disabled = run.active || rec.active; }
+    var rs = byId('runstate');
+    if (rs) {
+      if (rec.active) {
+        rs.textContent = '● 記録中… 本体で操作してください（押した操作がブロックになります）';
+        rs.className = 'is-running';
+      } else if (!run.active) {
+        rs.textContent = '';
+        rs.className = '';
+      }
+    }
+  }
+  function startRecord() {
+    if (run.active) { setStatus('試し実行中です（止めてから記録してください）', true); return; }
+    if (rec.active) { return; }
+    setStatus('記録を始めています…', false);
+    postJson('./record/start', {}).then(function (j) {
+      if (!j.ok) {
+        setRecUi(false);
+        setStatus(j.message || '記録できません', true);
+        return;
+      }
+      setRecUi(true);
+      setStatus('記録中… 本体で操作してください（押した操作がブロックになります）', false);
+    }).catch(function (e) {
+      setRecUi(false);
+      setStatus('記録できません: ' + e, true);
+    });
+  }
+  function stopRecord() {
+    if (!rec.active) { return; }
+    setStatus('記録をまとめています…', false);
+    postJson('./record/stop', {}).then(function (j) {
+      setRecUi(false);
+      if (!j.ok) {
+        setStatus(j.message || '記録できません', true);
+        return;
+      }
+      var steps = j.steps || [];
+      if (!steps.length) {
+        setStatus('操作が記録されませんでした（本体でボタンを押してから止めてください）', true);
+        return;
+      }
+      var sel = (typeof Blockly.getSelected === 'function') ? Blockly.getSelected() : null;
+      var made = (E && E.insertSteps) ? E.insertSteps(ws, steps, sel) : [];
+      setStatus(j.message || (made.length + ' 個の操作を記録しました'), false);
+    }).catch(function (e) {
+      setRecUi(false);
+      setStatus('記録できません: ' + e, true);
+    });
+  }
+  on('recbtn', 'click', function () { if (rec.active) { stopRecord(); } else { startRecord(); } });
   setRunUi(false, false);
   // 右クリック：一部だけ試す・区切り。値ブロック・影・プログラム自身には出さない。
   try {
@@ -1988,6 +2256,16 @@ button.run:hover { background: #17793a; }
     if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
       try { ev.preventDefault(); } catch (e) { /* 続ける */ }
       if (!run.active) { startTrial({}); }
+      return;
+    }
+    // クイック追加は mac の Cmd+K でも開く（VS Code の命令パレット相当）。
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'k' || ev.key === 'K')) {
+      try { ev.preventDefault(); } catch (e) { /* 続ける */ }
+      if (quickOpen) { quickClose(true); } else { quickOpenFn(); }
+      return;
+    }
+    if (ev.key === 'Escape' && quickOpen) {
+      quickClose(true);
       return;
     }
     if (ev.key === 'Escape' && document.getElementById('capmodal').style.display !== 'none') {
