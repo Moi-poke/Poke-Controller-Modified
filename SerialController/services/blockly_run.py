@@ -69,6 +69,8 @@ class TrialSession:
         self.block_id = ""
         #: 区切り。このIDのブロックの手前で一時停止する。
         self.breakpoints: frozenset[str] = frozenset()
+        #: 「ここまで実行」の行き先。このIDの手前で1回だけ止まり、止まったら空にする。
+        self.run_to = ""
         #: 次のブロックの手前で一時停止する（「1つ進む」）。
         self.step_pending = False
         #: 編集画面から停止を頼んだか（記録用。結果の判定は finish_called で行う）。
@@ -155,7 +157,11 @@ class TrialSession:
         hook = self.on_step
         if hook is not None:
             hook(self.block_id)
-        if self.step_pending or self.block_id in self.breakpoints:
+        run_to_hit = bool(self.run_to) and self.block_id == self.run_to
+        if run_to_hit:
+            # 1回だけ（一時停止したら空にし、繰り返しの2周目は止めない）。
+            self.run_to = ""
+        if self.step_pending or self.block_id in self.breakpoints or run_to_hit:
             self.step_pending = False
             pause = getattr(cmd, "pause", None)
             if callable(pause):

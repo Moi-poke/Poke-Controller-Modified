@@ -138,9 +138,9 @@ button.run:hover { background: #17793a; }
 </div>
 <div class="grp" role="group" aria-label="試し実行">
 <button id="runbtn" class="run" title="今の組み立てを保存せずに本体で走らせる (Ctrl+Enter)。右クリックで一部だけ試せます">▶ 実行</button>
-<button id="pausebtn" class="icon" disabled title="一時停止" aria-label="一時停止">⏸</button>
-<button id="stepbtn" class="icon" disabled title="1つ進む（次のブロックの手前で止める）" aria-label="1つ進む">⏭</button>
-<button id="stopbtn" class="icon" disabled title="停止" aria-label="停止">⏹</button>
+<button id="pausebtn" class="icon" disabled title="一時停止 (F5)" aria-label="一時停止">⏸</button>
+<button id="stepbtn" class="icon" disabled title="1つ進む (F10)（次のブロックの手前で止める）" aria-label="1つ進む">⏭</button>
+<button id="stopbtn" class="icon" disabled title="停止 (Shift+F5)" aria-label="停止">⏹</button>
 <button id="recbtn" title="本体で押した操作を記録し、押すブロックの並びにして挿入する">● 記録</button>
 <span id="runstate" role="status" aria-live="polite"></span>
 </div>
@@ -161,7 +161,8 @@ button.run:hover { background: #17793a; }
 <li>「プログラム」ブロックの中に操作を並べて保存します（<kbd>Ctrl</kbd>+<kbd>S</kbd>）。保存するとPokeConのコマンド一覧に約1秒で出ます。</li>
 <li>プログラムの外に置いたブロックは灰色になり、実行されません。つなぎ直すと元に戻ります。</li>
 <li>元に戻す <kbd>Ctrl</kbd>+<kbd>Z</kbd>／やり直し <kbd>Ctrl</kbd>+<kbd>Y</kbd>／複製 <kbd>Ctrl</kbd>+<kbd>C</kbd>→<kbd>Ctrl</kbd>+<kbd>V</kbd>／削除 <kbd>Delete</kbd>。右クリックでも操作できます。</li>
-<li>「▶ 実行」（<kbd>Ctrl</kbd>+<kbd>Enter</kbd>）で保存せずに本体で試せます。走っているブロックが光り、⏸で一時停止・⏭で1ブロックずつ・⏹で停止します。ブロックの右クリックで「このブロックだけ試す」「ここから下を試す」「ここで止める（区切り）」が使えます。</li>
+<li>ブロックの右クリックで「このブロックだけ試す」「ここから下を試す」「ここで止める（区切り）」が使えます。「▶ ここまで実行」はプログラム全体を走らせ、そのブロックの手前で1回だけ止めます（繰り返しの中でも2回目以降は止まりません）。</li>
+<li>キー操作（入力欄に文字を打っている間は効きません）：<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd>で選択中のブロックだけ試す・<kbd>F9</kbd>で区切りの付け外し・実行中の<kbd>F10</kbd>で1つ進む・<kbd>Shift</kbd>+<kbd>F5</kbd>で停止・<kbd>F5</kbd>で一時停止中は再開／実行していなければ実行（再読み込みを止めます）。</li>
 <li>画像認識ブロックの📷で、範囲・しきい値・テンプレを実際の画面で試しながら決められます。範囲が空なら画面全体です。</li>
 <li>変数は「変数」分類の「変数の作成…」で作ります。「設定数値」で受けた値は同じ名前の変数で使えます。</li>
 <li>サブルーチンは定義ブロックを置き、「呼ぶ」の名前欄で選びます。定義の名前を変えると呼出も追従します。</li>
@@ -1129,6 +1130,8 @@ button.run:hover { background: #17793a; }
   var RUN_POLL_MAX_FAILURES = 10;
   // 区切り（ブレークポイント）。保存物には入れない（この画面の間だけ）。
   var breakpoints = {};
+  // 「ここまで実行」の行き先（ブロックID）。止まったことを1回だけ知らせる用。
+  var runToWait = null;
   function breakpointList() {
     return Object.keys(breakpoints).filter(function (id) { return !!ws.getBlockById(id); });
   }
@@ -1149,7 +1152,7 @@ button.run:hover { background: #17793a; }
     var pb = byId('pausebtn');
     if (pb) {
       pb.textContent = run.paused ? '▶' : '⏸';
-      pb.title = run.paused ? '再開（続きを走らせる）' : '一時停止（押しているボタンは離れます）';
+      pb.title = run.paused ? '再開 (F5)（続きを走らせる）' : '一時停止 (F5)（押しているボタンは離れます）';
       try { pb.setAttribute('aria-label', run.paused ? '再開' : '一時停止'); } catch (e) { /* 続ける */ }
     }
     var rs = byId('runstate');
@@ -1287,7 +1290,11 @@ button.run:hover { background: #17793a; }
     run.pauseNotified = false;
     updateRunVars([]);
     setStatus('試し実行を始めています…', false);
-    postJson('./run', { code: r.code, breakpoints: breakpointList() }).then(function (j) {
+    var runBody = { code: r.code, breakpoints: breakpointList() };
+    // 「ここまで実行」の行き先。本体はその手前で1回だけ止める。
+    if (opts && opts.runTo) { runBody.runTo = opts.runTo; }
+    runToWait = (opts && opts.runTo) || null;
+    postJson('./run', runBody).then(function (j) {
       if (!j.ok) {
         setRunUi(false, false);
         setStatus(j.message || '試し実行できません', true);
@@ -1325,7 +1332,13 @@ button.run:hover { background: #17793a; }
           // コード欄が閉じていれば開いて実行ログタブにする。
           if (!run.pauseNotified) {
             run.pauseNotified = true;
-            setStatus('⏸ 一時停止中：変数は右の『実行ログ』タブで確認できます', false);
+            if (runToWait && s.blockId === runToWait) {
+              // 「ここまで実行」で止まった。1回だけ知らせ、次からは通常表示。
+              runToWait = null;
+              setStatus('⏸ 『ここまで実行』のブロックで止まりました（▶ で続き・⏭ で1つずつ）', false);
+            } else {
+              setStatus('⏸ 一時停止中：変数は右の『実行ログ』タブで確認できます', false);
+            }
             if (!previewOn) { setPreviewVisible(true); }
             showPaneTab('log');
           }
@@ -1353,6 +1366,7 @@ button.run:hover { background: #17793a; }
     lightBlock(null);
     setRunUi(false, false);
     run.pauseNotified = false;
+    runToWait = null;
     // 変数の最後の値は残す（次の実行開始で消す）。
     var result = s.result || '終了';
     if (result === 'エラー') {
@@ -1444,8 +1458,22 @@ button.run:hover { background: #17793a; }
     });
   }
   on('recbtn', 'click', function () { if (rec.active) { stopRecord(); } else { startRecord(); } });
+  // ボタンのキー表示（動的に変わる一時停止は setRunUi 側で付ける）。
+  (function () {
+    var step = byId('stepbtn');
+    if (step) { step.title = '1つ進む (F10)（次のブロックの手前で止める）'; }
+    var stop = byId('stopbtn');
+    if (stop) { stop.title = '停止 (Shift+F5)'; }
+  })();
   setRunUi(false, false);
   // 右クリック：一部だけ試す・区切り。値ブロック・影・プログラム自身には出さない。
+  // 区切りの付け外しは右クリックと F9 で共用する（実行中なら差し替えも送る）。
+  // try の外に置く（strict では try の中の関数宣言は外から見えない）。
+  var toggleBreakpoint = function (b) {
+    if (breakpoints[b.id]) { delete breakpoints[b.id]; } else { breakpoints[b.id] = true; }
+    paintBreakpoint(b, !!breakpoints[b.id]);
+    if (run.active) { runControl('breakpoints', { breakpoints: breakpointList() }); }
+  };
   try {
     var CMR = Blockly.ContextMenuRegistry;
     var reg = CMR && CMR.registry;
@@ -1478,6 +1506,15 @@ button.run:hover { background: #17793a; }
       callback: function (scope) { startTrial({ blockId: scope.block.id, only: false }); },
     });
     addItem({
+      id: 'pokeconRunTo', scopeType: CMR.ScopeType.BLOCK, weight: -1.5,
+      displayText: '▶ ここまで実行',
+      preconditionFn: function (scope) {
+        if (!trialTarget(scope)) { return 'hidden'; }
+        return run.active ? 'disabled' : 'enabled';
+      },
+      callback: function (scope) { startTrial({ runTo: scope.block.id }); },
+    });
+    addItem({
       id: 'pokeconBreakpoint', scopeType: CMR.ScopeType.BLOCK, weight: -1,
       displayText: function (scope) {
         return breakpoints[scope.block.id] ? '○ 区切りを外す' : '● ここで止める（区切り）';
@@ -1486,12 +1523,7 @@ button.run:hover { background: #17793a; }
         var b = trialTarget(scope);
         return b && b.type !== 'pokecon_sub_def' ? 'enabled' : 'hidden';
       },
-      callback: function (scope) {
-        var b = scope.block;
-        if (breakpoints[b.id]) { delete breakpoints[b.id]; } else { breakpoints[b.id] = true; }
-        paintBreakpoint(b, !!breakpoints[b.id]);
-        if (run.active) { runControl('breakpoints', { breakpoints: breakpointList() }); }
-      },
+      callback: function (scope) { toggleBreakpoint(scope.block); },
     });
   } catch (e) { /* 右クリックの追加に失敗しても編集は続ける */ }
   // 未保存のまま閉じようとしたら確認する（Ctrl+Sは下のkeydown共用処理で受ける）。
@@ -2327,10 +2359,37 @@ button.run:hover { background: #17793a; }
     document.getElementById('capbigimg').style.cursor = 'crosshair';
     if (wasDrag) { capMatchSoon(true); capBlockSync(); }
   });
+  // 入力欄に文字を打っている間は、試し実行のキー操作を効かせない。
+  // 欄の中での Backspace・Enter 等と取り合わないための安全弁。
+  function typingInField() {
+    try {
+      var a = document.activeElement;
+      if (!a || !a.tagName) { return false; }
+      var t = String(a.tagName).toUpperCase();
+      if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') { return true; }
+      if (a.isContentEditable) { return true; }
+    } catch (e) { /* 読めなければ効かせる */ }
+    return false;
+  }
+  function stopKeyEvent(ev) {
+    try { if (ev.preventDefault) { ev.preventDefault(); } } catch (e) { /* 続ける */ }
+  }
   window.addEventListener('keydown', function (ev) {
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
       try { ev.preventDefault(); } catch (e) { /* 続ける */ }
       doSave();
+      return;
+    }
+    // 選択中のブロックだけ試す（右クリックの「このブロックだけ試す」と同じ）。
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key === 'Enter') {
+      if (typingInField()) { return; }
+      stopKeyEvent(ev);
+      var only = (typeof quickSelected === 'function') ? quickSelected() : null;
+      if (!only) {
+        setStatus('ブロックを選んでから押してください（選択中のブロックだけ試します）', true);
+      } else {
+        startTrial({ blockId: only.id, only: true });
+      }
       return;
     }
     if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
@@ -2342,6 +2401,43 @@ button.run:hover { background: #17793a; }
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'k' || ev.key === 'K')) {
       try { ev.preventDefault(); } catch (e) { /* 続ける */ }
       if (quickOpen) { quickClose(true); } else { quickOpenFn(); }
+      return;
+    }
+    // F9：選択中のブロックの区切りを付け外し（右クリックと同じ）。
+    if (ev.key === 'F9') {
+      if (typingInField()) { return; }
+      stopKeyEvent(ev);
+      var tgt = (typeof quickSelected === 'function') ? quickSelected() : null;
+      if (!trialTarget({ block: tgt })) {
+        setStatus('区切りを付けるブロックを選んでください', true);
+      } else {
+        toggleBreakpoint(tgt);
+      }
+      return;
+    }
+    // F10：実行中なら1つ進む（⏭ と同じ）。
+    if (ev.key === 'F10') {
+      if (typingInField()) { return; }
+      stopKeyEvent(ev);
+      if (run.active) { runControl('step'); }
+      else { setStatus('試し実行中に使えます（▶ 実行で始めてください）', true); }
+      return;
+    }
+    // Shift+F5：実行中なら停止（⏹ と同じ。ブラウザの更新を止める）。
+    if (ev.key === 'F5' && ev.shiftKey) {
+      if (typingInField()) { return; }
+      stopKeyEvent(ev);
+      if (run.active) { runControl('stop'); }
+      else { setStatus('試し実行中に使えます（▶ 実行で始めてください）', true); }
+      return;
+    }
+    // F5：一時停止中なら再開、実行していなければ ▶ 実行。
+    // ブラウザの再読み込みを止める（未保存の変更があるのに再読み込みすると困る）。
+    if (ev.key === 'F5') {
+      if (typingInField()) { return; }
+      stopKeyEvent(ev);
+      if (run.active && run.paused) { runControl('resume'); }
+      else if (!run.active) { startTrial({}); }
       return;
     }
     if (ev.key === 'Escape' && quickOpen) {
