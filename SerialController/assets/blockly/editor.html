@@ -89,6 +89,16 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #stemerror:empty { display: none; }
 #saveerrors { display: none; margin: 6px 10px 0; padding: 8px 12px; border: 1px solid var(--err); border-radius: 6px; background: var(--err-bg); color: var(--err); white-space: pre-line; }
 #saveerrors.show { display: block; }
+/* 問題ボタン（状態行の右端）。件数と重さを示す（色だけでなく記号でも区別）。 */
+#statusline #problemsbtn { margin-left: auto; }
+#problemsbtn.problems-err { color: var(--err); border-color: var(--err); font-weight: 600; }
+#problemsbtn.problems-warn { color: var(--warn); border-color: var(--warn); font-weight: 600; }
+/* 問題タブの一覧。行はボタン（押すとそのブロックへ飛ぶ）で、記号で重さを示す。 */
+#problemslist { display: none; margin: 0; padding: 8px 10px; overflow: auto; }
+#problemslist .problem-row { display: block; width: 100%; text-align: left; white-space: normal; margin: 0 0 4px; }
+#problemslist .problem-row.problem-err { border-color: #f28b82; }
+#problemslist .problem-row.problem-warn { border-color: #fdd663; }
+#problemslist .problem-static { padding: 4px 2px; color: #a8adb5; }
 /* クイック追加の窓。画面上部中央に重ね、分類の色印つきで行を出す。 */
 #quick {
   display: none; position: fixed; left: 50%; top: 12px; transform: translateX(-50%);
@@ -218,7 +228,7 @@ button.run:hover { background: #17793a; }
 </div>
 </div>
 </header>
-<div id="statusline"><span id="stemerror" role="alert"></span><span id="status" role="status" aria-live="polite"></span></div>
+<div id="statusline"><span id="stemerror" role="alert"></span><span id="status" role="status" aria-live="polite"></span><button id="problemsbtn" aria-label="問題はありません" title="組み立て中の問題の一覧を右欄に開く">✓ 問題なし</button></div>
 <div id="quick" role="dialog" aria-label="ブロックを探す" style="display: none;">
 <input id="quickinput" role="combobox" aria-controls="quicklist" aria-expanded="false" autocomplete="off" spellcheck="false" placeholder="例: おす・まつ・くりかえし">
 <div id="quicklist" role="listbox" aria-label="候補"></div>
@@ -237,10 +247,11 @@ button.run:hover { background: #17793a; }
 <div id="ws"></div>
 <div id="splitter" role="separator" aria-orientation="vertical" aria-label="コード欄の幅" tabindex="0" title="ドラッグ（または←→キー）で幅を変える"></div>
 <aside id="previewwrap" aria-label="生成コード">
-<div class="panehead"><button id="tabcode" class="tab on" aria-pressed="true">生成コード</button><button id="tablog" class="tab" aria-pressed="false">実行ログ</button><span id="previewstatus" role="status" aria-live="polite"></span><button id="previewcopy" title="生成コードをクリップボードへ">コピー</button></div>
+<div class="panehead"><button id="tabcode" class="tab on" aria-pressed="true">生成コード</button><button id="tablog" class="tab" aria-pressed="false">実行ログ</button><button id="tabproblems" class="tab" aria-pressed="false">問題</button><span id="previewstatus" role="status" aria-live="polite"></span><button id="previewcopy" title="生成コードをクリップボードへ">コピー</button></div>
 <pre id="preview" tabindex="0" aria-label="生成コードのプレビュー"></pre>
 <div id="runvars" aria-label="試し実行の変数"></div>
 <pre id="runlog" tabindex="0" aria-label="試し実行のログ"></pre>
+<div id="problemslist" role="list" aria-label="問題の一覧" tabindex="0"></div>
 </aside>
 </main>
 <details id="legacy">
@@ -649,6 +660,104 @@ button.run:hover { background: #17793a; }
     if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; }
     previewTimer = setTimeout(function () { previewTimer = null; renderPreview(); }, 200);
   }
+  // 問題欄（VS Code の「問題」パネル相当）。保存を押す前から足りない所を
+  // 状態行のボタンと右欄の「問題」タブで一覧表示し、行を押すとそのブロックへ
+  // 飛べる。判定は E.problems（pokecon_editor.js）に寄せ、ここは表示と
+  // 数え直しのきっかけだけを持つ。
+  var problemsTimer = null;
+  function currentProblems() {
+    if (!E || typeof E.problems !== 'function') { return []; }
+    try { return E.problems(ws) || []; } catch (e) { return []; }
+  }
+  function scheduleProblems() {
+    if (problemsTimer) { clearTimeout(problemsTimer); problemsTimer = null; }
+    problemsTimer = setTimeout(function () { problemsTimer = null; refreshProblems(); }, 300);
+  }
+  function clearProblemsList(box) {
+    // 実DOMでは子を外す。firstChild の無い最小DOMでは何もしない。
+    try {
+      while (box.firstChild) { box.removeChild(box.firstChild); }
+    } catch (e) { /* 続ける */ }
+    try { box.textContent = ''; } catch (e) { /* 続ける */ }
+    try { if (box.options) { box.options.length = 0; } } catch (e) { /* 続ける */ }
+  }
+  function updateProblemsButton(list) {
+    var btn = byId('problemsbtn');
+    if (!btn) { return; }
+    var errs = list.filter(function (p) { return p && p.level === 'error'; }).length;
+    var text = '✓ 問題なし', cls = '', label = '問題はありません';
+    if (list.length && errs) {
+      text = '✖ ' + list.length;
+      cls = 'problems-err';
+      label = '問題が' + list.length + '件あります（エラー' + errs + '件）。押すと一覧を開きます';
+    } else if (list.length) {
+      text = '⚠ ' + list.length;
+      cls = 'problems-warn';
+      label = '問題が' + list.length + '件あります（警告のみ）。押すと一覧を開きます';
+    }
+    btn.textContent = text;
+    try { btn.className = cls; } catch (e) { /* 続ける */ }
+    try {
+      btn.setAttribute('aria-label', label);
+      btn.title = '組み立て中の問題の一覧を右欄に開く';
+    } catch (e) { /* 続ける */ }
+  }
+  function focusProblemBlock(id) {
+    var b = null;
+    try { b = ws.getBlockById(id); } catch (e) { b = null; }
+    if (!b) { return; }
+    try { if (typeof b.select === 'function') { b.select(); } } catch (e) { /* 選択は飾りのため落としても続ける */ }
+    try { if (typeof ws.centerOnBlock === 'function') { ws.centerOnBlock(id); } } catch (e) { /* 描画なしでも続ける */ }
+  }
+  function renderProblemsList(list) {
+    var box = byId('problemslist');
+    if (!box) { return; }
+    clearProblemsList(box);
+    if (!list.length) {
+      var ok = null;
+      try { ok = document.createElement('div'); } catch (e) { ok = null; }
+      if (ok) {
+        try {
+          ok.className = 'problem-static';
+          ok.textContent = '✓ 問題はありません';
+          box.appendChild(ok);
+        } catch (e) { /* 行が出なくても窓は保つ */ }
+      }
+      return;
+    }
+    list.forEach(function (p) {
+      var sym = (p && p.level === 'error') ? '✖' : '⚠';
+      var msg = (p && p.message) || '';
+      var id = (p && p.blockId) || null;
+      var row = null;
+      try { row = document.createElement(id ? 'button' : 'div'); } catch (e) { row = null; }
+      if (!row) { return; }
+      try {
+        row.className = 'problem-row ' + ((p && p.level === 'error') ? 'problem-err' : 'problem-warn');
+        // 利用者の入力や保存名を行に入れるときは textContent で入れる。
+        row.textContent = sym + ' ' + msg;
+        if (id) {
+          row.setAttribute('aria-label', sym + ' ' + msg + '（押すとそのブロックへ移動）');
+          (function (bid) {
+            row.addEventListener('click', function () { focusProblemBlock(bid); });
+          })(id);
+        } else {
+          row.setAttribute('aria-label', sym + ' ' + msg);
+        }
+      } catch (e) { /* 行が出なくても窓は保つ */ }
+      try { box.appendChild(row); } catch (e) { /* 続ける */ }
+    });
+  }
+  function refreshProblems() {
+    var list = currentProblems();
+    updateProblemsButton(list);
+    renderProblemsList(list);
+  }
+  on('problemsbtn', 'click', function () {
+    if (!previewOn) { setPreviewVisible(true); }
+    showPaneTab('problems');
+  });
+  on('tabproblems', 'click', function () { showPaneTab('problems'); });
   // 汚れ検知・浮きブロック対策はSELECTED登録より先に行う（検証スタブが最後の
   // 登録だけ覚えるため、SELECTEDの記憶処理を上書きしないよう順序を保つ）。
   try {
@@ -657,6 +766,8 @@ button.run:hover { background: #17793a; }
       if (E && !E.isContentEvent(e)) { return; }
       scheduleDirty();
       schedulePreview();
+      // UIだけの事象（選択など）では数え直さない（上の判定で弾く）。
+      scheduleProblems();
     });
   } catch (e) { /* 旧スタブでも続ける */ }
   function setStatus(s, isErr) {
@@ -684,6 +795,8 @@ button.run:hover { background: #17793a; }
       if (t && p) { preloadPreview(p, t.getValue()); }
     });
     try { if (typeof ws.clearUndo === 'function') { ws.clearUndo(); } } catch (e) { /* 続ける */ }
+    // 読込直後にも数える（開く・作例・控えの復元・新規はここを通る）。
+    refreshProblems();
   }
   // 保存済みの名前一覧（上書き確認に使う）と、今の編集が対応する保存名。
   // 新規・控えからの復元では対応先なし（null）。
@@ -1556,12 +1669,15 @@ button.run:hover { background: #17793a; }
     run.warned = [];
   }
   function showPaneTab(which) {
-    var code = which !== 'log';
-    var pre = byId('preview'), log = byId('runlog'), varsBox = byId('runvars');
+    var code = which === 'code';
+    var log = which === 'log';
+    var probs = which === 'problems';
+    var pre = byId('preview'), logEl = byId('runlog'), varsBox = byId('runvars'), probBox = byId('problemslist');
     if (pre && pre.style) { pre.style.display = code ? '' : 'none'; }
-    if (log && log.style) { log.style.display = code ? 'none' : 'block'; }
-    if (varsBox && varsBox.style) { varsBox.style.display = code ? 'none' : 'block'; }
-    [['tabcode', code], ['tablog', !code]].forEach(function (pair) {
+    if (logEl && logEl.style) { logEl.style.display = log ? 'block' : 'none'; }
+    if (varsBox && varsBox.style) { varsBox.style.display = log ? 'block' : 'none'; }
+    if (probBox && probBox.style) { probBox.style.display = probs ? 'block' : 'none'; }
+    [['tabcode', code], ['tablog', log], ['tabproblems', probs]].forEach(function (pair) {
       var t = byId(pair[0]);
       if (!t) { return; }
       t.className = pair[1] ? 'tab on' : 'tab';
