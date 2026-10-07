@@ -2740,6 +2740,19 @@ button.run:hover { background: #17793a; }
     } catch (e) { /* 読めなければ効かせる */ }
     return false;
   }
+  // 窓（作例・クイック追加・⋯メニュー・切り出し）を開いている最中か。
+  // その間のキーで裏の試し実行を始めない（何を走らせたか分からなくなる）。
+  function dialogOpen() {
+    try {
+      if (quickOpen || moreOpen) { return true; }
+      var ids = ['newdialog', 'capmodal'];
+      for (var i = 0; i < ids.length; i++) {
+        var el = byId(ids[i]);
+        if (el && el.style && el.style.display && el.style.display !== 'none') { return true; }
+      }
+    } catch (e) { /* 読めなければ開いていない扱い */ }
+    return false;
+  }
   function stopKeyEvent(ev) {
     try { if (ev.preventDefault) { ev.preventDefault(); } } catch (e) { /* 続ける */ }
   }
@@ -2762,6 +2775,8 @@ button.run:hover { background: #17793a; }
       return;
     }
     if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+      // 保存名などに打っている最中は実機を動かさない（確定のつもりで押されうる）。
+      if (typingInField() || dialogOpen()) { return; }
       try { ev.preventDefault(); } catch (e) { /* 続ける */ }
       if (!run.active) { startTrial({}); }
       return;
@@ -2806,7 +2821,11 @@ button.run:hover { background: #17793a; }
       if (typingInField()) { return; }
       stopKeyEvent(ev);
       if (run.active && run.paused) { runControl('resume'); }
-      else if (!run.active) { startTrial({}); }
+      else if (run.active) {
+        setStatus('試し実行中です（⏸ 一時停止は ⏸ ボタン、停止は Shift+F5）', false);
+      } else if (dialogOpen()) {
+        // 窓を開いている間は走らせない（再読み込みだけ止める）。
+      } else { startTrial({}); }
       return;
     }
     if (ev.key === 'Escape' && quickOpen) {

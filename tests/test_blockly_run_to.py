@@ -475,3 +475,68 @@ def test_docs_cover_the_run_to_and_key_operations() -> None:
     assert "ここまで実行" in text
     assert "F9" in text
     assert "F10" in text
+
+
+@NODE_ONLY
+def test_ctrl_enter_does_not_run_while_typing_a_name() -> None:
+    """保存名などに文字を打っている間の Ctrl+Enter では、実機を動かさないこと。"""
+    res = run_editor(
+        _SETUP
+        + """
+        boot();
+        await flush(400);
+        sandbox.document.activeElement = { tagName: 'INPUT' };
+        winHandlers.keydown(fakeKey({ key: 'Enter', ctrlKey: true }));
+        await flush(200);
+        await settle();
+        done({ runs: runCalls().filter((c) => c.url === './run').length });
+        """
+    )
+    assert res["runs"] == 0
+
+
+@NODE_ONLY
+def test_f5_while_running_explains_instead_of_doing_nothing() -> None:
+    """実行中（一時停止でない）の F5 は、黙らずに使えるキーを知らせること。"""
+    res = run_editor(
+        _SETUP
+        + """
+        boot();
+        await flush(400);
+        els.runbtn.handlers.click();
+        await flush(300);
+        const ev = fakeKey({ key: 'F5' });
+        winHandlers.keydown(ev);
+        await flush(100);
+        const status = els.status.textContent;
+        await settle();
+        done({ status, prevented: ev.prevented.length,
+               runs: runCalls().filter((c) => c.url === './run').length });
+        """
+    )
+    assert res["runs"] == 1
+    assert res["prevented"] == 1
+    assert "一時停止" in res["status"] and "停止" in res["status"]
+
+
+@NODE_ONLY
+def test_f5_does_not_start_a_run_while_a_dialog_is_open() -> None:
+    """作例の窓などを開いている間の F5 では、走らせないこと（再読み込みは止める）。"""
+    res = run_editor(
+        _SETUP
+        + """
+        routes.samples = { ok: true, samples: [] };
+        boot();
+        await flush(400);
+        els.newws.handlers.click();
+        await flush(300);
+        const ev = fakeKey({ key: 'F5' });
+        winHandlers.keydown(ev);
+        await flush(200);
+        await settle();
+        done({ prevented: ev.prevented.length,
+               runs: runCalls().filter((c) => c.url === './run').length });
+        """
+    )
+    assert res["runs"] == 0
+    assert res["prevented"] == 1
