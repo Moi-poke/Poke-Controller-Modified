@@ -216,6 +216,60 @@
       return { code: code };
     },
 
+    // 生成コードと行ごとの出どころ（MakeCodeの対応表示に相当）。
+    // 戻り値は { code, lines }。code は通常の生成と1文字も違わない。
+    // 印はコメント行のため、生成器の import 判定（codeOnly はコメントを
+    // 除いてから調べる）には影響しない。プログラム・サブルーチン定義の
+    // 自身には印を入れない（trialCode と同じく suppressPrefixSuffix を
+    // 一時的に立てる）。生成後は印の設定を必ず元へ戻す。
+    codeMap: function (ws, gen) {
+      var MARK = "# @@pokecon:%1@@\n";
+      var MARK_RE = /^[ \t]*# @@pokecon:(?:"([^"]+)"|'([^']+)')@@[ \t]*$/;
+      var prevPrefix = gen.STATEMENT_PREFIX;
+      var suppressed = [];
+      var marked = "";
+      try {
+        ws.getTopBlocks(false).forEach(function (t) {
+          if (t.type === "pokecon_program" || t.type === "pokecon_sub_def") {
+            suppressed.push([t, t.suppressPrefixSuffix]);
+            t.suppressPrefixSuffix = true;
+          }
+        });
+        gen.STATEMENT_PREFIX = MARK;
+        marked = gen.workspaceToCode(ws);
+      } finally {
+        // 戻しは1つずつ握る（途中で落ちても印を残さない）。
+        try {
+          gen.STATEMENT_PREFIX = prevPrefix;
+        } catch (e) {
+          /* 戻せなくても続ける */
+        }
+        suppressed.forEach(function (pair) {
+          try {
+            pair[0].suppressPrefixSuffix = pair[1];
+          } catch (e) {
+            /* 消えたブロックは戻せない */
+          }
+        });
+      }
+      // 印の行を取り除きながら、直後に続く行へ今の ID を割り当てる。
+      // 印は文ブロックごとに入るため、入れ子の中の行は内側の ID になる。
+      // 空行はどのブロックにも属さない扱いにする。
+      var out = [];
+      var ids = [];
+      var cur = null;
+      marked.split("\n").forEach(function (ln) {
+        var m = ln.match(MARK_RE);
+        if (m) {
+          cur = m[1] || m[2] || null;
+          return;
+        }
+        out.push(ln);
+        ids.push(/^[ \t]*$/.test(ln) ? null : cur);
+      });
+      return { code: out.join("\n"), lines: ids };
+    },
+
     // 新規の初期形。空のキャンバスから始めると、何を置けばよいか分からない。
     defaultState: function () {
       return {
