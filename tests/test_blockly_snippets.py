@@ -123,3 +123,21 @@ def test_quick_search_finds_snippet_entries_by_reading() -> None:
     assert res["snipN"] >= 8
     assert any(str(r).startswith("よく使う形:") for r in res["renda"])
     assert any(str(r).startswith("よく使う形:") for r in res["jikangire"])
+
+
+@NEEDS_NODE
+def test_quick_search_prefers_plain_blocks_for_generic_queries() -> None:
+    """汎い問合せでは素の項目が定番形より先に出ること。"""
+    # Given: 道具箱からの候補一覧
+    res: dict[str, Any] = run_blockly(
+        _SNIPPETS_SETUP
+        + """
+        const Q = Blockly.PokeconQuick;
+        const entries = Q.index(TOOLBOX);
+        const top = (q) => Q.search(entries, q, 5).map((e) => e.type);
+        done({ osu: top('おす'), matsu: top('まつ') });
+        """
+    )
+    # Then: 「おす」は押す素・「まつ」は待つ素が先頭（定番形に押しのけられない）
+    assert res["osu"][0] == "pokecon_press"
+    assert res["matsu"][0] == "pokecon_wait"

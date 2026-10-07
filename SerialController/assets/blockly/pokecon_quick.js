@@ -169,6 +169,9 @@
 
   // 並びは見出しの先頭＞見出し＞キーワード＞説明＞分類。
   // 合わない（どれかの語がどこにも無い）ときは -1。
+  // 「よく使う形」のような型つき定番形（欄・つなぎ済み）は、
+  // 同点では素の項目（型だけ）を先にする。汎い問い合わせ
+  // （例: おす・まつ）で定番形が素を押しのけないようにする。
   function rankOf(entry, terms) {
     var label = norm(entry.label);
     var keys = (entry.keywords || []).map(norm).join(" ");
@@ -367,6 +370,8 @@
     },
 
     // 空白区切りの全語を含む候補を順位付きで返す。空の問合せは空配列。
+    // 同点のときは素の項目（型だけ。欄・つなぎの無い形）を先にし、
+    // その後は道具箱の並び順（「よく使う形」の定番形は後ろ）。
     search: function (entries, query, limit) {
       var terms = termsOf(query);
       if (!terms.length) {
@@ -377,14 +382,17 @@
       (entries || []).forEach(function (e, i) {
         var rank = rankOf(e, terms);
         if (rank >= 0) {
-          scored.push([rank, i, e]);
+          var st = (e && e.block) || {};
+          var composite =
+            st.fields || st.inputs || st.next || st.extraState ? 1 : 0;
+          scored.push([rank, composite, i, e]);
         }
       });
       scored.sort(function (a, b) {
-        return a[0] - b[0] || a[1] - b[1];
+        return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
       });
       return scored.slice(0, n).map(function (s) {
-        return s[2];
+        return s[3];
       });
     },
 

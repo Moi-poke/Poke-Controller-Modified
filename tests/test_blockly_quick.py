@@ -37,16 +37,21 @@ def test_index_lists_press_block_with_japanese_heading() -> None:
         _SETUP_INDEX
         + """
         const press = entries.filter((e) => e.type === 'pokecon_press');
+        const plain = press.filter((e) => Object.keys(e.block).length === 1);
         done({ n: entries.length, types: press.map((e) => e.type),
                label: press.length ? press[0].label : '',
-               category: press.length ? press[0].category : '' });
+               category: press.length ? press[0].category : '',
+               plainCategory: plain.length ? plain[0].category : '',
+               cats: press.map((e) => e.category) });
         """
     )
-    # Then: 1件だけ入り、見出しは日本語で分類つき
+    # Then: 素の項目と「よく使う形」の定番形が入り、見出しは日本語で分類つき
+    # （定番形は欄・つなぎ済みのため型が重複する。素が「基本操作」にいること）
     assert res["n"] >= 40
-    assert res["types"] == ["pokecon_press"]
+    assert res["types"] == ["pokecon_press", "pokecon_press"]
     assert "押す" in res["label"]
-    assert res["category"] == "基本操作"
+    assert res["plainCategory"] == "基本操作"
+    assert "よく使う形" in res["cats"]
 
 
 def test_search_matches_readings_across_scripts_and_widths() -> None:
