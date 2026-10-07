@@ -71,6 +71,20 @@ def _shown(freeze: Any, content: tk.Frame) -> tuple[int, int]:
     return shown.winfo_width(), shown.winfo_height()
 
 
+def _settle_until(win: tk.Misc, cond: Any, timeout: float = 2.0) -> None:
+    """cond() が真になるまで窓の処理を回す（上限 timeout 秒）。
+
+    窓の大きさが実際に変わるのは窓管理側の都合（負荷・画面の状態）で遅れる
+    ことがあり、固定の待ち時間だと環境によって落ちる。主張は変えずに待つ。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        win.update()
+        if cond() or time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
+
+
 def _settle(win: tk.Misc, seconds: float = 0.05) -> None:
     deadline = time.monotonic() + seconds
     while True:
@@ -103,7 +117,9 @@ def test_the_content_keeps_its_size_while_the_edge_is_dragged(
 
     # When: the drag ends.
     _send(win, WM_EXITSIZEMOVE)
-    _settle(win)
+    _settle_until(
+        win, lambda: content.winfo_ismapped() and content.winfo_width() == 800
+    )
 
     # Then: 新しい大きさで 1 回だけ並べ直す（元の置き方へ戻り、絵は消える）。
     assert freeze.stand_in is None

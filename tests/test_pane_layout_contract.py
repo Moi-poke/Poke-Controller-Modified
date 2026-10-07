@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import time
 import tkinter as tk
 import tkinter.ttk as ttk
 from collections.abc import Iterator
@@ -175,8 +176,20 @@ def test_saved_positions_are_restored_once_the_window_gets_its_size(
         # When: the window is shown and sized (the end of start-up).
         window.geometry("900x700+0+0")
         window.deiconify()
-        for _ in range(5):
+        # 表示・寸法の確定は窓管理側の都合で遅れることがある（固定回数の
+        # update では環境によって間に合わない）。寸法が付くまで待つ（上限 2 秒）。
+        deadline = time.monotonic() + 2.0
+        while True:
             window.update()
+            pane = areas.arranger.root_pane
+            sized = pane is not None and pane.winfo_width() > 100
+            if (
+                sized
+                and pane is not None
+                and abs(pane.sashpos(0) - int(pane.winfo_width() * 0.3)) <= 3
+            ) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
 
         # Then: 寸法が決まった時点で前回の割合に戻る（既定の位置のままにしない）。
         pane = areas.arranger.root_pane
