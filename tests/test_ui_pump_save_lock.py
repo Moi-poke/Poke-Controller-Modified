@@ -98,10 +98,12 @@ def test_same_stem_pair_consistent_and_reloadable(tmp_path: Path) -> None:
     assert int(m_py.group(1)) == int(js_tag), (
         f"対が混ざっています: py={m_py.group(1)} json={js_tag}"
     )
-    # 再読込できる。
+    # 再読込できる（記録欄は取り除かれ、ブロックはそのまま戻る）。
     loaded = blockly_save.load_blockly(app, "PairStem")
     assert loaded.status == "ok"
-    assert loaded.workspace_json == js
+    assert json.loads(loaded.workspace_json) == {"blocks": json.loads(js)["blocks"]}
+    # `.json` に記録した `.py` の要約値が今の `.py` と一致する（対が混ざっていない）。
+    assert loaded.external_edit is False
 
 
 def test_different_stems_not_blocked_and_locks_bounded(tmp_path: Path) -> None:

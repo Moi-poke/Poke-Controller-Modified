@@ -229,11 +229,13 @@
         { type: "field_input", name: "TAGS", text: "blockly" },
         { type: "input_statement", name: "DO" },
       ],
-      colour: 230,
+      colour: 120,
+      tooltip:
+        "コマンド本体（1個まで）。名前がPokeConの一覧に出る。中に操作を上から順に並べる。タグはカンマ区切り。",
     },
     {
       type: "pokecon_press",
-      message0: "%1 を押す 長さ %2 待ち %3",
+      message0: "%1 を押す 長さ %2 秒 待ち %3 秒",
       args0: [
         {
           type: "field_dropdown",
@@ -253,6 +255,22 @@
             ["RCLICK", "RCLICK"],
             ["HOME", "HOME"],
             ["CAPTURE", "CAPTURE"],
+            ["↑", "Direction.UP"],
+            ["→", "Direction.RIGHT"],
+            ["↓", "Direction.DOWN"],
+            ["←", "Direction.LEFT"],
+            ["↗", "Direction.UP_RIGHT"],
+            ["↘", "Direction.DOWN_RIGHT"],
+            ["↙", "Direction.DOWN_LEFT"],
+            ["↖", "Direction.UP_LEFT"],
+            ["R↑", "Direction.R_UP"],
+            ["R→", "Direction.R_RIGHT"],
+            ["R↓", "Direction.R_DOWN"],
+            ["R←", "Direction.R_LEFT"],
+            ["R↗", "Direction.R_UP_RIGHT"],
+            ["R↘", "Direction.R_DOWN_RIGHT"],
+            ["R↙", "Direction.R_DOWN_LEFT"],
+            ["R↖", "Direction.R_UP_LEFT"],
           ],
         },
         { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
@@ -261,10 +279,11 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
+      tooltip: "ボタン・十字キーを押す。十字キーは方向指定になる。",
     },
     {
       type: "pokecon_stick",
-      message0: "スティック %1 %2 角度 %3 長さ %4 待ち %5",
+      message0: "スティック %1 %2 角度 %3 長さ %4 秒 待ち %5 秒",
       args0: [
         {
           type: "field_dropdown",
@@ -294,18 +313,19 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
+      tooltip: "指定した秒数だけ何もせずに待つ。",
     },
     {
       type: "pokecon_elapsed",
       message0: "開始からの秒数",
       args0: [],
       output: "Number",
-      colour: 160,
+      colour: 120,
       tooltip: "開始からの経過秒。ifとfinishで時間制限に使う。",
     },
     {
       type: "pokecon_hold",
-      message0: "%1 を押し続ける 待ち %2",
+      message0: "%1 を押し続ける 待ち %2 秒",
       args0: [
         {
           type: "field_dropdown",
@@ -402,12 +422,12 @@
       args0: [],
       previousStatement: null,
       nextStatement: null,
-      colour: 160,
+      colour: 120,
       tooltip: "コマンドを正常終了する（色違い検出時など）。",
     },
     {
       type: "pokecon_press_rep",
-      message0: "%1 を %2 回押す 長さ %3 間隔 %4 待ち %5",
+      message0: "%1 を %2 回押す 長さ %3 秒 間隔 %4 秒 待ち %5 秒",
       args0: [
         {
           type: "field_dropdown",
@@ -471,7 +491,7 @@
       ],
       previousStatement: null,
       nextStatement: null,
-      colour: 60,
+      colour: 40,
       tooltip: "ログへ出す（表示＝進捗・結果＝後で見返す用）。",
     },
     {
@@ -480,7 +500,7 @@
       args0: [],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 40,
       tooltip: "カメラ画像を保存する。使うと画像認識ありになる。",
     },
     {
@@ -499,7 +519,7 @@
       ],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 40,
       tooltip: "Discordへ通知する。画像付きは画像認識ありになる。",
     },
     {
@@ -514,7 +534,7 @@
       ],
       previousStatement: null,
       nextStatement: null,
-      colour: 20,
+      colour: 40,
       tooltip: "実行前に選択肢から選ばせる。取消は終了する。",
     },
     {
@@ -530,7 +550,7 @@
       ],
       previousStatement: null,
       nextStatement: null,
-      colour: 20,
+      colour: 40,
       tooltip: "実行前に数値を選ばせる。取消は終了する。",
     },
     {
@@ -544,46 +564,62 @@
       ],
       previousStatement: null,
       nextStatement: null,
-      colour: 20,
+      colour: 40,
       tooltip: "実行前に確認を取る。取消は終了する。",
     },
     {
       type: "pokecon_audio_tone_contains",
-      message0: "音 %1〜%2Hz が閾値 %3 を超えた 第2 %4〜%5Hz 閾値 %6",
+      message0: "音 %1〜%2Hz が閾値 %3 を超えた",
       args0: [
         { type: "field_number", name: "LO", value: 3000, min: 0, max: 22050 },
         { type: "field_number", name: "HI", value: 3200, min: 0, max: 22050 },
         { type: "field_number", name: "THRESH", value: 1000000 },
+      ],
+      message1: "第2帯域 %1〜%2Hz 閾値 %3（0〜0で使わない）",
+      args1: [
         { type: "field_number", name: "LO2", value: 0, min: 0, max: 22050 },
         { type: "field_number", name: "HI2", value: 0, min: 0, max: 22050 },
         { type: "field_number", name: "THRESH2", value: 0 },
       ],
+      inputsInline: false,
       output: "Boolean",
-      colour: 250,
+      colour: 20,
       tooltip: "指定帯域の音量が閾値を超えたら真（要調整）。第2は0,0で使わない。",
     },
     {
       type: "pokecon_audio_wait_tone",
-      message0: "音 %1〜%2Hz を待つ 閾値 %3 上限 %4 第2 %5〜%6Hz 閾値 %7",
+      message0: "音 %1〜%2Hz を待つ 閾値 %3 上限 %4 秒",
       args0: [
         { type: "field_number", name: "LO", value: 3000, min: 0, max: 22050 },
         { type: "field_number", name: "HI", value: 3200, min: 0, max: 22050 },
         { type: "field_number", name: "THRESH", value: 1000000 },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
+      ],
+      message1: "第2帯域 %1〜%2Hz 閾値 %3（0〜0で使わない）",
+      args1: [
         { type: "field_number", name: "LO2", value: 0, min: 0, max: 22050 },
         { type: "field_number", name: "HI2", value: 0, min: 0, max: 22050 },
         { type: "field_number", name: "THRESH2", value: 0 },
       ],
+      inputsInline: false,
       previousStatement: null,
       nextStatement: null,
-      colour: 250,
+      colour: 20,
       tooltip: "指定帯域の音が鳴るまで待つ（要調整）。第2は0,0で使わない。",
     },
     {
       type: "pokecon_vision_press_until",
-      message0: "画像 %1 が出るまで %2 を押す 上限 %3 閾値 %4 範囲 %5 グレー %6 %7 %8",
+      message0: "画像 %1 %2 が出るまで %3 を押す 上限 %4 秒",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        { type: "field_template", name: "TEMPLATE", value: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
+          alt: "*",
+        },
         {
           type: "field_dropdown",
           name: "TARGET",
@@ -605,29 +641,35 @@
           ],
         },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
-        {
-          type: "field_image",
-          name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
-          alt: "*",
-        },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "テンプレ画像が出るまで、ボタンを押し続ける（A連打で戦闘開始を待つ等）。上限秒で打ち切る。",
     },
     {
       type: "pokecon_vision_press_until_gone",
-      message0: "画像 %1 が消えるまで %2 を押す 上限 %3 閾値 %4 範囲 %5 グレー %6 %7 %8",
+      message0: "画像 %1 %2 が消えるまで %3 を押す 上限 %4 秒",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
+        { type: "field_template", name: "TEMPLATE", value: "" },
+        {
+          type: "field_image",
+          name: "PREVIEW",
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
+          alt: "*",
+        },
         {
           type: "field_dropdown",
           name: "TARGET",
@@ -649,70 +691,80 @@
           ],
         },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
-        {
-          type: "field_image",
-          name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
-          alt: "*",
-        },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "テンプレ画像が消えるまで、ボタンを押し続ける。上限秒で打ち切る。",
     },
     {
       type: "pokecon_vision_wait_count",
-      message0: "画像 %1 が %2 個出るまで待つ 上限 %3 閾値 %4 範囲 %5 グレー %6 %7 %8",
+      message0: "画像 %1 %2 が %3 個出るまで待つ 上限 %4 秒",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
-        { type: "field_number", name: "COUNT", value: 2, min: 1, max: 100 },
-        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
+        { type: "field_template", name: "TEMPLATE", value: "" },
         {
           type: "field_image",
           name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
           alt: "*",
         },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
+        { type: "field_number", name: "COUNT", value: 2, min: 1, max: 100 },
+        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "テンプレ画像が指定の個数見つかるまで待つ（卵の数え上げ等）。上限秒で打ち切る。",
     },
     {
       type: "pokecon_vision_count",
-      message0: "画像 %1 の個数 閾値 %2 範囲 %3 グレー %4 %5 %6",
+      message0: "画像 %1 %2 の個数",
       args0: [
-        { type: "field_dropdown", name: "TEMPLATE", options: [["my-pack/a.png", "my-pack/a.png"]] },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
+        { type: "field_template", name: "TEMPLATE", value: "" },
         {
           type: "field_image",
           name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
           alt: "*",
         },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       output: "Number",
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "画面内でテンプレ画像が見つかった個数（数値）。",
     },
     {
       type: "pokecon_sub_def",
@@ -723,6 +775,7 @@
         { type: "input_statement", name: "DO" },
         { type: "input_value", name: "RETURN" },
       ],
+      extensions: ["pokecon_sub_rename"],
       colour: 290,
       tooltip: "トップレベルに置く。呼ぶ側から self.名前() で呼べる。",
     },
@@ -730,7 +783,7 @@
       type: "pokecon_sub_call",
       message0: "呼ぶ %1 引数 %2 %3 %4",
       args0: [
-        { type: "field_input", name: "NAME", text: "my_sub" },
+        { type: "field_subname", name: "NAME", value: "my_sub" },
         { type: "input_value", name: "ARG0" },
         { type: "input_value", name: "ARG1" },
         { type: "input_value", name: "ARG2" },
@@ -744,7 +797,7 @@
       type: "pokecon_sub_call_value",
       message0: "呼んだ値 %1 引数 %2 %3 %4",
       args0: [
-        { type: "field_input", name: "NAME", text: "my_sub" },
+        { type: "field_subname", name: "NAME", value: "my_sub" },
         { type: "input_value", name: "ARG0" },
         { type: "input_value", name: "ARG1" },
         { type: "input_value", name: "ARG2" },
@@ -759,7 +812,7 @@
       args0: [{ type: "field_input", name: "TEXT", text: "メモ" }],
       previousStatement: null,
       nextStatement: null,
-      colour: 60,
+      colour: "#8a8f98",
       tooltip: "生成コードに # コメントとして残る。実行には影響しない。",
     },
   ]);
@@ -787,131 +840,310 @@
   }
   Blockly.fieldRegistry.register("field_capopen", CapOpenField);
 
+  // 範囲欄。空は画面全体の意味のため「全体」と見せる。書式は "x1,y1,x2,y2"
+  // （実画素・x2>x1・y2>y1）。生成側は不正な書式を黙って落とすため、
+  // 入口で受け付けない（打ち込み中は赤枠、確定時に直前の値へ戻る）。
+  var CROP_TEXT_RE = /^(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)$/;
+  class CropField extends Blockly.FieldTextInput {
+    static fromJson(options) {
+      return new CropField(options && options.text != null ? options.text : "");
+    }
+    doClassValidation_(newValue) {
+      var t = String(newValue == null ? "" : newValue).trim();
+      if (!t) {
+        return "";
+      }
+      var m = t.match(CROP_TEXT_RE);
+      if (!m || !(+m[3] > +m[1] && +m[4] > +m[2])) {
+        return null;
+      }
+      return [+m[1], +m[2], +m[3], +m[4]].join(",");
+    }
+    getText_() {
+      // 編集中は入力中の文字をそのまま出す（親の振る舞い）。
+      var editing = super.getText_();
+      if (editing != null) {
+        return editing;
+      }
+      var v = this.getValue();
+      return v ? String(v) : "全体";
+    }
+  }
+  Blockly.fieldRegistry.register("field_crop", CropField);
+
+  // 画像（テンプレ）欄。候補は editor.html が ./templates で配る一覧。
+  // 候補外の値も受け付ける：一覧の到着前に開いた・画像を改名した等で
+  // 保存値が候補に無くても、読込で黙って別の値へ書き換えない
+  // （存在しない画像は保存時の参照検査が止める）。空は未選択の意味。
+  var TEMPLATE_UNSET_LABEL = "（画像を選ぶ）";
+  class TemplateField extends Blockly.FieldDropdown {
+    constructor(value) {
+      super(function () {
+        var list =
+          typeof Blockly.PokeconTemplates !== "undefined" &&
+          Array.isArray(Blockly.PokeconTemplates)
+            ? Blockly.PokeconTemplates
+            : [];
+        var opts = list.map(function (n) {
+          return [n, n];
+        });
+        var cur = this.getValue();
+        if (
+          cur &&
+          !opts.some(function (o) {
+            return o[1] === cur;
+          })
+        ) {
+          opts.unshift([cur, cur]);
+        }
+        opts.push([TEMPLATE_UNSET_LABEL, ""]);
+        return opts;
+      });
+      this.setValue(value == null ? "" : String(value));
+    }
+    static fromJson(options) {
+      return new TemplateField(options ? options.value : undefined);
+    }
+    doClassValidation_(newValue) {
+      return newValue == null ? null : String(newValue);
+    }
+    // 候補の作り直し前でも、今の値をそのまま見せる。
+    getText_() {
+      var v = this.getValue();
+      return v ? String(v) : TEMPLATE_UNSET_LABEL;
+    }
+  }
+  Blockly.fieldRegistry.register("field_template", TemplateField);
+
+  // サブルーチン呼出の名前欄。ワークスペースの定義名から選ぶ（打ち間違い防止）。
+  // 候補外の値も受け付ける：読込で定義より先に呼出が来ても名前を失わない
+  // （未定義の呼出は保存時の検査が止める）。
+  function subDefNames(ws) {
+    var names = [];
+    if (!ws || typeof ws.getAllBlocks !== "function") {
+      return names;
+    }
+    ws.getAllBlocks(false).forEach(function (d) {
+      if (d.type !== "pokecon_sub_def") {
+        return;
+      }
+      var n = String(d.getFieldValue("NAME") || "").trim();
+      if (n && names.indexOf(n) === -1) {
+        names.push(n);
+      }
+    });
+    names.sort();
+    return names;
+  }
+  class SubNameField extends Blockly.FieldDropdown {
+    constructor(value) {
+      super(function () {
+        var b = this.getSourceBlock();
+        var names = subDefNames(b ? b.workspace : null);
+        var cur = this.getValue();
+        if (cur && names.indexOf(cur) === -1) {
+          names.unshift(cur);
+        }
+        if (!names.length) {
+          names.push("my_sub");
+        }
+        return names.map(function (n) {
+          return [n, n];
+        });
+      });
+      if (value != null && String(value).trim()) {
+        this.setValue(String(value).trim());
+      }
+    }
+    static fromJson(options) {
+      return new SubNameField(options ? options.value : undefined);
+    }
+    doClassValidation_(newValue) {
+      var t = String(newValue == null ? "" : newValue).trim();
+      return t ? t : null;
+    }
+    // 候補の作り直し前でも、今の値をそのまま見せる。
+    getText_() {
+      var v = this.getValue();
+      return v == null ? "" : String(v);
+    }
+  }
+  Blockly.fieldRegistry.register("field_subname", SubNameField);
+
+  // 定義の名前を利用者が変えたら、同じ名前を呼んでいる呼出も追従させる。
+  // 読込（作成事象）では動かさない：読込途中の既定名で無関係な呼出を
+  // 書き換えないよう、名前欄の変更事象だけを見る。
+  Blockly.Extensions.register("pokecon_sub_rename", function () {
+    this.setOnChange(function (e) {
+      if (
+        !e ||
+        e.type !== Blockly.Events.BLOCK_CHANGE ||
+        e.blockId !== this.id ||
+        e.element !== "field" ||
+        e.name !== "NAME" ||
+        this.isInFlyout
+      ) {
+        return;
+      }
+      var oldName = String(e.oldValue == null ? "" : e.oldValue).trim();
+      var newName = String(e.newValue == null ? "" : e.newValue).trim();
+      if (!oldName || !newName || oldName === newName || !this.workspace) {
+        return;
+      }
+      // 同名の定義がまだ残っているなら、呼出はそちらを指しているとみなす。
+      if (subDefNames(this.workspace).indexOf(oldName) !== -1) {
+        return;
+      }
+      // 追従は利用者の改名と同じ事象グループに入れ、「元に戻す」1回で両方戻す。
+      var prevGroup = Blockly.Events.getGroup();
+      Blockly.Events.setGroup(e.group || prevGroup || true);
+      try {
+        this.workspace.getAllBlocks(false).forEach(function (c) {
+          if (
+            (c.type === "pokecon_sub_call" || c.type === "pokecon_sub_call_value") &&
+            c.getFieldValue("NAME") === oldName
+          ) {
+            c.setFieldValue(newName, "NAME");
+          }
+        });
+      } finally {
+        Blockly.Events.setGroup(prevGroup);
+      }
+    });
+  });
+
   Blockly.defineBlocksWithJsonArray([
     {
       type: "pokecon_vision_contains",
-      message0: "画像 %1 がある 閾値 %2 範囲 %3 グレー %4 %5 %6",
+      message0: "画像 %1 %2 がある",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "TEMPLATE",
-          options: [["my-pack/a.png", "my-pack/a.png"]],
-        },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
+        { type: "field_template", name: "TEMPLATE", value: "" },
         {
           type: "field_image",
           name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
           alt: "*",
         },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       output: "Boolean",
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "画面にテンプレ画像があれば真。「もし」の条件に使う。📷 調整で実画面を見ながら範囲・閾値を決められる。",
     },
     {
       type: "pokecon_vision_wait_appear",
-      message0:
-        "画像 %1 が出るまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
+      message0: "画像 %1 %2 が出るまで待つ 上限 %3 秒",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "TEMPLATE",
-          options: [["my-pack/a.png", "my-pack/a.png"]],
-        },
-        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
+        { type: "field_template", name: "TEMPLATE", value: "" },
         {
           type: "field_image",
           name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
           alt: "*",
         },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
+        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "テンプレ画像が出るまで待つ。上限秒で打ち切る。",
     },
     {
       type: "pokecon_vision_wait_gone",
-      message0:
-        "画像 %1 が消えるまで待つ 上限 %2 閾値 %3 範囲 %4 グレー %5 %6 %7",
+      message0: "画像 %1 %2 が消えるまで待つ 上限 %3 秒",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "TEMPLATE",
-          options: [["my-pack/a.png", "my-pack/a.png"]],
-        },
-        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
+        { type: "field_template", name: "TEMPLATE", value: "" },
         {
           type: "field_image",
           name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
           alt: "*",
         },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
+        { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "テンプレ画像が消えるまで待つ。上限秒で打ち切る。",
     },
     {
       type: "pokecon_vision_position",
-      message0: "画像 %1 の位置 閾値 %2 範囲 %3 グレー %4 %5 %6",
+      message0: "画像 %1 %2 の位置",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "TEMPLATE",
-          options: [["my-pack/a.png", "my-pack/a.png"]],
-        },
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
+        { type: "field_template", name: "TEMPLATE", value: "" },
         {
           type: "field_image",
           name: "PREVIEW",
-          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-          width: 120,
-          height: 90,
+          src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==",
+          width: 64,
+          height: 48,
           alt: "*",
         },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
-      extensions: ["pokecon_template_preview", "pokecon_template_options"],
+      message1: "閾値 %1 範囲 %2 グレー %3 %4",
+      args1: [
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
+      extensions: ["pokecon_template_preview"],
       output: null,
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "テンプレ画像が見つかった位置。",
     },
     {
       type: "pokecon_vision_wait_stable",
-      message0: "画面が止まるまで待つ 静止 %1 上限 %2",
+      message0: "画面が止まるまで待つ 静止 %1 秒 上限 %2 秒",
       args0: [
         { type: "field_number", name: "QUIET", value: 0.5, min: 0, max: 60 },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
       ],
       previousStatement: null,
       nextStatement: null,
-      colour: 210,
+      colour: 195,
+      tooltip: "画面の変化が「静止」秒だけ続けて止まるまで待つ（暗転・演出の終わり待ち等）。",
     },
     {
       type: "pokecon_vision_color",
-      message0: "色 下限 %1 %2 %3 上限 %4 %5 %6 割合 %7 範囲 %8 %9",
+      message0: "色 下限 H %1 S %2 V %3 〜 上限 H %4 S %5 V %6",
       args0: [
         { type: "field_number", name: "H1", value: 0, min: 0, max: 179 },
         { type: "field_number", name: "S1", value: 0, min: 0, max: 255 },
@@ -919,50 +1151,25 @@
         { type: "field_number", name: "H2", value: 179, min: 0, max: 179 },
         { type: "field_number", name: "S2", value: 255, min: 0, max: 255 },
         { type: "field_number", name: "V2", value: 255, min: 0, max: 255 },
-        { type: "field_number", name: "RATIO", value: 0.6, min: 0, max: 1 },
-        { type: "field_input", name: "CROP", text: "" },
-        { type: "field_capopen", name: "CAPOPEN", text: "📷" },
       ],
+      message1: "が割合 %1 以上 範囲 %2 %3",
+      args1: [
+        { type: "field_number", name: "RATIO", value: 0.6, min: 0, max: 1 },
+        { type: "field_crop", name: "CROP", text: "" },
+        { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
+      ],
+      inputsInline: false,
       output: "Boolean",
-      colour: 210,
+      colour: 195,
+      tooltip:
+        "範囲内でHSVの色範囲に入る画素の割合が指定以上なら真。📷 調整で実画面を見ながら決められる。",
     },
   ]);
 
-  // TEMPLATE欄の候補一覧。editor.html が ./templates の取得結果で更新する。
-  // 未登録名は先頭に足して保持する（打ち間違いの既存保存物を壊さない）。
-  // Array.isArray で見る（instanceof はvm等の別レルム配列で偽になるため）。
-  Blockly.Extensions.register("pokecon_template_options", function () {
-    var f = this.getField("TEMPLATE");
-    if (!f) {
-      return;
-    }
-    f.menuGenerator_ = function () {
-      var list =
-        typeof Blockly.PokeconTemplates !== "undefined" &&
-        Array.isArray(Blockly.PokeconTemplates)
-          ? Blockly.PokeconTemplates
-          : [];
-      var opts = list.map(function (n) {
-        return [n, n];
-      });
-      var cur = f.getValue();
-      if (
-        cur &&
-        !opts.some(function (o) {
-          return o[1] === cur;
-        })
-      ) {
-        opts.unshift([cur, cur]);
-      }
-      // 空欄も常時選べる（従来の空テキストと同等。保存時は書式検査ではねられる）。
-      opts.push(["(空欄)", ""]);
-      return opts;
-    };
-  });
   // TEMPLATE欄の変更をダミーPREVIEW欄へ反映する。生成コードには触らない。
   // 欠損時は透明placeholderのままにする（保存は塞がない）。
   var PREVIEW_EMPTY =
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==";
   function previewUrl(v) {
     return "./template_image?name=" + encodeURIComponent(v);
   }
@@ -1041,6 +1248,26 @@
   });
   // リポジトリは4スペース字下げ（ruff format）。既定の2スペースのままでは通らない。
   pythonGenerator.INDENT = "    ";
+
+  // 変数名を読めるまま出す。Blockly既定は非ASCIIを `_E5_9B_9E` のように潰すが、
+  // Python 3 は日本語の識別子を受け付けるため、識別子に使えない文字だけを _ にする
+  // （文字・10進数字・結合文字・_ を残す。先頭が数字なら my_ を付ける）。
+  if (Blockly.Names && Blockly.Names.prototype) {
+    Blockly.Names.prototype.safeName = function (name) {
+      if (!name) {
+        return (Blockly.Msg && Blockly.Msg.UNNAMED_KEY) || "unnamed";
+      }
+      // Python は識別子を NFKC で正規化して比べる（全角「ａ」と「a」は同じ名前）。
+      // 先に正規化しておけば、重複名・予約語の判定もPythonと同じ形で効く。
+      var s = String(name)
+        .normalize("NFKC")
+        .replace(/[^\p{L}\p{Nd}\p{Mn}\p{Mc}_]/gu, "_");
+      if (/^[\p{Nd}\p{Mn}\p{Mc}]/u.test(s)) {
+        s = "my_" + s;
+      }
+      return s;
+    };
+  }
 
   function collectSubDefs(block) {
     var ws = block ? block.workspace : null;
@@ -1169,8 +1396,9 @@
       /self\.(waitTone|isTonePresent|waitSound|isSoundPresent|recordClip)\s*\(/.test(
         combined,
       );
-    // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
-    var useStick = /Direction\s*\(/.test(combined);
+    // スティック・十字キーを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
+    // press の十字キー（Direction.UP 等）は呼び括弧を持たないため . も見る。
+    var useStick = /Direction\s*[\(.]/.test(combined);
     var useButton = /Button\s*\./.test(combined);
     // 経過時間を使うときだけ time を足し、do() 先頭で起点を取る。
     var useTime = /_blockly_t0/.test(combined);
@@ -1332,11 +1560,14 @@
 
   pythonGenerator.forBlock["pokecon_press"] = function (block) {
     var btn = block.getFieldValue("BUTTON");
+    // 十字キー選択時（"Direction." 始まり）はそのまま、ボタンは Button. を付ける。
+    var target =
+      String(btn).indexOf("Direction.") === 0 ? btn : "Button." + btn;
     var dur = block.getFieldValue("DURATION");
     var wait = block.getFieldValue("WAIT");
     return (
-      "self.press(Button." +
-      btn +
+      "self.press(" +
+      target +
       ", duration=" +
       dur +
       ", wait=" +

@@ -395,7 +395,7 @@ def _body_json(raw: bytes) -> dict:
 
 def test_save_garbage_content_length_fails(server: str) -> None:
     raw = (
-        b"POST /save HTTP/1.1\r\nHost: x\r\n"
+        b"POST /save HTTP/1.1\r\nHost: 127.0.0.1\r\n"
         b"Content-Length: garbage\r\n"
         b"Content-Type: application/json\r\n"
         b"Connection: close\r\n\r\n{}"
@@ -438,7 +438,7 @@ def test_save_spoofed_huge_length_fails_fast(server: str) -> None:
     # 旧実装は申告全体を読もうとして待ち続けるため遅い。
     send_size = cap + 128 * 1024
     header = (
-        "POST /save HTTP/1.1\r\nHost: x\r\n"
+        "POST /save HTTP/1.1\r\nHost: 127.0.0.1\r\n"
         f"Content-Length: {claimed}\r\n"
         "Content-Type: application/json\r\n"
         "Connection: close\r\n\r\n"

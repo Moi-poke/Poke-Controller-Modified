@@ -2,48 +2,157 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>Blocklyエディタ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blocklyエディタ - PokeCon</title>
 <script src="./blockly_compressed.js"></script>
 <script src="./blocks_compressed.js"></script>
 <script src="./python_compressed.js"></script>
 <script src="./msg/ja.js"></script>
 <script src="./pokecon_blocks.js"></script>
 <script src="./pokecon_capture.js"></script>
+<script src="./pokecon_editor.js"></script>
 <style>
+:root {
+  --bg: #f4f5f7; --panel: #fff; --line: #d6d9de; --text: #1f2328; --muted: #5c636b;
+  --accent: #1a66d2; --accent-ink: #fff; --warn: #9a5b00; --err: #b3261e; --err-bg: #fdecea;
+}
 html, body { height: 100%; margin: 0; }
-#bar { padding: 8px; display: flex; gap: 8px; align-items: center; }
-#ws { height: calc(100% - 48px); width: 100%; }
-#status { color: #333; }
+body {
+  display: flex; flex-direction: column; color: var(--text); background: var(--bg);
+  font: 13px/1.4 "Segoe UI", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+}
+button, input, select { font: inherit; color: inherit; }
+button {
+  min-height: 30px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); cursor: pointer; white-space: nowrap;
+}
+button:hover { background: #eef2f7; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.primary:hover { background: #1557b3; }
+button.icon { min-width: 32px; padding: 3px 6px; font-size: 15px; }
+input, select { min-height: 28px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); box-sizing: border-box; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, #splitter:focus-visible, pre:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+#bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 10px;
+  background: var(--panel); border-bottom: 1px solid var(--line); position: relative; z-index: 20;
+}
+#bar .grp { display: flex; align-items: center; gap: 6px; }
+#bar .grp + .grp { padding-left: 14px; border-left: 1px solid var(--line); }
+#bar label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+#files { max-width: 190px; }
+#stem { width: 150px; }
+#stem[aria-invalid="true"] { border-color: var(--err); background: var(--err-bg); }
+#dirty { color: var(--muted); font-size: 12px; min-width: 5em; }
+#dirty.is-dirty { color: var(--warn); font-weight: 600; }
+#help { position: relative; }
+#help summary { cursor: pointer; list-style: none; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+#help summary::-webkit-details-marker { display: none; }
+#help .helpbody {
+  position: absolute; right: 0; top: calc(100% + 6px); width: 380px; padding: 10px 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15); z-index: 30;
+}
+#help ul { margin: 0; padding-left: 1.2em; }
+#help li + li { margin-top: 4px; }
+kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: #fafafa; font-size: 12px; }
+#statusline { display: flex; gap: 12px; align-items: baseline; min-height: 20px; padding: 3px 12px; background: var(--bg); border-bottom: 1px solid var(--line); white-space: pre-line; }
+#status { color: var(--text); }
+#stemerror { color: var(--err); font-weight: 600; }
+#stemerror:empty { display: none; }
+#saveerrors { display: none; margin: 6px 10px 0; padding: 8px 12px; border: 1px solid var(--err); border-radius: 6px; background: var(--err-bg); color: var(--err); white-space: pre-line; }
+#saveerrors.show { display: block; }
+#main { flex: 1 1 auto; display: flex; min-height: 0; }
+#ws { flex: 1 1 auto; min-width: 0; min-height: 320px; position: relative; }
+#splitter { display: none; flex: 0 0 6px; cursor: col-resize; background: var(--line); }
+#splitter:hover, #splitter.dragging { background: var(--accent); }
+#previewwrap { display: none; flex: 0 0 auto; width: 420px; min-width: 240px; max-width: 70vw; flex-direction: column; background: #1e1f22; color: #e6e6e6; }
+#main.with-code #splitter { display: block; }
+#main.with-code #previewwrap { display: flex; }
+#previewwrap .panehead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #2b2d31; border-bottom: 1px solid #111; }
+#previewwrap .panehead strong { font-weight: 600; }
+#previewstatus { flex: 1 1 auto; color: #a8adb5; font-size: 12px; }
+#previewwrap button { background: #3a3d43; border-color: #4a4e55; color: #e6e6e6; min-height: 26px; }
+#previewwrap button:hover { background: #4a4e55; }
+#preview { flex: 1 1 auto; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.5 Consolas, "Cascadia Mono", "MS Gothic", monospace; white-space: pre; tab-size: 4; }
+#legacy { padding: 2px 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+#legacy summary { cursor: pointer; padding: 2px 0; }
+#legacy .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 0; }
+.blocklyToolboxCategory { padding: 3px 0; }
 #capmodal { display: none; position: fixed; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; overflow: auto; }
-#capmodalbox { background: #fff; margin: 2vh auto; padding: 12px; width: fit-content; max-width: 96vw; }
+#capmodalbox { background: #fff; margin: 2vh auto; padding: 12px; width: fit-content; max-width: 96vw; border-radius: 8px; }
 #capbigimg { max-width: 90vw; max-height: 66vh; border: 1px solid #999; cursor: crosshair; }
 .caphandle { position: absolute; width: 8px; height: 8px; background: #f00; border: 1px solid #fff; display: none; }
 .capdim { position: absolute; background: rgba(0,0,0,0.65); color: #fff; font-size: 11px; padding: 1px 4px; display: none; pointer-events: none; white-space: nowrap; }
 </style>
 </head>
 <body>
-<div id="bar">
-<label>保存名 <input id="stem" value="MyBlock"></label>
-<button id="save">保存</button>
-<span id="status"></span>
+<header id="bar">
+<div class="grp">
+<button id="newws" title="新しいコマンドを作る（今の編集は確認のうえ閉じる）">新規</button>
+<label>保存済み <select id="files" aria-label="保存済みのコマンド"></select></label>
+<button id="open" title="選んだ保存物を開く">開く</button>
+<button id="del" title="選んだ保存物（.py と編集データ）を削除">削除</button>
 </div>
-<div id="bar2" style="padding: 0 8px 8px; display: flex; gap: 8px; align-items: center;">
-<label>保存済み <select id="files"></select></label>
-<button id="open">開く</button>
-<button id="del">削除</button>
+<div class="grp">
+<label>保存名 <input id="stem" value="MyBlock" aria-describedby="stemerror" spellcheck="false" autocomplete="off"></label>
+<button id="save" class="primary" title="保存 (Ctrl+S)">保存</button>
+<span id="dirty">保存済み</span>
+</div>
+<div class="grp">
+<button id="undo" class="icon" title="元に戻す (Ctrl+Z)" aria-label="元に戻す">↶</button>
+<button id="redo" class="icon" title="やり直し (Ctrl+Y)" aria-label="やり直し">↷</button>
+<button id="cleanup" title="ブロックの塊を縦に整列">整列</button>
+<button id="fit" title="すべてのブロックが見えるように表示">全体表示</button>
+</div>
+<div class="grp">
+<button id="capget" title="キャプチャから画像テンプレを切り出して保存">📷 テンプレ作成</button>
+<button id="previewtoggle" aria-expanded="false" aria-controls="previewwrap" title="生成されるPythonコードを右側に表示">コード表示</button>
+<details id="help">
+<summary>使い方</summary>
+<div class="helpbody">
+<ul>
+<li>「プログラム」ブロックの中に操作を並べて保存します（<kbd>Ctrl</kbd>+<kbd>S</kbd>）。保存するとPokeConのコマンド一覧に約1秒で出ます。</li>
+<li>プログラムの外に置いたブロックは灰色になり、実行されません。つなぎ直すと元に戻ります。</li>
+<li>元に戻す <kbd>Ctrl</kbd>+<kbd>Z</kbd>／やり直し <kbd>Ctrl</kbd>+<kbd>Y</kbd>／複製 <kbd>Ctrl</kbd>+<kbd>C</kbd>→<kbd>Ctrl</kbd>+<kbd>V</kbd>／削除 <kbd>Delete</kbd>。右クリックでも操作できます。</li>
+<li>画像認識ブロックの📷で、範囲・しきい値・テンプレを実際の画面で試しながら決められます。範囲が空なら画面全体です。</li>
+<li>変数は「変数」分類の「変数の作成…」で作ります。「設定数値」で受けた値は同じ名前の変数で使えます。</li>
+<li>サブルーチンは定義ブロックを置き、「呼ぶ」の名前欄で選びます。定義の名前を変えると呼出も追従します。</li>
+<li>編集中の内容はこのブラウザに自動で控えられ、閉じても次回に復元されます（保存とは別です）。</li>
+</ul>
+</div>
+</details>
+</div>
+</header>
+<div id="statusline"><span id="stemerror" role="alert"></span><span id="status" role="status" aria-live="polite"></span></div>
+<div id="saveerrors" role="alert" tabindex="-1"></div>
+<main id="main">
+<div id="ws"></div>
+<div id="splitter" role="separator" aria-orientation="vertical" aria-label="コード欄の幅" tabindex="0" title="ドラッグ（または←→キー）で幅を変える"></div>
+<aside id="previewwrap" aria-label="生成コード">
+<div class="panehead"><strong>生成コード</strong><span id="previewstatus" role="status" aria-live="polite"></span><button id="previewcopy" title="生成コードをクリップボードへ">コピー</button></div>
+<pre id="preview" tabindex="0" aria-label="生成コードのプレビュー"></pre>
+</aside>
+</main>
+<details id="legacy">
+<summary>旧来の道具（画像名の一括反映・枠の切出し保存）</summary>
+<div class="row">
 <label>画像 <select id="tpllist"></select></label>
 <button id="tplapply">選択中へ反映</button>
+<span id="capblockapply-legacy">従来の反映（推奨: ブロックの📷から範囲・しきい値ごと反映）</span>
 </div>
-<div id="bar3" style="padding: 0 8px 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-<button id="capget">キャプチャ取得</button>
+<div class="row">
 <span id="capwrap" style="position: relative; display: none;">
 <img id="capimg" alt="キャプチャ" style="max-width: 320px; max-height: 180px; border: 1px solid #999; cursor: crosshair;">
 <div id="caprect" style="position: absolute; border: 2px solid #f00; display: none; pointer-events: none;"></div>
 </span>
 <label>保存名 <input id="capname" value="" placeholder="例: mark"></label>
 <button id="capsave" disabled>切出し保存</button>
-<span id="capstatus"></span>
+<span id="capstatus" role="status" aria-live="polite"></span>
 </div>
+</details>
 <!-- 上部の仮想スティック区画は非表示（ブロック内蔵パッドへ移行）。DOMは残す。 -->
 <div id="bar4" style="padding: 0 8px 8px; display: none; gap: 8px; align-items: center; flex-wrap: wrap;">
 <span>スティック</span>
@@ -88,18 +197,19 @@ html, body { height: 100%; margin: 0; }
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">高さ <input id="caph" type="number" step="1" style="width: 5em;"><input id="caprh" type="range" min="0" value="0" style="width: 90px;"></span>
 <span style="color: #666; white-space: nowrap;">（実画像の画素・マウスでも上下可）</span>
 <span style="display: inline-flex; gap: 8px; align-items: center; white-space: nowrap;"><button id="capretake">取り直す</button><button id="capok">確定</button><button id="capcancel">キャンセル</button></span>
-<span id="capmodalstatus"></span>
+<span id="capmodalstatus" role="status" aria-live="polite"></span>
 </div>
 <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">テンプレ <select id="capmatchtpl"></select><span id="capmatchsize" style="color: #666;"></span></span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">しきい値 <input id="capth" type="number" step="0.01" min="0" max="1" value="0.7" style="width: 5em;"><input id="caprth" type="range" min="0" max="1" step="0.01" value="0.7" style="width: 120px;"></span>
 <label style="white-space: nowrap;"><input type="checkbox" id="capgray" checked> グレー</label>
 <label style="white-space: nowrap;"><input type="checkbox" id="caproionly"> 赤枠内のみ</label>
-<span id="capmatchstatus"></span>
+<span id="capmatchstatus" role="status" aria-live="polite"></span>
 <span id="capmatchcrop" style="color: #666;"></span>
 </div>
 <div id="capfiltrow" style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
 <span>色フィルタ <select id="capfilt_mode"><option value="off">OFF</option><option value="gray_out">対象外グレー</option><option value="mask">白黒</option></select></span>
+<span>プリセット <select id="capfilt_preset"><option value="custom">手動</option><option value="red">赤</option><option value="yellow">黄</option><option value="green">緑</option><option value="blue">青</option><option value="white">白</option></select></span>
 <span>H下限 <input id="caph1" type="number" min="0" max="179" value="0"></span>
 <span>S下限 <input id="caps1" type="number" min="0" max="255" value="0"></span>
 <span>V下限 <input id="capv1" type="number" min="0" max="255" value="0"></span>
@@ -120,105 +230,344 @@ html, body { height: 100%; margin: 0; }
 </div>
 </div>
 </div>
-<div id="ws"></div>
 <script>
 (function () {
   'use strict';
   // 生成器は Blockly.Python に付く（pythonGenerator 大域は無い）。
   var pythonGenerator =
     (typeof Blockly !== 'undefined' && Blockly.Python) || null;
+  // 状態判定の補助（pokecon_editor.js）。検証スタブでは無いため、無ければ
+  // 従来の振る舞い（変更＝未保存）に落とす。
+  var E = (typeof Blockly !== 'undefined' && Blockly.PokeconEditor) || null;
+  // 分類は「やりたいこと」で引けるように並べ、色はブロックの色に揃える。
+  // 値の穴には影ブロックを入れ、置いてすぐ数・文字を打てるようにする。
+  var TOOLBOX = {
+    kind: 'categoryToolbox',
+    contents: [
+      { kind: 'category', name: '基本操作', colour: '160', contents: [
+        { kind: 'block', type: 'pokecon_press' },
+        { kind: 'block', type: 'pokecon_stick' },
+        { kind: 'block', type: 'pokecon_press_rep' },
+        { kind: 'block', type: 'pokecon_hold' },
+        { kind: 'block', type: 'pokecon_hold_end' },
+        { kind: 'block', type: 'pokecon_wait' },
+      ] },
+      { kind: 'category', name: '流れ', colour: '120', contents: [
+        { kind: 'block', type: 'pokecon_program' },
+        { kind: 'block', type: 'controls_repeat_ext', inputs: { TIMES: { shadow: { type: 'math_number', fields: { NUM: 10 } } } } },
+        { kind: 'block', type: 'controls_whileUntil' },
+        { kind: 'block', type: 'controls_for', inputs: { FROM: { shadow: { type: 'math_number', fields: { NUM: 1 } } }, TO: { shadow: { type: 'math_number', fields: { NUM: 10 } } }, BY: { shadow: { type: 'math_number', fields: { NUM: 1 } } } } },
+        { kind: 'block', type: 'controls_if' },
+        { kind: 'block', type: 'controls_if', extraState: { hasElse: true } },
+        { kind: 'block', type: 'controls_flow_statements' },
+        { kind: 'block', type: 'pokecon_finish' },
+        { kind: 'block', type: 'pokecon_elapsed' },
+        { kind: 'block', type: 'pokecon_comment' },
+      ] },
+      { kind: 'category', name: '画像認識', colour: '195', contents: [
+        { kind: 'block', type: 'pokecon_vision_contains' },
+        { kind: 'block', type: 'pokecon_vision_wait_appear' },
+        { kind: 'block', type: 'pokecon_vision_wait_gone' },
+        { kind: 'block', type: 'pokecon_vision_press_until' },
+        { kind: 'block', type: 'pokecon_vision_press_until_gone' },
+        { kind: 'block', type: 'pokecon_vision_position' },
+        { kind: 'block', type: 'pokecon_vision_wait_stable' },
+        { kind: 'block', type: 'pokecon_vision_wait_count' },
+        { kind: 'block', type: 'pokecon_vision_count' },
+        { kind: 'block', type: 'pokecon_vision_color' },
+      ] },
+      { kind: 'category', name: '音声', colour: '20', contents: [
+        { kind: 'block', type: 'pokecon_audio_tone_contains' },
+        { kind: 'block', type: 'pokecon_audio_wait_tone' },
+      ] },
+      { kind: 'category', name: '入出力', colour: '40', contents: [
+        { kind: 'block', type: 'pokecon_print', inputs: { TEXT: { shadow: { type: 'text', fields: { TEXT: 'メッセージ' } } } } },
+        { kind: 'block', type: 'pokecon_screenshot' },
+        { kind: 'block', type: 'pokecon_discord', inputs: { CONTENT: { shadow: { type: 'text', fields: { TEXT: '通知' } } } } },
+        { kind: 'block', type: 'pokecon_dialog_choice' },
+        { kind: 'block', type: 'pokecon_dialog_number' },
+        { kind: 'block', type: 'pokecon_dialog_check' },
+      ] },
+      { kind: 'category', name: '計算・論理', colour: '230', contents: [
+        { kind: 'block', type: 'logic_compare' },
+        { kind: 'block', type: 'logic_operation' },
+        { kind: 'block', type: 'logic_negate' },
+        { kind: 'block', type: 'logic_boolean' },
+        { kind: 'block', type: 'math_number' },
+        { kind: 'block', type: 'math_arithmetic', inputs: { A: { shadow: { type: 'math_number', fields: { NUM: 1 } } }, B: { shadow: { type: 'math_number', fields: { NUM: 1 } } } } },
+        { kind: 'block', type: 'math_modulo', inputs: { DIVIDEND: { shadow: { type: 'math_number', fields: { NUM: 10 } } }, DIVISOR: { shadow: { type: 'math_number', fields: { NUM: 2 } } } } },
+        { kind: 'block', type: 'math_change', inputs: { DELTA: { shadow: { type: 'math_number', fields: { NUM: 1 } } } } },
+        { kind: 'block', type: 'math_random_int', inputs: { FROM: { shadow: { type: 'math_number', fields: { NUM: 1 } } }, TO: { shadow: { type: 'math_number', fields: { NUM: 100 } } } } },
+        { kind: 'block', type: 'math_random_float' },
+        { kind: 'block', type: 'text' },
+        { kind: 'block', type: 'text_join' },
+      ] },
+      { kind: 'category', name: '変数', colour: '330', custom: 'VARIABLE' },
+      { kind: 'category', name: 'サブルーチン', colour: '290', contents: [
+        { kind: 'block', type: 'pokecon_sub_def' },
+        { kind: 'block', type: 'pokecon_sub_call' },
+        { kind: 'block', type: 'pokecon_sub_call_value' },
+      ] },
+    ],
+  };
   var ws = Blockly.inject('ws', {
-    toolbox: {
-      kind: 'categoryToolbox',
-      contents: [
-        {
-          kind: 'category', name: 'PokeCon',
-          contents: [
-            { kind: 'block', type: 'pokecon_program' },
-            { kind: 'block', type: 'pokecon_sub_def' },
-            { kind: 'block', type: 'pokecon_sub_call' },
-            { kind: 'block', type: 'pokecon_sub_call_value' },
-            { kind: 'block', type: 'pokecon_comment' },
-            { kind: 'block', type: 'pokecon_press' },
-            { kind: 'block', type: 'pokecon_stick' },
-            { kind: 'block', type: 'pokecon_wait' },
-            { kind: 'block', type: 'pokecon_elapsed' },
-            { kind: 'block', type: 'pokecon_hold' },
-            { kind: 'block', type: 'pokecon_hold_end' },
-            { kind: 'block', type: 'pokecon_finish' },
-            { kind: 'block', type: 'pokecon_press_rep' },
-            { kind: 'block', type: 'pokecon_print' },
-            { kind: 'block', type: 'pokecon_screenshot' },
-            { kind: 'block', type: 'pokecon_discord' },
-            { kind: 'block', type: 'pokecon_dialog_choice' },
-            { kind: 'block', type: 'pokecon_dialog_number' },
-            { kind: 'block', type: 'pokecon_dialog_check' },
-          ],
-        },
-        {
-          kind: 'category', name: '画像認識',
-          contents: [
-            { kind: 'block', type: 'pokecon_vision_contains' },
-            { kind: 'block', type: 'pokecon_vision_wait_appear' },
-            { kind: 'block', type: 'pokecon_vision_wait_gone' },
-            { kind: 'block', type: 'pokecon_vision_press_until' },
-            { kind: 'block', type: 'pokecon_vision_press_until_gone' },
-            { kind: 'block', type: 'pokecon_vision_position' },
-            { kind: 'block', type: 'pokecon_vision_wait_stable' },
-            { kind: 'block', type: 'pokecon_vision_wait_count' },
-            { kind: 'block', type: 'pokecon_vision_count' },
-            { kind: 'block', type: 'pokecon_vision_color' },
-          ],
-        },
-        {
-          kind: 'category', name: '音声',
-          contents: [
-            { kind: 'block', type: 'pokecon_audio_tone_contains' },
-            { kind: 'block', type: 'pokecon_audio_wait_tone' },
-          ],
-        },
-        {
-          kind: 'category', name: '標準',
-          contents: [
-            { kind: 'block', type: 'controls_repeat' },
-            { kind: 'block', type: 'controls_whileUntil' },
-            { kind: 'block', type: 'controls_if' },
-            { kind: 'block', type: 'controls_flow_statements' },
-            { kind: 'block', type: 'logic_compare' },
-            { kind: 'block', type: 'logic_operation' },
-            { kind: 'block', type: 'logic_negate' },
-            { kind: 'block', type: 'math_number' },
-            { kind: 'block', type: 'math_arithmetic' },
-            { kind: 'block', type: 'math_modulo' },
-            { kind: 'block', type: 'math_change' },
-            { kind: 'block', type: 'math_random_int' },
-            { kind: 'block', type: 'math_random_float' },
-            { kind: 'block', type: 'text' },
-            { kind: 'block', type: 'text_join' },
-            { kind: 'block', type: 'variables_get' },
-            { kind: 'block', type: 'variables_set' },
-          ],
-        },
-      ],
-    },
+    renderer: 'zelos',
+    sounds: false,
+    trashcan: true,
+    grid: { spacing: 24, length: 3, colour: '#d5d8dc', snap: true },
+    zoom: { controls: true, wheel: true, startScale: 0.85, maxScale: 3, minScale: 0.3, scaleSpeed: 1.2 },
+    move: { scrollbars: true, drag: true, wheel: false },
+    toolbox: TOOLBOX,
   });
+  // 要素取得の安全弁。node検証の最小DOMスタブに無いidでも落とさない。
+  function byId(id) {
+    try { return document.getElementById(id); } catch (e) { return null; }
+  }
+  function on(id, ev, fn) {
+    var el = byId(id);
+    if (el && typeof el.addEventListener === 'function') { el.addEventListener(ev, fn); }
+  }
+  // 保存名の即時検査（Python側 validate_stem と同規則の軽量版）。
+  var STEM_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  function validateStemLocal(stem) {
+    if (!stem || !String(stem).trim()) { return '保存名を書いてください'; }
+    if (stem.indexOf('/') !== -1 || stem.indexOf('\\') !== -1 || stem.indexOf('.') !== -1) {
+      return '保存名に区切り文字は使えません（例: MyBlock）';
+    }
+    if (!STEM_RE.test(stem)) { return '保存名は英字・数字・`_`にしてください（例: MyBlock）'; }
+    return '';
+  }
+  function setStemError(s) {
+    var el = byId('stemerror');
+    if (!el) { return; }
+    el.textContent = s || '';
+    var input = byId('stem');
+    if (input && typeof input.setAttribute === 'function') {
+      input.setAttribute('aria-invalid', s ? 'true' : 'false');
+    }
+  }
+  // CROP欄の保存前検査。空＝全体、書式は「x1,y1,x2,y2」（実画素・x2>x1・y2>y1）。
+  // 生成側は不正を黙って落とすため、ここで件数付きで知らせる。
+  var CROP_RE = /^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/;
+  function validateCropsLocal() {
+    var bad = 0;
+    var blocks = [];
+    try { blocks = ws.getAllBlocks(false) || []; } catch (e) { blocks = []; }
+    blocks.forEach(function (b) {
+      if (!b || typeof b.getField !== 'function' || !b.getField('CROP')) { return; }
+      var v = '';
+      try { v = b.getFieldValue('CROP'); } catch (e) { v = ''; }
+      v = String(v == null ? '' : v).trim();
+      if (!v) { return; }
+      var m = v.match(CROP_RE);
+      if (!m || !(+m[3] > +m[1] && +m[4] > +m[2])) { bad++; }
+    });
+    if (!bad) { return ''; }
+    return '範囲（CROP）の書式が正しくないブロックが ' + bad + ' 個あります（例: 10,20,110,120）';
+  }
+  function setSaveErrors(lines) {
+    var box = byId('saveerrors');
+    if (!box) { return; }
+    if (!lines || !lines.length) {
+      box.textContent = '';
+      box.className = '';
+      box.style.display = 'none';
+      return;
+    }
+    box.textContent = '保存できません:\n- ' + lines.join('\n- ');
+    box.className = 'show';
+    box.style.display = 'block';
+    try { box.focus(); } catch (e) { /* フォーカスできなくても続ける */ }
+  }
+  // 未保存表示と生成コードプレビュー。未保存かどうかは事象の有無ではなく、
+  // 最後に保存・読込した時点の中身（baseline）との比較で決める。
+  // 選択などUIだけの事象や、読込直後に遅れて届く事象で汚さないため。
+  var dirty = false;
+  var baseline = '';
+  var previewTimer = null;
+  var dirtyTimer = null;
+  var previewOn = false;
+  function setDirty(v) {
+    dirty = !!v;
+    var el = byId('dirty');
+    if (!el) { return; }
+    el.textContent = dirty ? '● 未保存' : '保存済み';
+    el.className = dirty ? 'is-dirty' : '';
+    try { document.title = (dirty ? '● ' : '') + 'Blocklyエディタ - PokeCon'; } catch (e) { /* 続ける */ }
+  }
+  function markClean(key) {
+    baseline = (typeof key === 'string') ? key : (E ? E.stateKey(ws) : '');
+    setDirty(false);
+  }
+  function checkDirty() {
+    if (!E) { setDirty(true); return; }
+    setDirty(E.stateKey(ws) !== baseline);
+  }
+  function scheduleDirty() {
+    if (dirtyTimer) { clearTimeout(dirtyTimer); dirtyTimer = null; }
+    dirtyTimer = setTimeout(function () { dirtyTimer = null; checkDirty(); saveDraftSoon(); }, 120);
+  }
+  // 編集中の控え（ブラウザ内）。閉じた・落ちたときに次回復元する。
+  // 保存物とは別物で、保存すると「未保存なし」の控えに置き換わる。
+  // 番地は固定のため、別インストールの編集画面ともブラウザの保存領域を共有する。
+  // 控えの鍵は置き場ごとの識別子（一覧の appId）で分ける。
+  var DRAFT_KEY = 'pokecon.blockly.draft.v1';
+  var draftKey = DRAFT_KEY;
+  // 置き場の識別子が届いたか。届かなければ控えは使わない（共有の鍵に書くと
+  // 別インストールの控えと混ざるため）。
+  var draftKeyKnown = false;
+  // 起動時の控えの読込が済むまでは書かない（読む前に初期形で上書きしないため）。
+  var draftReady = false;
+  var draftTimer = null;
+  function storage() {
+    try { return (typeof window !== 'undefined' && window.localStorage) || null; } catch (e) { return null; }
+  }
+  function saveDraftNow() {
+    var st = storage();
+    if (!st || !E || !draftReady || !draftKeyKnown) { return; }
+    try {
+      var stemEl = byId('stem');
+      st.setItem(draftKey, JSON.stringify({
+        stem: stemEl ? stemEl.value : '',
+        dirty: dirty,
+        state: Blockly.serialization.workspaces.save(ws),
+      }));
+    } catch (e) { /* 容量超過などは控えを諦める */ }
+  }
+  function saveDraftSoon() {
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+    draftTimer = setTimeout(function () { draftTimer = null; saveDraftNow(); }, 800);
+  }
+  // 控えを読む。無ければ null、形が壊れていれば { broken: true }。
+  function readDraft() {
+    var st = storage();
+    if (!st || !draftKeyKnown) { return null; }
+    var raw = null;
+    try { raw = st.getItem(draftKey); } catch (e) { return null; }
+    if (raw == null || raw === '') { return null; }
+    try {
+      var d = JSON.parse(raw);
+      if (d && d.state && typeof d.state === 'object') { return d; }
+    } catch (e) { /* 下で壊れた扱い */ }
+    return { broken: true };
+  }
+  // 最後に保存・読込した保存名（次回起動時に一覧で選んでおく）。
+  function rememberStem(stem) {
+    var st = storage();
+    if (!st || !draftKeyKnown) { return; }
+    try { st.setItem(draftKey + '.last', stem); } catch (e) { /* 続ける */ }
+  }
+  function lastStem() {
+    var st = storage();
+    if (!st || !draftKeyKnown) { return null; }
+    try { return st.getItem(draftKey + '.last'); } catch (e) { return null; }
+  }
+  // 復元できなかった控えは捨てずに退避する（次の自動控えで消えないように）。
+  function keepBrokenDraft() {
+    var st = storage();
+    if (!st) { return; }
+    try { st.setItem(draftKey + '.broken', st.getItem(draftKey) || ''); } catch (e) { /* 続ける */ }
+  }
+  // 画面設定（コード欄の表示・幅）。保存物には入れない。
+  function readPref(name, fallback) {
+    var st = storage();
+    if (!st) { return fallback; }
+    try {
+      var v = st.getItem('pokecon.blockly.' + name);
+      return v == null ? fallback : v;
+    } catch (e) { return fallback; }
+  }
+  function writePref(name, value) {
+    var st = storage();
+    if (!st) { return; }
+    try { st.setItem('pokecon.blockly.' + name, String(value)); } catch (e) { /* 続ける */ }
+  }
+  function previewCode() {
+    if (!pythonGenerator) { return ''; }
+    try { return pythonGenerator.workspaceToCode(ws); } catch (e) { return ''; }
+  }
+  function renderPreview() {
+    var pre = byId('preview');
+    var st = byId('previewstatus');
+    if (!pre) { return; }
+    var code = previewCode();
+    pre.textContent = code || '（ブロックを置くとここに生成コードが出ます）';
+    if (st) {
+      var n = code ? code.replace(/\n+$/, '').split('\n').length : 0;
+      st.textContent = code ? n + '行（保存される内容）' : '';
+    }
+  }
+  function schedulePreview() {
+    if (!previewOn) { return; }
+    if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; }
+    previewTimer = setTimeout(function () { previewTimer = null; renderPreview(); }, 200);
+  }
+  // 汚れ検知・浮きブロック対策はSELECTED登録より先に行う（検証スタブが最後の
+  // 登録だけ覚えるため、SELECTEDの記憶処理を上書きしないよう順序を保つ）。
+  try {
+    if (E) { E.attachOrphanGuard(ws); }
+    ws.addChangeListener(function (e) {
+      if (E && !E.isContentEvent(e)) { return; }
+      scheduleDirty();
+      schedulePreview();
+    });
+  } catch (e) { /* 旧スタブでも続ける */ }
   function setStatus(s, isErr) {
     var el = document.getElementById('status');
+    if (!el) { return; }
     el.textContent = s;
-    el.style.color = isErr ? '#c00' : '#333';
-    el.style.fontWeight = isErr ? 'bold' : 'normal';
+    el.style.color = isErr ? '#b3261e' : '';
+    el.style.fontWeight = isErr ? '600' : 'normal';
+  }
+  // Blocklyの描画域を入れ物の大きさへ合わせ直す（コード欄の開閉・幅変更時）。
+  function resizeWorkspace() {
+    try { if (Blockly.svgResize) { Blockly.svgResize(ws); } } catch (e) { /* 続ける */ }
+  }
+  // ワークスペースへ状態を読み込み、浮き判定を済ませてから基準を取る
+  // （判定で無効化が変わると保存物も変わるため、基準より先に済ませる）。
+  function loadState(state) {
+    ws.clear();
+    Blockly.serialization.workspaces.load(state, ws);
+    if (E) { E.syncOrphans(ws); }
+    ws.getAllBlocks(false).forEach(function (b) {
+      if (typeof b.getField !== 'function') { return; }
+      var t = b.getField('TEMPLATE'), p = b.getField('PREVIEW');
+      if (t && p) { preloadPreview(p, t.getValue()); }
+    });
+    try { if (typeof ws.clearUndo === 'function') { ws.clearUndo(); } } catch (e) { /* 続ける */ }
+  }
+  // 保存済みの名前一覧（上書き確認に使う）と、今の編集が対応する保存名。
+  // 新規・控えからの復元では対応先なし（null）。
+  var knownStems = [];
+  var currentStem = null;
+  // 保存名の同一判定は大文字小文字を区別しない（Windowsでは同じファイルになる）。
+  function sameStem(a, b) {
+    return typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+  }
+  function stemExists(stem) {
+    return knownStems.some(function (s) { return sameStem(s, stem); });
+  }
+  // 一覧に無い名前を選ぶと空欄になるため、その場合は先頭を選ぶ。
+  function selectFile(name) {
+    var sel = byId('files');
+    if (!sel) { return; }
+    var hit = null;
+    knownStems.forEach(function (s) { if (hit === null && sameStem(s, name)) { hit = s; } });
+    sel.value = hit !== null ? hit : (knownStems[0] || '');
   }
   function refreshFiles(keep) {
-    fetch('./list').then(function (r) { return r.json(); }).then(function (j) {
+    return fetch('./list').then(function (r) { return r.json(); }).then(function (j) {
+      if (j.appId) { draftKey = DRAFT_KEY + '.' + j.appId; draftKeyKnown = true; }
       var sel = document.getElementById('files');
       sel.textContent = '';
-      (j.stems || []).forEach(function (name) {
+      knownStems = (j.stems || []).slice();
+      knownStems.forEach(function (name) {
         var opt = document.createElement('option');
         opt.value = name;
         opt.textContent = name;
         sel.appendChild(opt);
       });
-      if (keep) { sel.value = keep; }
+      selectFile(keep);
     }).catch(function (e) { setStatus('一覧を読めません: ' + e, true); });
   }
   function refreshTemplates() {
@@ -233,6 +582,25 @@ html, body { height: 100%; margin: 0; }
       });
       Blockly.PokeconTemplates = j.templates || [];
     }).catch(function () { /* 候補なしでも保存はできる */ });
+  }
+  // テンプレ画像の読込。存在しない名は壊れ表示にせず透明欄に戻す。
+  // node検証スタブに Image が無ければ従来どおり直接入れる。
+  var PREVIEW_EMPTY = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVQIHWMAAQAABQABim28IAAAAABJRU5ErkJggg==';
+  function preloadPreview(field, name) {
+    if (!field) { return; }
+    if (!name) {
+      try { field.setValue(PREVIEW_EMPTY); } catch (e) { /* 続ける */ }
+      return;
+    }
+    var url = './template_image?name=' + encodeURIComponent(name);
+    try {
+      var im = new Image();
+      im.onload = function () { try { field.setValue(url); } catch (e) { /* 続ける */ } };
+      im.onerror = function () { try { field.setValue(PREVIEW_EMPTY); } catch (e) { /* 続ける */ } };
+      im.src = url;
+    } catch (e) {
+      try { field.setValue(url); } catch (e2) { /* 続ける */ }
+    }
   }
   // ボタン押下でDOMフォーカスがBlockly外へ移るとFocusManagerが選択を外すため、
   // click時点の getSelected() は空になる。SELECTEDイベントでテンプレ欄つき
@@ -267,7 +635,7 @@ html, body { height: 100%; margin: 0; }
     }
     return target;
   }
-  document.getElementById('tplapply').addEventListener('click', function () {
+  on('tplapply', 'click', function () {
     var name = document.getElementById('tpllist').value;
     if (!name) { setStatus('画像を選んでください', true); return; }
     var target = resolveTplBlock(false);
@@ -278,23 +646,57 @@ html, body { height: 100%; margin: 0; }
     target.setFieldValue(name, 'TEMPLATE');
     setStatus('反映しました: ' + name, false);
   });
-  document.getElementById('save').addEventListener('click', function () {
+  function doSave() {
     if (!pythonGenerator) {
       setStatus('生成器がありません（python_compressed.js の読込を確認してください）', true);
+      setSaveErrors(['生成器がありません（python_compressed.js の読込を確認してください）']);
       return;
     }
+    var stemEl = byId('stem');
+    var stem = stemEl ? stemEl.value : '';
+    var errs = [];
+    var stemErr = validateStemLocal(stem);
+    if (stemErr) { errs.push(stemErr); }
+    setStemError(stemErr);
+    var cropErr = validateCropsLocal();
+    if (cropErr) { errs.push(cropErr); }
     var programs = ws.getTopBlocks(false).filter(function (b) { return b.type === 'pokecon_program'; });
     if (programs.length === 0) {
-      setStatus('「プログラム」ブロックを置き、その中に操作を並べてください（単体では保存できません）', true);
-      return;
+      errs.push('「プログラム」ブロックを置き、その中に操作を並べてください（単体では保存できません）');
     }
     if (programs.length > 1) {
-      setStatus('「プログラム」は1個までにしてください（今' + programs.length + '個あります）', true);
+      errs.push('「プログラム」は1個までにしてください（今' + programs.length + '個あります）');
+    }
+    var noImage = E ? E.blocksMissingTemplate(ws).length : 0;
+    if (noImage) {
+      errs.push('画像を選んでいない画像認識ブロックが ' + noImage + ' 個あります（ブロックの画像欄で選んでください）');
+    }
+    if (errs.length) {
+      setSaveErrors(errs);
+      setStatus(errs.join('\n'), true);
       return;
     }
-    var stem = document.getElementById('stem').value;
+    // 検査は通ったため、前回の失敗表示はここで消す（確認で取りやめても残さない）。
+    setSaveErrors([]);
+    // 開いていない別の保存物と同じ名前なら、上書きしてよいか確かめる。
+    if (stemExists(stem) && !sameStem(stem, currentStem) &&
+        !window.confirm('「' + stem + '」は既に保存されています。上書きしますか？（元の内容は消えます）')) {
+      setStatus('保存をやめました（保存名を変えると別のコマンドとして保存できます）', false);
+      return;
+    }
+    setSaveErrors([]);
     var state = Blockly.serialization.workspaces.save(ws);
     var code = pythonGenerator.workspaceToCode(ws);
+    if (!code || !String(code).trim()) {
+      setSaveErrors(['生成コードが空です']);
+      setStatus('生成コードが空です', true);
+      return;
+    }
+    // 保存中に編集が続いても取りこぼさないよう、送った時点の中身を基準にする。
+    var sentKey = E ? E.stateKey(ws) : '';
+    // 外れたブロックは保存を止めないが、実行されないことは伝える。
+    var orphanCount = E ? E.orphanBlocks(ws).length : 0;
+    setStatus('保存しています…', false);
     fetch('./save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -302,43 +704,87 @@ html, body { height: 100%; margin: 0; }
     }).then(function (r) { return r.json(); }).then(function (j) {
       var msg = j.message || (j.ok ? '保存しました' : '保存できません');
       if (j.warnings && j.warnings.length) { msg += '\n' + j.warnings.join('\n'); }
+      if (j.ok && orphanCount) {
+        msg += '\n注意: プログラムにつながっていないブロックの塊が ' + orphanCount +
+          ' 個あります（灰色・実行されません）';
+      }
       setStatus(msg, !j.ok);
-      if (j.ok) { refreshFiles(stem); }
-    }).catch(function (e) { setStatus('保存できません: ' + e, true); });
-  });
-  document.getElementById('open').addEventListener('click', function () {
+      if (!j.ok) {
+        var lines = (j.message || '保存できません').split('\n').filter(function (s) {
+          return s && s !== '保存できません:';
+        });
+        setSaveErrors(lines.length ? lines : ['保存できません']);
+      } else {
+        setSaveErrors([]);
+        currentStem = stem;
+        rememberStem(stem);
+        if (!stemExists(stem)) { knownStems.push(stem); }
+        if (E) { markClean(sentKey); checkDirty(); } else { setDirty(false); }
+        saveDraftNow();
+        refreshFiles(stem);
+        renderPreview();
+      }
+    }).catch(function (e) {
+      setStatus('保存できません: ' + e, true);
+      setSaveErrors(['保存できません: ' + e]);
+    });
+  }
+  on('save', 'click', doSave);
+  on('open', 'click', function () {
     var sel = document.getElementById('files');
     var stem = sel.value;
     if (!stem) { setStatus('開くものを選んでください', true); return; }
-    if (ws.getAllBlocks(false).length > 0 &&
-        !window.confirm('編集中の内容を捨てて「' + stem + '」を開きますか？')) {
+    // 捨てるものがあるときだけ確認する（未保存の変更が無ければ黙って開く）。
+    if (dirty && !window.confirm('保存していない変更を捨てて「' + stem + '」を開きますか？')) {
       return;
     }
-    // 候補取得を待ってから開く。TEMPLATE欄がdropdownのため、
-    // 一覧未到達で開くと保存値が候補外ではねられて既定値に化ける。
+    // 候補取得を待ってから開く（開いた直後から画像欄の候補が最新になるように。
+    // 保存値そのものは候補外でも保たれる）。
     refreshTemplates().then(function () {
       return fetch('./load?stem=' + encodeURIComponent(stem));
     }).then(function (r) {
       return r.json();
     }).then(function (j) {
       if (!j.ok) { setStatus(j.message || '開けません', true); return; }
-      ws.clear();
-      Blockly.serialization.workspaces.load(JSON.parse(j.workspaceJson), ws);
-      ws.getAllBlocks(false).forEach(function (b) {
-        if (typeof b.getField !== 'function') { return; }
-        var t = b.getField('TEMPLATE'), p = b.getField('PREVIEW');
-        if (t && p) {
-          var v = t.getValue();
-          p.setValue(v
-            ? './template_image?name=' + encodeURIComponent(v)
-            : 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
-        }
-      });
+      loadState(JSON.parse(j.workspaceJson));
       document.getElementById('stem').value = j.stem || stem;
+      currentStem = j.stem || stem;
+      rememberStem(currentStem);
       setStatus('開きました: ' + stem, false);
+      if (j.externalEdit) {
+        setStatus('開きました: ' + stem + '\n注意: .py が保存後に書き換えられています。ここで上書き保存すると、その手編集は消えます', true);
+      }
+      setSaveErrors([]);
+      setStemError('');
+      markClean();
+      saveDraftNow();
+      renderPreview();
+      try { ws.scrollCenter(); } catch (e) { /* 続ける */ }
     }).catch(function (e) { setStatus('開けません: ' + e, true); });
   });
-  document.getElementById('del').addEventListener('click', function () {
+  // 新規：初期形（プログラム1個）から始める。
+  on('newws', 'click', function () {
+    if (dirty && !window.confirm('保存していない変更を捨てて新しく作りますか？')) {
+      return;
+    }
+    if (!E) { ws.clear(); return; }
+    loadState(E.defaultState());
+    currentStem = null;
+    var stemEl = byId('stem');
+    if (stemEl) { stemEl.value = 'MyBlock'; }
+    setStemError('');
+    setSaveErrors([]);
+    markClean();
+    saveDraftNow();
+    renderPreview();
+    setStatus('新しいコマンドを作ります。「プログラム」の中に操作を並べてください', false);
+  });
+  // 編集操作（Blocklyのキー操作と同じもの）をボタンでも出す。
+  on('undo', 'click', function () { try { ws.undo(false); } catch (e) { /* 続ける */ } });
+  on('redo', 'click', function () { try { ws.undo(true); } catch (e) { /* 続ける */ } });
+  on('cleanup', 'click', function () { try { ws.cleanUp(); } catch (e) { /* 続ける */ } });
+  on('fit', 'click', function () { try { ws.zoomToFit(); } catch (e) { /* 続ける */ } });
+  on('del', 'click', function () {
     var sel = document.getElementById('files');
     var stem = sel.value;
     if (!stem) { setStatus('消すものを選んでください', true); return; }
@@ -351,9 +797,119 @@ html, body { height: 100%; margin: 0; }
       body: JSON.stringify({ stem: stem }),
     }).then(function (r) { return r.json(); }).then(function (j) {
       setStatus(j.message || (j.ok ? '削除しました' : '削除できません'), !j.ok);
+      if (j.ok && sameStem(stem, currentStem)) {
+        // 開いていた保存物を消したため、画面の内容はどこにも保存されていない。
+        currentStem = null;
+        markClean('');
+        checkDirty();
+      }
       refreshFiles();
     }).catch(function (e) { setStatus('削除できません: ' + e, true); });
   });
+  // 保存名の入力時検証（保存前と同じ文言を欄の隣に出す）。
+  on('stem', 'input', function () {
+    var el = byId('stem');
+    setStemError(validateStemLocal(el ? el.value : ''));
+  });
+  // 生成コードプレビューの開閉・コピー。
+  // コード欄は右ペイン。開閉はmainの class で切り替え、キャンバスを押し下げない。
+  function setPreviewVisible(v) {
+    previewOn = !!v;
+    var main = byId('main');
+    var btn = byId('previewtoggle');
+    if (main) { main.className = previewOn ? 'with-code' : ''; }
+    if (btn) {
+      btn.textContent = previewOn ? 'コードを隠す' : 'コード表示';
+      try { btn.setAttribute('aria-expanded', previewOn ? 'true' : 'false'); } catch (e) { /* 続ける */ }
+    }
+    if (previewOn) { renderPreview(); }
+    writePref('code', previewOn ? '1' : '0');
+    resizeWorkspace();
+  }
+  on('previewtoggle', 'click', function () { setPreviewVisible(!previewOn); });
+  // コード欄の幅。仕切りをドラッグ（または←→キー）で変え、次回も使う。
+  function setPaneWidth(px) {
+    var wrap = byId('previewwrap');
+    if (!wrap || !wrap.style) { return; }
+    var maxW = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth * 0.7 : 900;
+    var w = Math.round(Math.max(240, Math.min(maxW, px)));
+    wrap.style.width = w + 'px';
+    writePref('codeWidth', w);
+    resizeWorkspace();
+  }
+  var splitDrag = false;
+  on('splitter', 'pointerdown', function (ev) {
+    splitDrag = true;
+    try { this.setPointerCapture(ev.pointerId); } catch (e) { /* 続ける */ }
+    try { this.className = 'dragging'; } catch (e) { /* 続ける */ }
+    if (ev.preventDefault) { ev.preventDefault(); }
+  });
+  on('splitter', 'pointermove', function (ev) {
+    if (!splitDrag) { return; }
+    setPaneWidth(window.innerWidth - ev.clientX);
+  });
+  on('splitter', 'pointerup', function () { splitDrag = false; this.className = ''; });
+  on('splitter', 'keydown', function (ev) {
+    var wrap = byId('previewwrap');
+    var cur = wrap ? wrap.getBoundingClientRect().width : 420;
+    if (ev.key === 'ArrowLeft') { setPaneWidth(cur + 24); ev.preventDefault(); }
+    if (ev.key === 'ArrowRight') { setPaneWidth(cur - 24); ev.preventDefault(); }
+  });
+  on('previewcopy', 'click', function () {
+    var code = previewCode();
+    if (!code) { setStatus('コピーする生成コードがありません', true); return; }
+    function done() { setStatus('生成コードをコピーしました', false); }
+    function fallback() {
+      var pre = byId('preview');
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = code;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        done();
+      } catch (e) {
+        if (pre) {
+          try {
+            var r = document.createRange();
+            r.selectNodeContents(pre);
+            var s = window.getSelection();
+            if (s) { s.removeAllRanges(); s.addRange(r); }
+            document.execCommand('copy');
+            done();
+            return;
+          } catch (e2) { /* 下へ */ }
+        }
+        setStatus('コピーできませんでした', true);
+      }
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(done, fallback);
+    } else {
+      fallback();
+    }
+  });
+  // 未保存のまま閉じようとしたら確認する（Ctrl+Sは下のkeydown共用処理で受ける）。
+  try {
+    window.addEventListener('beforeunload', function (ev) {
+      // 判定の待ち時間（数百ms）内の編集も取りこぼさないよう、ここで確定させる。
+      if (E && draftReady) { checkDirty(); }
+      saveDraftNow();
+      if (!dirty) { return; }
+      try { ev.preventDefault(); } catch (e) { /* 続ける */ }
+      ev.returnValue = '';
+    });
+    // 別のタブで同じ控えが書き換わったら知らせる（控えは最後に編集したタブの内容になる）。
+    var otherTabNoticed = false;
+    window.addEventListener('storage', function (ev) {
+      // 書き込みのたび（編集中は毎秒近く）に出すと状態行を上書きし続けるため1回だけ。
+      if (ev && ev.key === draftKey && ev.newValue && !otherTabNoticed) {
+        otherTabNoticed = true;
+        setStatus('別のタブでもこのエディタを開いています。編集の控えは最後に編集したタブの内容になります', false);
+      }
+    });
+  } catch (e) { /* 旧スタブでも続ける */ }
   var capRect01 = null;
   var dragStart = null;
   function capSetStatus(s, isErr) {
@@ -361,6 +917,8 @@ html, body { height: 100%; margin: 0; }
     el.textContent = s;
     el.style.color = isErr ? '#c00' : '#333';
     el.style.fontWeight = isErr ? 'bold' : 'normal';
+    // 切出し区画は折りたたみ内のため、失敗（カメラ無し等）は状態行にも出す。
+    if (isErr) { setStatus(s, true); }
   }
   function capDraw() {
     var box = document.getElementById('caprect');
@@ -580,6 +1138,13 @@ html, body { height: 100%; margin: 0; }
   function capModalOpen() {
     capHiDim([]);
     capClearUpload();
+    // 「確定」は折りたたみ内の旧来の切出し区画へ枠を渡すだけのため、
+    // その区画を開いているときだけ出す（普段はmodal内の切出し保存で足りる）。
+    var legacy = byId('legacy');
+    var okBtn = byId('capok');
+    if (legacy && okBtn && okBtn.style && typeof legacy.open === 'boolean') {
+      okBtn.style.display = legacy.open ? '' : 'none';
+    }
     capModalRect = capRect01
       ? { x: capRect01.x, y: capRect01.y, width: capRect01.width, height: capRect01.height }
       : null;
@@ -746,8 +1311,16 @@ html, body { height: 100%; margin: 0; }
     if (capBlockSyncTimer) { clearTimeout(capBlockSyncTimer); capBlockSyncTimer = null; }
     capBlockSyncTimer = setTimeout(function () { capBlockSyncTimer = null; capBlockSync(); }, 150);
   }
+  // ブロック用のテンプレ選択と照合用の選択は同じものを指すよう揃える
+  // （別々に選べると「ブロックに入った画像」と「試した画像」が食い違う）。
   document.getElementById('capblocktpl').addEventListener('change', function () {
     capBlockSync();
+    var mt = byId('capmatchtpl');
+    if (mt && this.value && mt.value !== this.value) {
+      mt.value = this.value;
+      capMatchSize();
+      capMatchSoon(true);
+    }
   });
   // 取得待ちのブロック用起動。画像なしで開こうとした場合に使う。
   var capPendingBlock = null;
@@ -1008,6 +1581,12 @@ html, body { height: 100%; margin: 0; }
   document.getElementById('capmatchtpl').addEventListener('change', function () {
     capMatchSize();
     capMatchSoon(true);
+    // ブロック用に開いているときは、試した画像をそのままブロックへも入れる。
+    var bt = byId('capblocktpl');
+    if (capBlockMode && bt && this.value && bt.value !== this.value) {
+      bt.value = this.value;
+      capBlockSync();
+    }
   });
   document.getElementById('capgray').addEventListener('change', function () {
     capMatchSoon(true);
@@ -1019,7 +1598,11 @@ html, body { height: 100%; margin: 0; }
   ['caph1', 'caps1', 'capv1', 'caph2', 'caps2', 'capv2'].forEach(function (id) {
     var el = document.getElementById(id);
     if (!el) { return; }
-    el.addEventListener('input', function () { capFiltSoon(false); capBlockSyncSoon(); });
+    el.addEventListener('input', function () {
+      var preset = byId('capfilt_preset');
+      if (preset) { preset.value = 'custom'; }
+      capFiltSoon(false); capBlockSyncSoon();
+    });
   });
   (function () {
     var el = document.getElementById('capratio');
@@ -1030,6 +1613,30 @@ html, body { height: 100%; margin: 0; }
     var el = document.getElementById('capfilt_mode');
     if (!el) { return; }
     el.addEventListener('change', function () { capFiltSoon(false); });
+  })();
+  // 色プリセット（HSV範囲の目安）。選ぶと数値欄へ入り、即時反映される。
+  // 赤は周回するが単一範囲のため0〜10側に寄せる。手で変えたら手動に戻る。
+  (function () {
+    var el = byId('capfilt_preset');
+    if (!el || typeof el.addEventListener !== 'function') { return; }
+    var PRESETS = {
+      red: [0, 100, 100, 10, 255, 255],
+      yellow: [20, 100, 100, 35, 255, 255],
+      green: [35, 100, 100, 85, 255, 255],
+      blue: [90, 100, 100, 130, 255, 255],
+      white: [0, 0, 200, 179, 30, 255],
+    };
+    el.addEventListener('change', function () {
+      var v = PRESETS[el.value];
+      if (!v) { return; }
+      var ids = ['caph1', 'caps1', 'capv1', 'caph2', 'caps2', 'capv2'];
+      for (var i = 0; i < ids.length; i++) {
+        var target = byId(ids[i]);
+        if (target) { target.value = String(v[i]); }
+      }
+      capFiltSoon(false);
+      capBlockSyncSoon();
+    });
   })();
   document.getElementById('capupload').addEventListener('change', function () {
     var f = this.files && this.files[0];
@@ -1117,6 +1724,11 @@ html, body { height: 100%; margin: 0; }
     if (wasDrag) { capMatchSoon(true); capBlockSync(); }
   });
   window.addEventListener('keydown', function (ev) {
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
+      try { ev.preventDefault(); } catch (e) { /* 続ける */ }
+      doSave();
+      return;
+    }
     if (ev.key === 'Escape' && document.getElementById('capmodal').style.display !== 'none') {
       capModalClose();
     }
@@ -1350,8 +1962,59 @@ html, body { height: 100%; margin: 0; }
     });
     draw();
   })();
-  refreshFiles();
-  refreshTemplates();
+  // 起動：画面設定を戻し、候補一覧が届いてから控え（無ければ初期形）を読む
+  // （読んだ直後から画像欄の候補が最新になるように）。
+  (function () {
+    var w = parseInt(readPref('codeWidth', ''), 10);
+    if (!isNaN(w)) { setPaneWidth(w); }
+    if (readPref('code', '0') === '1') { setPreviewVisible(true); }
+  })();
+  if (typeof ResizeObserver === 'function') {
+    try { new ResizeObserver(resizeWorkspace).observe(byId('ws')); } catch (e) { /* 続ける */ }
+  }
+  // 一覧（置き場の識別子＝控えの鍵）→候補→控えの順に読む。
+  var started = refreshFiles().catch(function () { /* 一覧が無くても編集は始める */ })
+    .then(function () { return refreshTemplates(); });
+  if (E && started && typeof started.then === 'function') {
+    started.then(function () {
+      var draft = readDraft();
+      // 前回保存・読込した保存物を一覧で選んだ状態にしておく（開くは1押し）。
+      var last = lastStem();
+      if (last) { selectFile(last); }
+      var restored = false;
+      var broken = !!(draft && draft.broken);
+      if (broken) { keepBrokenDraft(); }
+      if (draft && !broken && draft.dirty) {
+        try {
+          loadState(draft.state);
+          var stemEl = byId('stem');
+          if (stemEl && draft.stem) { stemEl.value = draft.stem; }
+          // 対応先（開いていた保存物）は控えからは信用しない。同名の保存物が
+          // あれば保存時に上書きを確かめる（別タブ・別インストールの控え対策）。
+          currentStem = null;
+          restored = true;
+        } catch (e) {
+          broken = true;
+          keepBrokenDraft();
+        }
+      }
+      draftReady = true;
+      if (!restored) {
+        loadState(E.defaultState());
+        markClean();
+        setStatus(broken
+          ? '前回の編集の控えは復元できませんでした（ブラウザ内に退避してあります）。新しく始めます'
+          : '左の分類（基本操作・画像認識など）からブロックを引き出し、「プログラム」の中へつなげてください', broken);
+      } else {
+        // 控えは未保存のまま閉じた内容。保存済みとは扱わない。
+        markClean('');
+        checkDirty();
+        setStatus('前回保存しないまま閉じた編集を復元しました（まだ保存されていません）', false);
+      }
+      renderPreview();
+      try { ws.scrollCenter(); } catch (e) { /* 続ける */ }
+    });
+  }
 })();
 </script>
 </body>

@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import base64
 import functools
+import hashlib
 import http.server
 import json
+import socket
 import threading
 import urllib.parse
 import webbrowser
@@ -39,6 +41,37 @@ MAX_BODY_BYTES = 5 * 1024 * 1024
 #: 10MBの生画像がbase64で約13.4MBになるため余裕を見る。
 MAX_UPLOAD_BODY_BYTES = 16 * 1024 * 1024
 
+#: 待ち受けの決め打ち番号。毎回同じ番地（オリジン）にすると、ブラウザ内の
+#: 編集控え・画面設定（localStorage）が次回も使える。塞がっていれば任意番号。
+PREFERRED_PORT = 51793
+
+
+class _ExclusiveServer(http.server.ThreadingHTTPServer):
+    """番号の横取りをしない待ち受け。
+
+    既定の SO_REUSEADDR は Windows では使用中の番号にも重ねて bind できて
+    しまうため切り、Windows では排他指定を付ける（塞がっていれば素直に失敗）。
+    """
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
+
+
+def _bind_server() -> http.server.ThreadingHTTPServer:
+    """決め打ち番号で待ち受け、塞がっていれば任意番号へ落とす。"""
+    handler = functools.partial(_Handler)
+    try:
+        return _ExclusiveServer(("127.0.0.1", PREFERRED_PORT), handler)
+    except OSError:
+        return _ExclusiveServer(("127.0.0.1", 0), handler)
+
+
 _server: http.server.ThreadingHTTPServer | None = None
 _thread: threading.Thread | None = None
 
@@ -54,12 +87,80 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args: Any) -> None:
         return
 
+    #: 受け付ける Host 名。localhost 専用の受け口のため、それ以外の名前で
+    #: 届いた要求（DNSリバインディング）は断る。
+    _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
+
+    def _refuse_foreign(self, *, is_post: bool) -> bool:
+        """よそのページからの要求なら403で断り、真を返す。
+
+        `/save` は `.py` を書き、一覧の作り直しで読み込まれる（＝コード実行）。
+        待ち受け番号は固定のため、閲覧中の別サイトから狙われないよう、
+        Host・Origin・JSON種別で同じオリジンの編集画面だけを通す。
+        JSON種別はブラウザでは事前確認（preflight）が要り、ここは応じないため
+        no-cors の単純POSTも届かない。
+        """
+        # 待ち受けは常に IPv4 の (host, port) 組（_bind_server・試験とも）。
+        port = self.server.server_address[1]  # type: ignore[index]
+        host = str(self.headers.get("Host", "") or "")
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+        reason = ""
+        if host and name.lower() not in self._LOCAL_HOSTS:
+            reason = "Host が違います"
+        if is_post and not reason:
+            origin = self.headers.get("Origin")
+            allowed = {f"http://{h}:{port}" for h in self._LOCAL_HOSTS}
+            if origin is not None and origin not in allowed:
+                reason = "別のページからの要求です"
+            ctype = str(self.headers.get("Content-Type", "") or "").lower()
+            if not reason and not ctype.startswith("application/json"):
+                reason = "JSON 以外の要求です"
+        if not reason:
+            return False
+        if is_post:
+            # 未読のまま閉じるとRSTで応答が届かないため、上限つきで読み捨てる。
+            try:
+                remaining = int(str(self.headers.get("Content-Length", "0")).strip())
+                remaining = min(max(remaining, 0), MAX_UPLOAD_BODY_BYTES + 65536)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except Exception:
+                pass
+        body = json.dumps(
+            {"ok": False, "message": f"受け付けません: {reason}"}, ensure_ascii=False
+        ).encode("utf-8")
+        self.close_connection = True
+        self.send_response(403)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    def end_headers(self) -> None:
+        # アプリ更新後に古い資産・一覧をブラウザが使い回さないよう、都度取り直させる。
+        self.send_header("Cache-Control", "no-store")
+        # 他サイトのiframeへの埋め込みを断る（重ねたクリック誘導で削除等をさせない）。
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        super().end_headers()
+
     def do_GET(self) -> None:
         """`/list`・`/load`の受け口。それ以外は静的配信に任せる。"""
+        if self._refuse_foreign(is_post=False):
+            return
         path = urllib.parse.urlsplit(self.path).path
         if path == "/list":
             stems = blockly_save.list_blockly(WindowUtils.APP_DIR)
-            self._reply(True, "", {"stems": stems})
+            # 置き場ごとの識別子。番地を固定したため、別インストールの編集画面とも
+            # ブラウザ内の保存領域を共有する。控えをこれで分ける（中身は推測不能でよい）。
+            app_id = hashlib.sha256(
+                str(Path(WindowUtils.APP_DIR).resolve()).encode("utf-8")
+            ).hexdigest()[:16]
+            self._reply(True, "", {"stems": stems, "appId": app_id})
             return
         if path == "/load":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -68,9 +169,13 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             if res.status != "ok":
                 self._reply(False, res.message)
                 return
-            self._reply(
-                True, res.message, {"stem": stem, "workspaceJson": res.workspace_json}
-            )
+            # 手編集検出は保存時の要約値との比較（上書き保存で消えるため知らせる）。
+            extra: dict[str, Any] = {
+                "stem": stem,
+                "workspaceJson": res.workspace_json,
+                "externalEdit": res.external_edit,
+            }
+            self._reply(True, res.message, extra)
             return
         if path == "/templates":
             names = blockly_templates.list_image_templates(WindowUtils.APP_DIR)
@@ -163,6 +268,8 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         return payload
 
     def do_POST(self) -> None:
+        if self._refuse_foreign(is_post=True):
+            return
         if urllib.parse.urlsplit(self.path).path == "/delete":
             payload = self._read_json()
             if payload is None:
@@ -415,9 +522,8 @@ def open_blockly_editor(
     global _GET_FRAME
     _GET_FRAME = get_frame
     _stop_server()
-    handler = functools.partial(_Handler)
     global _server, _thread
-    _server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    _server = _bind_server()
     port = _server.server_address[1]
     _thread = threading.Thread(target=_server.serve_forever, daemon=True)
     _thread.start()
@@ -431,6 +537,26 @@ def open_blockly_editor(
         padx=10, pady=10
     )
     tk.Label(win, text=url).pack(padx=10, pady=(0, 10))
+
+    def copy_url() -> None:
+        """起動URLをクリップボードへ入れる（自動で開かない環境用）。"""
+        try:
+            win.clipboard_clear()
+            win.clipboard_append(url)
+        except Exception:
+            pass
+
+    def reopen() -> None:
+        """タブを閉じてしまったときに開き直す（編集中の控えはブラウザ側に残る）。"""
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    buttons = tk.Frame(win)
+    buttons.pack(padx=10, pady=(0, 10))
+    tk.Button(buttons, text="ブラウザで開く", command=reopen).pack(side=tk.LEFT, padx=4)
+    tk.Button(buttons, text="URLをコピー", command=copy_url).pack(side=tk.LEFT, padx=4)
 
     last_mtime = _py_dir_mtime()
 

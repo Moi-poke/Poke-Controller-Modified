@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import tempfile
 import threading
@@ -21,6 +23,10 @@ from loguru import logger
 from services import blockly_templates
 
 PY_DIR_REL = "Commands/PythonCommands"
+
+#: `.blockly.json` 内の PokeCon 用記録欄。Blockly の読込は未知の最上位欄を
+#: 無視するが、開くときは取り除いて返す（ブロック以外を編集画面へ渡さない）。
+RECORD_KEY = "pokecon"
 
 #: stemごとの保存錠（save/delete対の直列化用）。二重クリック保存で
 #: `.py`と`.blockly.json`がちぐはぐ（torn）にならないよう、対の書換えは
@@ -74,6 +80,22 @@ class SaveResult:
     warnings: list[str] = field(default_factory=list)
 
 
+def _py_digest(text: str) -> str:
+    """`.py` 中身の要約値。改行はLFへ寄せる（git の autocrlf で揺れないように）。"""
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def _with_record(workspace_json: str, code: str) -> str:
+    """書いた `.py` の要約値を記録欄へ入れたJSON文字列を返す。
+
+    手編集の検出は更新時刻では当てにならない（git取り出し・複写・整形で
+    前後が入れ替わる）ため、中身の要約値で比べる。
+    """
+    data = json.loads(workspace_json)
+    data[RECORD_KEY] = {"pySha256": _py_digest(code)}
+    return json.dumps(data, ensure_ascii=False)
+
+
 def _atomic_write(target: Path, text: str) -> None:
     """一時ファイル経由で書く。書けたらのみ置き換える。"""
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +140,7 @@ def save_blockly(
     py_rel = (PurePosixPath(PY_DIR_REL) / f"{stem}.py").as_posix()
     json_rel = (PurePosixPath(PY_DIR_REL) / f"{stem}.blockly.json").as_posix()
     code = python_code if python_code.endswith("\n") else python_code + "\n"
+    stored_json = _with_record(workspace_json, code)
     py_path = app / PurePosixPath(py_rel).as_posix()
     json_path = app / PurePosixPath(json_rel).as_posix()
     # 同一stemの対書きは錠の下で直列化する（二重クリック保存のtorn防止）。
@@ -127,7 +150,7 @@ def save_blockly(
             try:
                 _atomic_write(py_path, code)
                 try:
-                    _atomic_write(json_path, workspace_json)
+                    _atomic_write(json_path, stored_json)
                 except Exception:
                     # json側の想定外の例外でも.pyだけ残さない。HTTP受け口は
                     # 例外を握れず無応答になるため、ここで必ず結果に変える。
@@ -172,6 +195,9 @@ class LoadResult:
     status: str
     message: str
     workspace_json: str = ""
+    #: `.py` が保存時の中身と違う（手で書き換えられた可能性）。記録の無い
+    #: 旧保存物・`.py` 欠損は判定できないため偽にする。
+    external_edit: bool = False
 
 
 def load_blockly(app_dir: str | Path, stem: str) -> LoadResult:
@@ -194,7 +220,26 @@ def load_blockly(app_dir: str | Path, stem: str) -> LoadResult:
         return LoadResult(
             status="failed", message="開けません:\n- " + "\n- ".join(errors)
         )
-    return LoadResult(status="ok", message=f"開きました: {stem}", workspace_json=text)
+    data = json.loads(text)
+    record = data.pop(RECORD_KEY, None)
+    if record is None:
+        return LoadResult(
+            status="ok", message=f"開きました: {stem}", workspace_json=text
+        )
+    external = False
+    digest = record.get("pySha256") if isinstance(record, dict) else None
+    if isinstance(digest, str):
+        try:
+            current = path.with_name(f"{stem}.py").read_bytes().decode("utf-8")
+            external = _py_digest(current) != digest
+        except (OSError, UnicodeDecodeError):
+            external = False
+    return LoadResult(
+        status="ok",
+        message=f"開きました: {stem}",
+        workspace_json=json.dumps(data, ensure_ascii=False),
+        external_edit=external,
+    )
 
 
 @dataclass
