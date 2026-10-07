@@ -151,8 +151,7 @@
       // 浮きの先頭。手で無効にした塊は除くが、自動で灰色にした分
       // （ORPHAN_REASON）は「外にある」警告の対象に残す。
       var orphanIds = {};
-      PokeconEditor.orphanBlocks(ws).forEach(function (top) {
-        var on = false;
+      PokeconEditor.orphanBlocks(ws).forEach(function (top) {        var on = false;
         try {
           on = top.isEnabled();
         } catch (e) {
@@ -173,6 +172,54 @@
         }
         orphanIds[top.id] = true;
       });
+      // 塊の先頭をたどる（文・値の入れ子と次接続の上流）。
+      // 外の塊の中は実行されないため、画像・範囲・呼出のerrorは出さず
+      // 外のwarnだけにする（重複定義・プログラム重複は全体に影響するため残す）。
+      function chunkTop(b) {
+        var t = b;
+        var guard = 0;
+        var moved = true;
+        while (moved && guard++ < 1000) {
+          moved = false;
+          var s = null;
+          try {
+            s =
+              typeof t.getSurroundParent === "function"
+                ? t.getSurroundParent()
+                : null;
+          } catch (e) {
+            s = null;
+          }
+          if (s) {
+            t = s;
+            moved = true;
+            continue;
+          }
+          var pv = null;
+          try {
+            pv =
+              typeof t.getPreviousBlock === "function"
+                ? t.getPreviousBlock()
+                : null;
+          } catch (e) {
+            pv = null;
+          }
+          if (pv) {
+            t = pv;
+            moved = true;
+          }
+        }
+        return t;
+      }
+      function inOrphanChunk(b) {
+        var t = null;
+        try {
+          t = chunkTop(b);
+        } catch (e) {
+          return false;
+        }
+        return !!(t && orphanIds[t.id]);
+      }
       // 定義名の集計（無効な定義は数えない）。呼出・重複の判定に使う。
       var defCount = {};
       all.forEach(function (b) {
@@ -217,25 +264,27 @@
               message: "「プログラム」は1個までにしてください",
               blockId: b.id,
             });
-          } else {
-            var head = null;
-            try {
-              var input = typeof b.getInput === "function" ? b.getInput("DO") : null;
-              head = input && input.connection ? input.connection.targetBlock() : null;
-            } catch (e) {
-              head = null;
-            }
-            if (!head) {
-              warns.push({
-                level: "warn",
-                message: "プログラムの中身が空です（操作を並べてください）",
-                blockId: b.id,
-              });
-            }
+          }
+          var head = null;
+          try {
+            var input = typeof b.getInput === "function" ? b.getInput("DO") : null;
+            head = input && input.connection ? input.connection.targetBlock() : null;
+          } catch (e) {
+            head = null;
+          }
+          if (!head) {
+            warns.push({
+              level: "warn",
+              message: "プログラムの中身が空です（操作を並べてください）",
+              blockId: b.id,
+            });
           }
           return;
         }
-        if (missingTpl[b.id]) {
+        // 外の塊の中は実行されないため、画像・範囲・呼出のerrorは出さない
+        // （外のwarnは上で済み。重複定義・プログラム重複は全体に影響するため残す）。
+        var inOrphan = inOrphanChunk(b);
+        if (missingTpl[b.id] && !inOrphan) {
           errors.push({
             level: "error",
             message: "画像を選んでいません（ブロックの画像欄で選んでください）",
@@ -248,7 +297,7 @@
         } catch (e) {
           hasCrop = false;
         }
-        if (hasCrop) {
+        if (hasCrop && !inOrphan) {
           var crop = "";
           try {
             var raw = b.getFieldValue("CROP");
@@ -267,7 +316,10 @@
             }
           }
         }
-        if (b.type === "pokecon_sub_call" || b.type === "pokecon_sub_call_value") {
+        if (
+          (b.type === "pokecon_sub_call" || b.type === "pokecon_sub_call_value") &&
+          !inOrphan
+        ) {
           var called = "";
           try {
             called = String(b.getFieldValue("NAME") || "");

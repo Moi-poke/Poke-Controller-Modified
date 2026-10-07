@@ -83,8 +83,42 @@
     return [String(type)];
   }
 
+  // 素の項目か（型だけで欄・つなぎが無い形）。空の fields 等は
+  // 将来混ざっても素とみなすよう中身の有無で見る。
+  function hasKeys(v) {
+    return !!v && typeof v === "object" && Object.keys(v).length > 0;
+  }
+
+  // 影だけの穴は未記入の目安であり、つなぎ済みとみなさない。
+  // 実体のブロックを含む穴だけが「組み立て済み」の印になる。
+  function inputsHaveRealBlock(inputs) {
+    if (!inputs || typeof inputs !== "object") {
+      return false;
+    }
+    return Object.keys(inputs).some(function (k) {
+      var hole = inputs[k];
+      return !!hole && typeof hole === "object" && !!hole.block;
+    });
+  }
+
+  function isPlainState(st) {
+    if (!st || typeof st !== "object") {
+      return true;
+    }
+    return !(
+      hasKeys(st.fields) ||
+      inputsHaveRealBlock(st.inputs) ||
+      hasKeys(st.next) ||
+      hasKeys(st.extraState)
+    );
+  }
+
   // 挿入用の写し。kind は道具箱の目印で保存形には無いため落とす
   // （読み側が知らない属性で止まらないように）。
+  // next は後続ブロックであり保存形の一部なので写す（落とすと
+  // つなぎ済み定番形のクイック挿入で後続が消える）。
+  // fields 等は参照写しのため、呼出側で entries を書き換えないこと
+  // （insert 側は使う前に写す）。
   function stateOf(item) {
     var s = { type: item.type };
     if (item.fields) {
@@ -92,6 +126,9 @@
     }
     if (item.inputs) {
       s.inputs = item.inputs;
+    }
+    if (item.next) {
+      s.next = item.next;
     }
     if (item.extraState) {
       s.extraState = item.extraState;
@@ -169,9 +206,9 @@
 
   // 並びは見出しの先頭＞見出し＞キーワード＞説明＞分類。
   // 合わない（どれかの語がどこにも無い）ときは -1。
-  // 「よく使う形」のような型つき定番形（欄・つなぎ済み）は、
-  // 同点では素の項目（型だけ）を先にする。汎い問い合わせ
-  // （例: おす・まつ）で定番形が素を押しのけないようにする。
+  // 「よく使う形」のような型つき定番形（欄・実体のつなぎ済み）は、
+  // 同点では素の項目（型だけ・影だけの穴）を先にする。汎い問い合わせ
+  // （例: おす・まつ・くりかえし）で定番形が素を押しのけないようにする。
   function rankOf(entry, terms) {
     var label = norm(entry.label);
     var keys = (entry.keywords || []).map(norm).join(" ");
@@ -317,6 +354,8 @@
   }
 
   var PokeconQuick = {
+    // 素の項目か（型だけ・影だけの穴）。順位付けと試験で同じ定義を使う。
+    isPlain: isPlainState,
     // 道具箱（分類つきJSON）から候補一覧を作る。各候補は
     // { type, label, category, keywords, block } に説明と分類の色を添える
     // （tooltip・colour は窓の表示と順位付けに要るため）。
@@ -370,7 +409,7 @@
     },
 
     // 空白区切りの全語を含む候補を順位付きで返す。空の問合せは空配列。
-    // 同点のときは素の項目（型だけ。欄・つなぎの無い形）を先にし、
+    // 同点のときは素の項目（isPlain。型だけ・影だけの穴）を先にし、
     // その後は道具箱の並び順（「よく使う形」の定番形は後ろ）。
     search: function (entries, query, limit) {
       var terms = termsOf(query);
@@ -382,10 +421,7 @@
       (entries || []).forEach(function (e, i) {
         var rank = rankOf(e, terms);
         if (rank >= 0) {
-          var st = (e && e.block) || {};
-          var composite =
-            st.fields || st.inputs || st.next || st.extraState ? 1 : 0;
-          scored.push([rank, composite, i, e]);
+          scored.push([rank, isPlainState(e && e.block) ? 0 : 1, i, e]);
         }
       });
       scored.sort(function (a, b) {

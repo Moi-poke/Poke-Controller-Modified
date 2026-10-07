@@ -343,3 +343,35 @@ def test_other_tab_notice_is_shown_only_once() -> None:
     # Then: 1回目は知らせ、2回目は上書きしない
     assert "別のタブ" in res["first"]
     assert res["after"] == "保存しました"
+
+
+def test_closing_the_capture_modal_returns_focus_to_the_opener() -> None:
+    """拡大モーダルを閉じると、開く前の場所へフォーカスが戻ること。"""
+    # Given: 起動済み＋プログラム内の画像待ち（開く前のフォーカス先を用意する）
+    res = run_editor(
+        """
+        routes.list = { stems: [], appId: 'app1' };
+        boot();
+        await flush(400);
+        const prog = ws.getTopBlocks(false)[0];
+        const v = ws.newBlock('pokecon_vision_wait_appear');
+        prog.getInput('DO').connection.connect(v.previousConnection);
+        const focused = [];
+        els.runbtn.focus = () => { focused.push('runbtn'); };
+        els.capbigimg.src = 'blob:fake';
+        // 最小DOMに開く前のフォーカス先を置く（実ブラウザの activeElement 相当。
+        // 本文からは sandbox.document 経由で触る。document 直参照は
+        // inline 用の別グローバルのため未定義になる）
+        sandbox.document.activeElement = els.runbtn;
+        // When: ブロック用に開いて取り消しで閉じる
+        Blockly.PokeconOpenBlockModal(v.id);
+        await flush(300);
+        const opened = els.capmodal.style.display;
+        els.capcancel.handlers.click();
+        done({ opened, display: els.capmodal.style.display, focused });
+        """
+    )
+    # Then: 開いて閉じて、開く前のrunbtnへフォーカスが戻る
+    assert res["opened"] == "block"
+    assert res["display"] == "none"
+    assert res["focused"] == ["runbtn"]

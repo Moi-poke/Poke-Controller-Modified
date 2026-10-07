@@ -2479,6 +2479,7 @@ button.run:hover { background: #17793a; }
   function capModalOpen() {
     capHiDim([]);
     capClearUpload();
+    capModalRememberFocus();
     // 「確定」は折りたたみ内の旧来の切出し区画へ枠を渡すだけのため、
     // その区画を開いているときだけ出す（普段はmodal内の切出し保存で足りる）。
     var legacy = byId('legacy');
@@ -2509,6 +2510,18 @@ button.run:hover { background: #17793a; }
     capBlockMode = null;
     document.getElementById('capblockrow').style.display = 'none';
     document.getElementById('capok').style.display = '';
+    if (capModalReturnTo && typeof capModalReturnTo.focus === 'function') {
+      try { capModalReturnTo.focus(); } catch (e) { /* 続ける */ }
+    }
+    capModalReturnTo = null;
+  }
+  // 拡大モーダルを開く前のフォーカス先。閉じたら戻す（quick・newdialogと同じ）。
+  var capModalReturnTo = null;
+  function capModalRememberFocus() {
+    try {
+      capModalReturnTo =
+        (typeof document !== 'undefined' && document.activeElement) || null;
+    } catch (e) { capModalReturnTo = null; }
   }
   // ブロック用モード：対象ブロックID。nullのときは切出し用モード。
   var capBlockMode = null;
@@ -2675,6 +2688,7 @@ button.run:hover { background: #17793a; }
       return;
     }
     capBlockMode = target.id;
+    capModalRememberFocus();
     capHiDim([]);
     capClearUpload();
     capModalRect = null;

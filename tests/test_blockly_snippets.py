@@ -134,10 +134,46 @@ def test_quick_search_prefers_plain_blocks_for_generic_queries() -> None:
         + """
         const Q = Blockly.PokeconQuick;
         const entries = Q.index(TOOLBOX);
-        const top = (q) => Q.search(entries, q, 5).map((e) => e.type);
-        done({ osu: top('おす'), matsu: top('まつ') });
+        const top = (q) => Q.search(entries, q, 5)
+          .map((e) => e.category + ':' + e.type + ':'
+            + (Q.isPlain(e.block) ? 'plain' : 'rich'));
+        done({ osu: top('おす'), matsu: top('まつ'),
+               kurikaeshi: top('くりかえし') });
         """
     )
-    # Then: 「おす」は押す素・「まつ」は待つ素が先頭（定番形に押しのけられない）
-    assert res["osu"][0] == "pokecon_press"
-    assert res["matsu"][0] == "pokecon_wait"
+    # Then: 「おす」は基本操作の素・「まつ」は待つ素が先頭（定番形に押しのけられない）
+    # （「くりかえし」は影だけの素が定番形より先。素性の定義は実装と同一）
+    assert res["osu"][0] == "基本操作:pokecon_press:plain"
+    assert res["matsu"][0] == "基本操作:pokecon_wait:plain"
+    assert res["kurikaeshi"][0].endswith(":plain")
+    assert "controls_repeat_ext" in res["kurikaeshi"][0]
+
+
+@NEEDS_NODE
+def test_snippet_with_chained_blocks_keeps_followers_on_quick_insert() -> None:
+    """つなぎ済み定番形をクイック挿入すると後続が残ること。"""
+    # Given: 道具箱からの候補一覧
+    res: dict[str, Any] = run_blockly(
+        _SNIPPETS_SETUP
+        + """
+        const Q = Blockly.PokeconQuick;
+        const entries = Q.index(TOOLBOX);
+        const ws = new Blockly.Workspace();
+        Blockly.serialization.workspaces.load({ blocks: { languageVersion: 0,
+          blocks: [{ type: 'pokecon_program', fields: { NAME: 'Snip' },
+                     inputs: { DO: { block: { type: 'pokecon_press',
+                       fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.1 } } } } }] } }, ws);
+        const sel = ws.getAllBlocks(false).find((b) => b.type === 'pokecon_press');
+        // When: 「HOMEからゲームを再開」（press＋後続press）を選択中の後ろへ入れる
+        const entry = entries.find((e) => e.category === 'よく使う形'
+          && e.type === 'pokecon_press');
+        const made = Q.insert(ws, entry, sel);
+        const nextType = made && made.getNextBlock() ? made.getNextBlock().type : null;
+        const btn = made ? made.getFieldValue('BUTTON') : null;
+        ws.dispose();
+        done({ nextType, btn });
+        """
+    )
+    # Then: 先頭はHOME・後続の押すブロックが消えていない
+    assert res["btn"] == "HOME"
+    assert res["nextType"] == "pokecon_press"

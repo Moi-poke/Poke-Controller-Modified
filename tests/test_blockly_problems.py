@@ -275,9 +275,9 @@ def test_manually_disabled_blocks_are_not_counted() -> None:
     assert res3["problems"][0]["blockId"] is None
 
 
-def test_errors_come_before_warnings_in_workspace_order() -> None:
-    """errorが先に並び、同じ重さはワークスペースの並び順になること。"""
-    # Given: 空のプログラム＋外に置いた画像未選択の画像待ち
+def test_orphan_chunk_reports_only_the_outside_warning() -> None:
+    """外の塊の中身は実行されないため、外のwarnだけが出ること。"""
+    # Given: 空のプログラムと、外に置いた画像未選択の画像待ち
     state = (
         "{ blocks: { languageVersion: 0, blocks: ["
         " { type: 'pokecon_program', id: 'p1', fields: { NAME: 'x' } },"
@@ -285,14 +285,43 @@ def test_errors_come_before_warnings_in_workspace_order() -> None:
     )
     res = run_blockly(_problems_body(state))
     # When: 問題を数える（上は probe 本文に含む）
-    # Then: error→warn→warnで、warnはプログラム・外の塊の順
-    assert [p["level"] for p in res["problems"]] == [
-        "error",
-        "warn",
-        "warn",
-    ]
-    assert res["problems"][0]["blockId"] == "v1"
-    assert [p["blockId"] for p in res["problems"][1:]] == ["p1", "v1"]
+    # Then: 画像のerrorは出ず、外のwarnと空のwarnだけ
+    assert [p["level"] for p in res["problems"]] == ["warn", "warn"]
+    assert [p["blockId"] for p in res["problems"]] == ["p1", "v1"]
+
+
+def test_two_empty_programs_warn_about_both() -> None:
+    """中身の無いプログラムが2個あるときは、両方に空のwarnが出ること。"""
+    # Given: 中身の無いプログラムが2個
+    state = (
+        "{ blocks: { languageVersion: 0, blocks: ["
+        " { type: 'pokecon_program', id: 'p1', fields: { NAME: 'x' } },"
+        " { type: 'pokecon_program', id: 'p2',"
+        "   fields: { NAME: 'y' } } ] } }"
+    )
+    res = run_blockly(_problems_body(state))
+    # When: 問題を数える（上は probe 本文に含む）
+    # Then: 2個目の重複errorと、両方への空のwarn
+    assert [p["level"] for p in res["problems"]] == ["error", "warn", "warn"]
+    assert [p["blockId"] for p in res["problems"]] == ["p2", "p1", "p2"]
+
+
+def test_errors_come_before_warnings_in_workspace_order() -> None:
+    """errorが先に並び、同じ重さはワークスペースの並び順になること。"""
+    # Given: 未定義の呼出を含むプログラム＋外に置いたpressの塊
+    state = (
+        "{ blocks: { languageVersion: 0, blocks: ["
+        " { type: 'pokecon_program', id: 'p1', fields: { NAME: 'x' },"
+        "   inputs: { DO: { block: { type: 'pokecon_sub_call', id: 'c1',"
+        "     fields: { NAME: 'missing_sub' } } } } },"
+        " { type: 'pokecon_press', id: 's1', x: 400, y: 0,"
+        "   fields: { BUTTON: 'B', DURATION: 0.1, WAIT: 0.1 } } ] } }"
+    )
+    res = run_blockly(_problems_body(state))
+    # When: 問題を数える（上は probe 本文に含む）
+    # Then: error→warnで、呼出・外の塊の順
+    assert [p["level"] for p in res["problems"]] == ["error", "warn"]
+    assert [p["blockId"] for p in res["problems"]] == ["c1", "s1"]
 
 
 def test_boot_with_empty_program_shows_a_warning_count() -> None:
