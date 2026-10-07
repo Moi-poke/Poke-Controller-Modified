@@ -220,6 +220,228 @@
   Blockly.fieldRegistry.register("field_stickpad", StickPadField);
   Blockly.StickPadField = StickPadField;
 
+  // ---- コントローラ入力欄（ボタン・十字キー・スティック） ----
+  // 旧欄は「↑」が左スティック（Direction.UP）なのに十字キーと書かれ、
+  // 十字キー（Hat）は選べなかった。候補を実物どおりの名前にし、十字キーを
+  // 足す。保存値は従来の書式のまま（ボタンは press だけ素の名、ほかは
+  // Button. 付き）なので、旧保存物はそのまま読める。
+  // key は書式によらない識別子（ボタンは素の名、方向は Hat./Direction. 付き）。
+  var PAD_BUTTONS = [
+    ["A", "A"],
+    ["B", "B"],
+    ["X", "X"],
+    ["Y", "Y"],
+    ["L", "L"],
+    ["R", "R"],
+    ["ZL", "ZL"],
+    ["ZR", "ZR"],
+    ["MINUS", "−（マイナス）"],
+    ["PLUS", "＋（プラス）"],
+    ["HOME", "HOME"],
+    ["CAPTURE", "キャプチャ"],
+    ["LCLICK", "左スティック押し込み"],
+    ["RCLICK", "右スティック押し込み"],
+  ];
+  // 8方向。[Hatの名, Directionの名, 矢印, 角度(度・右が0で反時計回り)]
+  var PAD_DIRS = [
+    ["TOP", "UP", "↑", 90],
+    ["TOP_RIGHT", "UP_RIGHT", "↗", 45],
+    ["RIGHT", "RIGHT", "→", 0],
+    ["BTM_RIGHT", "DOWN_RIGHT", "↘", 315],
+    ["BTM", "DOWN", "↓", 270],
+    ["BTM_LEFT", "DOWN_LEFT", "↙", 225],
+    ["LEFT", "LEFT", "←", 180],
+    ["TOP_LEFT", "UP_LEFT", "↖", 135],
+  ];
+  var PAD_LABELS = {};
+  var PAD_KEYS = [];
+  PAD_BUTTONS.forEach(function (b) {
+    PAD_LABELS[b[0]] = b[1];
+    PAD_KEYS.push(b[0]);
+  });
+  PAD_DIRS.forEach(function (d) {
+    PAD_LABELS["Hat." + d[0]] = "十字キー" + d[2];
+    PAD_LABELS["Direction." + d[1]] = "左スティック" + d[2];
+    PAD_LABELS["Direction.R_" + d[1]] = "右スティック" + d[2];
+  });
+  PAD_DIRS.forEach(function (d) {
+    PAD_KEYS.push("Hat." + d[0]);
+  });
+  PAD_DIRS.forEach(function (d) {
+    PAD_KEYS.push("Direction." + d[1]);
+  });
+  PAD_DIRS.forEach(function (d) {
+    PAD_KEYS.push("Direction.R_" + d[1]);
+  });
+
+  // 絵の配置（選択画面の座標・px）。全候補を1回ずつ持つ（検証が見る）。
+  var PAD_W = 420;
+  var PAD_H = 280;
+  var PAD_LAYOUT = [];
+  function padAdd(key, x, y, w, h, text) {
+    PAD_LAYOUT.push({ key: key, x: x, y: y, w: w, h: h, text: text });
+  }
+  padAdd("ZL", 14, 8, 60, 26, "ZL");
+  padAdd("L", 80, 8, 60, 26, "L");
+  padAdd("R", 280, 8, 60, 26, "R");
+  padAdd("ZR", 346, 8, 60, 26, "ZR");
+  padAdd("MINUS", 158, 48, 34, 26, "−");
+  padAdd("CAPTURE", 158, 82, 34, 26, "◉");
+  padAdd("PLUS", 228, 48, 34, 26, "＋");
+  padAdd("HOME", 228, 82, 34, 26, "⌂");
+  // 方向の輪（中心・半径）。中心は押し込み（スティック）か飾り（十字キー）。
+  function padRing(prefix, cx, cy, r, center) {
+    PAD_DIRS.forEach(function (d) {
+      var rad = (d[3] * Math.PI) / 180;
+      var x = Math.round(cx + Math.cos(rad) * r - 13);
+      var y = Math.round(cy - Math.sin(rad) * r - 11);
+      var key = prefix === "Hat." ? "Hat." + d[0] : prefix + d[1];
+      padAdd(key, x, y, 26, 22, d[2]);
+    });
+    if (center) {
+      padAdd(center, cx - 17, cy - 11, 34, 22, "押");
+    }
+  }
+  padRing("Direction.", 84, 96, 40, "LCLICK");
+  padRing("Hat.", 150, 196, 36, null);
+  padRing("Direction.R_", 270, 196, 40, "RCLICK");
+  padAdd("X", 336, 54, 30, 28, "X");
+  padAdd("Y", 302, 84, 30, 28, "Y");
+  padAdd("A", 370, 84, 30, 28, "A");
+  padAdd("B", 336, 114, 30, 28, "B");
+
+  // 値（書式つき）→ 識別子。press の素の名もボタン扱いに揃える。
+  function padKeyOf(value) {
+    var v = String(value == null ? "" : value);
+    if (v.indexOf("Button.") === 0) {
+      return v.slice(7);
+    }
+    return v;
+  }
+  // 識別子 → 値。bare は press 欄の書式（ボタンは素の名）。
+  function padValueOf(key, bare) {
+    if (key.indexOf("Hat.") === 0 || key.indexOf("Direction.") === 0) {
+      return key;
+    }
+    return bare ? key : "Button." + key;
+  }
+  function padLabelOf(value) {
+    var label = PAD_LABELS[padKeyOf(value)];
+    return label == null ? String(value) : label;
+  }
+
+  Blockly.PokeconInput = {
+    LAYOUT: PAD_LAYOUT,
+    KEYS: PAD_KEYS,
+    keyOf: padKeyOf,
+    labelOf: padLabelOf,
+  };
+
+  class ControllerField extends Blockly.FieldDropdown {
+    constructor(value, bare) {
+      var isBare = !!bare;
+      super(
+        PAD_KEYS.map(function (k) {
+          return [PAD_LABELS[k], padValueOf(k, isBare)];
+        }),
+      );
+      this.bare_ = isBare;
+      this.setValue(value != null ? String(value) : padValueOf("A", isBare));
+    }
+    static fromJson(options) {
+      return new ControllerField(
+        options ? options.value : undefined,
+        options && options.style === "bare",
+      );
+    }
+    // コントローラの絵から選ぶ。描画（DropDownDiv）が無い環境では標準の一覧に落とす。
+    showEditor_(e) {
+      var DDD = Blockly.DropDownDiv;
+      if (!DDD || typeof document === "undefined" || !document.createElement) {
+        return super.showEditor_(e);
+      }
+      var field = this;
+      var bare = this.bare_;
+      var current = padKeyOf(this.getValue());
+      DDD.clearContent();
+      var content = DDD.getContentDiv();
+      var box = document.createElement("div");
+      box.className = "pokeconPad";
+      box.setAttribute("role", "group");
+      box.setAttribute("aria-label", "コントローラから入力を選ぶ");
+      box.style.cssText =
+        "position:relative;width:" + PAD_W + "px;height:" + PAD_H + "px;" +
+        "background:#2f3237;border-radius:40px 40px 70px 70px;font:13px/1 'Segoe UI','Yu Gothic UI',sans-serif;";
+      var groups = [
+        ["左スティック", 84, 166],
+        ["十字キー", 150, 266],
+        ["右スティック", 270, 266],
+      ];
+      groups.forEach(function (g) {
+        var t = document.createElement("span");
+        t.textContent = g[0];
+        t.style.cssText =
+          "position:absolute;left:" + (g[1] - 40) + "px;top:" + (g[2] - 12) +
+          "px;width:80px;text-align:center;color:#c9ccd1;font-size:11px;pointer-events:none;";
+        box.appendChild(t);
+      });
+      var currentBtn = null;
+      PAD_LAYOUT.forEach(function (it) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.textContent = it.text;
+        b.title = PAD_LABELS[it.key];
+        b.setAttribute("aria-label", PAD_LABELS[it.key]);
+        var on = it.key === current;
+        b.setAttribute("aria-pressed", on ? "true" : "false");
+        b.style.cssText =
+          "position:absolute;left:" + it.x + "px;top:" + it.y + "px;width:" + it.w +
+          "px;height:" + it.h + "px;min-height:0;min-width:0;padding:0;border-radius:7px;cursor:pointer;" +
+          "border:1px solid " + (on ? "#ffd166" : "#5b6068") + ";" +
+          "background:" + (on ? "#ffd166" : "#43474e") + ";color:" + (on ? "#1f2328" : "#f1f3f5") +
+          ";font-weight:600;font-size:" + (it.text.length > 2 ? 12 : 14) + "px;";
+        b.addEventListener("click", function () {
+          field.setValue(padValueOf(it.key, bare));
+          DDD.hideIfOwner(field, true);
+        });
+        if (on) {
+          currentBtn = b;
+        }
+        box.appendChild(b);
+      });
+      // 打鍵でも選べる（A/B/X/Y/L/R と矢印＝十字キー）。
+      box.addEventListener("keydown", function (ev) {
+        var k = String(ev.key || "");
+        var map = {
+          a: "A", b: "B", x: "X", y: "Y", l: "L", r: "R",
+          ArrowUp: "Hat.TOP", ArrowDown: "Hat.BTM", ArrowLeft: "Hat.LEFT", ArrowRight: "Hat.RIGHT",
+        };
+        var key = map[k] || map[k.toLowerCase()];
+        if (!key) {
+          return;
+        }
+        ev.preventDefault();
+        field.setValue(padValueOf(key, bare));
+        DDD.hideIfOwner(field, true);
+      });
+      var hint = document.createElement("div");
+      hint.textContent = "クリックで選ぶ（A/B/X/Y/L/R キー・矢印＝十字キーでも可）";
+      hint.style.cssText = "padding:6px 4px 0;color:#5c636b;font-size:11px;";
+      content.appendChild(box);
+      content.appendChild(hint);
+      DDD.setColour("#ffffff", "#d6d9de");
+      DDD.showPositionedByField(this, function () {});
+      setTimeout(function () {
+        try {
+          (currentBtn || box.querySelector("button")).focus();
+        } catch (err) {
+          /* 焦点が移せなくても選べる */
+        }
+      }, 0);
+    }
+  }
+  Blockly.fieldRegistry.register("field_controller", ControllerField);
+
   Blockly.defineBlocksWithJsonArray([
     {
       type: "pokecon_program",
@@ -237,49 +459,14 @@
       type: "pokecon_press",
       message0: "%1 を押す 長さ %2 秒 待ち %3 秒",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "BUTTON",
-          options: [
-            ["Y", "Y"],
-            ["B", "B"],
-            ["A", "A"],
-            ["X", "X"],
-            ["L", "L"],
-            ["R", "R"],
-            ["ZL", "ZL"],
-            ["ZR", "ZR"],
-            ["MINUS", "MINUS"],
-            ["PLUS", "PLUS"],
-            ["LCLICK", "LCLICK"],
-            ["RCLICK", "RCLICK"],
-            ["HOME", "HOME"],
-            ["CAPTURE", "CAPTURE"],
-            ["↑", "Direction.UP"],
-            ["→", "Direction.RIGHT"],
-            ["↓", "Direction.DOWN"],
-            ["←", "Direction.LEFT"],
-            ["↗", "Direction.UP_RIGHT"],
-            ["↘", "Direction.DOWN_RIGHT"],
-            ["↙", "Direction.DOWN_LEFT"],
-            ["↖", "Direction.UP_LEFT"],
-            ["R↑", "Direction.R_UP"],
-            ["R→", "Direction.R_RIGHT"],
-            ["R↓", "Direction.R_DOWN"],
-            ["R←", "Direction.R_LEFT"],
-            ["R↗", "Direction.R_UP_RIGHT"],
-            ["R↘", "Direction.R_DOWN_RIGHT"],
-            ["R↙", "Direction.R_DOWN_LEFT"],
-            ["R↖", "Direction.R_UP_LEFT"],
-          ],
-        },
+        { type: "field_controller", name: "BUTTON", style: "bare", value: "A" },
         { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
         { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
       ],
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "ボタン・十字キーを押す。十字キーは方向指定になる。",
+      tooltip: "ボタン・十字キーを押す。スティックの方向を選ぶと、その向きへ倒して戻す。",
     },
     {
       type: "pokecon_stick",
@@ -327,42 +514,7 @@
       type: "pokecon_hold",
       message0: "%1 を押し続ける 待ち %2 秒",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "TARGET",
-          options: [
-            ["Y", "Button.Y"],
-            ["B", "Button.B"],
-            ["A", "Button.A"],
-            ["X", "Button.X"],
-            ["L", "Button.L"],
-            ["R", "Button.R"],
-            ["ZL", "Button.ZL"],
-            ["ZR", "Button.ZR"],
-            ["MINUS", "Button.MINUS"],
-            ["PLUS", "Button.PLUS"],
-            ["LCLICK", "Button.LCLICK"],
-            ["RCLICK", "Button.RCLICK"],
-            ["HOME", "Button.HOME"],
-            ["CAPTURE", "Button.CAPTURE"],
-            ["↑", "Direction.UP"],
-            ["→", "Direction.RIGHT"],
-            ["↓", "Direction.DOWN"],
-            ["←", "Direction.LEFT"],
-            ["↗", "Direction.UP_RIGHT"],
-            ["↘", "Direction.DOWN_RIGHT"],
-            ["↙", "Direction.DOWN_LEFT"],
-            ["↖", "Direction.UP_LEFT"],
-            ["R↑", "Direction.R_UP"],
-            ["R→", "Direction.R_RIGHT"],
-            ["R↓", "Direction.R_DOWN"],
-            ["R←", "Direction.R_LEFT"],
-            ["R↗", "Direction.R_UP_RIGHT"],
-            ["R↘", "Direction.R_DOWN_RIGHT"],
-            ["R↙", "Direction.R_DOWN_LEFT"],
-            ["R↖", "Direction.R_UP_LEFT"],
-          ],
-        },
+        { type: "field_controller", name: "TARGET", value: "Button.A" },
         { type: "field_number", name: "WAIT", value: 0.1, min: 0, max: 60 },
       ],
       previousStatement: null,
@@ -374,42 +526,7 @@
       type: "pokecon_hold_end",
       message0: "%1 を離す",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "TARGET",
-          options: [
-            ["Y", "Button.Y"],
-            ["B", "Button.B"],
-            ["A", "Button.A"],
-            ["X", "Button.X"],
-            ["L", "Button.L"],
-            ["R", "Button.R"],
-            ["ZL", "Button.ZL"],
-            ["ZR", "Button.ZR"],
-            ["MINUS", "Button.MINUS"],
-            ["PLUS", "Button.PLUS"],
-            ["LCLICK", "Button.LCLICK"],
-            ["RCLICK", "Button.RCLICK"],
-            ["HOME", "Button.HOME"],
-            ["CAPTURE", "Button.CAPTURE"],
-            ["↑", "Direction.UP"],
-            ["→", "Direction.RIGHT"],
-            ["↓", "Direction.DOWN"],
-            ["←", "Direction.LEFT"],
-            ["↗", "Direction.UP_RIGHT"],
-            ["↘", "Direction.DOWN_RIGHT"],
-            ["↙", "Direction.DOWN_LEFT"],
-            ["↖", "Direction.UP_LEFT"],
-            ["R↑", "Direction.R_UP"],
-            ["R→", "Direction.R_RIGHT"],
-            ["R↓", "Direction.R_DOWN"],
-            ["R←", "Direction.R_LEFT"],
-            ["R↗", "Direction.R_UP_RIGHT"],
-            ["R↘", "Direction.R_DOWN_RIGHT"],
-            ["R↙", "Direction.R_DOWN_LEFT"],
-            ["R↖", "Direction.R_UP_LEFT"],
-          ],
-        },
+        { type: "field_controller", name: "TARGET", value: "Button.A" },
       ],
       previousStatement: null,
       nextStatement: null,
@@ -429,42 +546,7 @@
       type: "pokecon_press_rep",
       message0: "%1 を %2 回押す 長さ %3 秒 間隔 %4 秒 待ち %5 秒",
       args0: [
-        {
-          type: "field_dropdown",
-          name: "TARGET",
-          options: [
-            ["Y", "Button.Y"],
-            ["B", "Button.B"],
-            ["A", "Button.A"],
-            ["X", "Button.X"],
-            ["L", "Button.L"],
-            ["R", "Button.R"],
-            ["ZL", "Button.ZL"],
-            ["ZR", "Button.ZR"],
-            ["MINUS", "Button.MINUS"],
-            ["PLUS", "Button.PLUS"],
-            ["LCLICK", "Button.LCLICK"],
-            ["RCLICK", "Button.RCLICK"],
-            ["HOME", "Button.HOME"],
-            ["CAPTURE", "Button.CAPTURE"],
-            ["↑", "Direction.UP"],
-            ["→", "Direction.RIGHT"],
-            ["↓", "Direction.DOWN"],
-            ["←", "Direction.LEFT"],
-            ["↗", "Direction.UP_RIGHT"],
-            ["↘", "Direction.DOWN_RIGHT"],
-            ["↙", "Direction.DOWN_LEFT"],
-            ["↖", "Direction.UP_LEFT"],
-            ["R↑", "Direction.R_UP"],
-            ["R→", "Direction.R_RIGHT"],
-            ["R↓", "Direction.R_DOWN"],
-            ["R←", "Direction.R_LEFT"],
-            ["R↗", "Direction.R_UP_RIGHT"],
-            ["R↘", "Direction.R_DOWN_RIGHT"],
-            ["R↙", "Direction.R_DOWN_LEFT"],
-            ["R↖", "Direction.R_UP_LEFT"],
-          ],
-        },
+        { type: "field_controller", name: "TARGET", value: "Button.A" },
         { type: "field_number", name: "COUNT", value: 3, min: 1, max: 1000 },
         { type: "field_number", name: "DURATION", value: 0.1, min: 0, max: 10 },
         { type: "field_number", name: "INTERVAL", value: 0.1, min: 0, max: 60 },
@@ -620,26 +702,7 @@
           height: 48,
           alt: "*",
         },
-        {
-          type: "field_dropdown",
-          name: "TARGET",
-          options: [
-            ["Y", "Button.Y"],
-            ["B", "Button.B"],
-            ["A", "Button.A"],
-            ["X", "Button.X"],
-            ["L", "Button.L"],
-            ["R", "Button.R"],
-            ["ZL", "Button.ZL"],
-            ["ZR", "Button.ZR"],
-            ["MINUS", "Button.MINUS"],
-            ["PLUS", "Button.PLUS"],
-            ["LCLICK", "Button.LCLICK"],
-            ["RCLICK", "Button.RCLICK"],
-            ["HOME", "Button.HOME"],
-            ["CAPTURE", "Button.CAPTURE"],
-          ],
-        },
+        { type: "field_controller", name: "TARGET", value: "Button.A" },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
@@ -670,26 +733,7 @@
           height: 48,
           alt: "*",
         },
-        {
-          type: "field_dropdown",
-          name: "TARGET",
-          options: [
-            ["Y", "Button.Y"],
-            ["B", "Button.B"],
-            ["A", "Button.A"],
-            ["X", "Button.X"],
-            ["L", "Button.L"],
-            ["R", "Button.R"],
-            ["ZL", "Button.ZL"],
-            ["ZR", "Button.ZR"],
-            ["MINUS", "Button.MINUS"],
-            ["PLUS", "Button.PLUS"],
-            ["LCLICK", "Button.LCLICK"],
-            ["RCLICK", "Button.RCLICK"],
-            ["HOME", "Button.HOME"],
-            ["CAPTURE", "Button.CAPTURE"],
-          ],
-        },
+        { type: "field_controller", name: "TARGET", value: "Button.A" },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
@@ -1371,7 +1415,11 @@
         })
         .join(", ") +
       "]\n";
-    var body = generator.statementToCode(block, "DO");
+    // 試し実行（一部だけ）のときは、編集画面が do() の中身を差し替える。
+    var body =
+      typeof generator.pokeconBodyOverride === "function"
+        ? generator.pokeconBodyOverride(generator)
+        : generator.statementToCode(block, "DO");
     var inner = body ? generator.prefixLines(body, "    ") : "        pass\n";
     // statementToCodeだけ・prefixLinesだけの片方では字下げが壊れる（spike確定）。
     // 両方を使ってdo()の中に寄せる。
@@ -1396,10 +1444,21 @@
       /self\.(waitTone|isTonePresent|waitSound|isSoundPresent|recordClip)\s*\(/.test(
         combined,
       );
-    // スティック・十字キーを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
-    // press の十字キー（Direction.UP 等）は呼び括弧を持たないため . も見る。
-    var useStick = /Direction\s*[\(.]/.test(combined);
-    var useButton = /Button\s*\./.test(combined);
+    // キーの名前はコードの部分だけで探す（コメント・文字列に書いた「Hat.」等で
+    // 使っていない import を足さない）。文字列とコメントは左から1回で見分ける
+    // （先にコメントを消すと、文字列中の「#」以降のキー名まで消えて import が欠ける）。
+    var codeOnly = combined.replace(
+      /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|#[^\n]*/g,
+      function (m) {
+        return m.charAt(0) === "#" ? "" : "''";
+      },
+    );
+    // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
+    // スティックの方向（Direction.UP 等）は呼び括弧を持たないため . も見る。
+    var useStick = /\bDirection\s*[\(.]/.test(codeOnly);
+    var useButton = /\bButton\s*\./.test(codeOnly);
+    // 十字キー（Hat.TOP 等）を使うときだけ Hat を足す。
+    var useHat = /\bHat\s*\./.test(codeOnly);
     // 経過時間を使うときだけ time を足し、do() 先頭で起点を取る。
     var useTime = /_blockly_t0/.test(combined);
     // 乱数を使うときだけ random を足す（未使用のimportを出さない）。
@@ -1436,6 +1495,10 @@
     if (useStick) {
       keyNames.push("Direction", "Stick");
     }
+    if (useHat) {
+      keyNames.push("Hat");
+    }
+    keyNames.sort();
     var keysLine =
       keyNames.length > 0
         ? "from Commands.Keys import " + keyNames.join(", ") + "\n"
@@ -1560,9 +1623,11 @@
 
   pythonGenerator.forBlock["pokecon_press"] = function (block) {
     var btn = block.getFieldValue("BUTTON");
-    // 十字キー選択時（"Direction." 始まり）はそのまま、ボタンは Button. を付ける。
+    // 方向（スティックの Direction.・十字キーの Hat.）はそのまま、ボタンは Button. を付ける。
     var target =
-      String(btn).indexOf("Direction.") === 0 ? btn : "Button." + btn;
+      String(btn).indexOf("Direction.") === 0 || String(btn).indexOf("Hat.") === 0
+        ? btn
+        : "Button." + btn;
     var dur = block.getFieldValue("DURATION");
     var wait = block.getFieldValue("WAIT");
     return (

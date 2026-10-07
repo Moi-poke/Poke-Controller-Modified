@@ -109,6 +109,113 @@
       });
     },
 
+    // 試し実行のコード。各ブロックの手前に目印（本体の services/blockly_run が
+    // 差し込む関数）を置き、実行中のブロックを光らせ・区切りで止められるようにする。
+    // opts.blockId があればそのブロック（only なら単独、無ければ後続も）だけを
+    // do() に置く。成功なら {code}、走らせられなければ {error}。
+    // 保存物・取り消し履歴は変えない（一時的な付け外しは事象を止めて戻す）。
+    trialCode: function (ws, gen, opts) {
+      opts = opts || {};
+      var programs = ws.getTopBlocks(false).filter(function (b) {
+        return b.type === "pokecon_program" && b.isEnabled();
+      });
+      if (programs.length !== 1) {
+        return {
+          error: programs.length
+            ? "プログラムは1個までにしてください"
+            : "「プログラム」ブロックがありません（試し実行はプログラムの形で走らせます）",
+        };
+      }
+      var program = programs[0];
+      var target = null;
+      if (opts.blockId) {
+        target = ws.getBlockById(opts.blockId);
+        if (!target) {
+          return { error: "ブロックが見つかりません" };
+        }
+        if (target.type === "pokecon_program") {
+          target = null;
+        } else if (target.outputConnection) {
+          return { error: "値のブロックは単独では試せません（使っている側のブロックで試してください）" };
+        }
+      }
+      if (target) {
+        var root = target.getRootBlock();
+        if (root && root.type === "pokecon_sub_def") {
+          var args = String(root.getFieldValue("ARGS") || "")
+            .split(/[,、]/)
+            .filter(function (s) {
+              return s.trim();
+            });
+          if (args.length) {
+            return { error: "引数のあるサブルーチンの中は単独では試せません（呼ぶ側から試してください）" };
+          }
+        }
+      }
+      if (target && looseFlowBlock(target, !!opts.only)) {
+        return { error: "「中断・次へ」は繰り返しの中でしか使えません（繰り返しのブロックごと試してください）" };
+      }
+      var Ev = Blockly.Events;
+      var lifted = [];
+      var suppressed = [];
+      var code = "";
+      Ev.disable();
+      try {
+        // プログラム外で灰色にしたブロックも試せるよう、走らせる分だけ一時的に戻す。
+        if (target && target.type !== "pokecon_sub_def") {
+          for (var b = target; b; b = opts.only ? null : b.getNextBlock()) {
+            if (typeof b.hasDisabledReason === "function" && b.hasDisabledReason(ORPHAN_REASON)) {
+              b.setDisabledReason(false, ORPHAN_REASON);
+              lifted.push(b);
+            }
+          }
+        }
+        // 目印は do()・サブルーチンの中だけに付ける（外に出ると self が無い）。
+        ws.getTopBlocks(false).forEach(function (t) {
+          if (t.type === "pokecon_program" || t.type === "pokecon_sub_def") {
+            suppressed.push([t, t.suppressPrefixSuffix]);
+            t.suppressPrefixSuffix = true;
+          }
+        });
+        gen.STATEMENT_PREFIX = "_pokecon_step(self, %1)\n";
+        if (target) {
+          gen.pokeconBodyOverride = function (g) {
+            if (target.type === "pokecon_sub_def") {
+              return g.statementToCode(target, "DO");
+            }
+            return g.prefixLines(g.blockToCode(target, !!opts.only) || "", g.INDENT);
+          };
+        }
+        // workspaceToCode は外に置いた塊も直下へ出すため、プログラムだけを生成する。
+        gen.init(ws);
+        var line = gen.blockToCode(program);
+        if (Array.isArray(line)) {
+          line = line[0];
+        }
+        code = gen.finish(line || "");
+        code = code.replace(/^\s+\n/, "").replace(/\n\s+$/, "\n").replace(/[ \t]+\n/g, "\n");
+      } finally {
+        // 戻しは1つずつ握る（途中で落ちても事象を止めたままにしない）。
+        try {
+          gen.STATEMENT_PREFIX = null;
+          delete gen.pokeconBodyOverride;
+          suppressed.forEach(function (pair) {
+            pair[0].suppressPrefixSuffix = pair[1];
+          });
+          lifted.forEach(function (b) {
+            try {
+              b.setDisabledReason(true, ORPHAN_REASON);
+            } catch (e) {
+              /* 消えたブロックは戻せない */
+            }
+          });
+        } finally {
+          Ev.enable();
+        }
+      }
+      return { code: code };
+    },
+
     // 新規の初期形。空のキャンバスから始めると、何を置けばよいか分からない。
     defaultState: function () {
       return {
@@ -126,6 +233,39 @@
       };
     },
   };
+
+  // 繰り返しの外へ出てしまう「中断・次へ」。試す範囲（target 以下、only でなければ
+  // 後続も）の中で、包む繰り返しが範囲内に無いものを1つ返す（無ければ null）。
+  // 単独で生成すると `break` が繰り返しの外に出て文法エラーになるため。
+  var LOOP_TYPES = {
+    controls_repeat_ext: true,
+    controls_repeat: true,
+    controls_whileUntil: true,
+    controls_for: true,
+    controls_forEach: true,
+  };
+  function looseFlowBlock(target, only) {
+    var inRange = {};
+    for (var b = target; b; b = only ? null : b.getNextBlock()) {
+      b.getDescendants(false).forEach(function (d) {
+        inRange[d.id] = d;
+      });
+    }
+    var found = null;
+    Object.keys(inRange).forEach(function (id) {
+      var f = inRange[id];
+      if (found || f.type !== "controls_flow_statements") {
+        return;
+      }
+      for (var p = f.getSurroundParent(); p && inRange[p.id]; p = p.getSurroundParent()) {
+        if (LOOP_TYPES[p.type]) {
+          return;
+        }
+      }
+      found = f;
+    });
+    return found;
+  }
 
   Blockly.PokeconEditor = PokeconEditor;
 })();

@@ -17,13 +17,19 @@ NEEDS_NODE = pytest.mark.skipif(
 )
 
 
+@NEEDS_NODE
 def test_press_block_offers_dpad() -> None:
-    """pressブロックで十字キー（Direction）を選べること。"""
-    text = SRC.read_text(encoding="utf-8")
-    press_sec = text[text.index('type: "pokecon_press"') :]
-    press_sec = press_sec[: press_sec.index('type: "pokecon_stick"')]
-    assert "Direction.UP" in press_sec
-    assert "Direction.R_UP" in press_sec
+    """pressブロックで左右スティックの方向（Direction）も選べること。"""
+    # 候補はコントローラ入力欄（field_controller）が持つため、本物の欄に聞く。
+    from blockly_node import run_blockly
+
+    res = run_blockly(
+        "const ws = new Blockly.Workspace();\n"
+        "const f = ws.newBlock('pokecon_press').getField('BUTTON');\n"
+        "done({ values: f.getOptions(false).map((o) => o[1]) });"
+    )
+    assert "Direction.UP" in res["values"]
+    assert "Direction.R_UP" in res["values"]
 
 
 def test_press_generator_handles_direction() -> None:

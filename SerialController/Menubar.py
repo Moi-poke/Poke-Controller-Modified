@@ -535,6 +535,7 @@ class PokeController_Menubar(tk.Menu):
             is_busy=lambda: self.app.runner.is_busy(),
             reload_commands=self.app.reloadCommands,
             get_frame=blockly_capture.build_get_frame(lambda: self.camera),
+            run_host=self.app,
         )
 
     def OpenErrorReport(self) -> None:

@@ -358,16 +358,20 @@ class CommandRunner:
             self.post_on_gui()
             return
 
-        # 使用履歴は開始できたあとで数える。開始前に足すと、起動に失敗した
-        # 回数まで「実行回数」に混ざる。ファイルへ書くのは終了時に1回だけ。
-        CommandStats.record(self._stats, cmd_name)
-        self.stats_dirty = True
-        # 履歴は開始できたあとで積む。失敗した回まで残ると見た目が嘘になる。
-        # 履歴の失敗で実行は壊さない（種別判定が落ちても走り続ける）。
-        try:
-            self._hist_begin(command, cmd_name)
-        except Exception:
-            logger.error(traceback.format_exc())
+        # 編集画面の試し実行は数えない・残さない。保存前の組み立てで一覧に
+        # 無く、履歴から再実行もできないため、「最近使った」を汚すだけになる。
+        trial = bool(getattr(command, "POKECON_TRIAL", False))
+        if not trial:
+            # 使用履歴は開始できたあとで数える。開始前に足すと、起動に失敗した
+            # 回数まで「実行回数」に混ざる。ファイルへ書くのは終了時に1回だけ。
+            CommandStats.record(self._stats, cmd_name)
+            self.stats_dirty = True
+            # 履歴は開始できたあとで積む。失敗した回まで残ると見た目が嘘になる。
+            # 履歴の失敗で実行は壊さない（種別判定が落ちても走り続ける）。
+            try:
+                self._hist_begin(command, cmd_name)
+            except Exception:
+                logger.error(traceback.format_exc())
         # 走行記録は開始の確定後に始める。失敗作の記録は残さない。
         self._end_reason = "完了"
         self._diag_begin(cmd_name)

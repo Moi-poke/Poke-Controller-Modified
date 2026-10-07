@@ -192,3 +192,23 @@ def test_two_runs_close_newest_first() -> None:
     assert entries[1].result == CommandHistory.RESULT_DONE
     assert entries[1].seconds == 1.0
     assert runner.current_history_entry is None
+
+
+def test_trial_run_from_the_editor_is_not_counted_or_kept_in_history() -> None:
+    """編集画面の試し実行は、使用回数にも実行履歴にも残さないこと（再実行できないため）。"""
+    # Given: 履歴を渡した走行器と、試し実行の印つきコマンド
+    runner, _, entries = make_history_runner()
+    stats: dict[str, dict] = runner._stats
+    cmd: Any = FakeCommand()
+    cmd.POKECON_TRIAL = True
+    # When: 開始する
+    runner.request_start(cmd, FakeSer())
+    # Then: 走ってはいるが、回数・履歴は増えない
+    assert runner.state == "running"
+    assert entries == []
+    assert stats == {}
+    assert runner.stats_dirty is False
+    # 対照: 印の無いコマンドは数える（検査が効いていることの確認）
+    other, _, other_entries = make_history_runner()
+    other.request_start(FakeCommand(), FakeSer())
+    assert len(other_entries) == 1

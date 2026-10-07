@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from blockly_node import BLOCKLY
+from blockly_node import BLOCKLY, NEEDS_NODE
 
 
 def read_editor() -> str:
@@ -101,3 +101,20 @@ def test_status_line_and_error_banner_follow_the_header() -> None:
     assert html.index('id="status"') < html.index('<main id="main"')
     assert 'id="status" role="status" aria-live="polite"' in html
     assert 'id="saveerrors" role="alert"' in html
+
+
+@NEEDS_NODE
+def test_editor_loads_blockly_media_from_the_bundled_folder() -> None:
+    """Blocklyの画像・音は同梱の media/ から読むこと（既定の static.blockly.com を見に行かない）。"""
+    from blockly_node import run_editor
+
+    res = run_editor(
+        """
+        let opts = null;
+        Blockly.inject = (_id, o) => { opts = o; return ws; };
+        boot();
+        await flush(300);
+        done({ media: opts && opts.media });
+        """
+    )
+    assert res["media"] == "./media/"

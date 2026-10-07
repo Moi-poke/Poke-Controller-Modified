@@ -76,6 +76,17 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 #previewstatus { flex: 1 1 auto; color: #a8adb5; font-size: 12px; }
 #previewwrap button { background: #3a3d43; border-color: #4a4e55; color: #e6e6e6; min-height: 26px; }
 #previewwrap button:hover { background: #4a4e55; }
+#previewwrap .tab { background: transparent; border-color: transparent; color: #a8adb5; font-weight: 600; }
+#previewwrap .tab.on { background: #3a3d43; border-color: #4a4e55; color: #fff; }
+#runlog { display: none; flex: 1 1 auto; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.5 Consolas, "Cascadia Mono", "MS Gothic", monospace; white-space: pre-wrap; }
+button.run { background: #1e8e3e; border-color: #1e8e3e; color: #fff; font-weight: 600; }
+button.run:hover { background: #17793a; }
+#runstate { font-size: 12px; color: var(--muted); }
+#runstate.is-running { color: #1e8e3e; font-weight: 600; }
+#runstate.is-paused { color: var(--warn); font-weight: 600; }
+/* 試し実行で走っているブロック。標準は色が薄くなるだけで見落とすため縁取りで光らせる。 */
+.blocklyHighlighted > .blocklyPath { fill-opacity: 1 !important; stroke: #ffb300 !important; stroke-width: 4px !important; filter: drop-shadow(0 0 6px rgba(255, 179, 0, 0.9)); }
+.pokecon-bp > .blocklyPath { stroke: #d93025 !important; stroke-width: 3px !important; stroke-dasharray: 6 3; }
 #preview { flex: 1 1 auto; margin: 0; padding: 10px 12px; overflow: auto; font: 12px/1.5 Consolas, "Cascadia Mono", "MS Gothic", monospace; white-space: pre; tab-size: 4; }
 #legacy { padding: 2px 10px; background: var(--panel); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 #legacy summary { cursor: pointer; padding: 2px 0; }
@@ -101,6 +112,13 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 <button id="save" class="primary" title="保存 (Ctrl+S)">保存</button>
 <span id="dirty">保存済み</span>
 </div>
+<div class="grp" role="group" aria-label="試し実行">
+<button id="runbtn" class="run" title="今の組み立てを保存せずに本体で走らせる (Ctrl+Enter)。右クリックで一部だけ試せます">▶ 実行</button>
+<button id="pausebtn" class="icon" disabled title="一時停止" aria-label="一時停止">⏸</button>
+<button id="stepbtn" class="icon" disabled title="1つ進む（次のブロックの手前で止める）" aria-label="1つ進む">⏭</button>
+<button id="stopbtn" class="icon" disabled title="停止" aria-label="停止">⏹</button>
+<span id="runstate" role="status" aria-live="polite"></span>
+</div>
 <div class="grp">
 <button id="undo" class="icon" title="元に戻す (Ctrl+Z)" aria-label="元に戻す">↶</button>
 <button id="redo" class="icon" title="やり直し (Ctrl+Y)" aria-label="やり直し">↷</button>
@@ -117,6 +135,7 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 <li>「プログラム」ブロックの中に操作を並べて保存します（<kbd>Ctrl</kbd>+<kbd>S</kbd>）。保存するとPokeConのコマンド一覧に約1秒で出ます。</li>
 <li>プログラムの外に置いたブロックは灰色になり、実行されません。つなぎ直すと元に戻ります。</li>
 <li>元に戻す <kbd>Ctrl</kbd>+<kbd>Z</kbd>／やり直し <kbd>Ctrl</kbd>+<kbd>Y</kbd>／複製 <kbd>Ctrl</kbd>+<kbd>C</kbd>→<kbd>Ctrl</kbd>+<kbd>V</kbd>／削除 <kbd>Delete</kbd>。右クリックでも操作できます。</li>
+<li>「▶ 実行」（<kbd>Ctrl</kbd>+<kbd>Enter</kbd>）で保存せずに本体で試せます。走っているブロックが光り、⏸で一時停止・⏭で1ブロックずつ・⏹で停止します。ブロックの右クリックで「このブロックだけ試す」「ここから下を試す」「ここで止める（区切り）」が使えます。</li>
 <li>画像認識ブロックの📷で、範囲・しきい値・テンプレを実際の画面で試しながら決められます。範囲が空なら画面全体です。</li>
 <li>変数は「変数」分類の「変数の作成…」で作ります。「設定数値」で受けた値は同じ名前の変数で使えます。</li>
 <li>サブルーチンは定義ブロックを置き、「呼ぶ」の名前欄で選びます。定義の名前を変えると呼出も追従します。</li>
@@ -132,8 +151,9 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
 <div id="ws"></div>
 <div id="splitter" role="separator" aria-orientation="vertical" aria-label="コード欄の幅" tabindex="0" title="ドラッグ（または←→キー）で幅を変える"></div>
 <aside id="previewwrap" aria-label="生成コード">
-<div class="panehead"><strong>生成コード</strong><span id="previewstatus" role="status" aria-live="polite"></span><button id="previewcopy" title="生成コードをクリップボードへ">コピー</button></div>
+<div class="panehead"><button id="tabcode" class="tab on" aria-pressed="true">生成コード</button><button id="tablog" class="tab" aria-pressed="false">実行ログ</button><span id="previewstatus" role="status" aria-live="polite"></span><button id="previewcopy" title="生成コードをクリップボードへ">コピー</button></div>
 <pre id="preview" tabindex="0" aria-label="生成コードのプレビュー"></pre>
+<pre id="runlog" tabindex="0" aria-label="試し実行のログ"></pre>
 </aside>
 </main>
 <details id="legacy">
@@ -317,6 +337,8 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
     grid: { spacing: 24, length: 3, colour: '#d5d8dc', snap: true },
     zoom: { controls: true, wheel: true, startScale: 0.85, maxScale: 3, minScale: 0.3, scaleSpeed: 1.2 },
     move: { scrollbars: true, drag: true, wheel: false },
+    // 画像・音は同梱分を使う（既定は static.blockly.com を見に行く。CDN禁止）。
+    media: './media/',
     toolbox: TOOLBOX,
   });
   // 要素取得の安全弁。node検証の最小DOMスタブに無いidでも落とさない。
@@ -526,6 +548,8 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
   // ワークスペースへ状態を読み込み、浮き判定を済ませてから基準を取る
   // （判定で無効化が変わると保存物も変わるため、基準より先に済ませる）。
   function loadState(state) {
+    // 区切りはブロックIDに付くため、別の中身を読むときは外す。
+    clearBreakpoints();
     ws.clear();
     Blockly.serialization.workspaces.load(state, ws);
     if (E) { E.syncOrphans(ws); }
@@ -890,6 +914,238 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
       fallback();
     }
   });
+  // ---- 試し実行（保存せずに本体の実行器で走らせる） ----
+  // 本体（services/blockly_run）が各ブロックの手前の目印で「いまどこか」を
+  // 記録し、ここは約0.15秒ごとに様子を取りに行って光らせる。止める・進める
+  // は本体のコマンドの一時停止を使うため、本体の一時停止ボタンとも揃う。
+  var run = { active: false, paused: false, runId: 0, seq: 0, timer: null, warned: [], failures: 0 };
+  // 様子を取れない回数の上限（0.6秒おき・約6秒）。超えたら諦めて知らせる。
+  var RUN_POLL_MAX_FAILURES = 10;
+  // 区切り（ブレークポイント）。保存物には入れない（この画面の間だけ）。
+  var breakpoints = {};
+  function breakpointList() {
+    return Object.keys(breakpoints).filter(function (id) { return !!ws.getBlockById(id); });
+  }
+  function paintBreakpoint(b, onOff) {
+    try {
+      var root = b && typeof b.getSvgRoot === 'function' ? b.getSvgRoot() : null;
+      if (root && root.classList) { root.classList.toggle('pokecon-bp', !!onOff); }
+    } catch (e) { /* 描画なしでも続ける */ }
+  }
+  function clearBreakpoints() { breakpoints = {}; }
+  function setRunUi(active, paused) {
+    run.active = !!active;
+    run.paused = !!(active && paused);
+    var map = { runbtn: run.active, pausebtn: !run.active, stepbtn: !run.active, stopbtn: !run.active };
+    Object.keys(map).forEach(function (id) { var el = byId(id); if (el) { el.disabled = map[id]; } });
+    var pb = byId('pausebtn');
+    if (pb) {
+      pb.textContent = run.paused ? '▶' : '⏸';
+      pb.title = run.paused ? '再開（続きを走らせる）' : '一時停止（押しているボタンは離れます）';
+      try { pb.setAttribute('aria-label', run.paused ? '再開' : '一時停止'); } catch (e) { /* 続ける */ }
+    }
+    var rs = byId('runstate');
+    if (rs) {
+      rs.textContent = !run.active ? '' : (run.paused ? '⏸ 一時停止中' : '● 実行中');
+      rs.className = !run.active ? '' : (run.paused ? 'is-paused' : 'is-running');
+    }
+  }
+  function lightBlock(id) {
+    if (typeof ws.highlightBlock !== 'function') { return; }
+    try { ws.highlightBlock(id || null); } catch (e) { /* 消えたブロック等は無視 */ }
+  }
+  function clearRunWarnings() {
+    run.warned.forEach(function (id) {
+      var b = ws.getBlockById(id);
+      if (b) { try { b.setWarningText(null); } catch (e) { /* 続ける */ } }
+    });
+    run.warned = [];
+  }
+  function showPaneTab(which) {
+    var code = which !== 'log';
+    var pre = byId('preview'), log = byId('runlog');
+    if (pre && pre.style) { pre.style.display = code ? '' : 'none'; }
+    if (log && log.style) { log.style.display = code ? 'none' : 'block'; }
+    [['tabcode', code], ['tablog', !code]].forEach(function (pair) {
+      var t = byId(pair[0]);
+      if (!t) { return; }
+      t.className = pair[1] ? 'tab on' : 'tab';
+      try { t.setAttribute('aria-pressed', pair[1] ? 'true' : 'false'); } catch (e) { /* 続ける */ }
+    });
+  }
+  on('tabcode', 'click', function () { showPaneTab('code'); });
+  on('tablog', 'click', function () { showPaneTab('log'); });
+  function appendRunLog(lines) {
+    var el = byId('runlog');
+    (lines || []).forEach(function (item) {
+      run.seq = Math.max(run.seq, item[0]);
+      if (el) { el.textContent += item[1] + '\n'; }
+    });
+    if (el && lines && lines.length) {
+      try { el.scrollTop = el.scrollHeight; } catch (e) { /* 続ける */ }
+      setStatus('試し実行中: ' + lines[lines.length - 1][1], false);
+    }
+  }
+  function postJson(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function (r) { return r.json(); });
+  }
+  // opts: {} で全体、{blockId, only} で一部だけ。
+  function startTrial(opts) {
+    if (run.active) { setStatus('試し実行中です（止めてから試してください）', true); return; }
+    if (!E || !pythonGenerator) { setStatus('試し実行の準備ができていません', true); return; }
+    var r;
+    try {
+      r = E.trialCode(ws, pythonGenerator, opts || {});
+    } catch (e) {
+      r = { error: '試し実行のコードを作れませんでした: ' + e };
+    }
+    if (r.error) { setStatus(r.error, true); return; }
+    // 走らせる分に画像未選択のブロックがあると必ず失敗するため、送る前に止める。
+    var noImage = E.blocksMissingTemplate(ws).filter(function (b) {
+      return r.code.indexOf("'" + b.id + "'") !== -1;
+    });
+    if (noImage.length) {
+      setStatus('画像を選んでいない画像認識ブロックが ' + noImage.length + ' 個あります（ブロックの画像欄で選んでください）', true);
+      try { if (typeof noImage[0].select === 'function') { noImage[0].select(); } } catch (e) { /* 続ける */ }
+      return;
+    }
+    clearRunWarnings();
+    var log = byId('runlog');
+    if (log) { log.textContent = ''; }
+    run.seq = 0;
+    run.failures = 0;
+    setStatus('試し実行を始めています…', false);
+    postJson('./run', { code: r.code, breakpoints: breakpointList() }).then(function (j) {
+      if (!j.ok) {
+        setRunUi(false, false);
+        setStatus(j.message || '試し実行できません', true);
+        return;
+      }
+      run.runId = j.runId;
+      setRunUi(true, false);
+      if (previewOn) { showPaneTab('log'); }
+      setStatus('試し実行中です（編集しても、走っている内容は変わりません）', false);
+      pollRun();
+    }).catch(function (e) {
+      setRunUi(false, false);
+      setStatus('試し実行できません: ' + e, true);
+    });
+  }
+  function pollRun() {
+    if (run.timer) { clearTimeout(run.timer); run.timer = null; }
+    fetch('./run/state?since=' + run.seq).then(function (r) { return r.json(); }).then(function (s) {
+      if (!run.active) { return; }
+      run.failures = 0;
+      if (s.runId !== run.runId) {
+        // 別のタブ等が新しい試し実行を始めた。こちらは追えないので手放す。
+        lightBlock(null);
+        setRunUi(false, false);
+        setStatus('別の画面で新しい試し実行が始まったため、この画面での表示をやめました', false);
+        return;
+      }
+      appendRunLog(s.logs);
+      if (s.running) {
+        lightBlock(s.blockId);
+        setRunUi(true, s.paused);
+        run.timer = setTimeout(pollRun, 150);
+        return;
+      }
+      finishRun(s);
+    }).catch(function () {
+      if (!run.active) { return; }
+      // 本体の窓を閉じた（受け口が止まった）等。いつまでも取りに行かない。
+      run.failures = (run.failures || 0) + 1;
+      if (run.failures >= RUN_POLL_MAX_FAILURES) {
+        lightBlock(null);
+        setRunUi(false, false);
+        setStatus('本体と通信できません（PokeCon の「Blocklyエディタ」窓を閉じた可能性があります）。実行中なら本体側で止めてください', true);
+        return;
+      }
+      run.timer = setTimeout(pollRun, 600);
+    });
+  }
+  function finishRun(s) {
+    lightBlock(null);
+    setRunUi(false, false);
+    var result = s.result || '終了';
+    if (result === 'エラー') {
+      var msg = s.error || '（本体のログ欄を確認してください）';
+      var b = s.errorBlock ? ws.getBlockById(s.errorBlock) : null;
+      if (b) {
+        try { b.setWarningText(msg); run.warned.push(b.id); } catch (e) { /* 続ける */ }
+        try { if (typeof b.select === 'function') { b.select(); } } catch (e) { /* 続ける */ }
+        try { if (typeof ws.centerOnBlock === 'function') { ws.centerOnBlock(b.id); } } catch (e) { /* 続ける */ }
+      }
+      setStatus('試し実行でエラーが出ました: ' + msg + (b ? '（警告の付いたブロック）' : ''), true);
+      return;
+    }
+    setStatus(result === '停止' ? '試し実行を止めました' : '試し実行が終わりました（' + result + '）', false);
+  }
+  function runControl(action, extra) {
+    var body = { action: action };
+    if (extra) { Object.keys(extra).forEach(function (k) { body[k] = extra[k]; }); }
+    return postJson('./run/control', body).then(function (j) {
+      if (!j.ok && j.message) { setStatus(j.message, true); }
+    }).catch(function (e) { setStatus('本体へ届きません: ' + e, true); });
+  }
+  on('runbtn', 'click', function () { startTrial({}); });
+  on('pausebtn', 'click', function () { runControl(run.paused ? 'resume' : 'pause'); });
+  on('stepbtn', 'click', function () { runControl('step'); });
+  on('stopbtn', 'click', function () { runControl('stop'); });
+  setRunUi(false, false);
+  // 右クリック：一部だけ試す・区切り。値ブロック・影・プログラム自身には出さない。
+  try {
+    var CMR = Blockly.ContextMenuRegistry;
+    var reg = CMR && CMR.registry;
+    var trialTarget = function (scope) {
+      var b = scope && scope.block;
+      // 部品棚（フライアウト）の見本はワークスペースに無いため対象外。
+      if (!b || b.isInFlyout || b.isShadow() || b.outputConnection || b.type === 'pokecon_program') { return null; }
+      return b;
+    };
+    var addItem = function (item) {
+      if (reg && !reg.getItem(item.id)) { reg.register(item); }
+    };
+    addItem({
+      id: 'pokeconTryOnly', scopeType: CMR.ScopeType.BLOCK, weight: -3,
+      displayText: '▶ このブロックだけ試す',
+      preconditionFn: function (scope) {
+        if (!trialTarget(scope)) { return 'hidden'; }
+        return run.active ? 'disabled' : 'enabled';
+      },
+      callback: function (scope) { startTrial({ blockId: scope.block.id, only: true }); },
+    });
+    addItem({
+      id: 'pokeconTryFrom', scopeType: CMR.ScopeType.BLOCK, weight: -2,
+      displayText: '▶ ここから下を試す',
+      preconditionFn: function (scope) {
+        var b = trialTarget(scope);
+        if (!b || !b.getNextBlock()) { return 'hidden'; }
+        return run.active ? 'disabled' : 'enabled';
+      },
+      callback: function (scope) { startTrial({ blockId: scope.block.id, only: false }); },
+    });
+    addItem({
+      id: 'pokeconBreakpoint', scopeType: CMR.ScopeType.BLOCK, weight: -1,
+      displayText: function (scope) {
+        return breakpoints[scope.block.id] ? '○ 区切りを外す' : '● ここで止める（区切り）';
+      },
+      preconditionFn: function (scope) {
+        var b = trialTarget(scope);
+        return b && b.type !== 'pokecon_sub_def' ? 'enabled' : 'hidden';
+      },
+      callback: function (scope) {
+        var b = scope.block;
+        if (breakpoints[b.id]) { delete breakpoints[b.id]; } else { breakpoints[b.id] = true; }
+        paintBreakpoint(b, !!breakpoints[b.id]);
+        if (run.active) { runControl('breakpoints', { breakpoints: breakpointList() }); }
+      },
+    });
+  } catch (e) { /* 右クリックの追加に失敗しても編集は続ける */ }
   // 未保存のまま閉じようとしたら確認する（Ctrl+Sは下のkeydown共用処理で受ける）。
   try {
     window.addEventListener('beforeunload', function (ev) {
@@ -1727,6 +1983,11 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === 's' || ev.key === 'S')) {
       try { ev.preventDefault(); } catch (e) { /* 続ける */ }
       doSave();
+      return;
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+      try { ev.preventDefault(); } catch (e) { /* 続ける */ }
+      if (!run.active) { startTrial({}); }
       return;
     }
     if (ev.key === 'Escape' && document.getElementById('capmodal').style.display !== 'none') {

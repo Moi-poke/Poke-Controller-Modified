@@ -790,7 +790,9 @@ class CommandPanelMixin:
         一時停止に対応しない種類ではボタン自体を disabled にしてある
         （_apply_runner_state）。ここへ来るのは F7 の打鍵だけ。
         """
-        cmd = self.cur_command
+        # 走っているものを優先する。編集画面の試し実行は一覧の選択
+        # （cur_command）とは別の命令で走るため、選択側を止めても効かない。
+        cmd = self.runner.running_command or self.cur_command
         if cmd is None or not getattr(cmd, "alive", False):
             return
         if not callable(getattr(cmd, "togglePause", None)):
@@ -798,9 +800,58 @@ class CommandPanelMixin:
             print("This command does not support pause.")
             return
         paused = cmd.togglePause()
+        self._show_paused(bool(paused))
+
+    def _show_paused(self, paused: bool) -> None:
+        """一時停止ボタンの表示と題名を、命令の状態へ揃える。"""
         self.pauseButton["text"] = "再開" if paused else "一時停止"
         self._paused = paused
         self._update_title()
+
+    def set_running_paused(self, paused: bool) -> None:
+        """走っている命令を指定の状態（一時停止／再開）へ揃える。
+
+        編集画面のボタンから呼ぶ。切り替え（togglePause）だと、本体側で
+        先に押されていたときに逆へ戻してしまうため、状態を指定させる。
+        """
+        cmd = self.runner.running_command
+        is_paused = getattr(cmd, "isPaused", None)
+        if self.runner.state != "running" or not callable(is_paused):
+            return
+        if bool(is_paused()) != bool(paused):
+            self.togglePause()
+
+    def syncPauseState(self) -> None:
+        """命令が自分から止まった（区切り・1つ進む）ときに表示を揃える。
+
+        GUI スレッドの見回り（編集画面の窓の after）から呼ぶ。作業スレッドは
+        Tk を触れないため、命令の状態を読んで表示側を合わせに行く。
+        """
+        cmd = self.runner.running_command
+        is_paused = getattr(cmd, "isPaused", None)
+        if self.runner.state != "running" or not callable(is_paused):
+            return
+        paused = bool(is_paused())
+        if paused != bool(self._paused):
+            self._show_paused(paused)
+
+    def start_external_command(self, cmd_class: Any) -> str | None:
+        """一覧に無いクラス（編集画面の試し実行）を本体と同じ手順で走らせる。
+
+        GUI スレッドから呼ぶ。開始できたら None、できなければ理由を返す。
+        作る（_buildCommand）・COM の写し・開始（runner）は Start と同じ
+        経路を通し、カメラ・音声・ダイアログの渡し方を揃える。
+        """
+        if self.runner.is_busy():
+            return "本体で別のコマンドが実行中です（止めてから試してください）"
+        command = self._buildCommand(cmd_class)
+        if command is None:
+            return "コマンドを作れませんでした（本体のログ欄を確認してください）"
+        self._snapshotSerialConfig(command)
+        self.runner.request_start(command, self.serial.sender)
+        if self.runner.running_command is not command:
+            return "開始できませんでした（本体のログ欄を確認してください）"
+        return None
 
     def PauseCommandWithF7(self, *event: Any) -> None:
         if self.runner.state == "running":
