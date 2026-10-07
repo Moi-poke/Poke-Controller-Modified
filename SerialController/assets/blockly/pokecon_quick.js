@@ -391,9 +391,11 @@
       var Ev = Blockly.Events;
       var made = null;
       var grouped = false;
+      // 外側で既に束ねていれば、その束ねに入れて後で元へ戻す（壊さない）。
+      var prevGroup = Ev && typeof Ev.getGroup === "function" ? Ev.getGroup() : "";
       try {
         if (Ev && typeof Ev.setGroup === "function") {
-          Ev.setGroup(true);
+          Ev.setGroup(prevGroup || true);
           grouped = true;
         }
         // 同じ候補を使い回しても壊さないよう写しから作る。
@@ -414,7 +416,7 @@
       } finally {
         if (grouped) {
           try {
-            Ev.setGroup(false);
+            Ev.setGroup(prevGroup || false);
           } catch (e) {
             // 閉じられなくても作った分は返す。
           }

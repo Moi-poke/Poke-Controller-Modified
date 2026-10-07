@@ -187,6 +187,31 @@ class Recorder:
         except Exception:
             return False
 
+    def follow(self, transport: Any) -> bool:
+        """記録中に線が差し替わっていたら、聞き手を新しい線へ付け替える。
+
+        本体の Sender.setTransport は自分の入力ログの聞き手しか移さない。
+        付け替えないと古い線を聞き続け、記録中のまま何も溜まらなくなる。
+        付け替えたら True。記録中でない・同じ線・付けられないときは False。
+        """
+        try:
+            old = self._transport
+            if old is None or transport is None or transport is old:
+                return False
+            add = getattr(transport, "add_listener", None)
+            if not callable(add) or not add(self._logger.feed):
+                return False
+            try:
+                remove = getattr(old, "remove_listener", None)
+                if callable(remove):
+                    remove(self._logger.feed)
+            except Exception:
+                pass
+            self._transport = transport
+            return True
+        except Exception:
+            return False
+
     def stop(self) -> list[dict[str, Any]]:
         """記録を外し、手順を返す。記録中でなければ空。例外は外へ投げない。"""
         try:

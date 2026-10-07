@@ -435,3 +435,71 @@ def test_a_new_recording_starts_from_a_clean_slate() -> None:
     steps = rec.stop()
     # Then: 2回目の手順に、前回から押していた A の長い押下は入らない
     assert [s["target"] for s in steps] == ["Button.B"]
+
+
+def test_recording_follows_a_swapped_transport() -> None:
+    """記録中に本体の送信線が差し替わっても、新しい線の操作を記録し続けること。"""
+    # Given: 本物の sender（線1）で記録を始める
+    first, second = FakeTransport(), FakeTransport()
+    sender = Sender.Sender(is_show_serial=False, transport=first)
+    keys = KeyPress(sender)
+    host = _FakeHost(first)
+    host.serial.sender = sender  # type: ignore[assignment]  # 本物の sender に差し替える
+    addr, httpd, stop, gui = _serve_with_host(host)
+    try:
+        assert _post(addr, "/record/start", {})["ok"] is True
+        # When: 線が差し替わり、GUI の見回りが1回走ってから操作する
+        assert sender.setTransport(second)
+        blockly_editor._call_on_gui(blockly_editor._follow_record_transport)
+        keys.input(Button.B)
+        time.sleep(0.1)
+        keys.inputEnd(Button.B)
+        reply = _post(addr, "/record/stop", {})
+        # Then: 新しい線での操作が記録され、古い線には聞き手が残らない
+        assert [s["target"] for s in reply["steps"]] == ["Button.B"]
+        assert first._listeners == [] or all(
+            getattr(f, "__self__", None) is not blockly_editor._RECORDER._logger
+            for f in first._listeners
+        )
+    finally:
+        _teardown_server(httpd, stop, gui)
+
+
+class _Runner:
+    def __init__(self) -> None:
+        self.running_command: Any = None
+
+    @property
+    def state(self) -> str:
+        return "idle" if self.running_command is None else "running"
+
+    def is_busy(self) -> bool:
+        return self.running_command is not None
+
+
+def test_server_refuses_trial_while_recording_and_recording_while_trial() -> None:
+    """受け口でも、記録中の試し実行・試し実行中の記録を断ること（画面の制限だけに頼らない）。"""
+    from services import blockly_run
+
+    transport = FakeTransport()
+    host = _FakeHost(transport)
+    host.runner = _Runner()  # type: ignore[attr-defined]  # 試し実行の様子を見る口
+    addr, httpd, stop, gui = _serve_with_host(host)
+    try:
+        # Given: 記録中 / When: 試し実行 / Then: 断る
+        assert _post(addr, "/record/start", {})["ok"] is True
+        reply = _post(addr, "/run", {"code": "x = 1\n"})
+        assert reply["ok"] is False and "記録" in reply["message"]
+        _post(addr, "/record/stop", {})
+        # Given: 試し実行中 / When: 記録 / Then: 断る
+        trial_cls = type("TrialCmd", (), {})
+        blockly_editor._TRIAL = blockly_editor._Trial(
+            blockly_run.TrialSession(7), trial_cls
+        )
+        host.runner.running_command = trial_cls()  # type: ignore[attr-defined]
+        reply = _post(addr, "/record/start", {})
+        assert reply["ok"] is False and "試し実行" in reply["message"]
+        assert blockly_editor._RECORDER.recording is False
+    finally:
+        blockly_editor._TRIAL = None
+        _teardown_server(httpd, stop, gui)

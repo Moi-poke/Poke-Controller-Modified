@@ -132,6 +132,20 @@ def _call_on_gui(fn: Callable[[], Any]) -> Any:
         return fut.result()
 
 
+def _follow_record_transport() -> None:
+    """記録中に本体の送信線が差し替わっていたら、記録を新しい線へ移す。
+
+    GUI スレッドの見回りから呼ぶ（本体の Sender は GUI スレッドで線を替える）。
+    """
+    if not _RECORDER.recording:
+        return
+    host = _RUN_HOST
+    sender = getattr(getattr(host, "serial", None), "sender", None)
+    transport = getattr(sender, "transport", None)
+    if transport is not None:
+        _RECORDER.follow(transport)
+
+
 def drain_gui_calls() -> None:
     """待ち行列の仕事を片付ける。GUI スレッドの見回りから呼ぶ。"""
     while True:
@@ -629,6 +643,13 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                 "本体と繋がっていないため試し実行できません（保存して本体で実行してください）",
             )
             return
+        if _RECORDER.recording:
+            # 記録中に走らせると、試し実行の操作まで記録に混ざる。
+            self._reply(
+                False,
+                "操作の記録中は試し実行できません（記録を止めてから試してください）",
+            )
+            return
         if "breakpoints" in payload:
             _BREAKPOINTS = _as_ids(payload.get("breakpoints"))
         session = blockly_run.TrialSession(next(_RUN_IDS))
@@ -711,6 +732,12 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         def _attach() -> tuple[bool, str]:
             if _RECORDER.recording:
                 return (False, "既に記録中です（止めてから始めてください）")
+            if _our_command(_TRIAL) is not None:
+                # 試し実行の操作まで記録に混ざるため断る。
+                return (
+                    False,
+                    "試し実行中は記録できません（試し実行を止めてから始めてください）",
+                )
             serial = getattr(host, "serial", None)
             sender = getattr(serial, "sender", None)
             transport = getattr(sender, "transport", None)
@@ -934,6 +961,10 @@ def open_blockly_editor(
             return
         try:
             drain_gui_calls()
+        except Exception:
+            pass
+        try:
+            _follow_record_transport()
         except Exception:
             pass
         sync = getattr(run_host, "syncPauseState", None)

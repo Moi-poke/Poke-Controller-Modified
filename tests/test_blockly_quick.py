@@ -249,3 +249,20 @@ def test_insert_goes_inside_the_program_when_nothing_fits_after() -> None:
     assert res["aPrev"] == "p1"
     assert res["root"] == ["P", "P"]
     assert res["bPrev"] is not None
+
+
+def test_insert_keeps_an_outer_undo_group() -> None:
+    """外側で束ねている取り消し単位の中で使っても、その束ねを壊さないこと。"""
+    res = run_blockly(
+        _SETUP_INDEX
+        + """
+        const ws = new Blockly.Workspace();
+        const wait = entries.find((e) => e.type === 'pokecon_wait');
+        Blockly.Events.setGroup('outer-group');
+        Q.insert(ws, wait, null);
+        const after = Blockly.Events.getGroup();
+        Blockly.Events.setGroup(false);
+        done({ after });
+        """
+    )
+    assert res["after"] == "outer-group"
