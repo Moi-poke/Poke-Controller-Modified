@@ -654,6 +654,10 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             _BREAKPOINTS = _as_ids(payload.get("breakpoints"))
         session = blockly_run.TrialSession(next(_RUN_IDS))
         session.breakpoints = _BREAKPOINTS
+        run_to = payload.get("runTo", "")
+        if isinstance(run_to, str) and run_to:
+            # 行き先が来なくても止まらないだけ（走らせる前に断らない）。
+            session.run_to = run_to
         cls, errors = blockly_run.build_trial_class(
             str(payload.get("code", "")), session
         )
