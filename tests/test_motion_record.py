@@ -28,7 +28,7 @@ def _stick_events(
     evs = []
     for i, (dt, x, y) in enumerate(points):
         at = t0 + dt
-        deg = math.degrees(math.atan2(y - 128, x - 128))
+        deg = math.degrees(math.atan2(128 - y, x - 128))
         mag = min(1.0, math.hypot(x - 128, y - 128) / 128.0)
         evs.append(
             InputLog.InputEvent(
@@ -68,7 +68,7 @@ def _circle_points(
         dt = i * period / (n - 1)
         deg = 90 + i * 360 / (n - 1)
         x = 128 + r * math.cos(math.radians(deg))
-        y = 128 + r * math.sin(math.radians(deg))
+        y = 128 - r * math.sin(math.radians(deg))
         out.append((dt, x, y))
     return out
 
@@ -298,7 +298,7 @@ def _stick_events_right(
     evs = []
     for i, (dt, x, y) in enumerate(points):
         at = t0 + dt
-        deg = math.degrees(math.atan2(y - 128, x - 128))
+        deg = math.degrees(math.atan2(128 - y, x - 128))
         mag = min(1.0, math.hypot(x - 128, y - 128) / 128.0)
         evs.append(
             InputLog.InputEvent(
@@ -364,7 +364,7 @@ def _arc_points(
     span: float = 90.0,
     dt0: float = 0.0,
 ) -> list[tuple[float, float, float]]:
-    """短い弧の座標列。B6 の移動部の材料にする。"""
+    """短い弧の座標列。B6 の移動部の材料にする。座標は送信系。"""
     out = []
     for i in range(n):
         dt = dt0 + i * period / (n - 1)
@@ -373,7 +373,7 @@ def _arc_points(
             (
                 dt,
                 128 + r * math.cos(math.radians(deg)),
-                128 + r * math.sin(math.radians(deg)),
+                128 - r * math.sin(math.radians(deg)),
             )
         )
     return out
@@ -510,3 +510,103 @@ def test_slow_ramp_keeps_total_time() -> None:
     # 以前は無変化区間を捨てて 8ms に潰れていた（約250倍速）。
     # 静止区間を残すため 2 秒前後になる。
     assert 1900 <= total <= 2300
+
+
+def test_roundtrip_up_stays_up() -> None:
+    """Given: 上への倒し記録 / When: 圧縮→復元→再生座標 / Then: 上のままであること。"""
+    import sys
+
+    sys.path.insert(0, "SerialController")
+
+    from core import motion
+    from core.CommandOperate import OperateMixin
+    from core.Keys import Stick
+
+    t0 = 30000.0
+    wall = datetime.datetime.now()
+    # 上へ倒して戻す（送信系: y が減る）。
+    evs = [
+        # 倒し始めの PRESS は倒した座標で来る（中央の PRESS は変化なし扱い）。
+        InputLog.InputEvent(
+            "PRESS", "stick", "Stick.LEFT", t0, wall, x=128, y=60, deg=90.0, mag=0.53
+        ),
+        InputLog.InputEvent(
+            "CHANGE",
+            "stick",
+            "Stick.LEFT",
+            t0 + 0.1,
+            wall,
+            x=128,
+            y=1,
+            deg=90.0,
+            mag=1.0,
+        ),
+        InputLog.InputEvent(
+            "RELEASE",
+            "stick",
+            "Stick.LEFT",
+            t0 + 0.2,
+            wall,
+            duration=0.2,
+            deg=90.0,
+            mag=1.0,
+            max_mag=1.0,
+        ),
+    ]
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    sticks = [s for s in steps if s["kind"] == "stick" and not s.get("static")]
+    assert sticks, "上への倒しが stick 区間になること"
+    # 復元した送信座標が上（y < 128）であること。
+    for s in sticks:
+        for key in ("from", "to"):
+            r, th = s[key]
+            if r >= 8:
+                x, y = motion.restore_xy([motion.Waypoint(0, r, th)], 0.0)
+                assert y < 128.0, f"{key}={s[key]} が上にならない"
+    # 再生側の Direction も上（y > 128、Direction 規約で上が大きい）であること。
+    d = OperateMixin._polar_dir(Stick.LEFT, 127, 90)
+    assert d.y > 200
+
+
+def test_down_motion_roundtrip() -> None:
+    """Given: 下への倒し記録 / When: 圧縮→復元 / Then: 下のままであること。"""
+    t0 = 31000.0
+    wall = datetime.datetime.now()
+    evs = [
+        InputLog.InputEvent(
+            "PRESS", "stick", "Stick.LEFT", t0, wall, x=128, y=190, deg=-90.0, mag=0.48
+        ),
+        InputLog.InputEvent(
+            "CHANGE",
+            "stick",
+            "Stick.LEFT",
+            t0 + 0.1,
+            wall,
+            x=128,
+            y=255,
+            deg=-90.0,
+            mag=1.0,
+        ),
+        InputLog.InputEvent(
+            "RELEASE",
+            "stick",
+            "Stick.LEFT",
+            t0 + 0.2,
+            wall,
+            duration=0.2,
+            deg=-90.0,
+            mag=1.0,
+            max_mag=1.0,
+        ),
+    ]
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    sticks = [s for s in steps if s["kind"] == "stick" and not s.get("static")]
+    assert sticks, "下への倒しが stick 区間になること"
+    from core import motion as _motion
+
+    for s in sticks:
+        for key in ("from", "to"):
+            r, th = s[key]
+            if r >= 8:
+                x, y = _motion.restore_xy([_motion.Waypoint(0, r, th)], 0.0)
+                assert y > 128.0, f"{key}={s[key]} が下にならない"
