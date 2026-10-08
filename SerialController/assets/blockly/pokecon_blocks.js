@@ -1820,7 +1820,9 @@
     );
     // スティックを使うときだけ Direction・Stick を足す（未使用のimportを出さない）。
     // スティックの方向（Direction.UP 等）は呼び括弧を持たないため . も見る。
-    var useStick = /\bDirection\s*[\(.]/.test(codeOnly);
+    // 軌跡の再生（stick_move 系）は Stick.LEFT を直接使うため Stick. でも見る。
+    var useStick =
+      /\bDirection\s*[\(.]/.test(codeOnly) || /\bStick\s*\./.test(codeOnly);
     var useButton = /\bButton\s*\./.test(codeOnly);
     // 十字キー（Hat.TOP 等）を使うときだけ Hat を足す。
     var useHat = /\bHat\s*\./.test(codeOnly);

@@ -2820,3 +2820,254 @@ def test_samples_carry_unified_tags() -> None:
         for top in ws["blocks"]["blocks"]:
             if isinstance(top, dict) and top.get("type") == "pokecon_program":
                 walk(top)
+
+
+PROBE_MOTION_JS = """\
+'use strict';
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+const sandbox = { console, setTimeout, clearTimeout };
+vm.createContext(sandbox);
+for (const f of [
+  'blockly_compressed.js',
+  'blocks_compressed.js',
+  'python_compressed.js',
+  'msg/ja.js',
+]) {
+  vm.runInContext(read(f), sandbox, { filename: f });
+}
+const fail = (msg) => {
+  console.error('MOTION-PROBE-FAIL: ' + msg);
+  process.exit(1);
+};
+try {
+  vm.runInContext(read('pokecon_blocks.js'), sandbox, { filename: 'pokecon_blocks.js' });
+} catch (e) {
+  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);
+}
+const gen = sandbox.Blockly.Python;
+if (!gen.forBlock || typeof gen.forBlock['pokecon_motion'] !== 'function') {
+  fail('pokecon_motion が登録されていない');
+}
+const state = {
+  blocks: {
+    languageVersion: 0,
+    blocks: [
+      {
+        type: 'pokecon_program',
+        fields: { NAME: 'MotionTest' },
+        inputs: {
+          DO: {
+            block: {
+              type: 'pokecon_motion',
+              fields: { STICK: 'LEFT', FROM: '0,90', TO: '127,450', T_MS: 500, END: 'CONT' },
+            },
+          },
+        },
+      },
+    ],
+  },
+};
+const ws = new sandbox.Blockly.Workspace();
+sandbox.Blockly.serialization.workspaces.load(state, ws);
+const code = gen.workspaceToCode(ws);
+ws.dispose();
+console.log('=== GENERATED START ===');
+console.log(code);
+console.log('=== GENERATED END ===');
+"""
+
+
+@NEEDS_NODE
+def test_browser_motion_codegen_has_stick_import() -> None:
+    proc = subprocess.run(
+        ["node", "-e", PROBE_MOTION_JS, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    code = proc.stdout[start:end]
+    assert "self.stick_move(Stick.LEFT, 0, 90, 127, 450, 500)" in code
+    assert "from Commands.Keys import Direction, Stick" in code
+
+
+def _motion_probe_js(state_line: str) -> str:
+    """motion検証用のprobe文面を作る（PROBE_MOTION_JS流儀の読込・登録・生成）。"""
+    return (
+        "'use strict';\n"
+        "const fs = require('fs');\n"
+        "const vm = require('vm');\n"
+        "const path = require('path');\n"
+        "const root = process.argv[1];\n"
+        "const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');\n"
+        "const sandbox = { console, setTimeout, clearTimeout };\n"
+        "vm.createContext(sandbox);\n"
+        "for (const f of [\n"
+        "  'blockly_compressed.js',\n"
+        "  'blocks_compressed.js',\n"
+        "  'python_compressed.js',\n"
+        "  'msg/ja.js',\n"
+        "]) {\n"
+        "  vm.runInContext(read(f), sandbox, { filename: f });\n"
+        "}\n"
+        "const fail = (msg) => {\n"
+        "  console.error('MOTION-PROBE-FAIL: ' + msg);\n"
+        "  process.exit(1);\n"
+        "};\n"
+        "try {\n"
+        "  vm.runInContext(read('pokecon_blocks.js'), sandbox,"
+        " { filename: 'pokecon_blocks.js' });\n"
+        "} catch (e) {\n"
+        "  fail('pokecon_blocks.js が投げた: ' + e.constructor.name + ': ' + e.message);\n"
+        "}\n"
+        "const gen = sandbox.Blockly.Python;\n"
+        "for (const t of ['pokecon_motion', 'pokecon_motion2']) {\n"
+        "  if (!gen.forBlock || typeof gen.forBlock[t] !== 'function') {\n"
+        "    fail(t + ' が登録されていない');\n"
+        "  }\n"
+        "}\n"
+        + state_line
+        + "const ws = new sandbox.Blockly.Workspace();\n"
+        + "sandbox.Blockly.serialization.workspaces.load(state, ws);\n"
+        + "const code = gen.workspaceToCode(ws);\n"
+        + "ws.dispose();\n"
+        + "console.log('=== GENERATED START ===');\n"
+        + "console.log(code);\n"
+        + "console.log('=== GENERATED END ===');\n"
+    )
+
+
+def _run_motion_probe_js(probe_js: str) -> str:
+    """probeを実行し、生成コード部分だけを返す。"""
+    proc = subprocess.run(
+        ["node", "-e", probe_js, str(BLOCKLY)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"probe失敗:\n{proc.stderr}\n{proc.stdout}"
+    start = proc.stdout.index("=== GENERATED START ===\n") + len(
+        "=== GENERATED START ===\n"
+    )
+    end = proc.stdout.index("=== GENERATED END ===")
+    return proc.stdout[start:end]
+
+
+MOTION_E2E_PY_STATE = {
+    "blocks": {
+        "languageVersion": 0,
+        "blocks": [
+            {
+                "type": "pokecon_program",
+                "fields": {"NAME": "MotionTest", "TAGS": "blockly"},
+                "inputs": {
+                    "DO": {
+                        "block": {
+                            "type": "pokecon_motion",
+                            "fields": {
+                                "STICK": "LEFT",
+                                "FROM": "0,90",
+                                "TO": "127,450",
+                                "T_MS": 500,
+                                "END": "RELEASE",
+                            },
+                            "next": {
+                                "block": {
+                                    "type": "pokecon_motion2",
+                                    "fields": {
+                                        "FROM_L": "0,90",
+                                        "TO_L": "127,90",
+                                        "FROM_R": "0,0",
+                                        "TO_R": "127,0",
+                                        "T_MS": 200,
+                                        "END": "CONT",
+                                    },
+                                    "next": {
+                                        "block": {
+                                            "type": "pokecon_motion2",
+                                            "fields": {
+                                                "FROM_L": "0,90",
+                                                "TO_L": "127,90",
+                                                "FROM_R": "0,0",
+                                                "TO_R": "127,0",
+                                                "T_MS": 200,
+                                                "END": "RELEASE",
+                                            },
+                                        }
+                                    },
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+        ],
+    }
+}
+
+
+MOTION_RELEASE_PY_STATE = {
+    "blocks": {
+        "languageVersion": 0,
+        "blocks": [
+            {
+                "type": "pokecon_program",
+                "fields": {"NAME": "MotionTest", "TAGS": "blockly"},
+                "inputs": {
+                    "DO": {
+                        "block": {
+                            "type": "pokecon_motion",
+                            "fields": {
+                                "STICK": "LEFT",
+                                "FROM": "0,90",
+                                "TO": "127,450",
+                                "T_MS": 500,
+                                "END": "RELEASE",
+                            },
+                        }
+                    }
+                },
+            }
+        ],
+    }
+}
+
+
+@NEEDS_NODE
+def test_browser_motion_e2e_motion_release_passes_validation() -> None:
+    """Given motion(END=RELEASE)の実生成コード / When Python側で検証する / Then 空エラーになること。"""
+    import json
+
+    from core import blockly_validate
+
+    state = "const state = " + json.dumps(MOTION_RELEASE_PY_STATE) + ";\n"
+    code = _run_motion_probe_js(_motion_probe_js(state))
+    assert "self.stick_move(Stick.LEFT, 0, 90, 127, 450, 500)" in code
+    assert "self.stick_release(Stick.LEFT)" in code
+    assert "from Commands.Keys import Direction, Stick" in code
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+@NEEDS_NODE
+def test_browser_motion_e2e_motion2_cont_and_release_pass_validation() -> None:
+    """Given motion2(END=CONT/RELEASE)の実生成コード / When Python側で検証する / Then 空エラーになること。"""
+    import json
+
+    from core import blockly_validate
+
+    state = "const state = " + json.dumps(MOTION_E2E_PY_STATE) + ";\n"
+    code = _run_motion_probe_js(_motion_probe_js(state))
+    assert code.count("self.stick_move2(") == 2
+    assert "self.stick_release_both()" in code
+    assert "from Commands.Keys import Direction, Stick" in code
+    assert blockly_validate.validate_generated_code(code) == []

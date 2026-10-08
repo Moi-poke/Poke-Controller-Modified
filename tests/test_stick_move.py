@@ -173,3 +173,127 @@ def test_release_direction_covers_both_axes() -> None:
     rtilts = dr.getTilting()
     assert Tilt.R_RIGHT in rtilts
     assert Tilt.R_UP in rtilts
+
+
+class _FakeKeys2:
+    """解放の呼び出しだけを記録する最小の keys 代役。"""
+
+    def __init__(self) -> None:
+        self.ends: list[Any] = []
+
+    def inputEnd(self, btns: Any) -> None:
+        self.ends.append(btns)
+
+
+def test_stick_move_stops_on_alive_false() -> None:
+    """Given: 再生の途中で停止要求が来る / When: stick_move を回す / Then: StopThread で止まり刻みが途切れること。"""
+    from core.CommandOperate import StopThread
+
+    # Given: 最初の刻みで停止要求が来る台
+    host = _Host()
+    orig_input = host.keys.input
+
+    def _stop_after_first(btns: Any) -> None:
+        orig_input(btns)
+        host.alive = False
+
+    host.keys.input = _stop_after_first
+    # When: 5 刻みぶん回す
+    stopped = False
+    try:
+        host.stick_move(Stick.LEFT, 0, 90, 127, 90, 100)
+    except StopThread:
+        stopped = True
+    # Then: 途中で止まり、終了予定は残らない
+    assert stopped
+    assert 1 <= len(host.keys.sent) < 5
+    assert getattr(host, "_motion_clock", None) is None
+
+
+def test_gate_raises_stop_when_keys_released() -> None:
+    """Given: 後始末で keys を捨てた台 / When: 関所を通す / Then: StopThread になること。"""
+    from core.CommandOperate import StopThread
+
+    host = _Host()
+    host.keys = None
+    stopped = False
+    try:
+        host._gate()
+    except StopThread:
+        stopped = True
+    assert stopped
+
+
+def test_stick_release_calls_inputEnd_once_with_both_axes() -> None:
+    """Given: 左スティックの解放 / When: stick_release を呼ぶ / Then: inputEnd が1回で両軸を含むこと。"""
+    from core.Keys import Tilt
+
+    host = _Host()
+    host.keys = _FakeKeys2()
+    host.stick_release(Stick.LEFT)
+    assert len(host.keys.ends) == 1
+    released = host.keys.ends[0]
+    assert isinstance(released, Direction)
+    assert released.stick is Stick.LEFT
+    tilts = released.getTilting()
+    assert Tilt.RIGHT in tilts
+    assert Tilt.UP in tilts
+
+
+def test_stick_release_both_calls_inputEnd_once_with_both_sides() -> None:
+    """Given: 両スティックの解放 / When: stick_release_both を呼ぶ / Then: inputEnd が1回で両側を含むこと。"""
+    from core.Keys import Tilt
+
+    host = _Host()
+    host.keys = _FakeKeys2()
+    host.stick_release_both()
+    assert len(host.keys.ends) == 1
+    released = host.keys.ends[0]
+    assert isinstance(released, list)
+    assert {d.stick for d in released} == {Stick.LEFT, Stick.RIGHT}
+    left = next(d for d in released if d.stick is Stick.LEFT)
+    right = next(d for d in released if d.stick is Stick.RIGHT)
+    assert Tilt.RIGHT in left.getTilting()
+    assert Tilt.UP in left.getTilting()
+    assert Tilt.R_RIGHT in right.getTilting()
+    assert Tilt.R_UP in right.getTilting()
+
+
+def test_inputEnd_left_keeps_right_posture() -> None:
+    """Given: 左右のスティックを倒す / When: 左だけ離す / Then: 右の姿勢が残ること。"""
+    from core import Sender
+    from core.Keys import CENTER, KeyPress
+    from fakes import FakeTransport
+
+    transport = FakeTransport()
+    sender = Sender.Sender(is_show_serial=False, transport=transport)
+    keys = KeyPress(sender)
+    left = Direction(Stick.LEFT, (218, 218))
+    right = Direction(Stick.RIGHT, (218, 218))
+    keys.input(left)
+    keys.input(right)
+    # When: 左だけ離す
+    keys.inputEnd(left)
+    # Then: 左は中立に戻り、右は倒したまま
+    posture = sender.getPosture()
+    assert (posture["lx"], posture["ly"]) == (CENTER, CENTER)
+    assert (posture["rx"], posture["ry"]) == (218, 255 - 218)
+
+
+def test_hold_hat_survives_unrelated_inputEnd() -> None:
+    """Given: 十字キーを押しっぱなし / When: 関係ないボタンを離す / Then: Hat が中立に落ちないこと。"""
+    from core import Sender
+    from core.Keys import Button, Hat, KeyPress
+    from fakes import FakeTransport
+
+    transport = FakeTransport()
+    sender = Sender.Sender(is_show_serial=False, transport=transport)
+    keys = KeyPress(sender)
+    keys.hold(Hat.TOP)
+    # When: 関係ないボタンを離す
+    keys.inputEnd(Button.A)
+    # Then: 押しっぱなしの十字キーが残る
+    assert sender.getPosture()["hat"] == int(Hat.TOP)
+    # 後始末: 離すと中立に戻る
+    keys.holdEnd(Hat.TOP)
+    assert sender.getPosture()["hat"] == int(Hat.CENTER)

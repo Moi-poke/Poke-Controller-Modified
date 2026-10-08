@@ -245,3 +245,225 @@ done({ code: code });
     assert "self.stick_move2(Stick.LEFT" in out["code"]
     assert "Stick.RIGHT" in out["code"]
     assert "stick_release" not in out["code"]
+
+
+def test_motion_playback_with_hold_keeps_hat() -> None:
+    """Given: 十字キーの押しっぱなし＋スティック区間の再生 / When: 区間の前後で hold/holdEnd を併用する / Then: 途中の解放で Hat が落ちず最後に戻ること。"""
+    import threading
+
+    from core import Sender
+    from core.CommandOperate import OperateMixin
+    from core.Keys import Button, Hat, KeyPress, Stick
+    from fakes import FakeTransport
+
+    class _LiveHost(OperateMixin):
+        """再生の台。待ちは実時間で回す。"""
+
+        def __init__(self, keys: KeyPress) -> None:
+            self.keys = keys
+            self.alive = True
+            self._stop_event = threading.Event()
+            self._resume_event = threading.Event()
+            self._resume_event.set()
+
+        def _cleanup(self) -> None:
+            return None
+
+        def _pausedSeconds(self) -> float:
+            return 0.0
+
+    transport = FakeTransport()
+    sender = Sender.Sender(is_show_serial=False, transport=transport)
+    host = _LiveHost(KeyPress(sender))
+    # Given: 十字キーを押さえたまま区間を再生する
+    host.hold(Hat.TOP)
+    host.stick_move(Stick.LEFT, 0, 90, 127, 90, 40)
+    host.stick_release(Stick.LEFT)
+    # When: 関係ないボタンを離す
+    host.keys.inputEnd(Button.A)
+    # Then: 押しっぱなしの十字キーが残る
+    assert sender.getPosture()["hat"] == int(Hat.TOP)
+    # When: 押しっぱなしを解く
+    host.holdEnd(Hat.TOP)
+    # Then: 中立に戻る
+    assert sender.getPosture()["hat"] == int(Hat.CENTER)
+
+
+def _stick_events_right(
+    t0: float,
+    points: list[tuple[float, float, float]],
+    release_at: float | None = None,
+) -> list[InputLog.InputEvent]:
+    """R側版の材料化。_stick_events と同じ座標列を Stick.RIGHT で作る。"""
+    evs = []
+    for i, (dt, x, y) in enumerate(points):
+        at = t0 + dt
+        deg = math.degrees(math.atan2(y - 128, x - 128))
+        mag = min(1.0, math.hypot(x - 128, y - 128) / 128.0)
+        evs.append(
+            InputLog.InputEvent(
+                "PRESS" if i == 0 else "CHANGE",
+                "stick",
+                "Stick.RIGHT",
+                at,
+                datetime.datetime.now(),
+                x=x,
+                y=y,
+                deg=deg,
+                mag=mag,
+            )
+        )
+    if release_at is not None:
+        evs.append(
+            InputLog.InputEvent(
+                "RELEASE",
+                "stick",
+                "Stick.RIGHT",
+                t0 + release_at,
+                datetime.datetime.now(),
+                duration=release_at,
+                deg=90.0,
+                mag=1.0,
+                max_mag=1.0,
+            )
+        )
+    return evs
+
+
+def test_dual_stick_materializes_stick2() -> None:
+    """Given: L/R 同時に同じ円回し / When: 変換 / Then: kind=stick2 が出て両側の from/to と t_ms を持つこと。"""
+    t0 = 11000.0
+    pts = _circle_points()
+    evs = _stick_events(t0, pts, release_at=0.51) + _stick_events_right(
+        t0, pts, release_at=0.51
+    )
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    sticks2 = [s for s in steps if s["kind"] == "stick2"]
+    assert sticks2
+    for s in sticks2:
+        assert {"l_from", "l_to", "r_from", "r_to", "t_ms"} <= set(s)
+        assert isinstance(s["t_ms"], int)
+
+
+def test_dual_stick_ends_with_both_release() -> None:
+    """Given: L/R 同時に同じ円回し / When: 変換 / Then: 終端が side=BOTH の release_stick になること。"""
+    t0 = 11100.0
+    pts = _circle_points()
+    evs = _stick_events(t0, pts, release_at=0.51) + _stick_events_right(
+        t0, pts, release_at=0.51
+    )
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    assert steps[-1] == {"kind": "release_stick", "side": "BOTH"}
+
+
+def _arc_points(
+    n: int = 15,
+    r: float = 100.0,
+    period: float = 0.1,
+    deg0: float = 90.0,
+    span: float = 90.0,
+    dt0: float = 0.0,
+) -> list[tuple[float, float, float]]:
+    """短い弧の座標列。B6 の移動部の材料にする。"""
+    out = []
+    for i in range(n):
+        dt = dt0 + i * period / (n - 1)
+        deg = deg0 + i * span / (n - 1)
+        out.append(
+            (
+                dt,
+                128 + r * math.cos(math.radians(deg)),
+                128 + r * math.sin(math.radians(deg)),
+            )
+        )
+    return out
+
+
+def test_button_cut_inside_flat_adds_no_stick_segment() -> None:
+    """Given: 動くクリップ内の静止小区間と平坦部に入るボタンcut / When: 変換 / Then: ボタンなし時より stick 区間が増えないこと。"""
+    t0 = 12000.0
+    move1 = _arc_points(dt0=0.0)
+    fx, fy = move1[-1][1], move1[-1][2]
+    flat = [(0.1 + i * 0.01, fx, fy) for i in range(21)]
+    pts = move1 + flat + _arc_points(deg0=180.0, dt0=0.3)
+    base = br.build_motion_steps(
+        sorted(_stick_events(t0, pts, release_at=0.41), key=lambda e: e.at)
+    )
+    evs = _stick_events(t0, pts, release_at=0.41)
+    evs.append(
+        InputLog.InputEvent(
+            "PRESS", "button", "Button.A", t0 + 0.20, datetime.datetime.now()
+        )
+    )
+    evs.append(
+        InputLog.InputEvent(
+            "RELEASE",
+            "button",
+            "Button.A",
+            t0 + 0.25,
+            datetime.datetime.now(),
+            duration=0.05,
+        )
+    )
+    with_cut = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    n_base = sum(1 for s in base if s["kind"] == "stick")
+    n_cut = sum(1 for s in with_cut if s["kind"] == "stick")
+    assert n_cut <= n_base
+
+
+def test_buttons_around_stick_stay_as_press_in_order() -> None:
+    """Given: スティック前後のボタン(A押下→スティック→B押下) / When: 変換 / Then: 前後が kind=press で残り press→stick…→press の時刻順になること。"""
+    t0 = 13000.0
+    evs = [
+        InputLog.InputEvent("PRESS", "button", "Button.A", t0, datetime.datetime.now()),
+        InputLog.InputEvent(
+            "RELEASE",
+            "button",
+            "Button.A",
+            t0 + 0.1,
+            datetime.datetime.now(),
+            duration=0.1,
+        ),
+    ]
+    evs += _stick_events(
+        t0 + 0.3, _circle_points(n=25, r=100.0, period=0.2), release_at=0.21
+    )
+    evs += [
+        InputLog.InputEvent(
+            "PRESS", "button", "Button.B", t0 + 0.9, datetime.datetime.now()
+        ),
+        InputLog.InputEvent(
+            "RELEASE",
+            "button",
+            "Button.B",
+            t0 + 1.0,
+            datetime.datetime.now(),
+            duration=0.1,
+        ),
+    ]
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    kinds = [s["kind"] for s in steps]
+    assert kinds[0] == "press"
+    assert steps[0]["target"] == "Button.A"
+    assert kinds[-1] == "press"
+    assert steps[-1]["target"] == "Button.B"
+    first_stick = kinds.index("stick")
+    last_stick = len(kinds) - 1 - kinds[::-1].index("stick")
+    assert first_stick > 0
+    assert last_stick < len(kinds) - 1
+    assert all(k == "stick" for k in kinds[first_stick : last_stick + 1])
+
+
+def test_two_discrete_ops_stay_single_clip() -> None:
+    """Given: 離散2回操作(0〜0.3sと1.0〜1.3s) / When: 変換 / Then: 1クリップ扱いで2操作が1つのsteps列にまとまること(将来分割対応時の変更検出用)。"""
+    t0 = 14000.0
+    base = _circle_points(n=25, r=100.0, period=0.3)
+    shifted = [(dt + 1.0, x, y) for dt, x, y in base]
+    evs = _stick_events(t0, base, release_at=0.31) + _stick_events(
+        t0, shifted, release_at=1.31
+    )
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    assert any(s["kind"] == "stick" for s in steps)
+    releases = [s for s in steps if s["kind"] == "release_stick"]
+    assert len(releases) == 1
+    assert steps[-1]["kind"] == "release_stick"
