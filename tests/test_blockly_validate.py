@@ -309,3 +309,22 @@ def test_dialog_number_range_rejected() -> None:
 
 def test_dialog_vars_broken_json_ignored() -> None:
     assert blockly_validate.validate_dialog_vars("{broken") == []
+
+
+def test_stick_move_family_passes_validation() -> None:
+    """Given: motion 生成コード / When: 検証する / Then: 未定義扱いにならないこと。"""
+    code = (
+        "from Commands.Keys import Stick\n"
+        "from Commands.PythonCommandBase import PythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(PythonCommand):\n"
+        '    NAME = "x"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.stick_move(Stick.LEFT, 0, 90, 127, 450, 500)\n"
+        "        self.stick_release(Stick.LEFT)\n"
+        "        self.stick_move2(Stick.LEFT, (0, 90), (127, 90), "
+        "Stick.RIGHT, (0, 0), (127, 0), 200)\n"
+        "        self.stick_release_both()\n"
+    )
+    assert blockly_validate.validate_generated_code(code) == []
