@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from Gamepad import SwitchGamepadController
 from Keyboard import SwitchKeyboardController
 from core import transport
 from core.Keys import KeyPress
@@ -75,6 +76,7 @@ class SerialService:
         base_dir: str,
         input_log_emit: Callable[[str], None] | None,
         keyboard_active: Callable[[], bool] | None = None,
+        gamepad_active: Callable[[], bool] | None = None,
         log_dir: str | None = None,
     ) -> None:
         """notify_user は利用者への1行通知（Window は print を渡す）。
@@ -83,16 +85,23 @@ class SerialService:
         input_log_emit は入力ログの送り先（LogPane.emitInputLog）。
         keyboard_active は押下を受け付けるかの判定（Window は窓の
         フォーカスを渡す）。省略時は常時受け付ける。
+        gamepad_active はゲームパッド読み取りの門（有効化中は開ける）。
+        キーボードと違いフォーカスに連動させない。
         log_dir は走行記録CSVの置き場。省略時は base_dir/log。
         """
         self._notify = notify_user
         self._base_dir = base_dir
         self._emit = input_log_emit
         self._keyboard_active = keyboard_active
+        self._gamepad_active = gamepad_active
         self._log_dir = log_dir or os.path.join(base_dir, "log")
         self.sender: Sender | None = None
         self.key_press: KeyPress | None = None
         self.keyboard: SwitchKeyboardController | None = None
+        self.gamepad: SwitchGamepadController | None = None
+        # ゲームパッド入力の表示先（仮想パッドの鏡）。Tk スレッド制約の
+        # ため、呼び出し側がスレッドの受け渡しまで持つ。None なら送らない。
+        self._gamepad_display: Callable[[dict[str, Any]], None] | None = None
         # 走行記録の進行中状態。begin/end 以外は触らない。
         self._run_active = False
         self._run_name = ""
@@ -326,6 +335,7 @@ class SerialService:
         # 開き直す前に必ず止める。呼び出し元が止めているかどうかに
         # 依存しない。
         self.stop_keyboard()
+        self.stop_gamepad()
 
         # 旧コードは自分自身を再帰呼び出ししていた。閉じてそのまま開けばよい。
         if self.sender.isOpened():
@@ -362,6 +372,7 @@ class SerialService:
         キーボードは同時に止める。
         """
         self.stop_keyboard()
+        self.stop_gamepad()
         if self.sender is not None and self.sender.isOpened():
             self._notify("Port is closed.")
             self.sender.closeSerial()
@@ -428,6 +439,79 @@ class SerialService:
             self.keyboard.reload_key_map()
         except Exception as e:
             logger.warning(f"キー割り当ての再読込で例外: {e}")
+
+    # -- ゲームパッド -----------------------------------------------------------
+
+    def set_gamepad_enabled(
+        self, enabled: bool, pad_index: int = 0, deadzone: int = 0
+    ) -> str | None:
+        """ゲームパッド操作の有効・無効を切り替える。
+
+        成功したら None、失敗したら理由を返す（呼び出し側は画面の
+        チェックを戻す）。理由はここで利用者とファイルの両方へ出す。
+        キーボード操作と同じ作法である。
+        """
+        if not enabled:
+            self.stop_gamepad()
+            return None
+        if self.sender is None:
+            message = "シリアル未接続のためゲームパッド操作を有効にできません"
+            self._notify(message)
+            logger.warning(message)
+            return message
+        if self.gamepad is None:
+            try:
+                self.gamepad = SwitchGamepadController(
+                    self.sender,
+                    pad_index=pad_index,
+                    is_active=self._gamepad_active,
+                    on_display=self._gamepad_display,
+                    deadzone=deadzone,
+                )
+                self.gamepad.listen()
+            except Exception as e:
+                message = f"ゲームパッド操作を開始できませんでした: {e}"
+                self._notify(message)
+                logger.warning(message)
+                self.gamepad = None
+                return message
+        return None
+
+    def stop_gamepad(self) -> None:
+        """ゲームパッド操作を止める。止まっていれば何もしない。
+
+        停止処理は切断・再接続・終了の3か所から呼ばれる。同じ手順を
+        3回書くと、片方だけ直したときに挙動が食い違う。
+        """
+        if self.gamepad is not None:
+            try:
+                self.gamepad.stop()
+            except Exception as e:
+                logger.warning(f"ゲームパッドの停止で例外: {e}")
+            self.gamepad = None
+
+    def set_gamepad_display(self, fn: Callable[[dict[str, Any]], None] | None) -> None:
+        """ゲームパッド入力の表示先を差し替える（仮想パッドの鏡用）。
+
+        生きている実体にもそのまま付ける。Tk スレッドへの受け渡しは
+        呼び出し側が行う（ここでは呼ばない。読取スレッドから来る）。
+        """
+        self._gamepad_display = fn
+        gamepad = self.gamepad
+        if gamepad is not None:
+            try:
+                gamepad.on_display = fn
+            except Exception:
+                pass
+
+    def list_gamepads(self) -> list[int]:
+        """繋がっているパッド番号の一覧。読めなければ空リスト。"""
+        try:
+            from core.pad_source import PadSource
+
+            return PadSource().scan()
+        except Exception:
+            return []
 
     # -- 状態・終了 ---------------------------------------------------------------
 
@@ -507,6 +591,7 @@ class SerialService:
         戻り値は「閉じたか」。呼び出し側は切断の表示に使う。
         """
         self.stop_keyboard()
+        self.stop_gamepad()
         if self.sender is not None and self.sender.isOpened():
             self.sender.closeSerial()
             self._note_open(False)

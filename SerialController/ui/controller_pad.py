@@ -126,6 +126,8 @@ class ControllerGUI:
         self._held_click: str | None = None
         # 送ったスティックの座標（0〜255）。頭の描画と中立へ戻す判断に使う。
         self._stick_xy: dict[str, tuple[int, int]] = {"L": (128, 128), "R": (128, 128)}
+        # 外部表示（ゲームパッド）の押し込み集合。_draw_knob の光に使う。
+        self._ext_click: set = set()
         # 論理座標 → 画面座標の倍率とずらし（_redraw で決まる）。
         self._scale = 1.0
         self._ox = 0.0
@@ -347,6 +349,9 @@ class ControllerGUI:
         tags = ("key", f"key:{name}", f"knob:{name}")
         # 押し込み中も倒している間も光らせる（操作中だと目で分かるように）。
         held = name in self._held_btn or (x, y) != (128, 128)
+        ext = getattr(self, "_ext_click", None)
+        if ext is not None and name in ext:
+            held = True
         self._oval(
             cx, cy, radius, fill=self.BUTTON_ACTIVE_BG if held else self.KEY,
             outline=self.KEY_EDGE, tags=(*tags, f"face:{name}"),
@@ -705,6 +710,97 @@ class ControllerGUI:
             self._held_hat.clear()
             self._applyHat()
         self._paintHat()
+
+    # ------------------------------------------------------------------
+    # 外部表示（ゲームパッド入力の鏡）
+    # ------------------------------------------------------------------
+    # ゲームパッドの入力をこの操作盤に光らせて見せる。送信は
+    # ゲームパッド側が既に行っているため、ここでは描くだけであり、
+    # Sender には一切触らない。マウス操作の保持（_held_btn 等）とも
+    # 混ぜない。混ぜると、ゲームパッドの解放がマウスの押下を消す。
+    # 呼び出しは必ず Tk スレッドから行うこと（別スレッドからは
+    # root.after 経由で予約する。Canvas はスレッドセーフでない）。
+
+    def showExternal(
+        self,
+        buttons: Any = (),
+        hat_dirs: Any = (),
+        stick_l: tuple[int, int] | None = None,
+        stick_r: tuple[int, int] | None = None,
+    ) -> None:
+        """ゲームパッドの現在状態を描く（送信なし・保持なし）。
+
+        buttons は Switch 側のボタン名の集合、hat_dirs は向きの集合
+        （"UP" 等）、stick_l/r は 0〜255 の座標。None の項目は
+        触らない。存在しないボタン名は黙って飛ばす。
+        """
+        try:
+            wanted = set(buttons or ())
+            for name in (
+                "A",
+                "B",
+                "X",
+                "Y",
+                "L",
+                "R",
+                "ZL",
+                "ZR",
+                "MINUS",
+                "PLUS",
+                "HOME",
+                "CAPTURE",
+                "LCLICK",
+                "RCLICK",
+            ):
+                if name in ("LCLICK", "RCLICK"):
+                    continue
+                self._paint(name, name in wanted)
+            # 押し込みはスティックの頭の光で見せる（_draw_knob と同じ規則）。
+            self._ext_click = wanted
+            hat = set(hat_dirs or ())
+            for direction in self.HAT_DIRS:
+                self._paint(direction, direction in hat)
+            if stick_l is not None:
+                self._stick_xy["L"] = (int(stick_l[0]), int(stick_l[1]))
+            if stick_r is not None:
+                self._stick_xy["R"] = (int(stick_r[0]), int(stick_r[1]))
+            for shape in SHAPES:
+                if shape.name in STICK_SIDES:
+                    try:
+                        self._draw_knob(shape)
+                    except tk.TclError:
+                        pass
+        except tk.TclError:
+            pass
+
+    def clearExternal(self) -> None:
+        """外部表示を消し、マウス操作の表示に戻す。送信はしない。"""
+        try:
+            for name in (
+                "A",
+                "B",
+                "X",
+                "Y",
+                "L",
+                "R",
+                "ZL",
+                "ZR",
+                "MINUS",
+                "PLUS",
+                "HOME",
+                "CAPTURE",
+            ):
+                self._paint(name, name in self._held_btn)
+            self._ext_click = set()
+            self._paintHat()
+            for shape in SHAPES:
+                if shape.name in STICK_SIDES:
+                    try:
+                        self._draw_knob(shape)
+                    except tk.TclError:
+                        pass
+        except tk.TclError:
+            pass
 
     def bind(self, event: str, func: Any) -> None:
         self.window.bind(event, func)
