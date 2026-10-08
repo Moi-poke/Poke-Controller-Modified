@@ -17,11 +17,12 @@ tkinter には触らない。受け口（ui/blockly_editor.py）が GUI スレ�
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Any
 
-from core import InputLog
+from core import InputLog, motion as _motion
 
 #: 0.05秒単位に丸めるための刻み。編集画面の DURATION・WAIT 欄が
 #: 0.05秒刻みでも扱いやすいよう、ここで寄せる。
@@ -115,6 +116,17 @@ def events_to_steps(events: list[InputLog.InputEvent]) -> list[dict[str, Any]]:
     return steps
 
 
+#: スティック操作をクリップとみなす r の閾値（u8 距離）。
+#: motion.DEADZONE_R と同じ意味。ここでは座標で判定する。
+MOTION_DEADZONE_XY = 8.0
+#: クリップ終了の無操作継続（秒）。両スティック中立かつボタン保持なしが
+#: これだけ続けばクリップを閉じる。
+CLIP_IDLE_S = 0.15
+#: 解放用の固定の斜め座標。両軸が閾値 127 を超えるため両 tilt が返り、
+#: 両軸とも解放される（ID:006 確定。中立 Direction では片軸が残る）。
+RELEASE_XY = (218, 218)
+
+
 class _RecordLogger(InputLog.InputLogger):
     """記録用の聞き手。行の書式化はせず、PRESS/RELEASE だけを溜める。
 
@@ -156,9 +168,14 @@ class _RecordLogger(InputLog.InputLogger):
 class Recorder:
     """送信線への記録の付け外しと、手順への変換を持つ。"""
 
-    def __init__(self) -> None:
+    def __init__(self, use_motion: bool = True) -> None:
         self._logger = _RecordLogger()
+        self._motion_logger = _MotionLogger()
+        #: スティック軌跡の記録を使うか。True なら stick 操作は motion 区間
+        #: （stick_move 系の材料）になり、False なら従来の press 変換だけ。
+        self.use_motion = bool(use_motion)
         self._transport: Any = None
+        self._motion_transport: Any = None
         #: 記録を始めた時刻（壁時計）。手順の変換には使わない。
         self.started_at: float = 0.0
 
@@ -182,6 +199,16 @@ class Recorder:
             if not add(self._logger.feed):
                 return False
             self._transport = transport
+            # motion 用の聞き手も同じ線へ付ける。付けなくても press 記録は
+            # 動く（motion 区間だけ作られない）。
+            self._motion_transport = None
+            if self.use_motion:
+                try:
+                    self._motion_logger.clear()
+                    if add(self._motion_logger.feed):
+                        self._motion_transport = transport
+                except Exception:
+                    self._motion_transport = None
             self.started_at = time.time()
             return True
         except Exception:
@@ -208,12 +235,28 @@ class Recorder:
             except Exception:
                 pass
             self._transport = transport
+            # motion 用も付け替える。付けられなくても press 記録は続ける。
+            try:
+                if self._motion_transport is not None:
+                    remove_old = getattr(old, "remove_listener", None)
+                    if callable(remove_old):
+                        remove_old(self._motion_logger.feed)
+                    self._motion_transport = None
+                if self.use_motion and add(self._motion_logger.feed):
+                    self._motion_transport = transport
+            except Exception:
+                self._motion_transport = None
             return True
         except Exception:
             return False
 
     def stop(self) -> list[dict[str, Any]]:
-        """記録を外し、手順を返す。記録中でなければ空。例外は外へ投げない。"""
+        """記録を外し、手順を返す。記録中でなければ空。例外は外へ投げない。
+
+        motion 用の聞き手が付いていて stick 操作があれば、motion 区間の
+        材料（kind が stick/stick2/hold/hold_end/release_stick のもの）を
+        混ぜて返す。無ければ従来の press 変換だけ。
+        """
         try:
             transport, self._transport = self._transport, None
             if transport is None:
@@ -224,6 +267,317 @@ class Recorder:
                     remove(self._logger.feed)
             except Exception:
                 pass
+            motion_transport, self._motion_transport = self._motion_transport, None
+            if motion_transport is not None:
+                try:
+                    remove_motion = getattr(motion_transport, "remove_listener", None)
+                    if callable(remove_motion):
+                        remove_motion(self._motion_logger.feed)
+                except Exception:
+                    pass
+            if motion_transport is not None:
+                try:
+                    motion_steps = build_motion_steps(self._motion_logger.snapshot())
+                    if any(
+                        step.get("kind") in ("stick", "stick2", "hold", "hold_end")
+                        for step in motion_steps
+                    ):
+                        return motion_steps
+                except Exception:
+                    pass
             return events_to_steps(self._logger.snapshot())
         except Exception:
             return []
+
+
+# ---------------------------------------------------------------------------
+# スティック軌跡の記録（motion）
+# ---------------------------------------------------------------------------
+# PRESS/RELEASE だけでは落ちるスティックの途中経路を、極座標の waypoint 列
+# として残す。圧縮の実体は core/motion.py（純粋層）。ここでは記録イベントの
+# 収集・クリップ分割・区間合成・ブロック生成材料への変換だけを持つ。
+#
+# クリップの外側は従来どおり events_to_steps（pokecon_press 連鎖）へ回す。
+# クリップ内は hold/holdEnd（待ちなし）＋ stick_move 系の呼び出し材料を作る。
+# press を使うと待ちで軌跡が止まるため、クリップ内では使わない（ID:006）。
+
+
+class _MotionLogger(InputLog.InputLogger):
+    """軌跡記録用の聞き手。PRESS/RELEASE/CHANGE をすべて溜める。
+
+    CHANGE にはその瞬間の座標・角度・倒し量が入る。親の集約・流量制限は
+    通さない（記録は表示ではないため）。ただしスティックの CHANGE は
+    log_stick_change=False だと生成されないため、記録用は True で作る。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(emit=lambda _line: None, log_stick_change=True)
+        self._events_lock = threading.Lock()
+        self._events: list[InputLog.InputEvent] = []
+
+    def _output(self, events: list[InputLog.InputEvent]) -> None:
+        """全イベントを錠つきのリストへ溜める。"""
+        if not events:
+            return
+        with self._events_lock:
+            self._events.extend(events)
+
+    def snapshot(self) -> list[InputLog.InputEvent]:
+        """溜めたイベントの写しを返す。"""
+        with self._events_lock:
+            return list(self._events)
+
+    def clear(self) -> None:
+        """溜めたイベントを捨て、押下状態も中立へ戻す。"""
+        with self._lock:
+            self._reset_state()
+        with self._events_lock:
+            self._events.clear()
+
+
+def _stick_xy_at(
+    events: list[InputLog.InputEvent],
+) -> list[tuple[str, float, float, float]]:
+    """スティック座標の時系列 [(side, at, x, y)] を抜く。
+
+    PRESS/CHANGE の x・y を使う。RELEASE の座標は中立のため使わない
+    （離す直前の値は CHANGE/PRESS 側にある）。at は perf_counter 値。
+    """
+    out: list[tuple[str, float, float, float]] = []
+    for ev in events:
+        if ev.kind != "stick":
+            continue
+        if ev.action not in ("PRESS", "CHANGE"):
+            continue
+        if ev.x is None or ev.y is None:
+            continue
+        side = "R" if ev.name.endswith("RIGHT") else "L"
+        out.append((side, float(ev.at), float(ev.x), float(ev.y)))
+    return out
+
+
+def _motion_buttons(
+    events: list[InputLog.InputEvent], t0: float
+) -> list[tuple[float, str, bool]]:
+    """ボタン/Hat の on/off [(t_ms, name, on)] を時刻順で返す。"""
+    out: list[tuple[float, str, bool]] = []
+    for ev in events:
+        if ev.kind == "stick":
+            continue
+        if ev.action == "PRESS":
+            out.append(((float(ev.at) - t0) * 1000.0, ev.name, True))
+        elif ev.action == "RELEASE":
+            out.append(((float(ev.at) - t0) * 1000.0, ev.name, False))
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def build_motion_steps(
+    events: list[InputLog.InputEvent],
+    eps: float = _motion.DEFAULT_EPS,
+) -> list[dict[str, Any]]:
+    """イベント列を motion ブロックの材料へ変換する。純関数。
+
+    返すのは [{kind, ...}] の並び。kind は "stick"（単独）/"stick2"（L+R 同時）/
+    "hold" / "hold_end" / "release_stick" / "press"（クリップ外の従来手順）。
+    時刻はすべて ms（整数）。T（移行時間）には 0.05 秒丸めを適用しない。
+
+    クリップの切り方: 開始はどちらかのスティックが r >= 8、終了は両スティック
+    中立かつボタン保持なしが 150ms 継続。押下区間がクリップにかかるボタンは
+    クリップに含める（境界をまたぐ場合はクリップを広げる）。
+    クリップ外は events_to_steps と同じ press 変換へ回す。
+    """
+    if not events:
+        return []
+    sticks = _stick_xy_at(events)
+    if not sticks:
+        # スティック操作なし。従来の press 変換そのまま。
+        return [{"kind": "press", **step} for step in events_to_steps(events)]
+    t0 = min(ev.at for ev in events)
+    buttons = _motion_buttons(events, t0)
+    # クリップ区間を求める（スティックが動いている範囲＋ボタンの跨ぎ＋前後余白）。
+    clips = _split_clips(sticks, buttons, t0)
+    if not clips:
+        return [{"kind": "press", **step} for step in events_to_steps(events)]
+    steps: list[dict[str, Any]] = []
+    # クリップ外の press 変換用に、イベントをクリップ区間で区切る。
+    for index, (clip_start, clip_end) in enumerate(clips):
+        # クリップ前の press 区間。
+        prev_end = clips[index - 1][1] if index > 0 else None
+        before = [
+            ev
+            for ev in events
+            if (prev_end is None or ev.at >= prev_end) and ev.at < clip_start
+        ]
+        for step in events_to_steps(before):
+            steps.append({"kind": "press", **step})
+        steps.extend(_clip_to_steps(sticks, buttons, t0, clip_start, clip_end, eps))
+    # 最後のクリップ後の press 区間。
+    after = [ev for ev in events if ev.at >= clips[-1][1]]
+    for step in events_to_steps(after):
+        steps.append({"kind": "press", **step})
+    return steps
+
+
+def _split_clips(
+    sticks: list[tuple[str, float, float, float]],
+    buttons: list[tuple[float, str, bool]],
+    t0: float,
+) -> list[tuple[float, float]]:
+    """クリップ区間 [(開始 at, 終了 at)] を返す。at は perf_counter 値。"""
+    # スティックが動いている時刻の範囲を求める。
+    active = [
+        at
+        for _, at, x, y in sticks
+        if math.hypot(x - 128.0, y - 128.0) >= MOTION_DEADZONE_XY
+    ]
+    if not active:
+        return []
+    start = min(active)
+    # 終了: 最後の active から 150ms。ボタン保持があればその解放まで広げる。
+    end = max(active) + CLIP_IDLE_S
+    if buttons:
+        # クリップにかかる押下（開始前から押下・終了後に解放）を含める。
+        held: dict[str, float] = {}
+        for t_ms, name, on in buttons:
+            at = t0 + t_ms / 1000.0
+            if on:
+                held[name] = at
+            else:
+                held.pop(name, None)
+        # 終了時点でまだ押されているものは、その解放時刻まで広げる。
+        # （解放イベントが記録末尾に無い場合は CLIP_IDLE_S で閉じる。）
+        for t_ms, name, on in buttons:
+            at = t0 + t_ms / 1000.0
+            if not on and at > end - CLIP_IDLE_S and at <= end + CLIP_IDLE_S:
+                end = max(end, at)
+    return [(start, end)]
+
+
+def _clip_to_steps(
+    sticks: list[tuple[str, float, float, float]],
+    buttons: list[tuple[float, str, bool]],
+    t0: float,
+    clip_start: float,
+    clip_end: float,
+    eps: float,
+) -> list[dict[str, Any]]:
+    """1 クリップを stick/hold 系の材料へ変換する。"""
+    # チャンネルごとに圧縮する。
+    tracks: dict[str, list[_motion.Waypoint]] = {}
+    for side in ("L", "R"):
+        samples = [(at, x, y) for s, at, x, y in sticks if s == side]
+        # クリップ範囲内のサンプルだけ使う。
+        samples = [s for s in samples if clip_start - 0.05 <= s[0] <= clip_end]
+        tracks[side] = _motion.compress_track(samples, clip_start, eps)
+    base_ms = 0.0
+    # 分割時刻: L/R の waypoint ∪ クリップ内のボタン/Hat イベント時刻。
+    cuts = {base_ms}
+    for side in ("L", "R"):
+        for w in tracks[side]:
+            cuts.add(float(w.t))
+    for t_ms, _name, _on in buttons:
+        at = t0 + t_ms / 1000.0
+        if clip_start <= at <= clip_end:
+            cuts.add((at - clip_start) * 1000.0)
+    # クリップ終了も区切りに含める。
+    cuts.add((clip_end - clip_start) * 1000.0)
+    ordered = sorted(cuts)
+    steps: list[dict[str, Any]] = []
+    # クリップ内のボタン/Hat は hold/holdEnd（待ちなし）へ。
+    for t_ms, name, on in buttons:
+        at = t0 + t_ms / 1000.0
+        if clip_start <= at <= clip_end:
+            steps.append(
+                {
+                    "kind": "hold" if on else "hold_end",
+                    "target": name,
+                    "at_ms": round((at - clip_start) * 1000.0),
+                }
+            )
+    # 区間ごとに stick 材料を作る。分割点の値は圧縮後の折れ線から補間で求める
+    # （生データから取らない。極座標で線形な区間を途中で切っても ε 保証が保たれる）。
+    for lo_ms, hi_ms in zip(ordered, ordered[1:]):
+        span = hi_ms - lo_ms
+        if span <= 0:
+            continue
+        seg: dict[str, tuple[tuple[float, float], tuple[float, float]]] = {}
+        for side in ("L", "R"):
+            pts = tracks[side]
+            if not pts:
+                continue
+            r0, th0 = _motion._restore_polar(pts, lo_ms)
+            r1, th1 = _motion._restore_polar(pts, hi_ms)
+            seg[side] = ((round(r0), round(th0)), (round(r1), round(th1)))
+        if not seg:
+            continue
+        t_int = int(round(span))
+        # 両側とも無変化の区間は stick_move が待つだけで何も送らない。
+        # 以前は捨てていたため、捨てた区間の時間が再生総時間から消え、
+        # ゆっくり操作が超高速で再生されていた。静止区間として残す。
+        if all(f == t for f, t in seg.values()):
+            (side, ((fr, fth), (_tr, _tth))) = next(iter(seg.items()))
+            steps.append(
+                {
+                    "kind": "stick",
+                    "side": side,
+                    "from": [fr, fth],
+                    "to": [fr, fth],
+                    "t_ms": t_int,
+                    "static": True,
+                }
+            )
+            continue
+        if len(seg) == 2:
+            (l0, l1), (r0v, r1v) = seg["L"], seg["R"]
+            steps.append(
+                {
+                    "kind": "stick2",
+                    "l_from": [l0[0], l0[1]],
+                    "l_to": [l1[0], l1[1]],
+                    "r_from": [r0v[0], r0v[1]],
+                    "r_to": [r1v[0], r1v[1]],
+                    "t_ms": t_int,
+                }
+            )
+        else:
+            (side, ((fr, fth), (tr, tth))) = next(iter(seg.items()))
+            steps.append(
+                {
+                    "kind": "stick",
+                    "side": side,
+                    "from": [fr, fth],
+                    "to": [tr, tth],
+                    "t_ms": t_int,
+                }
+            )
+    # クリップ終端では動かした側ごとに解放する（設計 ID:006）。
+    # end="hold" の引き継ぎは生成側（END 欄）で選ぶ。ここでは既定の
+    # 解放材料を出し、最後の区間の END を RELEASE にするのは insertSteps 側。
+    moved = [side for side in ("L", "R") if tracks[side]]
+    if moved:
+        if len(moved) == 2:
+            steps.append({"kind": "release_stick", "side": "BOTH"})
+        else:
+            steps.append({"kind": "release_stick", "side": moved[0]})
+    # 時刻順に並べ替える（hold と stick の混在を時刻順にする）。
+    # stick 区間の開始時刻は ordered（記録時刻順）の区間開始を使う。
+    # 以前は出した区間の span だけを積算していたため、捨てた無変化区間の
+    # 時間が再生総時間から消え、ゆっくり操作が超高速で再生されていた。
+    # 無変化区間の時間も ordered 上に残る（後続区間が前倒しにならない）。
+    timed: list[tuple[float, int, dict[str, Any]]] = []
+    tail: list[dict[str, Any]] = []
+    bounds = [lo for lo, _hi in zip(ordered, ordered[1:]) if _hi > lo]
+    pos = 0
+    for step in steps:
+        if step["kind"] in ("hold", "hold_end"):
+            timed.append((float(step.pop("at_ms")), 0, step))
+        elif step["kind"] == "release_stick":
+            # 終端の解放は常に最後（時刻ソートの対象外）。
+            tail.append(step)
+        else:
+            start = bounds[pos] if pos < len(bounds) else 0.0
+            pos += 1
+            timed.append((start, 1, step))
+    timed.sort(key=lambda item: (item[0], item[1]))
+    return [step for _, _, step in timed] + tail

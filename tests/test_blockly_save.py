@@ -198,3 +198,92 @@ def test_bad_dialog_var_fails_without_files(tmp_path: Path) -> None:
     res = blockly_save.save_blockly(app, "MyBlock", ws, good_code())
     assert res.status == "failed"
     assert list((app / "Commands" / "PythonCommands").iterdir()) == []
+
+
+def _motion_ws() -> str:
+    """motion/motion2ブロックを含むworkspace JSONを作る。"""
+    release2 = {
+        "type": "pokecon_motion2",
+        "fields": {
+            "FROM_L": "0,90",
+            "TO_L": "127,90",
+            "FROM_R": "0,0",
+            "TO_R": "127,0",
+            "T_MS": 200,
+            "END": "RELEASE",
+        },
+    }
+    cont2 = {
+        "type": "pokecon_motion2",
+        "fields": {
+            "FROM_L": "0,90",
+            "TO_L": "127,90",
+            "FROM_R": "0,0",
+            "TO_R": "127,0",
+            "T_MS": 200,
+            "END": "CONT",
+        },
+        "next": {"block": release2},
+    }
+    motion = {
+        "type": "pokecon_motion",
+        "fields": {
+            "STICK": "LEFT",
+            "FROM": "0,90",
+            "TO": "127,450",
+            "T_MS": 500,
+            "END": "RELEASE",
+        },
+        "next": {"block": cont2},
+    }
+    program = {
+        "type": "pokecon_program",
+        "fields": {"NAME": "MotionTest", "TAGS": "blockly"},
+        "inputs": {"DO": {"block": motion}},
+    }
+    return json.dumps({"blocks": {"languageVersion": 0, "blocks": [program]}})
+
+
+def _motion_code() -> str:
+    """motion/motion2ブロックの生成コード相当（実測のcodegen形に合わせる）。"""
+    return (
+        "from Commands.Keys import Direction, Stick\n"
+        "from Commands.PythonCommandBase import PythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(PythonCommand):\n"
+        '    NAME = "MotionTest"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.stick_move(Stick.LEFT, 0, 90, 127, 450, 500)\n"
+        "        self.stick_release(Stick.LEFT)\n"
+        "        self.stick_move2(Stick.LEFT, (0, 90), (127, 90), "
+        "Stick.RIGHT, (0, 0), (127, 0), 200)\n"
+        "        self.stick_move2(Stick.LEFT, (0, 90), (127, 90), "
+        "Stick.RIGHT, (0, 0), (127, 0), 200)\n"
+        "        self.stick_release_both()\n"
+    )
+
+
+def test_motion_save_load_keeps_fields_and_code(tmp_path: Path) -> None:
+    """Given motion入りworkspace / When 保存→読込する / Then FROM/TO/T_MS/END欄が保持され同じstick_moveコードが出ること。"""
+    app = make_app(tmp_path)
+    ws = _motion_ws()
+    code = _motion_code()
+    assert blockly_save.save_blockly(app, "MotionTest", ws, code).status == "saved"
+    res = blockly_save.load_blockly(app, "MotionTest")
+    assert res.status == "ok"
+    assert json.loads(res.workspace_json) == json.loads(ws)
+
+
+def test_motion_save_load_code_still_validates(tmp_path: Path) -> None:
+    """Given motion入り保存物 / When 保存→読込する / Then 読込後のコード相当が検証を通ること。"""
+    from core import blockly_validate
+
+    app = make_app(tmp_path)
+    ws = _motion_ws()
+    code = _motion_code()
+    assert blockly_save.save_blockly(app, "MotionTest", ws, code).status == "saved"
+    res = blockly_save.load_blockly(app, "MotionTest")
+    assert res.status == "ok"
+    assert blockly_validate.validate_workspace_json(res.workspace_json) == []
+    assert blockly_validate.validate_generated_code(code) == []

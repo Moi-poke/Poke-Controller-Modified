@@ -309,3 +309,90 @@ def test_dialog_number_range_rejected() -> None:
 
 def test_dialog_vars_broken_json_ignored() -> None:
     assert blockly_validate.validate_dialog_vars("{broken") == []
+
+
+def test_stick_move_family_passes_validation() -> None:
+    """Given: motion 生成コード / When: 検証する / Then: 未定義扱いにならないこと。"""
+    code = (
+        "from Commands.Keys import Stick\n"
+        "from Commands.PythonCommandBase import PythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(PythonCommand):\n"
+        '    NAME = "x"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.stick_move(Stick.LEFT, 0, 90, 127, 450, 500)\n"
+        "        self.stick_release(Stick.LEFT)\n"
+        "        self.stick_move2(Stick.LEFT, (0, 90), (127, 90), "
+        "Stick.RIGHT, (0, 0), (127, 0), 200)\n"
+        "        self.stick_release_both()\n"
+    )
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_motion_release_codegen_passes_validation() -> None:
+    """Given motionブロック(END=RELEASE)の生成コード / When 検証する / Then 空エラーになること。"""
+    code = (
+        "from Commands.Keys import Direction, Stick\n"
+        "from Commands.PythonCommandBase import PythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(PythonCommand):\n"
+        '    NAME = "MotionTest"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.stick_move(Stick.LEFT, 0, 90, 127, 450, 500)\n"
+        "        self.stick_release(Stick.LEFT)\n"
+    )
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_motion2_cont_and_release_codegen_passes_validation() -> None:
+    """Given motion2ブロック(END=CONT/RELEASE)の生成コード / When 検証する / Then 空エラーになること。"""
+    code = (
+        "from Commands.Keys import Direction, Stick\n"
+        "from Commands.PythonCommandBase import PythonCommand\n"
+        "\n\n"
+        "class BlocklyCmd(PythonCommand):\n"
+        '    NAME = "MotionTest"\n'
+        "\n"
+        "    def do(self) -> None:\n"
+        "        self.stick_move2(Stick.LEFT, (0, 90), (127, 90), "
+        "Stick.RIGHT, (0, 0), (127, 0), 200)\n"
+        "        self.stick_move2(Stick.LEFT, (0, 90), (127, 90), "
+        "Stick.RIGHT, (0, 0), (127, 0), 200)\n"
+        "        self.stick_release_both()\n"
+    )
+    assert blockly_validate.validate_generated_code(code) == []
+
+
+def test_subroutine_named_stick_move_rejected() -> None:
+    """Given stick_move名のサブルーチン定義 / When 検証する / Then 公開API重複で拒否されること。"""
+    code = sub_code(
+        "        self.press(Button.A)\n",
+        "    def stick_move(self) -> None:\n        self.press(Button.A)\n\n",
+    )
+    errors = blockly_validate.validate_generated_code(code)
+    assert errors != []
+    assert any("stick_move" in e for e in errors)
+
+
+def test_subroutine_named_stick_move2_rejected() -> None:
+    """Given stick_move2名のサブルーチン定義 / When 検証する / Then 公開API重複で拒否されること。"""
+    code = sub_code(
+        "        self.press(Button.A)\n",
+        "    def stick_move2(self) -> None:\n        self.press(Button.A)\n\n",
+    )
+    errors = blockly_validate.validate_generated_code(code)
+    assert errors != []
+    assert any("stick_move2" in e for e in errors)
+
+
+def test_subroutine_named_stick_release_rejected() -> None:
+    """Given stick_release名のサブルーチン定義 / When 検証する / Then 公開API重複で拒否されること。"""
+    code = sub_code(
+        "        self.press(Button.A)\n",
+        "    def stick_release(self) -> None:\n        self.press(Button.A)\n\n",
+    )
+    errors = blockly_validate.validate_generated_code(code)
+    assert errors != []
+    assert any("stick_release" in e for e in errors)

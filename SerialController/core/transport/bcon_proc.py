@@ -263,6 +263,19 @@ def _worker_main(cmd_q: Any, evt_q: Any, cfg: dict) -> None:
     except Exception:
         pass
 
+    def _forward_tx(row: Any) -> None:
+        # 送った行の写しだけを親へ運ぶ。選別（STATEのみ・同一行削り）は
+        # 本家の _notify_tx が済ませているため、ここで削らない。
+        try:
+            evt_q.put(("tx", str(row)))
+        except Exception:
+            pass
+
+    try:
+        transport.add_listener(_forward_tx)
+    except Exception:
+        pass
+
     def _reply(call_id: Any, ok: bool, result: Any) -> None:
         try:
             evt_q.put(("reply", call_id, bool(ok), result))
@@ -509,6 +522,11 @@ class BconProcTransport(Transport):
         self._pending_lock = threading.Lock()
         self._subs: list[Any] = []
         self._subs_lock = threading.Lock()
+        # 送信行の聞き手（入力ログ・記録・モニタ用）。本家と同一規律。
+        self._tx_listeners: list[Any] = []
+        self._tx_listener_ng: set[int] = set()
+        # 直前に配った行。同一行の再送を削る基準。開き直しで戻す。
+        self._tx_last_note: str | None = None
         self._hook_begin: Any = None
         self._hook_end: Any = None
         self._dispatch_thread: Any = None
@@ -694,6 +712,12 @@ class BconProcTransport(Transport):
                             func((int(ftype), bytes(payload), int(seq)))
                         except Exception:
                             pass
+                elif kind == "tx":
+                    row = evt[1] if len(evt) > 1 else ""
+                    try:
+                        self._notify_tx(str(row))
+                    except Exception:
+                        pass
                 elif kind == "log":
                     print(evt[1] if len(evt) > 1 else "")
                 elif kind == "hook":
@@ -845,6 +869,8 @@ class BconProcTransport(Transport):
             return False
         ok = bool(box.get("result", False))
         self._opened = ok
+        if ok:
+            self._tx_last_note = None
         if not ok:
             self._warn(f"bcon-procのopenが子で失敗しました({label}): {box!r}")
             self._terminate_worker()
@@ -913,14 +939,71 @@ class BconProcTransport(Transport):
             pass
 
     def add_listener(self, func: Any) -> bool:
-        """bcon本家と同様に繋げない（False）。"""
-        _ = func
-        return False
+        """送信行を受け取る相手を足す。入力ログはここへ繋ぐ。
+
+        子が送った行の写しをevt経路で受け、配る。選別（STATEのみ・
+        同一行削り）は子側の本家が済ませている。重ねて足さない。
+        子が死んでいるあいだも受け付け、復帰後の行から配る。
+        """
+        if not callable(func):
+            return False
+        with self._subs_lock:
+            if func not in self._tx_listeners:
+                self._tx_listeners.append(func)
+            try:
+                self._tx_listener_ng.discard(id(func))
+            except Exception:
+                pass
+        return True
 
     def remove_listener(self, func: Any) -> None:
-        """繋いでいないため何もしない。"""
-        _ = func
-        return None
+        """聞き手を外す。外したら苦情の記録も消す（付け直せる）。"""
+        try:
+            with self._subs_lock:
+                if func in self._tx_listeners:
+                    self._tx_listeners.remove(func)
+                try:
+                    self._tx_listener_ng.discard(id(func))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _notify_tx(self, row: str) -> None:
+        """子から届いた行の写しを聞き手へ配る。聞き手が落ちても止めない。
+
+        子側で同一行削り済みだが、再送・再接続の境で同じ行が重なるため
+        親側でも基準を持つ（本家と同一規律）。聞き手が無いあいだは基準を
+        進めない（後付けの聞き手が最初の変化を見落とさないため）。
+        """
+        text = row if isinstance(row, str) else ""
+        if not text:
+            return
+        with self._subs_lock:
+            if text == self._tx_last_note:
+                return
+            funcs = list(self._tx_listeners)
+            if not funcs:
+                return
+            self._tx_last_note = text
+        for func in funcs:
+            try:
+                func(text)
+            except Exception as e:
+                try:
+                    key = id(func)
+                    with self._subs_lock:
+                        if key in self._tx_listener_ng:
+                            continue
+                        self._tx_listener_ng.add(key)
+                except Exception:
+                    pass
+                try:
+                    logging.getLogger(__name__).warning(
+                        f"送信行の受け取りで例外が出ました（以後は黙ります）: {e!r}"
+                    )
+                except Exception:
+                    pass
 
     def set_hooks(self, on_write_begin: Any = None, on_write_end: Any = None) -> None:
         """親側で保持し、子からのhook転送で呼ぶ。"""

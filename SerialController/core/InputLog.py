@@ -992,12 +992,36 @@ class InputLogger:
 
     # -- 解析 ---------------------------------------------------------------
 
-    def _parse(self, row: str) -> tuple[Any, ...] | None:
-        """'0x00fc 8 80 80' を (btn, hat, lx, ly, rx, ry) にする。
+    def _parse_s_row(self, row: str) -> tuple[Any, ...] | None:
+        """Pico式S行（`S btn hat lx ly rx ry`・姿勢空間）を解釈する。
 
-        スティックは変化したぶんだけ送られてくる可変長なので、
-        位置ではなく先頭のフラグを見てどちらの値かを決める。
+        受け入れるのは7欄そろいの完全姿勢だけ。欄不足・不正値はNone
+        （呼び側が捨てる）。legacyの可変長と違い旗が無いので、6値の
+        すべてをそのまま読む。値域はencoding.pico_fieldと同じ規則へ寄せる
+        （btn 16bit・hat 8超は中立・座標8bit）。姿勢空間btnはそのまま
+        InputLogのボタン表（姿勢bit）として扱う（legacy側の2bit shiftは
+        掛けない。S行はshiftしていないため）。
         """
+        token = row.split()
+        if len(token) != 7 or token[0].upper() != "S":
+            return None
+        try:
+            btn = int(token[1], 16)
+            hat = int(token[2], 16)
+            lx, ly, rx, ry = (int(token[i], 16) for i in range(3, 7))
+        except ValueError:
+            return None
+        if not 0 <= btn <= 0xFFFF:
+            return None
+        if not 0 <= hat <= 8:
+            hat = HAT_CENTER
+        for value in (lx, ly, rx, ry):
+            if not 0 <= value <= 0xFF:
+                return None
+        return btn, hat, lx, ly, rx, ry
+
+    def _parse_legacy(self, row: str) -> tuple[Any, ...] | None:
+        """legacy可変長行を解釈する（従来の_parseの中身そのまま）。"""
         token = row.split()
         if len(token) < 2:
             return None
@@ -1015,6 +1039,23 @@ class InputLogger:
             rx, ry = int(token[i], 16), int(token[i + 1], 16)
             i += 2
         return flags >> BUTTON_SHIFT, hat, lx, ly, rx, ry
+
+    def _parse(self, row: str) -> tuple[Any, ...] | None:
+        """送信1行を (btn, hat, lx, ly, rx, ry) にする。
+
+        legacy可変長行とPico式S行（7欄フルステート）の両方を受ける。
+        先頭欄がSならS行として読む。どちらでもなければNone。
+        """
+        text = row.strip() if isinstance(row, str) else ""
+        if not text:
+            return None
+        head = text.split(None, 1)[0].upper()
+        if head == "S":
+            return self._parse_s_row(text)
+        try:
+            return self._parse_legacy(text)
+        except ValueError:
+            return None
 
     def _diff(self, row: str) -> list:
         parsed = self._parse(row)
