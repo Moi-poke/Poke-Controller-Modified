@@ -478,6 +478,7 @@
           options: [
             ["L", "LEFT"],
             ["R", "RIGHT"],
+            ["L+R", "BOTH"],
           ],
         },
         { type: "field_stickpad", name: "PAD", value: "90,100" },
@@ -489,7 +490,64 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "L/Rスティックをパッドか角度で倒す（8方向・強さ100%固定）。",
+      tooltip: "L/Rスティックをパッドか角度で倒す（8方向・強さ100%固定）。軌跡の再生は記録から作る。",
+    },
+    {
+      // 軌跡の再生用。記録（MotionRecorder）が作る。手でも置ける。
+      // from/to は極座標 (r, θ)。θ は累積角度（+360 で 1 周）。
+      // T は移行時間（整数 ms。0.05 秒丸めの対象外）。
+      // 終了時は既定で離さない（次の区間へ引き継ぐ）。区間の最後だけ離す。
+      type: "pokecon_motion",
+      message0: "スティック軌跡 %1 %2 → %3 %4ms %5",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "STICK",
+          options: [
+            ["L", "LEFT"],
+            ["R", "RIGHT"],
+          ],
+        },
+        { type: "field_input", name: "FROM", text: "0,90" },
+        { type: "field_input", name: "TO", text: "127,90" },
+        { type: "field_number", name: "T_MS", value: 100, min: 1, max: 60000 },
+        {
+          type: "field_dropdown",
+          name: "END",
+          options: [
+            ["続ける", "CONT"],
+            ["離す", "RELEASE"],
+          ],
+        },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "スティックを極座標の from → to へ Tms で動かす（記録の再生用）。離すは区間の最後だけ。",
+    },
+    {
+      // L/R 同時用。片側ずつの from/to を持ち、同じ T で動かす。
+      type: "pokecon_motion2",
+      message0: "スティック軌跡 L %1 → %2 R %3 → %4 %5ms %6",
+      args0: [
+        { type: "field_input", name: "FROM_L", text: "0,90" },
+        { type: "field_input", name: "TO_L", text: "127,90" },
+        { type: "field_input", name: "FROM_R", text: "0,0" },
+        { type: "field_input", name: "TO_R", text: "127,0" },
+        { type: "field_number", name: "T_MS", value: 100, min: 1, max: 60000 },
+        {
+          type: "field_dropdown",
+          name: "END",
+          options: [
+            ["続ける", "CONT"],
+            ["離す", "RELEASE"],
+          ],
+        },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "L/R を同じ T で同時に動かす（記録の再生用）。離すは区間の最後だけ。",
     },
     {
       type: "pokecon_wait",
@@ -2001,6 +2059,71 @@
       wait +
       ")\n"
     );
+  };
+
+  // 軌跡の再生コード。FROM/TO は "r,θ" のテキスト（L+R のときは
+  // FROM_L/FROM_R・TO_L/TO_R の 4 欄）。T に 0.05 秒丸めは適用しない。
+  pythonGenerator.forBlock["pokecon_motion"] = function (block) {
+    function pair(text, fallback) {
+      var parts = String(text == null ? fallback : text).split(",");
+      var r = Number(parts[0]);
+      var th = Number(parts.length > 1 ? parts[1] : NaN);
+      if (!isFinite(r)) { r = 0; }
+      if (!isFinite(th)) { th = 0; }
+      return [r, th];
+    }
+    function field(name, fallback) {
+      try {
+        var v = block.getFieldValue(name);
+        return v == null ? fallback : v;
+      } catch (e) {
+        return fallback;
+      }
+    }
+    var rawStick = field("STICK", "LEFT");
+    var t = Math.max(1, Math.round(Number(field("T_MS", 100))));
+    if (!isFinite(t)) { t = 100; }
+    var stick = rawStick === "RIGHT" ? "RIGHT" : "LEFT";
+    var f = pair(field("FROM", "0,90"), "0,90");
+    var goal = pair(field("TO", "127,90"), "127,90");
+    var out = "self.stick_move(Stick." + stick + ", " + f[0] + ", " + f[1] + ", " +
+      goal[0] + ", " + goal[1] + ", " + t + ")\n";
+    if (field("END", "CONT") === "RELEASE") {
+      out += "self.stick_release(Stick." + stick + ")\n";
+    }
+    return out;
+  };
+
+  pythonGenerator.forBlock["pokecon_motion2"] = function (block) {
+    function pair(text, fallback) {
+      var parts = String(text == null ? fallback : text).split(",");
+      var r = Number(parts[0]);
+      var th = Number(parts.length > 1 ? parts[1] : NaN);
+      if (!isFinite(r)) { r = 0; }
+      if (!isFinite(th)) { th = 0; }
+      return [r, th];
+    }
+    function field(name, fallback) {
+      try {
+        var v = block.getFieldValue(name);
+        return v == null ? fallback : v;
+      } catch (e) {
+        return fallback;
+      }
+    }
+    var t = Math.max(1, Math.round(Number(field("T_MS", 100))));
+    if (!isFinite(t)) { t = 100; }
+    var lf = pair(field("FROM_L", "0,90"), "0,90");
+    var lt = pair(field("TO_L", "127,90"), "127,90");
+    var rf = pair(field("FROM_R", "0,0"), "0,0");
+    var rt = pair(field("TO_R", "127,0"), "127,0");
+    var out = "self.stick_move2(Stick.LEFT, (" + lf[0] + ", " + lf[1] + "), (" +
+      lt[0] + ", " + lt[1] + "), Stick.RIGHT, (" + rf[0] + ", " + rf[1] + "), (" +
+      rt[0] + ", " + rt[1] + "), " + t + ")\n";
+    if (field("END", "CONT") === "RELEASE") {
+      out += "self.stick_release_both()\n";
+    }
+    return out;
   };
 
   pythonGenerator.forBlock["pokecon_wait"] = function (block) {
