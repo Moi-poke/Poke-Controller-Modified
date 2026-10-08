@@ -12,6 +12,7 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "pandas>=2.2.3",
     "pillow>=11.1.0",
+    "pygame>=2.6.1",
     "pygubu>=0.36.3",
     "pynput>=1.7.7",
     "pyserial>=3.5",

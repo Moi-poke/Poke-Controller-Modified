@@ -219,11 +219,16 @@ class PokeControllerApp(
         # から Tk を触れないので、GUI 側が Event へ写し、述語だけ渡す。
         # 初期は下ろしておく（結線直後の即時同期で正される）。
         self._kb_window_active = threading.Event()
+        # ゲームパッド操作の門。キーボードと違い、読取はポーリングの
+        # ため窓外の入力を拾わない。フォーカスに連動させない。
+        # 有効化中は常に開けておく。
+        self._gamepad_active = threading.Event()
         self.serial = SerialService(
             notify_user=print,
             base_dir=BASE_DIR,
             input_log_emit=LogPane.emitInputLog,
             keyboard_active=self._kb_window_active.is_set,
+            gamepad_active=self._gamepad_active.is_set,
         )
         self.serial.transport_override = self._transport_override
         # いま使っている通信方式の名前（画面表示と保存に使う）
@@ -434,6 +439,8 @@ class PokeControllerApp(
         self.is_show_realtime.set(self.settings.is_show_realtime.get())
         self.is_show_serial.set(self.settings.is_show_serial.get())
         self.is_use_keyboard.set(self.settings.is_use_keyboard.get())
+        self.is_use_gamepad.set(self.settings.is_use_gamepad.get())
+        self.gamepad_dz.set(str(self.settings.gamepad_deadzone.get()))
         self.fps.set(str(self.settings.fps.get()))
         self.show_size.set(self.settings.show_size.get())
         self.show_mode.set(self.settings.show_mode.get())
@@ -698,6 +705,11 @@ class PokeControllerApp(
         self.settings.is_show_realtime.set(self.is_show_realtime.get())
         self.settings.is_show_serial.set(self.is_show_serial.get())
         self.settings.is_use_keyboard.set(self.is_use_keyboard.get())
+        self.settings.is_use_gamepad.set(self.is_use_gamepad.get())
+        try:
+            self.settings.gamepad_deadzone.set(int(str(self.gamepad_dz.get())))
+        except Exception:
+            pass
         self.settings.is_use_left_stick_mouse.set(
             self.camera_lf.is_use_left_stick_mouse.get()
         )

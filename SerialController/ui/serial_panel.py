@@ -96,6 +96,16 @@ class SerialPanelMixin:
     is_use_keyboard: Any
     _kb_window_active: Any
     cb_use_keyboard: Any
+    is_use_gamepad: Any
+    _gamepad_active: Any
+    cb_use_gamepad: Any
+    gamepad_label: Any
+    gamepad_choice: Any
+    gamepad_cb: Any
+    _gamepad_map: dict[str, int]
+    gamepad_dz_label: Any
+    gamepad_dz: Any
+    gamepad_dz_spin: Any
     cb_left_stick_mouse: Any
     cb_right_stick_mouse: Any
     simpleConButton: Any
@@ -301,13 +311,21 @@ class SerialPanelMixin:
         )
         self.cb_use_keyboard.grid(column=0, row=0, padx="10", pady="5", sticky="ew")
 
+        self.is_use_gamepad = tk.BooleanVar()
+        self.cb_use_gamepad = ttk.Checkbutton(self.control_lf)
+        self.cb_use_gamepad.config(
+            text="ゲームパッドで操作",
+            variable=self.is_use_gamepad,
+            command=self._on_gamepad_toggled,
+        )
+        self.cb_use_gamepad.grid(column=1, row=0, padx="10", pady="5", sticky="ew")
+
         self.cb_left_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_left_stick_mouse.config(
             text="左スティックをマウスで",
             variable=self.camera_lf.is_use_left_stick_mouse,
             command=self._on_left_stick_toggled,
         )
-        self.cb_left_stick_mouse.grid(column=1, row=0, padx="10", pady="5", sticky="ew")
 
         self.cb_right_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_right_stick_mouse.config(
@@ -315,9 +333,42 @@ class SerialPanelMixin:
             variable=self.camera_lf.is_use_right_stick_mouse,
             command=self._on_right_stick_toggled,
         )
-        # 3 つとも 1 行に並べる（2 行目に 1 つだけ置くと、空いた欄が増えるだけ）。
+        self.cb_left_stick_mouse.grid(column=0, row=1, padx="10", pady="5", sticky="ew")
         self.cb_right_stick_mouse.grid(
-            column=2, row=0, padx="10", pady="5", sticky="ew"
+            column=1, row=1, padx="10", pady="5", sticky="ew"
+        )
+        # ゲームパッドの選択行。繋がっているパッドを名前で選ぶ。
+        # 番号決め打ちでは、複数台・差し替え時に別の物を掴む。
+        self.gamepad_label = ttk.Label(self.control_lf, text="パッド: ")
+        self.gamepad_label.grid(column=0, row=2, padx="10", pady="2", sticky="w")
+        self.gamepad_choice = tk.StringVar(value="")
+        self.gamepad_cb = ttk.Combobox(
+            self.control_lf, textvariable=self.gamepad_choice, width=28
+        )
+        self.gamepad_cb.grid(column=1, row=2, padx="10", pady="2", sticky="ew")
+        self.gamepad_cb.bind("<<ComboboxSelected>>", self._on_gamepad_selected, add="")
+        # 遊び（デッドゾーン）。0=なし・GUI と同等。drift 時に上げる。
+        self.gamepad_dz_label = ttk.Label(self.control_lf, text="遊び: ")
+        self.gamepad_dz_label.grid(column=0, row=3, padx="10", pady="2", sticky="w")
+        self.gamepad_dz = tk.StringVar(value="0")
+        self.gamepad_dz_spin = ttk.Spinbox(
+            self.control_lf,
+            textvariable=self.gamepad_dz,
+            from_=0,
+            to=8192,
+            increment=100,
+            width=8,
+        )
+        self.gamepad_dz_spin.grid(column=1, row=3, padx="10", pady="2", sticky="w")
+        self.gamepad_dz_spin.bind("<FocusOut>", self._on_gamepad_dz_changed, add="")
+        self.gamepad_dz_spin.bind("<Return>", self._on_gamepad_dz_changed, add="")
+        # ゲームパッドの状態行。読取中の名前・経路・生軸値を出す。
+        self.gamepad_status = tk.StringVar(value="")
+        self.gamepad_status_label = ttk.Label(
+            self.control_lf, textvariable=self.gamepad_status
+        )
+        self.gamepad_status_label.grid(
+            column=0, columnspan=2, row=4, padx="10", pady=(0, 5), sticky="ew"
         )
 
         self.control_lf.config(text="コントローラ")
@@ -931,8 +982,27 @@ class SerialPanelMixin:
         # 古い値のまま書き戻される。常に全項目を集めてから書く
         # _on_setting_changed() に一本化する。
         self.is_use_keyboard.set(connected and keyboard_active)
-        # 接続経路でもキーボードだけが生きるため、ここで結線する。
-        # チェック切替時だけだと、繋ぎ直した回は監視なしになる。
+        gamepad_active = False
+        self.refreshGamepads()
+        if connected and self.is_use_gamepad.get():
+            gamepad_active = (
+                self.serial.set_gamepad_enabled(
+                    True, self._gamepad_index(), self._gamepad_deadzone()
+                )
+                is None
+            )
+        self.is_use_gamepad.set(gamepad_active)
+        if gamepad_active:
+            self._bindGamepadMirror()
+        try:
+            if gamepad_active:
+                self._gamepad_active.set()
+            else:
+                self._gamepad_active.clear()
+        except Exception:
+            pass
+        # キーボードの門は従来通りフォーカス連動。ゲームパッドは
+        # 専用の門を使うため、ここでは触らない。
         if connected and keyboard_active:
             self._bindKeyboardFocus()
         else:
@@ -952,6 +1022,12 @@ class SerialPanelMixin:
         self.serial.disconnect()
         self._unbindKeyboardFocus()
         self.is_use_keyboard.set(False)
+        self.is_use_gamepad.set(False)
+        self._clearGamepadMirror()
+        try:
+            self._gamepad_active.clear()
+        except Exception:
+            pass
         self._refresh_bcon_rows()
         self._on_setting_changed()
         self._update_title()
@@ -1051,6 +1127,223 @@ class SerialPanelMixin:
         保存はその後に行い、画面に見えている状態と設定を一致させる。
         """
         self.activateKeyboard()
+        self._on_setting_changed()
+
+    def activateGamepad(self) -> None:
+        """ゲームパッド操作の有効・無効を切り替える。
+
+        実体の寿命は serial サービスが持つ。ここでは画面の辻褄
+        （チェックの巻き戻し）だけを見る。読み取りの門はキーボードと
+        同じフォーカス述語を使い、窓外の操作を流さない。
+        """
+        if self.is_use_gamepad.get():
+            self.refreshGamepads()
+            err = self.serial.set_gamepad_enabled(
+                True, self._gamepad_index(), self._gamepad_deadzone()
+            )
+            if err is not None:
+                self.is_use_gamepad.set(False)
+                return
+            self._bindGamepadMirror()
+            # 専用の門を開ける。キーボードのフォーカス門とは独立。
+            try:
+                self._gamepad_active.set()
+            except Exception:
+                pass
+        else:
+            self.serial.stop_gamepad()
+            self._clearGamepadMirror()
+            try:
+                self._gamepad_active.clear()
+            except Exception:
+                pass
+
+    def _bindGamepadMirror(self) -> None:
+        """ゲームパッド入力の鏡を結線する。Tk への受け渡しまで持つ。
+
+        読取スレッドから直接 Canvas を触ると Tcl が壊れるため、
+        root.after(0) で Tk スレッドへ予約してから描く。終了・無効化
+        では _clearGamepadMirror で鏡を消す。
+        """
+        try:
+            self.serial.set_gamepad_display(self._onGamepadDisplay)
+        except Exception as e:
+            logger.warning(f"ゲームパッド表示の結線で例外: {e}")
+
+    def _onGamepadDisplay(self, snapshot: Any) -> None:
+        """読取スレッドからの通知。Tk スレッドへ予約して描く。"""
+        try:
+            self.root.after(0, self._paintGamepadMirror, snapshot)
+        except Exception:
+            pass
+
+    def _paintGamepadMirror(self, snapshot: Any) -> None:
+        """仮想パッドへゲームパッドの現在状態を描く（Tk スレッド専用）。"""
+        try:
+            dock = getattr(self, "controller_dock", None)
+            pad = None
+            if dock is not None:
+                pad = getattr(dock, "embedded", None) or getattr(dock, "floating", None)
+            data = dict(snapshot or {})
+            self._setGamepadStatus(data)
+            if not data.get("connected"):
+                if pad is not None:
+                    pad.clearExternal()
+                return
+            if pad is not None:
+                pad.showExternal(
+                    data.get("buttons", ()),
+                    data.get("hat_dirs", ()),
+                    tuple(data.get("stick_l", (128, 128))),
+                    tuple(data.get("stick_r", (128, 128))),
+                )
+        except Exception as e:
+            logger.warning(f"ゲームパッド表示の描画で例外: {e}")
+
+    def _setGamepadStatus(self, data: dict[str, Any]) -> None:
+        """状態行に名前・経路・生軸値を出す（Tk スレッド専用）。"""
+        try:
+            status = getattr(self, "gamepad_status", None)
+            if status is None:
+                return
+            if not data.get("connected"):
+                status.set("ゲームパッド: 未接続")
+                return
+            name = str(data.get("pad_name", "") or "?")
+            route = str(data.get("route", "") or "?")
+            raw = tuple(data.get("raw_axes", ()) or ())
+            raw_text = " ".join(f"{float(v):+.2f}" for v in raw[:6])
+            buttons = ",".join(data.get("buttons", ()))
+            status.set(f"{name} [{route}] 軸:{raw_text} {buttons}")
+        except Exception:
+            pass
+
+    def _clearGamepadMirror(self) -> None:
+        """鏡を消す（無効化・切断時。Tk スレッド専用）。"""
+        try:
+            self.serial.set_gamepad_display(None)
+        except Exception:
+            pass
+        try:
+            self._paintGamepadMirror({"connected": False})
+        except Exception:
+            pass
+
+    def _gamepad_index(self) -> int:
+        """ゲームパッド番号を通常の int で返す。読めないときだけ 0。"""
+        try:
+            index = int(self.settings.gamepad_index.get())
+        except (TypeError, ValueError, tk.TclError):
+            return 0
+        return index if 0 <= index <= 3 else 0
+
+    def _gamepad_deadzone(self) -> int:
+        """遊びを通常の int で返す。読めない・範囲外は 0。"""
+        try:
+            value = int(self.settings.gamepad_deadzone.get())
+        except (TypeError, ValueError, tk.TclError):
+            return 0
+        return value if 0 <= value <= 8192 else 0
+
+    def _on_gamepad_dz_changed(self, event: Any = None) -> None:
+        """遊びの変更を保存し、有効化中なら作り直して適用する。"""
+        try:
+            value = int(str(self.gamepad_dz.get()).strip())
+        except (TypeError, ValueError, tk.TclError):
+            value = self._gamepad_deadzone()
+            try:
+                self.gamepad_dz.set(str(value))
+            except Exception:
+                pass
+            return
+        value = max(0, min(8192, value))
+        try:
+            self.gamepad_dz.set(str(value))
+            self.settings.gamepad_deadzone.set(value)
+        except Exception:
+            pass
+        if self.is_use_gamepad.get():
+            try:
+                gamepad = self.serial.gamepad
+                if gamepad is not None:
+                    # 作り直さない。実体・スレッド・表示結線を保ったまま
+                    # 遊びだけ変える。作り直すと開き直りの瞬間に未接続に
+                    # 落ち、以後の申告が止まる。
+                    gamepad.deadzone = max(0, min(8192, int(value)))
+                else:
+                    self.serial.stop_gamepad()
+                    err = self.serial.set_gamepad_enabled(
+                        True, self._gamepad_index(), value
+                    )
+                    if err is not None:
+                        self.is_use_gamepad.set(False)
+                        return
+                    self._bindGamepadMirror()
+            except Exception as e:
+                logger.warning(f"遊びの適用で例外: {e}")
+        self._on_setting_changed()
+
+    def refreshGamepads(self) -> None:
+        """繋がっているパッド一覧を取り直して選択肢へ入れる。
+
+        抜き差ししても選び直せるよう、接続ボタン・チェック切替の
+        際に呼び出す。選んでいた物が残っていれば残す。
+        """
+        try:
+            from core.pad_source import PadSource
+
+            names = PadSource().names()
+        except Exception:
+            names = {}
+        try:
+            current = self._gamepad_index()
+            labels = [f"{i}: {names.get(i, 'XInput パッド')}" for i in range(4)]
+            self._gamepad_map = {label: i for i, label in enumerate(labels)}
+            self.gamepad_cb["values"] = labels
+            for label, index in self._gamepad_map.items():
+                if index == current:
+                    self.gamepad_choice.set(label)
+                    break
+            self.gamepad_dz.set(str(self._gamepad_deadzone()))
+        except Exception as e:
+            logger.warning(f"パッド一覧の更新で例外: {e}")
+
+    def _on_gamepad_selected(self, event: Any = None) -> None:
+        """選択肢で選んだパッドへ切り替える。途中でも切り替える。
+
+        有効化中なら実体を作り直す（番号は生成時に固定のため）。
+        無効中なら設定だけ残し、次回有効化で使う。
+        """
+        try:
+            raw = str(self.gamepad_choice.get()).strip()
+            index = self._gamepad_map.get(raw, None)
+            if index is None:
+                # 「0」のような番号の直接入力も受ける
+                index = int(raw.split(":")[0].strip())
+        except Exception:
+            index = 0
+        try:
+            index = max(0, min(3, int(index)))
+            self.settings.gamepad_index.set(index)
+        except Exception:
+            index = 0
+        if self.is_use_gamepad.get():
+            try:
+                self.serial.stop_gamepad()
+                err = self.serial.set_gamepad_enabled(
+                    True, int(index), self._gamepad_deadzone()
+                )
+                if err is not None:
+                    self.is_use_gamepad.set(False)
+                    return
+                self._bindGamepadMirror()
+            except Exception as e:
+                logger.warning(f"パッド切替で例外: {e}")
+        self._on_setting_changed()
+
+    def _on_gamepad_toggled(self) -> None:
+        """ゲームパッド操作の切り替え。有効化に失敗した場合も保存する。"""
+        self.activateGamepad()
         self._on_setting_changed()
 
     def _on_left_stick_toggled(self) -> None:

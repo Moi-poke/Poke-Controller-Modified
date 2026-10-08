@@ -42,7 +42,7 @@ ARBITRATION_MODES = ("off", "human", "script")
 # 長すぎると「操作できない時間」が体感で分かるほど伸びる。
 ARBITRATION_COOLDOWN = 2.0
 # 人の手による操作とみなす申告者。これ以外（script / None）は自動側とみなす。
-HUMAN_SOURCES = ("mouse", "keyboard", "gui")
+HUMAN_SOURCES = ("mouse", "keyboard", "gui", "gamepad")
 # 拒否の通知を間引く間隔(秒)。連打や毎フレームの申告で通知が溢れるのを防ぐ。
 REJECT_NOTIFY_INTERVAL = 1.0
 

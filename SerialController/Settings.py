@@ -63,6 +63,16 @@ class GuiSettings:
         self.is_use_keyboard = tk.BooleanVar(
             value=general.getboolean("is_use_keyboard")
         )
+        # ゲームパッド操作。キーボード操作と同じ形の鏡。既定は OFF。
+        self.is_use_gamepad = tk.BooleanVar(
+            value=general.getboolean("is_use_gamepad", fallback=False)
+        )
+        self.gamepad_index = tk.IntVar(
+            value=general.getint("gamepad_index", fallback=0)
+        )
+        self.gamepad_deadzone = tk.IntVar(
+            value=general.getint("gamepad_deadzone", fallback=0)
+        )
         # マウスでのスティック操作。GUI のチェックボックスと1対1で対応する
         self.is_use_left_stick_mouse = tk.BooleanVar(
             value=general.getboolean("is_use_left_stick_mouse")
@@ -350,6 +360,9 @@ class GuiSettings:
                 "is_show_realtime": self.is_show_realtime.get(),
                 "is_show_serial": self.is_show_serial.get(),
                 "is_use_keyboard": self.is_use_keyboard.get(),
+                "is_use_gamepad": self.is_use_gamepad.get(),
+                "gamepad_index": self.gamepad_index.get(),
+                "gamepad_deadzone": self.gamepad_deadzone.get(),
                 "is_use_left_stick_mouse": self.is_use_left_stick_mouse.get(),
                 "is_use_right_stick_mouse": self.is_use_right_stick_mouse.get(),
                 "is_take_stick_log": self.is_take_stick_log.get(),
