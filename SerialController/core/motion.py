@@ -78,18 +78,18 @@ class MotionClip:
 def xy_to_polar(x: float, y: float) -> tuple[float, float]:
     """(x, y) を (r, θ[度]) へ直す。θ の原点は +x 方向、反時計回りが正。
 
-    Direction の y は上が大きい（送信時に 255-y で反転する）ため、
-    ここでの y も上が大きい座標系で扱う。記録の読み戻し（送信行の Y を
-    255-y で戻す）と対になる。
+    入るのは送信行の座標系（y は上が小さい）。InputLog.angle と同じく
+    dy = CENTER - y として上を正に戻す。以前は dy = y - CENTER で θ の
+    符号が反転し、再生で回転方向・上下が逆になっていた。
     """
-    dx, dy = x - CENTER, y - CENTER
+    dx, dy = x - CENTER, CENTER - y
     return math.hypot(dx, dy), math.degrees(math.atan2(dy, dx))
 
 
 def polar_to_xy(r: float, deg: float) -> tuple[float, float]:
-    """(r, θ[度]) を Direction 規約の (x, y)（上が大きい）へ戻す。"""
+    """(r, θ[度]) を送信行の (x, y)（y は上が小さい）へ戻す。"""
     a = math.radians(deg)
-    return 128.0 + r * math.cos(a), 128.0 + r * math.sin(a)
+    return 128.0 + r * math.cos(a), 128.0 - r * math.sin(a)
 
 
 def unwrap_angles(ths: list[float]) -> list[float]:

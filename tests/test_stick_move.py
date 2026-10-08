@@ -297,3 +297,31 @@ def test_hold_hat_survives_unrelated_inputEnd() -> None:
     # 後始末: 離すと中立に戻る
     keys.holdEnd(Hat.TOP)
     assert sender.getPosture()["hat"] == int(Hat.CENTER)
+
+
+def test_polar_dir_four_quadrants() -> None:
+    """Given: 上下左右の極座標 / When: Direction へ直す / Then: 各象限になること。"""
+    from core.Keys import Stick as _Stick
+
+    up = OperateMixin._polar_dir(_Stick.LEFT, 127, 90)
+    assert up.y > 200 and abs(up.x - 128) <= 2
+    down = OperateMixin._polar_dir(_Stick.LEFT, 127, -90)
+    assert down.y < 56 and abs(down.x - 128) <= 2
+    right = OperateMixin._polar_dir(_Stick.LEFT, 127, 0)
+    assert right.x > 200 and abs(right.y - 128) <= 2
+    left = OperateMixin._polar_dir(_Stick.LEFT, 127, 180)
+    assert left.x < 56 and abs(left.y - 128) <= 2
+
+
+def test_move2_down_right_roundtrip() -> None:
+    """Given: L=下・R=右への同時移動 / When: 再生 / Then: 各側がその方向になること。"""
+    from core.Keys import Stick as _Stick
+
+    host = _Host()
+    host.stick_move2(
+        _Stick.LEFT, (0, -90), (127, -90), _Stick.RIGHT, (0, 0), (127, 0), 40
+    )
+    assert len(host.keys.sent) == 2
+    last = {d.stick: d for d in host.keys.sent[-1]}
+    assert last[_Stick.LEFT].y < 56
+    assert last[_Stick.RIGHT].x > 200

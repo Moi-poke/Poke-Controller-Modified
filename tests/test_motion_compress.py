@@ -19,13 +19,16 @@ from core import motion
 def _circle(
     t0: float, period_s: float, n: int = 63
 ) -> list[tuple[float, float, float]]:
-    """1 周の円（r=127）。8ms 格子相当のサンプル列。"""
+    """1 周の円（r=127）。8ms 格子相当のサンプル列。
+
+    座標は送信系（y は上が小さい）。θ=90° が上で反時計回りが正。
+    """
     out: list[tuple[float, float, float]] = []
     for i in range(n):
         at = t0 + i * 0.008
         deg = 90 + i * 360 / (n - 1)
         x = 128 + 127 * math.cos(math.radians(deg))
-        y = 128 + 127 * math.sin(math.radians(deg))
+        y = 128 - 127 * math.sin(math.radians(deg))
         out.append((at, x, y))
     return out
 
@@ -64,12 +67,13 @@ def test_circle_point_count_shrinks_with_eps() -> None:
 def test_straight_line_keeps_single_theta() -> None:
     """Given: 中央から上への直線 / When: 圧縮 / Then: θ が一定で r だけ増えること。"""
     t0 = 3000.0
+    # 上方向は送信系で y が減る。dy=CENTER-y で正に戻すため θ=+90° が上。
     samples: list[tuple[float, float, float]] = [
-        (t0 + i * 0.008, 128.0, 128.0 + i * 127.0 / 19) for i in range(20)
+        (t0 + i * 0.008, 128.0, 128.0 - i * 127.0 / 19) for i in range(20)
     ]
     pts = motion.compress_track(samples, t0, 2.5)
     assert len(pts) >= 2
-    # r=0 の点の θ も隣の有効値（90°）になっている。
+    # r=0 の点の θ も隣の有効値（+90°＝上）になっている。
     assert all(abs(p.th - 90.0) <= 1.0 for p in pts)
     assert _restore_error(pts, samples, t0) <= 2.5 + 1.2
 
@@ -127,3 +131,40 @@ def test_refine_quantized_adds_midpoint_and_stops_at_depth() -> None:
     assert [w.t for w in out] == sorted(w.t for w in out)
     capped = motion._refine_quantized(track, list(quant), 2.5, depth=4)
     assert capped == quant
+
+
+def test_clockwise_turn_accumulates_negative() -> None:
+    """Given: 時計回り1周の円 / When: 圧縮 / Then: θ が -360° 蓄積されること。"""
+    t0 = 6000.0
+    n = 63
+    samples: list[tuple[float, float, float]] = []
+    for i in range(n):
+        at = t0 + i * 0.008
+        deg = 90 - i * 360 / (n - 1)
+        x = 128 + 127 * math.cos(math.radians(deg))
+        y = 128 - 127 * math.sin(math.radians(deg))
+        samples.append((at, x, y))
+    pts = motion.compress_track(samples, t0, 2.5)
+    assert len(pts) >= 2
+    assert abs((pts[-1].th - pts[0].th) - -360.0) <= 2.0
+
+
+def test_four_directions_roundtrip() -> None:
+    """Given: 上下左右への倒し / When: 圧縮→復元 / Then: 各方向が保たれること。"""
+    t0 = 7000.0
+    # (dx, dy): 上下左右。送信系で上が y 減。
+    cases = [
+        ((0, -127), lambda x, y: y < 128.0, "up"),
+        ((0, 127), lambda x, y: y > 128.0, "down"),
+        ((127, 0), lambda x, y: x > 128.0, "right"),
+        ((-127, 0), lambda x, y: x < 128.0, "left"),
+    ]
+    for (dx, dy), check, _label in cases:
+        samples = [
+            (t0 + i * 0.008, 128.0 + dx * i / 19, 128.0 + dy * i / 19)
+            for i in range(20)
+        ]
+        pts = motion.compress_track(samples, t0, 2.5)
+        assert pts, "倒しが waypoint になること"
+        x, y = motion.restore_xy(pts, pts[-1].t)
+        assert check(x, y), "方向が保たれること"
