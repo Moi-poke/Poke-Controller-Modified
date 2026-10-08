@@ -508,12 +508,26 @@ def _clip_to_steps(
                 continue
             r0, th0 = _motion._restore_polar(pts, lo_ms)
             r1, th1 = _motion._restore_polar(pts, hi_ms)
-            if r0 == r1 and th0 == th1:
-                continue
             seg[side] = ((round(r0), round(th0)), (round(r1), round(th1)))
         if not seg:
             continue
         t_int = int(round(span))
+        # 両側とも無変化の区間は stick_move が待つだけで何も送らない。
+        # 以前は捨てていたため、捨てた区間の時間が再生総時間から消え、
+        # ゆっくり操作が超高速で再生されていた。静止区間として残す。
+        if all(f == t for f, t in seg.values()):
+            (side, ((fr, fth), (_tr, _tth))) = next(iter(seg.items()))
+            steps.append(
+                {
+                    "kind": "stick",
+                    "side": side,
+                    "from": [fr, fth],
+                    "to": [fr, fth],
+                    "t_ms": t_int,
+                    "static": True,
+                }
+            )
+            continue
         if len(seg) == 2:
             (l0, l1), (r0v, r1v) = seg["L"], seg["R"]
             steps.append(
@@ -547,10 +561,14 @@ def _clip_to_steps(
         else:
             steps.append({"kind": "release_stick", "side": moved[0]})
     # 時刻順に並べ替える（hold と stick の混在を時刻順にする）。
-    # stick 区間は開始時刻で並べる。
+    # stick 区間の開始時刻は ordered（記録時刻順）の区間開始を使う。
+    # 以前は出した区間の span だけを積算していたため、捨てた無変化区間の
+    # 時間が再生総時間から消え、ゆっくり操作が超高速で再生されていた。
+    # 無変化区間の時間も ordered 上に残る（後続区間が前倒しにならない）。
     timed: list[tuple[float, int, dict[str, Any]]] = []
     tail: list[dict[str, Any]] = []
-    cursor = 0.0
+    bounds = [lo for lo, _hi in zip(ordered, ordered[1:]) if _hi > lo]
+    pos = 0
     for step in steps:
         if step["kind"] in ("hold", "hold_end"):
             timed.append((float(step.pop("at_ms")), 0, step))
@@ -558,7 +576,8 @@ def _clip_to_steps(
             # 終端の解放は常に最後（時刻ソートの対象外）。
             tail.append(step)
         else:
-            timed.append((cursor, 1, step))
-            cursor += float(step["t_ms"])
+            start = bounds[pos] if pos < len(bounds) else 0.0
+            pos += 1
+            timed.append((start, 1, step))
     timed.sort(key=lambda item: (item[0], item[1]))
     return [step for _, _, step in timed] + tail
