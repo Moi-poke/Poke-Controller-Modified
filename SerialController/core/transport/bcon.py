@@ -145,6 +145,12 @@ class BconTransport(Transport):
     capability = BCON_STATE
 
     def __init__(self, logger: Any = None, use_len12: bool = False) -> None:
+        self._tx_listeners: list[Callable[[str], None]] = []
+        # 直前に配った行。同一行の再送を削る基準。開き直しで戻す。
+        self._tx_last_note: str | None = None
+        # 一度落ちた聞き手の id()。同じ苦情を繰り返さない
+        # （TextSerialTransport._listener_ng と同じ約束）。
+        self._tx_listener_ng: set[int] = set()
         self.ser: Any = None
         self._logger = logger if logger is not None else getLogger(__name__)
         if logger is None:
@@ -278,9 +284,11 @@ class BconTransport(Transport):
             # 開き直しで古い欠片が残ると次回の先頭整列を乱すため捨てる。
             self._parser = BconParser()
             # 開き直しで古い姿勢を送り直さないよう最新保持も捨てる。
+            # 配った行の基準も戻す（繋ぎ直後の最初の行は必ず配る）。
             # 数え直しのため統計も0へ戻す（live_statsの区切りはopen）。
             self._live_pending = None
             self._live_latest = None
+            self._tx_last_note = None
             self._live_last_tx = 0.0
             self._live_sent = 0
             self._live_merged = 0
@@ -433,11 +441,16 @@ class BconTransport(Transport):
                 self._logger.debug("bconは開いていないため送りません")
                 return
             frame = frame_build(T_STATE, payload, seq)
-            self._write_frame(frame, row, measure_perf, begin, end, ser)
+            sent_ok = bool(self._write_frame(frame, row, measure_perf, begin, end, ser))
             with self._lock:
                 self._live_sent += 1
                 self._live_latest = (payload, note)
                 self._live_last_tx = time.perf_counter()
+            if sent_ok:
+                # 送れた行だけを配る。開いていない線・書込失敗の行は
+                # Switch に届いていないので記録に残さない（TextSerialの
+                # _write_one が送った行だけ _notify するのと同じ約束）。
+                self._notify_tx(note if isinstance(note, str) else "")
 
     def flush_pending(self) -> None:
         """保留があれば送り切る。loop起動中は起こして即送させる。"""
@@ -684,31 +697,83 @@ class BconTransport(Transport):
                     self._logger.debug(f"bconのlive組立に失敗: {e!r}")
                     next_tx = now + interval
                     continue
-                self._write_frame(frame, note, show, begin, end, ser)
+                sent_ok = bool(self._write_frame(frame, note, show, begin, end, ser))
             now = time.perf_counter()
             with self._lock:
                 self._live_sent += 1
                 self._live_latest = (payload, note)
                 self._live_last_tx = now
+            if sent_ok and not held:
+                # 実際に送った分だけを配る。開いていない線の分は配らない。
+                # 同一行の再送は _notify_tx 側で削る。呼び出しは錠の外。
+                self._notify_tx(note if isinstance(note, str) else "")
             next_tx += interval
             if next_tx <= now:
                 next_tx = now + interval
 
-    # -- 聞き手（入力ログ用。バイナリは繋げない）--
+    # -- 聞き手（入力ログ・記録・モニタ用。送った行の写しを配る）--
 
-    def add_listener(self, func: Callable[[str], None]) -> bool:
-        """送信行を受け取る相手を足す。bconは繋げないためFalse。
+    def add_listener(self, func: Any) -> bool:
+        """送信行を受け取る相手を足す。入力ログはここへ繋ぐ。
 
-        バイナリ輸送は送信行（文字列）を作らない。黙って繋いだ振りを
-        すると入力ログが空のまま動いている扱いになる（静かに壊れる型）。
-        PicoUartと同様にFalseを返し、呼び出し側が理由を出せるようにする。
+        配るのは send_row が受けた行の写し（Modifiedのwire行・Pico式S行・
+        `end` のいずれか。InputLogger は両書式を読む）。配る時点は
+        「実際に送った後」（同期送出の成功時・loop送出の書込成功時）。
+        間引きで畳まれた分・抑えで捨てた分・会話フレーム（HELLO等）は
+        配らない。Switch に届いていない操作を記録に残すと、ログと実機が
+        ずれるため。重ねて足さない（同じ行が2回届く）。
         """
-        _ = func
-        return False
+        if not callable(func):
+            return False
+        with self._lock:
+            if func not in self._tx_listeners:
+                self._tx_listeners.append(func)
+            self._tx_listener_ng.discard(id(func))
+        return True
 
-    def remove_listener(self, func: Callable[[str], None]) -> None:
-        """聞き手を外す。繋いでいないため何もしない。"""
-        _ = func
+    def remove_listener(self, func: Any) -> None:
+        """聞き手を外す。外したら苦情の記録も消す（付け直せる）。"""
+        with self._lock:
+            if func in self._tx_listeners:
+                self._tx_listeners.remove(func)
+            self._tx_listener_ng.discard(id(func))
+
+    def _notify_tx(self, row: Any) -> None:
+        """送った行の写しを聞き手へ配る。聞き手が落ちても送信は止めない。
+
+        一覧の写しだけを錠の中で取り、呼び出しは外で行う。持ったまま
+        呼ぶと、遅い聞き手がすべての送信を詰まらせる
+        （TextSerialTransport._notify と同一規律）。
+
+        直前に配った行と同じ再送（120Hz loopの定期再送・live workerの
+        keepalive）は配らない。同じ行の差分は必ず無イベントになるため、
+        入力ログ・記録の内容は変わらない。変えるのはモニタの表示量だけ
+        （同じ行が毎秒100件並ぶのを抑える）。
+        聞き手が無いあいだは基準を進めない。進めると、後付けの聞き手が
+        最初の変化を見落とす（押下を見ず解放だけ見る形になる）。
+        """
+        text = row if isinstance(row, str) else ""
+        if not text:
+            return
+        with self._lock:
+            if text == self._tx_last_note:
+                return
+            funcs = list(self._tx_listeners)
+            if not funcs:
+                return
+            self._tx_last_note = text
+        for func in funcs:
+            try:
+                func(row)
+            except Exception as e:
+                key = id(func)
+                with self._lock:
+                    if key in self._tx_listener_ng:
+                        continue
+                    self._tx_listener_ng.add(key)
+                self._logger.warning(
+                    f"送信行の受け取りで例外が出ました（以後は黙ります）: {e!r}"
+                )
 
     # -- 第4区画:受信パーサ（RXポンプ・TYPE購読。Task 4でHELLOを載せる）--
 

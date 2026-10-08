@@ -338,3 +338,211 @@ class OperateMixin:
 
         self.press(Button.HOME, wait=1)
         self.press(Button.HOME, wait=1)
+
+    # ------------------------------------------------------------------
+    # スティック軌跡の再生（stick_move / stick_move2）
+    # ------------------------------------------------------------------
+    # 記録したスティック操作（極座標のwaypoint列）を再生する補助関数。
+    # press() が input→wait→inputEnd→wait のため区間境界で中立を経由する
+    # のに対し、こちらは input() の差分申告を直接連打するので中立を
+    # 経由しない。setStick は調停対象外で常時受理されるため、ボタン調停に
+    # 蹴られて欠けることもない。
+    #
+    # 時刻は区間開始 t0 からの相対msで持ち、待ちは絶対時刻の deadline で
+    # 行う（_sleep_until）。一時停止中は wait() が remain を減らさないため
+    # 起床だけが延び、次の刻みの deadline は元の時間軸のままになる。
+    # そのままでは再開後に残り刻みが一気に送られる（早送り）ため、
+    # 止まっていた時間 P_k だけ t0 を前へずらす（t0 += P_k）。
+    # P_k は _pausedSeconds() の差分で取る。「実経過−要求」で代用すると
+    # sleep のジッタまで足して蓄積するため使わない。
+
+    # 連鎖判定の窓（秒）。前区間の終了予定 _motion_clock からの遅れが
+    # この範囲内なら、今回の t0 を前区間の終了予定へ引き継ぐ。
+    # 待ちの行き過ぎは最大1刻み（_TICK=20ms）＋ブロック間の処理時間
+    # より大きければ連鎖が切れたと誤判定しない。50msが妥当。
+    _MOTION_CHAIN_WINDOW = 0.05
+    # 補間の刻み（秒）。再生の床は wait() の _TICK=20ms。
+    _MOTION_STEP_S = 0.02
+
+    def _sleep_until(self, deadline: float) -> float:
+        """deadline（perf_counter）まで待つ。止まっていた秒数も返す。
+
+        待ちは wait() に丸投げする（一時停止・停止の意味論を継承する）。
+        戻り値はこの待ちのあいだに止まっていた時間 P_k（秒）。
+        _pausedSeconds() の前後差で取る。sleep のジッタは含まない。
+        残りが0以下なら待たない（遅れを取り戻そうと詰めない）。
+        """
+        paused_before = self._pausedSeconds()
+        remain = deadline - time.perf_counter()
+        if remain > 0:
+            self.wait(remain)
+        paused_after = self._pausedSeconds()
+        return max(0.0, paused_after - paused_before)
+
+    @staticmethod
+    def _polar_dir(stick: Any, r: float, deg: float) -> Direction:
+        """極座標（r: 0〜、deg: 累積角度）から Direction を作る。
+
+        Direction の y は上が大きい（送信時に 255-y で反転する）。
+        タプル形 (x, y) で渡すと角度→座標の丸めが1回少なくて済む。
+        x・y は 0〜255 へクリップする（四角ゲートの斜めは 127 を超える）。
+        """
+        import math
+
+        a = math.radians(deg)
+        x = min(255, max(0, round(128 + r * math.cos(a))))
+        y = min(255, max(0, round(128 + r * math.sin(a))))
+        return Direction(stick, (int(x), int(y)))
+
+    def _motion_t0(self, now: float) -> float:
+        """今回の区間開始 t0 を決める。連鎖中なら前区間の終了予定を引き継ぐ。
+
+        長い一時停止の後は窓から外れて now に再同期する（予定時刻は過去の
+        ため引き継ぐ意味がない）。ずれは蓄積しない。
+        """
+        clk = getattr(self, "_motion_clock", None)
+        if clk is not None:
+            try:
+                gap = now - float(clk)
+            except (TypeError, ValueError):
+                gap = None
+            if gap is not None and 0 <= gap < self._MOTION_CHAIN_WINDOW:
+                return float(clk)
+        return now
+
+    def stick_move(
+        self,
+        stick: Any,
+        r0: float,
+        th0: float,
+        r1: float,
+        th1: float,
+        t_ms: float,
+    ) -> None:
+        """スティックを (r0, th0) から (r1, th1) へ T_ms で動かす。
+
+        極座標の線形補間。各刻みでは「時刻 t になったら t の値を送る」
+        （開始値 from は直前ブロックで送信済みのため送り直さない）。
+        r・θ とも変わらない静止区間は待つだけで何も送らない。
+        終了予定 _motion_clock を残す（次の区間が引き継ぐ）。
+        """
+        now = time.perf_counter()
+        t0 = self._motion_t0(now)
+        total = max(0.0, float(t_ms)) / 1000.0
+        step = self._MOTION_STEP_S
+        n = max(1, int(__import__("math").ceil(total / step)) if total > 0 else 1)
+        same = r0 == r1 and th0 == th1
+        t_ms_f = float(t_ms)
+        for k in range(1, n + 1):
+            tk = min(k * step * 1000.0, t_ms_f)
+            paused = self._sleep_until(t0 + tk / 1000.0)
+            # 止まっていたぶん開始をずらす（次刻み以降の早送りを防ぐ）。
+            # 当該刻みは既に終わっているため二重補正にはならない。
+            if paused:
+                t0 += paused
+            if not same and t_ms_f > 0:
+                u = tk / t_ms_f
+                self._gate()
+                self.keys.input(
+                    self._polar_dir(stick, r0 + u * (r1 - r0), th0 + u * (th1 - th0))
+                )
+            self.checkIfAlive()
+        self._motion_clock = t0 + total
+
+    def stick_move2(
+        self,
+        stick_l: Any,
+        l_from: tuple[float, float],
+        l_to: tuple[float, float],
+        stick_r: Any,
+        r_from: tuple[float, float],
+        r_to: tuple[float, float],
+        t_ms: float,
+    ) -> None:
+        """L/R を同じ T・同じ刻みループで動かす。
+
+        交互に input() すると L と R が別 slot に載り最大 8ms ずれるため、
+        1刻み1回の input([dirL, dirR]) でまとめて送る（_applyToSender が
+        リストを処理し sendPosture 一発になる）。静止している側は
+        リストに入れない。
+        """
+        now = time.perf_counter()
+        t0 = self._motion_t0(now)
+        total = max(0.0, float(t_ms)) / 1000.0
+        step = self._MOTION_STEP_S
+        import math as _math
+
+        n = max(1, int(_math.ceil(total / step)) if total > 0 else 1)
+        l_same = l_from[0] == l_to[0] and l_from[1] == l_to[1]
+        r_same = r_from[0] == r_to[0] and r_from[1] == r_to[1]
+        t_ms_f = float(t_ms)
+        for k in range(1, n + 1):
+            tk = min(k * step * 1000.0, t_ms_f)
+            paused = self._sleep_until(t0 + tk / 1000.0)
+            if paused:
+                t0 += paused
+            dirs = []
+            if not l_same and t_ms_f > 0:
+                u = tk / t_ms_f
+                dirs.append(
+                    self._polar_dir(
+                        stick_l,
+                        l_from[0] + u * (l_to[0] - l_from[0]),
+                        l_from[1] + u * (l_to[1] - l_from[1]),
+                    )
+                )
+            if not r_same and t_ms_f > 0:
+                u = tk / t_ms_f
+                dirs.append(
+                    self._polar_dir(
+                        stick_r,
+                        r_from[0] + u * (r_to[0] - r_from[0]),
+                        r_from[1] + u * (r_to[1] - r_from[1]),
+                    )
+                )
+            if dirs:
+                self._gate()
+                self.keys.input(dirs)
+            self.checkIfAlive()
+        self._motion_clock = t0 + total
+
+    # 解放用の固定の斜め座標。両軸が getTilting() の閾値 127 を超えるため
+    # 両 tilt が返り、両軸とも解放される（設計 ID:006 確定）。
+    # 中立の Direction (128, 128) では [UP] だけが返り水平軸が残るうえ、
+    # 実姿勢が水平に倒れていた場合は fixOtherAxis が端へ寄せて跳ねる。
+    _RELEASE_XY = (218, 218)
+
+    def stick_release(self, stick: Any) -> None:
+        """その側のスティックだけを解放する。
+
+        end="hold" のときは呼ばない（次の区間へ値を引き継ぐ）。
+        既定（"release"）では区間の最後に呼ぶ。
+        """
+        from core.Keys import Stick as _Stick
+
+        self._gateRelease()
+        side = _Stick.RIGHT if stick is _Stick.RIGHT else _Stick.LEFT
+        try:
+            x, y = self._RELEASE_XY
+            self.keys.inputEnd(Direction(side, (int(x), int(y))))
+        except AttributeError:
+            # keys が捨てられている（停止直後）。解放は諦め、停止を優先する。
+            pass
+        self.checkIfAlive()
+
+    def stick_release_both(self) -> None:
+        """L/R の両方を解放する。1 回の inputEnd でまとめて行う。"""
+        from core.Keys import Stick as _Stick
+
+        self._gateRelease()
+        try:
+            x, y = self._RELEASE_XY
+            self.keys.inputEnd(
+                [
+                    Direction(_Stick.LEFT, (int(x), int(y))),
+                    Direction(_Stick.RIGHT, (int(x), int(y))),
+                ]
+            )
+        except AttributeError:
+            pass
+        self.checkIfAlive()

@@ -13,6 +13,79 @@
   // 標準の disableOrphans と付け外しを共有する。
   var ORPHAN_REASON = "ORPHANED_BLOCK";
 
+  // motion 材料 1 件をブロックにする。press 手順なら null を返す。
+  // kind: stick → pokecon_motion、stick2 → pokecon_motion2、
+  // hold/hold_end → pokecon_hold/pokecon_hold_end、
+  // release_stick は直前の motion 系ブロックの END を RELEASE にする。
+  var lastMotionBlock = null;
+  function pairText(pair) {
+    if (!pair || pair.length < 2) { return "0,90"; }
+    return String(pair[0]) + "," + String(pair[1]);
+  }
+  function setFields(b, values) {
+    Object.keys(values).forEach(function (name) {
+      try {
+        b.setFieldValue(String(values[name]), name);
+      } catch (e) {
+        /* 欄が無ければそのまま */
+      }
+    });
+  }
+  function drawBlock(b) {
+    try {
+      if (typeof b.initSvg === "function") { b.initSvg(); }
+      if (typeof b.render === "function") { b.render(); }
+    } catch (e) {
+      /* 描画なしの検証では無視する */
+    }
+  }
+  function makeMotionBlock(ws, s) {
+    if (!s || typeof s.kind !== "string") { return null; }
+    var b = null;
+    if (s.kind === "stick") {
+      b = ws.newBlock("pokecon_motion");
+      setFields(b, {
+        STICK: s.side === "R" ? "RIGHT" : "LEFT",
+        FROM: pairText(s.from),
+        TO: pairText(s.to),
+        T_MS: s.t_ms,
+        END: "CONT",
+      });
+      lastMotionBlock = b;
+    } else if (s.kind === "stick2") {
+      b = ws.newBlock("pokecon_motion2");
+      setFields(b, {
+        FROM_L: pairText(s.l_from),
+        TO_L: pairText(s.l_to),
+        FROM_R: pairText(s.r_from),
+        TO_R: pairText(s.r_to),
+        T_MS: s.t_ms,
+        END: "CONT",
+      });
+      lastMotionBlock = b;
+    } else if (s.kind === "hold") {
+      b = ws.newBlock("pokecon_hold");
+      var target = String(s.target || "Button.A");
+      setFields(b, { TARGET: target, WAIT: 0.1 });
+    } else if (s.kind === "hold_end") {
+      b = ws.newBlock("pokecon_hold_end");
+      var endTarget = String(s.target || "Button.A");
+      setFields(b, { TARGET: endTarget });
+    } else if (s.kind === "release_stick") {
+      // 直前の motion 系の END を RELEASE にする（ブロックは増やさない）。
+      if (lastMotionBlock) {
+        try {
+          lastMotionBlock.setFieldValue("RELEASE", "END");
+        } catch (e) { /* 欄が無ければそのまま */ }
+      }
+      lastMotionBlock = null;
+      return null;
+    } else {
+      return null;
+    }
+    drawBlock(b);
+    return b;
+  }
   var PokeconEditor = {
     // 保存物に関わる事象か。選択・クリック・表示位置などUIだけの事象は
     // 未保存表示を汚さない（選んだだけで「未保存」になっていた）。
@@ -562,15 +635,19 @@
       };
     },
 
-    // 記録した手順を pokecon_press ブロックの並びにして挿入する。
-    // steps は [{target, duration, wait}]（services/blockly_record の形）。
-    // target は Button.A / Hat.TOP / Direction.UP の形で、BUTTON 欄の書式に
-    // 合わせる（ボタンだけ素の名 A、方向は Hat./Direction. のまま）。
+    // 記録した手順をブロックの並びにして挿入する。
+    // steps は [{target, duration, wait}]（press 手順、services/blockly_record
+    // の形）か、motion 材料（{kind: stick/stick2/hold/hold_end/release_stick}）
+    // の混在。target は Button.A / Hat.TOP / Direction.UP の形で、BUTTON 欄の
+    // 書式に合わせる（ボタンだけ素の名 A、方向は Hat./Direction. のまま）。
+    // motion 材料は pokecon_motion / pokecon_motion2・pokecon_hold・
+    // pokecon_hold_end ブロックになる。
     // 挿入位置は、選択中の文ブロックがあればその直後（元の後続は最後の
     // 新ブロックの後ろへつけ直す）、無ければプログラムの DO の末尾、
     // プログラムが無ければ空いている所。全体を1つの取り消し単位にする。
     // 作ったブロックの配列を返す（描画なしで検証できる）。
     insertSteps: function (ws, steps, selected) {
+      lastMotionBlock = null;
       var made = [];
       if (!steps || !steps.length) {
         return made;
@@ -582,6 +659,18 @@
       }
       try {
         steps.forEach(function (s) {
+          // release_stick は直前の motion の END を変えるだけで、
+          // ブロックを作らない（makeMotionBlock が null を返す）。
+          // press フォールバックへ落とさないよう先に弾く。
+          if (s && s.kind === "release_stick") {
+            makeMotionBlock(ws, s);
+            return;
+          }
+          var motion = makeMotionBlock(ws, s);
+          if (motion) {
+            made.push(motion);
+            return;
+          }
           var b = ws.newBlock("pokecon_press");
           var target = String((s && s.target) || "A");
           // ボタンだけ素の名（Button.A → A）、方向はそのまま。
