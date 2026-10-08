@@ -438,3 +438,34 @@ def test_trial_refuses_trace_ids_that_are_not_plain_strings() -> None:
     # 対照: 素の文字列なら通る
     ok = code.replace("'a' + str(1)", "'a1'")
     assert blockly_run.build_trial_class(ok, make_session())[0] is not None
+
+
+def _motion_block() -> dict[str, Any]:
+    """motionブロック1つ（END=RELEASE、T_MS=500）。"""
+    return {
+        "type": "pokecon_motion",
+        "id": "m1",
+        "fields": {
+            "STICK": "LEFT",
+            "FROM": "0,90",
+            "TO": "127,450",
+            "T_MS": 500,
+            "END": "RELEASE",
+        },
+    }
+
+
+def test_trial_build_with_motion_block_succeeds() -> None:
+    """Given press/wait/printにstick_move呼出1行を足した試し実行コード / When クラスを作る / Then 成功すること。"""
+    state = _program(
+        _press(
+            "p1",
+            "A",
+            {**_motion_block(), "next": {"block": _print("pr1", _text("hello"))}},
+        ),
+    )
+    code = trial(state)["r"]["code"]
+    assert "self.stick_move(Stick.LEFT, 0, 90, 127, 450, 500)" in code
+    session = make_session()
+    cls, errors = blockly_run.build_trial_class(code, session)
+    assert errors == [] and cls is not None

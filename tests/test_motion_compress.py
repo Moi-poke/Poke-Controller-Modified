@@ -95,3 +95,35 @@ def test_neutral_unit_difference_is_documented() -> None:
 def test_unwrap_crosses_branch_cut() -> None:
     """Given: ±180° をまたぐ角度列 / When: 展開 / Then: 連続になること。"""
     assert motion.unwrap_angles([170.0, -170.0, -150.0]) == [170.0, 190.0, 210.0]
+
+
+def test_line_through_center_splits_with_bounded_error() -> None:
+    """Given: 中心を貫く左→右の直線(r<=1.5通過) / When: compress_trackする / Then: 2区間以上に分割され各waypoint列の復元誤差がε以下であること。"""
+    t0 = 5000.0
+    n = 31
+    samples = [(t0 + i * 0.008, 8.0 + 240.0 * i / (n - 1), 128.0) for i in range(n)]
+    assert min(math.hypot(x - 128, y - 128) for _, x, y in samples) <= 1.5
+    pts = motion.compress_track(samples, t0, 2.5)
+    assert len(pts) >= 2
+    times = [p.t for p in pts]
+    assert len(set(times)) < len(times) or any(p.r == 0 for p in pts)
+    worst = _restore_error(pts, samples, t0)
+    assert worst <= 2.5 + 1.2
+
+
+def test_refine_quantized_adds_midpoint_and_stops_at_depth() -> None:
+    """Given: 誤差超過のtrackと2点の量子化列 / When: _refine_quantizedを直接呼ぶ / Then: 中点が追加され深さ上限で止まること。"""
+    x0, y0 = motion.polar_to_xy(100.0, 90.0)
+    x1, y1 = motion.polar_to_xy(40.0, 135.0)
+    x2, y2 = motion.polar_to_xy(100.0, 180.0)
+    track = [(0.0, x0, y0), (100.0, x1, y1), (200.0, x2, y2)]
+    quant = [motion.Waypoint(0, 100, 90), motion.Waypoint(200, 100, 180)]
+    before = motion._max_error_xy(
+        track, [motion.Waypoint(float(w.t), float(w.r), float(w.th)) for w in quant]
+    )
+    assert before > 2.5
+    out = motion._refine_quantized(track, list(quant), 2.5)
+    assert len(out) > len(quant)
+    assert [w.t for w in out] == sorted(w.t for w in out)
+    capped = motion._refine_quantized(track, list(quant), 2.5, depth=4)
+    assert capped == quant
