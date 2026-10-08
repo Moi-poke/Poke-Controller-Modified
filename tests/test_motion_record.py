@@ -379,8 +379,8 @@ def _arc_points(
     return out
 
 
-def test_button_cut_inside_flat_adds_no_stick_segment() -> None:
-    """Given: 動くクリップ内の静止小区間と平坦部に入るボタンcut / When: 変換 / Then: ボタンなし時より stick 区間が増えないこと。"""
+def test_button_cut_inside_flat_keeps_time_with_static() -> None:
+    """Given: 動くクリップ内の静止小区間と平坦部に入るボタンcut / When: 変換 / Then: 静止区間は static 付きで残り再生総時間が保たれること。"""
     t0 = 12000.0
     move1 = _arc_points(dt0=0.0)
     fx, fy = move1[-1][1], move1[-1][2]
@@ -406,9 +406,14 @@ def test_button_cut_inside_flat_adds_no_stick_segment() -> None:
         )
     )
     with_cut = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
-    n_base = sum(1 for s in base if s["kind"] == "stick")
-    n_cut = sum(1 for s in with_cut if s["kind"] == "stick")
-    assert n_cut <= n_base
+
+    # 静止区間は static 付きで残る（捨てると再生総時間が崩れる）。
+    # ボタン cut で区間が切れても、再生総時間（t_ms 合計）は保たれる。
+    def total_ms(steps: list[dict]) -> int:
+        return sum(s.get("t_ms", 0) for s in steps if s["kind"] in ("stick", "stick2"))
+
+    assert total_ms(with_cut) >= total_ms(base)
+    assert any(s.get("static") for s in with_cut if s["kind"] == "stick")
 
 
 def test_buttons_around_stick_stay_as_press_in_order() -> None:
@@ -467,3 +472,41 @@ def test_two_discrete_ops_stay_single_clip() -> None:
     releases = [s for s in steps if s["kind"] == "release_stick"]
     assert len(releases) == 1
     assert steps[-1]["kind"] == "release_stick"
+
+
+def test_slow_ramp_keeps_total_time() -> None:
+    """Given: 2秒の緩慢ランプ（疎CHANGE） / When: 変換 / Then: 再生総時間が保たれること。"""
+    t0 = 20000.0
+    wall = datetime.datetime.now()
+    evs = [
+        InputLog.InputEvent(
+            "PRESS", "stick", "Stick.LEFT", t0, wall, x=138, y=128, deg=0.0, mag=0.08
+        ),
+        InputLog.InputEvent(
+            "CHANGE",
+            "stick",
+            "Stick.LEFT",
+            t0 + 1.992,
+            wall,
+            x=228,
+            y=128,
+            deg=0.0,
+            mag=0.78,
+        ),
+        InputLog.InputEvent(
+            "RELEASE",
+            "stick",
+            "Stick.LEFT",
+            t0 + 2.0,
+            wall,
+            duration=2.0,
+            deg=0.0,
+            mag=0.78,
+            max_mag=0.78,
+        ),
+    ]
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    total = sum(s.get("t_ms", 0) for s in steps if s["kind"] in ("stick", "stick2"))
+    # 以前は無変化区間を捨てて 8ms に潰れていた（約250倍速）。
+    # 静止区間を残すため 2 秒前後になる。
+    assert 1900 <= total <= 2300
