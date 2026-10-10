@@ -71,7 +71,7 @@ class GuiSettings:
             value=general.getint("gamepad_index", fallback=0)
         )
         self.gamepad_deadzone = tk.IntVar(
-            value=general.getint("gamepad_deadzone", fallback=0)
+            value=general.getint("gamepad_deadzone", fallback=1638)
         )
         # マウスでのスティック操作。GUI のチェックボックスと1対1で対応する
         self.is_use_left_stick_mouse = tk.BooleanVar(

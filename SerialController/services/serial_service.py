@@ -443,7 +443,7 @@ class SerialService:
     # -- ゲームパッド -----------------------------------------------------------
 
     def set_gamepad_enabled(
-        self, enabled: bool, pad_index: int = 0, deadzone: int = 0
+        self, enabled: bool, pad_index: int = 0, deadzone: int = 1638
     ) -> str | None:
         """ゲームパッド操作の有効・無効を切り替える。
 

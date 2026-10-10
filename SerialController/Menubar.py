@@ -536,6 +536,11 @@ class PokeController_Menubar(tk.Menu):
             reload_commands=self.app.reloadCommands,
             get_frame=blockly_capture.build_get_frame(lambda: self.camera),
             run_host=self.app,
+            record_blocked=lambda: (
+                "実行中は記録できません（止めてから始めてください）"
+                if self.app.runner.is_busy()
+                else None
+            ),
         )
 
     def OpenErrorReport(self) -> None:

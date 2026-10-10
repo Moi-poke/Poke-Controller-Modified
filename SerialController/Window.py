@@ -273,6 +273,19 @@ class PokeControllerApp(
         # 走行記録の受け先。SerialService が担い、runner が開始・終了で呼ぶ。
         # 記録の失敗で実行は壊さない（runner・service 側で握る）。
         self.runner.set_diag(self.serial, self.profile)
+
+        # 記録中の通常コマンドの開始拒否。判定は編集側の記録を見る。
+        # ui への直参照は作らず、遅延読みで循環を避ける（runner は ui を
+        # 知らない。Window が両者をつなぐ）。
+        def _recording_now() -> bool:
+            try:
+                from ui import blockly_editor
+
+                return bool(blockly_editor.is_recording())
+            except Exception:
+                return False
+
+        self.runner.set_record_guard(_recording_now)
         # 履歴の受け先。開始・終了で 1 行ずつ積む。渡さなければ残さない。
         self.runner.set_history(self.command_history, self._commandKind)
         self._closing = False

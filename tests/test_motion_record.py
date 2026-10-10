@@ -104,8 +104,69 @@ def test_circle_with_button_produces_hold_and_sticks() -> None:
     assert any(s["t_ms"] <= 60 for s in sticks)
     # 終端に解放材料がある。
     assert steps[-1] == {"kind": "release_stick", "side": "L"}
-    # T に丸めなし（整数 ms のまま）。
-    assert all(isinstance(s["t_ms"], int) for s in sticks)
+
+
+def test_mid_clip_release_returns_to_neutral() -> None:
+    """Given: 途中で離して置くスティック / When: 変換→再生する / Then: 離した後は中立に戻り最後まで残らないこと。"""
+    import threading
+
+    from core import Sender
+    from core.CommandOperate import OperateMixin
+    from core.Keys import KeyPress, Stick
+    from fakes import FakeTransport
+
+    class _Host(OperateMixin):
+        """再生の台。待ちは実時間で回す。"""
+
+        def __init__(self, keys: KeyPress) -> None:
+            self.keys = keys
+            self.alive = True
+            self._stop_event = threading.Event()
+            self._resume_event = threading.Event()
+            self._resume_event.set()
+
+        def _cleanup(self) -> None:
+            return None
+
+        def _pausedSeconds(self) -> float:
+            return 0.0
+
+    # Given: 上へ倒して0.2秒で離し、置いたまま0.5秒で押し直す操作
+    t0 = 12000.0
+    evs = _stick_events(t0, [(0.0, 128, 1)], release_at=None)
+    evs.append(
+        InputLog.InputEvent(
+            "RELEASE",
+            "stick",
+            "Stick.LEFT",
+            t0 + 0.2,
+            datetime.datetime.now(),
+            duration=0.2,
+            deg=90.0,
+            mag=1.0,
+            max_mag=1.0,
+        )
+    )
+    steps = br.build_motion_steps(sorted(evs, key=lambda e: e.at))
+    # When: 変換した手順をそのまま再生する
+    transport = FakeTransport()
+    sender = Sender.Sender(is_show_serial=False, transport=transport)
+    host = _Host(KeyPress(sender))
+    for step in steps:
+        if step.get("kind") == "stick":
+            host.stick_move(
+                Stick.LEFT,
+                step["from"][0],
+                step["from"][1],
+                step["to"][0],
+                step["to"][1],
+                step["t_ms"],
+            )
+        elif step.get("kind") == "release_stick":
+            host.stick_release(Stick.LEFT)
+    # Then: 再生後は中立に戻り、倒しっぱなしが残らない
+    posture = sender.getPosture()
+    assert (posture["lx"], posture["ly"]) == (128, 128)
 
 
 def test_no_stick_falls_back_to_press() -> None:

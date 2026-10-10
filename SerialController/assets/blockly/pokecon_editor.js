@@ -16,6 +16,7 @@
   // motion 材料 1 件をブロックにする。press 手順なら null を返す。
   // kind: stick → pokecon_motion、stick2 → pokecon_motion2、
   // hold/hold_end → pokecon_hold/pokecon_hold_end、
+  // wait → pokecon_wait（sec・wait の順で秒を読む）、
   // release_stick は直前の motion 系ブロックの END を RELEASE にする。
   var lastMotionBlock = null;
   function pairText(pair) {
@@ -66,11 +67,28 @@
     } else if (s.kind === "hold") {
       b = ws.newBlock("pokecon_hold");
       var target = String(s.target || "Button.A");
-      setFields(b, { TARGET: target, WAIT: 0.1 });
+      // chord 連鎖の持ち時間（at_ms 由来の wait も同じ欄で来る）。
+      // 数値が無ければ従来どおり既定の 0.1。
+      var holdWait = Number(s.wait);
+      if (!isFinite(holdWait)) {
+        holdWait = 0.1;
+      }
+      setFields(b, { TARGET: target, WAIT: holdWait });
     } else if (s.kind === "hold_end") {
       b = ws.newBlock("pokecon_hold_end");
       var endTarget = String(s.target || "Button.A");
       setFields(b, { TARGET: endTarget });
+    } else if (s.kind === "wait") {
+      // chord 連鎖の待ち（変換器は sec・wait のどちらかで秒を載せる）。
+      // press フォールバックへ落とすと押下になるためここで受ける。
+      b = ws.newBlock("pokecon_wait");
+      var sec = Number(s.sec);
+      if (!isFinite(sec)) {
+        sec = Number(s.wait);
+      }
+      if (isFinite(sec)) {
+        setFields(b, { SEC: sec });
+      }
     } else if (s.kind === "release_stick") {
       // 直前の motion 系の END を RELEASE にする（ブロックは増やさない）。
       if (lastMotionBlock) {
@@ -79,6 +97,10 @@
         } catch (e) { /* 欄が無ければそのまま */ }
       }
       lastMotionBlock = null;
+      return null;
+    } else if (s.kind === "press") {
+      // chord 連鎖・motion クリップ外の press は従来の pokecon_press 扱い。
+      // 欄への具体値は insertSteps 側の press フォールバックが付ける。
       return null;
     } else {
       return null;
@@ -637,11 +659,12 @@
 
     // 記録した手順をブロックの並びにして挿入する。
     // steps は [{target, duration, wait}]（press 手順、services/blockly_record
-    // の形）か、motion 材料（{kind: stick/stick2/hold/hold_end/release_stick}）
-    // の混在。target は Button.A / Hat.TOP / Direction.UP の形で、BUTTON 欄の
+    // の形。{kind: 'press', ...} も同じ扱い）か、motion 材料（{kind:
+    // stick/stick2/hold/hold_end/wait/release_stick}）の混在。target は
+    // Button.A / Hat.TOP / Direction.UP の形で、BUTTON 欄の
     // 書式に合わせる（ボタンだけ素の名 A、方向は Hat./Direction. のまま）。
     // motion 材料は pokecon_motion / pokecon_motion2・pokecon_hold・
-    // pokecon_hold_end ブロックになる。
+    // pokecon_hold_end・pokecon_wait ブロックになる。
     // 挿入位置は、選択中の文ブロックがあればその直後（元の後続は最後の
     // 新ブロックの後ろへつけ直す）、無ければプログラムの DO の末尾、
     // プログラムが無ければ空いている所。全体を1つの取り消し単位にする。

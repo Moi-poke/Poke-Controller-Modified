@@ -100,7 +100,7 @@ class SwitchGamepadController:
         is_active: Callable[[], bool] | None = None,
         reader: Any | None = None,
         on_display: Callable[[dict[str, Any]], None] | None = None,
-        deadzone: int = 0,
+        deadzone: int = 1638,
     ) -> None:
         """sender へ差分申告する。sender が None なら作れない。
 
@@ -112,7 +112,7 @@ class SwitchGamepadController:
         on_display は読むたびに呼ぶ表示口（仮想パッドの鏡用）。
         読取スレッドから呼ぶため、Tk を触る処理は呼び出し側で
         root.after 経由にすること。
-        deadzone は SDL 経路のスティック遊び（0〜8192）。
+        deadzone は SDL 経路のスティック遊び（0〜8192、既定1638=最大値の5%）。
         XInput 経路は既定のまま変えない。
         """
         if sender is None:
