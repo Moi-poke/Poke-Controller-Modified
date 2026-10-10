@@ -2100,9 +2100,9 @@ button.run:hover { background: #17793a; }
   on('pausebtn', 'click', function () { runControl(run.paused ? 'resume' : 'pause'); });
   on('stepbtn', 'click', function () { runControl('step'); });
   on('stopbtn', 'click', function () { runControl('stop'); });
-  // ---- 操作の記録（本体で押した操作を押すブロックの並びにする） ----
+  // ---- 操作の記録（本体で押した操作をブロックの並びにする） ----
   // 本体で実際に押した操作（送信線へ出た入力）を記録し、止めたときに
-  // pokecon_press ブロックの並びにして挿入する。同時押しの再現はしない。
+  // 単独押しは pokecon_press、同時押しは hold・holdEnd の連鎖にして挿入する。
   var rec = { active: false };
   function setRecUi(active) {
     rec.active = !!active;

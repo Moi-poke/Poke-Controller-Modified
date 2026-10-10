@@ -1723,10 +1723,9 @@ class Sender:
     def startLiveWorker(self, transport: Any = None) -> bool:
         """workerを1本だけ起動し、現在姿勢を最初に送る。
 
-        確認と起動を _live_lock の中で行う。二重起動で worker が
-        漏れると、古い方が止められず線が2本になる。
-        準備（列への投入）は外で行う。錠の中で putLive すると
-        同じ錠を取り直して詰まる（Lock は再入不可）。
+        確認・登録・起動を _live_lock の一つの臨界区間で行う。二重起動で
+        worker が漏れると、古い方が止められず線が2本になる。
+        準備の写し（snapshot）は外で取る。姿勢の錠と順序逆転で詰むため。
         動いているときは帳簿に触らず False で抜ける。
         """
         return self._startLiveWorker(transport) is not None
@@ -1742,25 +1741,23 @@ class Sender:
             transport = getattr(self, "transport", None)
         if transport is None:
             return None
+        # 起動準備の写しは錠の外で取る。snapshot は姿勢の錠（_lock）を
+        # 取るため、_live_lock の中で呼ぶと順序逆転で詰む（Lock は再入不可）。
+        # putLive は scheduler 側の錠だけを取り、_live_lock は統計の
+        # 一瞬だけなので、ここで呼んでも起動の臨界区間には入らない。
+        pending_snap = self.snapshot()
         with self._live_lock:
             thread = self._live_thread
             if thread is not None and thread.is_alive():
                 return None
-        self._live_stop.clear()
-        with self._live_lock:
+            self._live_stop.clear()
             self._live_last_snap = None
             self._live_last_sent_at = None
             self._live_last_shown_at = None
             self._live_last_shown_snap = None
-        self.putLive(self.snapshot())
-        with self._live_lock:
-            thread = self._live_thread
-            if thread is not None and thread.is_alive():
-                return None
-            # 生成・登録・起動まで錠の中で行う。登録と起動の間に錠を離すと、
-            # 別の起動が「登録済みだが未起動（is_alive False）」を見て
-            # もう1本起こし、線が2本になる。start() は錠を取らないため、
-            # ここで起こしても詰まらない。
+            # 生成・登録・起動まで一つの臨界区間で行う。確認と起動の
+            # 間に錠を離すと、並行した起動が同じ隙へ入り線が2本になる。
+            # start() は錠を取らないため、ここで起こしても詰まらない。
             started = threading.Thread(
                 target=self._liveLoop,
                 args=(transport,),
@@ -1769,7 +1766,16 @@ class Sender:
             )
             self._live_thread = started
             started.start()
-            return started
+            started_alive = started.is_alive()
+        if not started_alive:
+            # 起動直後に死んでいたら登録を外す（isLiveWorkerRunning と
+            # 二重起動防止の判定が「死んだ登録」を残さないため）。
+            with self._live_lock:
+                if self._live_thread is started:
+                    self._live_thread = None
+            return None
+        self.putLive(pending_snap)
+        return started
 
     def discardLive(self) -> bool:
         """scheduler の未送出を破棄する。

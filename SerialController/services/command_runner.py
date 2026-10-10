@@ -129,6 +129,9 @@ class CommandRunner:
         self._kind_of: Callable[[Any], str] | None = None
         self._now: Callable[[], datetime] = datetime.now
         self._monotonic: Callable[[], float] = time.monotonic
+        # 記録中の開始拒否の判定口。Window が runner と記録側をつなぐ。
+        # 渡さなければ従来どおり（記録中でも開始できる）。
+        self._record_guard: Callable[[], bool] | None = None
         # 実行中の履歴の行と開始時刻。終わったら None へ戻す。
         self._hist_entry: CommandHistory.HistoryEntry | None = None
         self._hist_t0 = 0.0
@@ -211,6 +214,14 @@ class CommandRunner:
         self._now = now
         self._monotonic = monotonic
 
+    def set_record_guard(self, guard: Callable[[], bool] | None) -> None:
+        """記録中の開始拒否の判定口を渡す。Window が組み立て後に呼ぶ。
+
+        guard が True を返したら記録中とみなし、開始を断る。None なら
+        判定しない（従来どおり記録中でも開始できる）。
+        """
+        self._record_guard = guard
+
     @property
     def current_history_entry(self) -> CommandHistory.HistoryEntry | None:
         """実行中の履歴の行。空きなら None。
@@ -282,13 +293,26 @@ class CommandRunner:
                 logger.warning("Start refused while fenced thread is alive")
                 return
             self._fenced_thread = None
+        # 記録中は通常コマンドの開始を断る。記録への混ざりを防ぐため。
+        # 判定口が無ければ従来どおり通す（新predicate未配線時と同等）。
+        guard = self._record_guard
+        if guard is not None:
+            try:
+                recording = bool(guard())
+            except Exception:
+                recording = False
+            if recording:
+                self._notify(
+                    "操作の記録中は開始できません（記録を止めてから試してください）"
+                )
+                logger.warning("Start refused while recording")
+                return
         # 二重起動を断る。Tk は同じボタンのコールバックを並行実行しないが、
         # F6・パレット・外部呼び出しからも入って来られる。
         if self.is_busy():
             self._notify("すでにコマンドが動いています")
             logger.warning("A command is already running")
             return
-
         # 旧コードはメッセージを出すだけで先へ進み、None.NAME で落ちていた
         if command is None:
             self._notify("No commands have been assigned yet.")

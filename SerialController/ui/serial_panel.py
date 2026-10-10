@@ -101,10 +101,9 @@ class SerialPanelMixin:
     cb_use_gamepad: Any
     gamepad_label: Any
     gamepad_choice: Any
-    gamepad_cb: Any
-    _gamepad_map: dict[str, int]
     gamepad_dz_label: Any
     gamepad_dz: Any
+    _gamepad_after: Any
     gamepad_dz_spin: Any
     cb_left_stick_mouse: Any
     cb_right_stick_mouse: Any
@@ -347,10 +346,10 @@ class SerialPanelMixin:
         )
         self.gamepad_cb.grid(column=1, row=2, padx="10", pady="2", sticky="ew")
         self.gamepad_cb.bind("<<ComboboxSelected>>", self._on_gamepad_selected, add="")
-        # 遊び（デッドゾーン）。0=なし・GUI と同等。drift 時に上げる。
+        # 遊び（デッドゾーン）。既定1638=最大値の5%。drift 時に上げる。
         self.gamepad_dz_label = ttk.Label(self.control_lf, text="遊び: ")
         self.gamepad_dz_label.grid(column=0, row=3, padx="10", pady="2", sticky="w")
-        self.gamepad_dz = tk.StringVar(value="0")
+        self.gamepad_dz = tk.StringVar(value="1638")
         self.gamepad_dz_spin = ttk.Spinbox(
             self.control_lf,
             textvariable=self.gamepad_dz,
@@ -373,7 +372,9 @@ class SerialPanelMixin:
 
         self.control_lf.config(text="コントローラ")
         self.control_lf.pack(fill="x", padx=5, pady=5)
-
+        self._gamepad_after = None
+        self.refreshGamepads()
+        self._poll_gamepads()
         # 仮想コントローラ。タブの中に常に置き、別ウィンドウへも出せる
         # （ui/controller_dock.py）。送り先は開くたびに今の物を引く。
         dock_area = ttk.Frame(self.tab_controller)
@@ -1116,6 +1117,10 @@ class SerialPanelMixin:
 
     def closingController(self) -> None:
         """終了時。押しっぱなしを離してから、埋め込みも別窓も消す。"""
+        try:
+            self._cancel_gamepad_patrol()
+        except Exception:
+            pass
         dock = getattr(self, "controller_dock", None)
         if dock is not None:
             dock.shutdown()
@@ -1238,12 +1243,12 @@ class SerialPanelMixin:
         return index if 0 <= index <= 3 else 0
 
     def _gamepad_deadzone(self) -> int:
-        """遊びを通常の int で返す。読めない・範囲外は 0。"""
+        """遊びを通常の int で返す。読めない・範囲外は既定1638。"""
         try:
             value = int(self.settings.gamepad_deadzone.get())
         except (TypeError, ValueError, tk.TclError):
-            return 0
-        return value if 0 <= value <= 8192 else 0
+            return 1638
+        return value if 0 <= value <= 8192 else 1638
 
     def _on_gamepad_dz_changed(self, event: Any = None) -> None:
         """遊びの変更を保存し、有効化中なら作り直して適用する。"""
@@ -1287,7 +1292,8 @@ class SerialPanelMixin:
         """繋がっているパッド一覧を取り直して選択肢へ入れる。
 
         抜き差ししても選び直せるよう、接続ボタン・チェック切替の
-        際に呼び出す。選んでいた物が残っていれば残す。
+        際に呼び出す。選んでいた物が残っていれば残す。名前は SDL の
+        実名があれば実名、XInput のみは汎名になる（PadSource.names）。
         """
         try:
             from core.pad_source import PadSource
@@ -1297,7 +1303,7 @@ class SerialPanelMixin:
             names = {}
         try:
             current = self._gamepad_index()
-            labels = [f"{i}: {names.get(i, 'XInput パッド')}" for i in range(4)]
+            labels = [f"{i}: {names.get(i, '(未接続)')}" for i in range(4)]
             self._gamepad_map = {label: i for i, label in enumerate(labels)}
             self.gamepad_cb["values"] = labels
             for label, index in self._gamepad_map.items():
@@ -1308,9 +1314,42 @@ class SerialPanelMixin:
         except Exception as e:
             logger.warning(f"パッド一覧の更新で例外: {e}")
 
+    def _poll_gamepads(self) -> None:
+        """抜き差しで一覧と状態行を追従させる画面側巡回（2秒毎）。
+
+        Tk から線への往復はしない。選択肢の名前（実名・汎名・未接続）と
+        状態行だけを取り直す。操作中（値を読んでいる最中）の上書きで
+        選択が飛ばないよう、選んでいる番号は保つ（refreshGamepads が
+        現在値を選び直す）。終了時は _cancel_gamepad_patrol で止める。
+        """
+        try:
+            self.refreshGamepads()
+        except Exception:
+            pass
+        try:
+            self._gamepad_after = self.root.after(2000, self._poll_gamepads)
+        except Exception:
+            self._gamepad_after = None
+
+    def _cancel_gamepad_patrol(self) -> None:
+        """巡回の予約を取り消す。終了・破棄の前に呼ぶ。"""
+        try:
+            after_id = getattr(self, "_gamepad_after", None)
+        except Exception:
+            after_id = None
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        try:
+            self._gamepad_after = None
+        except Exception:
+            pass
+
     def _on_gamepad_selected(self, event: Any = None) -> None:
         """選択肢で選んだパッドへ切り替える。途中でも切り替える。
-
         有効化中なら実体を作り直す（番号は生成時に固定のため）。
         無効中なら設定だけ残し、次回有効化で使う。
         """
