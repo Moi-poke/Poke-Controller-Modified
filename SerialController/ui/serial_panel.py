@@ -170,6 +170,11 @@ class SerialPanelMixin:
         self.disconnectComPort.pack(side="left", padx=(5, 0))
 
         self.is_show_serial = tk.BooleanVar()
+        # 値の変化を送信側へ押し込む。送信スレッドに Tk 変数を読ませると、
+        # GUI が忙しい間そこで待たされる（実機で 1.5 秒を実測し、その間は
+        # 姿勢が1本も送られなかった）。変化は必ず GUI スレッドで起きるため、
+        # ここで読んで渡してよい。
+        self.is_show_serial.trace_add("write", lambda *_: self._push_show_serial())
         # 操作ボタンと同じ行に並べると最も幅を取る行になるので、次の行へ。
         self.cb_show_serial = ttk.Checkbutton(self.serial_lf)
         self.cb_show_serial.config(
@@ -453,6 +458,18 @@ class SerialPanelMixin:
         self.refreshComPorts()
         self.activateSerial()
 
+    def _push_show_serial(self) -> None:
+        """表示の切替を送信側へ渡す（GUI スレッドから呼ばれる）。
+
+        送信スレッドは Tk 変数を読まないため、値の変化はここで知らせる。
+        送信側がまだ無いとき（起動直後）は SerialService 側が何もしない。
+        """
+        try:
+            value = bool(self.is_show_serial.get())
+        except Exception:
+            return
+        self.serial.set_show_serial(value)
+
     def _sender_spec(self) -> SenderSpec:
         """tk 変数の現在値を通常の値へ落として Sender 生成用にまとめる。
 
@@ -463,7 +480,7 @@ class SerialPanelMixin:
         actions = self.settings.input_log_actions.get().strip()
         return SenderSpec(
             transport_name=self._selectedTransportName(),
-            is_show_serial=self.is_show_serial,
+            is_show_serial=bool(self.is_show_serial.get()),
             arbitration_mode=self.arbitration_mode.get(),
             arbitration_cooldown=self._arbitrationCooldown(),
             input_log_format=self.settings.input_log_format.get(),
@@ -690,9 +707,14 @@ class SerialPanelMixin:
                 except (TypeError, ValueError):
                     pass
                 try:
-                    self.root.after(0, lambda: self._apply_bcon_wired_display(wired))
-                except Exception:
-                    pass
+                    # 表示の更新は最新 1 件で足りる。裏から after は呼ばない。
+                    from core.ui_inbox import post_latest_to_gui
+
+                    post_latest_to_gui(
+                        self, "bcon_wired", self._apply_bcon_wired_display, wired
+                    )
+                except Exception as e:
+                    logger.debug(f"bcon 表示の受け渡しに失敗: {e}")
                 return
 
         threading.Thread(target=job, daemon=True).start()
@@ -771,9 +793,12 @@ class SerialPanelMixin:
             try:
                 if getattr(self, "_closing", False):
                     return
-                self.root.after(0, self._finish_bcon_setter)
-            except Exception:
-                pass
+                # 後始末の通知は必ず届ける（捨てない）。裏から after は呼ばない。
+                from core.ui_inbox import post_to_gui
+
+                post_to_gui(self, self._finish_bcon_setter)
+            except Exception as e:
+                logger.warning(f"切替の反映を予約できませんでした: {e}")
 
         threading.Thread(target=job, daemon=True).start()
 
@@ -1173,9 +1198,12 @@ class SerialPanelMixin:
     def _onGamepadDisplay(self, snapshot: Any) -> None:
         """読取スレッドからの通知。Tk スレッドへ予約して描く。"""
         try:
-            self.root.after(0, self._paintGamepadMirror, snapshot)
-        except Exception:
-            pass
+            # 表示の更新は最新 1 件で足りる。裏から after は呼ばない。
+            from core.ui_inbox import post_latest_to_gui
+
+            post_latest_to_gui(self, "gamepad", self._paintGamepadMirror, snapshot)
+        except Exception as e:
+            logger.debug(f"ゲームパッド表示の受け渡しに失敗: {e}")
 
     def _paintGamepadMirror(self, snapshot: Any) -> None:
         """仮想パッドへゲームパッドの現在状態を描く（Tk スレッド専用）。"""

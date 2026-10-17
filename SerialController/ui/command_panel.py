@@ -556,7 +556,8 @@ class CommandPanelMixin:
                 # 回す（CaptureAreaProxy）。
                 gui = self.preview
                 if gui is not None:
-                    gui = CaptureAreaProxy(self.root, gui)
+                    # inbox は Window が作る（mixin の宿主なので mypy からは見えない）。
+                    gui = CaptureAreaProxy(self.root, gui, getattr(self, "inbox", None))
                 if WindowUtils.acceptsGuiArg(cmd_class):
                     command = cmd_class(self.camera, gui)
                 else:
