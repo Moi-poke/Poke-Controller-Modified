@@ -69,6 +69,9 @@ class Sender:
             transport if transport is not None else Transport.TextSerialTransport()
         )
         self.is_show_serial = is_show_serial
+        # 送信スレッドが読む値の控え。Tk の変数は GUI スレッドでしか
+        #   読まないため、作った場所（GUI）で一度だけ読んでおく。
+        self._show_serial_last = self._initialShowSerial(is_show_serial)
 
         self._logger = getLogger(__name__)
         self._logger.addHandler(NullHandler())
@@ -542,19 +545,63 @@ class Sender:
         return self.transport.is_open()
 
     def _should_show_serial(self) -> bool:
-        """is_show_serial は tk.BooleanVar でも素の bool でも受け付ける。
+        """いま送信行を表示するか。送信スレッドからも呼ばれる。
 
-        worker スレッドからも呼ばれる。Tk の変数を別スレッドから読むと
-        例外になることがあるため、読めないときは直前の値を保つ。
+        素の bool はそのまま読む。Tk の変数（get を持つもの）は
+        GUI スレッドからだけ読み、送信スレッドからは押し込まれた値を
+        使う。Tk の変数は GUI スレッドのもので、worker から読むと
+        GUI が忙しい間（Tcl が回っていない間）そこで待たされる。
+        実機で測ると 1.5 秒待たされ、その間は姿勢が1本も送られなかった。
+
+        読めないときは直前の値を保つ。表示の有無で送信は変えない。
         """
+        target = self.is_show_serial
+        getter = getattr(target, "get", None)
+        if not callable(getter):
+            self._show_serial_last = bool(target)
+            return self._show_serial_last
+        if threading.current_thread() is not threading.main_thread():
+            # ここで Tk の変数は読まない（GUI の都合で待たされるため）。
+            return bool(getattr(self, "_show_serial_last", True))
         try:
-            getter = getattr(self.is_show_serial, "get", None)
-            value = bool(getter()) if callable(getter) else bool(self.is_show_serial)
+            value = bool(getter())
         except Exception:
             # 読めないときは直前の値を保つ。表示の有無で送信は変えない。
             return bool(getattr(self, "_show_serial_last", True))
         self._show_serial_last = value
         return value
+
+    def setShowSerial(self, value: Any) -> None:
+        """送信行を表示するかを押し込む（GUI スレッドから呼ぶ）。
+
+        画面が値の変化を知らせるための入口である。Tk の変数を
+        送信スレッドに読ませないために要る。画面側の入口は
+        SerialService.set_show_serial。
+
+        素の bool を渡されていた場合は属性そのものが正なので、
+        そちらも揃える（外から見た値と送信側の値が食い違わない）。
+        Tk の変数は書き換えない（画面の表示と取り合いになるため）。
+        """
+        self._show_serial_last = bool(value)
+        if not callable(getattr(self.is_show_serial, "get", None)):
+            self.is_show_serial = self._show_serial_last
+
+    @staticmethod
+    def _initialShowSerial(value: Any) -> bool:
+        """表示可否の初期値を読む。
+
+        Tk の変数は GUI スレッドのときだけ読む。読めない場所で
+        作られた場合の既定は「表示する」（送信そのものは変えない）。
+        """
+        getter = getattr(value, "get", None)
+        if not callable(getter):
+            return bool(value)
+        if threading.current_thread() is not threading.main_thread():
+            return True
+        try:
+            return bool(getter())
+        except Exception:
+            return True
 
     def writeRow(
         self, row: str, is_show: bool = False, measure_perf: bool = True
@@ -694,8 +741,11 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-        if snap is not None:
-            self.putLive(snap)
+            # 列への投入まで錠の中で行う。snapshot と push の間に錠を離すと、
+            #   別スレッドの新しい revision が先に積まれ、古い状態が後ろに
+            #   並ぶ（線には古い状態が最後に残る）。
+            if snap is not None:
+                self.putLive(snap)
 
     def applyHat(self, hat: Any = None) -> None:
         """Hat の向きを差し替え、変化があれば live に渡す。
@@ -718,8 +768,9 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-        if snap is not None:
-            self.putLive(snap)
+            # 列への投入まで錠の中で行う（applyButtons と同じ理由）。
+            if snap is not None:
+                self.putLive(snap)
 
     # 既定の所有者。source を渡さない経路はここへ集める。
     #   所有者が 1 人だけのときは、合成しても現行と同じ値になる。
@@ -806,8 +857,10 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-        if snap is not None:
-            self.putLive(snap)
+            # 列への投入まで錠の中で行う（applyButtons と同じ理由。ここを
+            # 離すと、後から来た新しい revision が先に積まれて順序が破れる）。
+            if snap is not None:
+                self.putLive(snap)
         return True
 
     def restoreOwner(self, source: Any = None) -> bool:
@@ -842,8 +895,9 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-        if snap is not None:
-            self.putLive(snap)
+            # 列への投入まで錠の中で行う（applyButtons と同じ理由）。
+            if snap is not None:
+                self.putLive(snap)
         return True
 
     def isOwnerSuspended(self, source: Any = None) -> bool:
@@ -881,8 +935,9 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-        if snap is not None:
-            self.putLive(snap)
+            # 列への投入まで錠の中で行う（applyButtons と同じ理由）。
+            if snap is not None:
+                self.putLive(snap)
         return had
 
     def getOwners(self) -> dict[str, Any]:
@@ -1059,8 +1114,9 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-        if snap is not None:
-            self.putLive(snap)
+            # 列への投入まで錠の中で行う（applyButtons と同じ理由）。
+            if snap is not None:
+                self.putLive(snap)
 
     def releaseAll(self) -> None:
         """全項目を中立に戻し、変化があれば live に渡す。
@@ -1094,8 +1150,9 @@ class Sender:
                 self._bumpRevision()
                 if self._liveCapable():
                     snap = self.snapshot()
-        if snap is not None:
-            self.putLive(snap)
+            # 列への投入まで錠の中で行う（applyButtons と同じ理由）。
+            if snap is not None:
+                self.putLive(snap)
 
     def getPosture(self) -> dict[str, int]:
         """現在の姿勢の写しを返す（確認・デバッグ用）。"""
@@ -1366,7 +1423,8 @@ class Sender:
             return False
         self.releaseAll()
         if self._liveCapable():
-            self.putLive(self.snapshot())
+            # 錠の外で採った snapshot を渡すと順序が崩れ得るので、採取ごと任せる。
+            self.putLive()
             return True
         self.writeRow(self._buildRow())
         return True
@@ -1547,6 +1605,16 @@ class Sender:
             self._live_last_shown_at: float | None = None
         if not hasattr(self, "_live_last_shown_snap"):
             self._live_last_shown_snap: dict[str, Any] | None = None
+        if not hasattr(self, "_last_put_rev"):
+            self._last_put_rev = -1
+        if not hasattr(self, "_open_probe_at"):
+            self._open_probe_at = -1e9
+        if not hasattr(self, "_open_probe_tr"):
+            self._open_probe_tr: Any = None
+        if not hasattr(self, "_open_probe_ok"):
+            self._open_probe_ok = True
+        if not hasattr(self, "_open_probe_warned"):
+            self._open_probe_warned = False
 
     def putLive(
         self, snap: dict[str, Any] | None = None, *, _closing: bool = False
@@ -1563,11 +1631,22 @@ class Sender:
         なく順序の保護であり、優先送信ではない。
         """
         self._ensureLiveState()
-        if self._live_closing and not _closing:
-            return
-        if snap is None:
-            snap = self.snapshot()
-        self._live_sched.push(snap)
+        # 保証できるのは snap を省いたとき（この錠の中で採る）だけ。外で採った
+        # snap を渡された場合は、ここで錠を取っても古さは直らないので順序は
+        # 保証されない（渡す側が _lock の中で採ること）。渡された snap の古さは
+        # __debug__ の assert で検出する。
+        with self._lock:
+            if self._live_closing and not _closing:
+                return
+            if snap is None:
+                snap = self.snapshot()
+            revision = int(snap.get("revision", 0))
+            if __debug__:
+                assert revision >= self._last_put_rev, (
+                    "stale snapshot: 錠の外で採った snap を渡していないか"
+                )
+            self._last_put_rev = revision
+            self._live_sched.push(snap)
         with self._live_lock:
             self._live_stats["put"] += 1
 
@@ -1643,6 +1722,43 @@ class Sender:
             pass
         self._live_timer_raised = False
 
+    #: 線が開いているかの問い合わせ間隔（秒）。bcon_proc では IPC の往復に
+    #: なるため、毎スロット（8ms）で呼ぶと送出の周期が崩れる。
+    OPEN_PROBE_S = 0.25
+
+    def _transportOpenCached(self, transport: Any, now: float) -> bool:
+        """線が開いているか。問い合わせは OPEN_PROBE_S に 1 回だけにする。
+
+        判定を持たない Transport、および判定が遠隔（子プロセスの往復）の
+        Transport は問い合わせずに開いている扱いにする。IPC を 8ms ループから
+        呼ぶと周期が崩れ、応答が遅いだけの子を「閉」と誤判定して送信が止まる。
+        仮に閉じていても、送信側の失敗で間引きが効くのでログは溢れない。
+        """
+        if (
+            self._open_probe_tr is transport
+            and now - self._open_probe_at < self.OPEN_PROBE_S
+        ):
+            return self._open_probe_ok
+        self._open_probe_tr = transport
+        self._open_probe_at = now
+        probe = getattr(transport, "is_open", None)
+        # 判定が手元（ローカル）の方式だけ問い合わせる。遠隔の判定は
+        # 8ms の送出ループを止めるので、問い合わせない。
+        if probe is None or not getattr(transport, "is_open_is_local", False):
+            self._open_probe_ok = True
+            return True
+        try:
+            self._open_probe_ok = bool(probe() if callable(probe) else probe)
+        except Exception:
+            if not self._open_probe_warned:
+                self._open_probe_warned = True
+                self._logger.warning(
+                    "is_open の問い合わせで例外。開いている扱いにします",
+                    exc_info=True,
+                )
+            self._open_probe_ok = True
+        return self._open_probe_ok
+
     def _liveLoop(self, transport: Any) -> None:
         """8 ms ごとに最新の姿勢を1行送り続ける（状態同期）。
 
@@ -1688,6 +1804,13 @@ class Sender:
                         last_at = self._live_last_sent_at
                     if last_at is not None and now - last_at < self.LIVE_REPEAT_S:
                         continue
+                if not self._transportOpenCached(transport, now):
+                    # 線が開いていない間は送らない。送れば毎スロットで例外に
+                    #   なり、「Using a port that is not open.」を毎秒40行
+                    #   ログへ流す。開いた時点から次のスロットで送り始める。
+                    with self._live_lock:
+                        self._live_last_sent_at = now
+                    continue
                 self._recordLiveOrder(out)
                 try:
                     show = self._showLiveRow(out, now, is_repeat)
@@ -1698,6 +1821,11 @@ class Sender:
                             self._live_stats["keepalive"] += 1
                         self._live_last_sent_at = time.perf_counter()
                 except Exception:
+                    # 失敗しても再送間隔を進める。進めないと repeat の門が
+                    #   開いたままになり、8ms ごとに再試行して traceback を
+                    #   吐き続ける（線は無音のまま）。
+                    with self._live_lock:
+                        self._live_last_sent_at = time.perf_counter()
                     self._logLiveError()
         finally:
             # worker の終了時は必ず戻す（異常終了でも通る）。
@@ -1725,8 +1853,9 @@ class Sender:
 
         確認と起動を _live_lock の中で行う。二重起動で worker が
         漏れると、古い方が止められず線が2本になる。
-        準備（列への投入）は外で行う。錠の中で putLive すると
-        同じ錠を取り直して詰まる（Lock は再入不可）。
+        列への投入は _lock（再入可）の中で行う。_live_lock は再入不可なので
+        その中では putLive しない。snapshot と push を離すと、同時に走った
+        apply* の新しい revision が先に積まれ、起動時の古い状態が後ろに並ぶ。
         動いているときは帳簿に触らず False で抜ける。
         """
         return self._startLiveWorker(transport) is not None
@@ -1746,13 +1875,19 @@ class Sender:
             thread = self._live_thread
             if thread is not None and thread.is_alive():
                 return None
-        self._live_stop.clear()
+            # 停止の印を消すのも錠の中。外で消すと、止まりかけの worker を
+            # 生き返らせる（停止側が印を立てた直後に消える）競合が起きる。
+            self._live_stop.clear()
         with self._live_lock:
             self._live_last_snap = None
             self._live_last_sent_at = None
             self._live_last_shown_at = None
             self._live_last_shown_snap = None
-        self.putLive(self.snapshot())
+        with self._lock:
+            # snapshot と push を同じ臨界区間に入れる。離すと、同時に走った
+            # apply* の新しい revision が先に積まれ、起動時の古い状態が
+            # 後ろに並ぶ（線には古い状態が最後に残る）。
+            self.putLive(self.snapshot())
         with self._live_lock:
             thread = self._live_thread
             if thread is not None and thread.is_alive():
@@ -1807,8 +1942,9 @@ class Sender:
         起動側が止まるまで待たされる。
         """
         self._ensureLiveState()
-        self._live_stop.set()
         with self._live_lock:
+            # 印を立てるのも錠の中（_startLiveWorker の clear と競合させない）。
+            self._live_stop.set()
             thread = self._live_thread
         if thread is None:
             return True

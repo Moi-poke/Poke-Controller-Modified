@@ -115,6 +115,15 @@ class CommandRunner:
         # 打ち切り後に塞いだ古い作業の線。生きている間の新規開始は断り
         # 二重駆動にしない。死んだのを見たら外す。
         self._fenced_thread: Any = None
+        # 打切りで止めた live worker を起こし直す必要があるかの印。
+        #   live 経路は列へ積むだけで同期送信しないため、止めたまま
+        #   黙って無音になる。
+        self._fenced_live = False
+        # 打切りで逃げたコマンドの送り元。再開時にこの持ち分だけを取り下げる
+        # （全所有者を消すと、人の入力や次のコマンドの初回押下まで消える）。
+        self._fenced_owner: str | None = None
+        # 再開の世代。後発の再開や終了で、走っている再試行を打ち切る。
+        self._resume_gen = 0
         # 走行記録の受け先（SerialService）。無いときは記録しない。
         # Window が組み立て後に set_diag で渡す。呼び出しは例外を握り、
         # 記録の失敗で実行を壊さない。
@@ -282,6 +291,8 @@ class CommandRunner:
                 logger.warning("Start refused while fenced thread is alive")
                 return
             self._fenced_thread = None
+            # 塞ぎが解けたので、止めていた live worker を戻す。
+            self._resume_fenced_live(ser)
         # 二重起動を断る。Tk は同じボタンのコールバックを並行実行しないが、
         # F6・パレット・外部呼び出しからも入って来られる。
         if self.is_busy():
@@ -475,7 +486,13 @@ class CommandRunner:
             if waited >= STOP_ESCALATE_MS:
                 # 打ち切り。線を塞いで画面を戻す。新規開始は塞ぎが解けるまで断る。
                 self._fence_live(self._ser)
+                # 再試行中にまた塞ぐことがある。走っている再開を無効にする。
+                self._resume_gen += 1
                 self._fenced_thread = thread
+                # 逃げたコマンドの送り元を覚える（再開時にこの分だけ取り下げる）。
+                self._fenced_owner = str(
+                    getattr(self._running, "input_source", "script")
+                )
                 self._end_reason = "打切り（線を塞ぎ）"
                 message = (
                     f"コマンドが停止しません（経過 {waited // 1000}秒）。"
@@ -613,11 +630,27 @@ class CommandRunner:
             alive = False
         if not alive:
             self._fenced_thread = None
+            self._resume_fenced_live()
 
     def _fence_live(self, ser: Any) -> None:
-        """生き残りが線へ書き続けないよう送出だけ止める。失敗は握る。"""
+        """生き残りが線へ書き続けないよう送出だけ止める。失敗は握る。
+
+        止める相手は live 経路の共有 worker でもある。止めたら覚えておき、
+        塞ぎを外すときに _resume_fenced_live で必ず起こし直す。覚えないと、
+        打ち切り後の実行が「申告は積まれるが1行も出ない」無音のまま走る
+        （利用者からは Start は押せて動いているのに Switch が動かない、
+        と見える）。
+        """
         try:
             if ser is not None:
+                capable = getattr(ser, "isLiveCapable", None)
+                running = getattr(ser, "isLiveWorkerRunning", None)
+                if callable(capable) and callable(running):
+                    try:
+                        if capable() and running():
+                            self._fenced_live = True
+                    except Exception as e:
+                        logger.warning(f"live worker の稼働確認で例外: {e}")
                 discard = getattr(ser, "discardLive", None)
                 if callable(discard):
                     try:
@@ -632,6 +665,106 @@ class CommandRunner:
                         logger.warning(f"live worker の停止で例外: {e}")
         except Exception as e:
             logger.warning(f"線の封鎖で例外: {e}")
+
+    def _resume_fenced_live(self, target_ser: Any = None) -> None:
+        """塞ぎで止めた live worker を起こし直す（片付けは同期、再試行は裏）。
+
+        target_ser は「これから使う線」。request_start は self._ser を差し替える
+        前にここを通るため、渡さないと古い個体（もう使わない Sender）を
+        起こし直してしまう。渡されなければ今の self._ser を使う。
+
+        起こす前に 2 つ片付ける。どちらも「古い実行の持ち越し」を断つため。
+
+        1. 塞いでいる間に溜まった申告を捨てる（discardLive）。
+        2. 逃げたコマンドの持ち分だけ取り下げる（dropOwner）。全所有者を
+           取り下げると、人の入力（キーボード/ゲームパッド）や、これから
+           始まるコマンドの初回押下まで消えてしまう。
+
+        片付けは GUI スレッドで同期的に行い、すぐ終わらせる。止まりきって
+        いない worker を待つ再試行は裏スレッドへ出す（GUI を固めない）。
+        終了処理中は起こさない（closeSerial が止める側だから）。
+        """
+        resume, self._fenced_live = self._fenced_live, False
+        owner, self._fenced_owner = self._fenced_owner, None
+        if not resume or self._closing:
+            return
+        ser = self._ser if target_ser is None else target_ser
+        try:
+            capable = getattr(ser, "isLiveCapable", None)
+            if not callable(capable) or not capable():
+                return
+            is_open = getattr(ser, "isOpened", None)
+            if callable(is_open) and not is_open():
+                # 線が閉じている（closeSerial が走った）。_live_closing が真の
+                # ままで putLive が捨てるので、起こしても無音になる。
+                logger.debug("線が閉じているため live worker を起こしません")
+                return
+            discard = getattr(ser, "discardLive", None)
+            if callable(discard):
+                try:
+                    discard()
+                except Exception as e:
+                    logger.warning(f"live の破棄で例外（再開は続けます）: {e}")
+            dropper = getattr(ser, "dropOwner", None)
+            if owner is not None and callable(dropper):
+                try:
+                    dropper(owner)
+                except Exception as e:
+                    logger.warning(f"押下の取り下げで例外（再開は続けます）: {e}")
+            elif owner is None:
+                # 送り元が分からないときは全取り下げをしない（人の入力を消す）。
+                logger.warning("逃げた送り元が不明なため押下の取り下げを省きました")
+        except Exception as e:
+            # 片付けの失敗で再開を止めない（止めると live が無音のまま残る）。
+            logger.warning(f"live の片付けで例外（再開は続けます）: {e}")
+        self._resume_gen += 1
+        threading.Thread(
+            target=self._resume_worker_bg,
+            args=(ser, self._resume_gen),
+            name="LiveResumer",
+            daemon=True,
+        ).start()
+
+    def _resume_worker_bg(self, ser: Any, gen: int) -> None:
+        """裏で worker を起こし直す。Tk には触らない。
+
+        止まりきっていない worker が残っていると startLiveWorker は何もせず
+        False を返し、_live_stop も消さないため、あとで自然に死んでも誰も
+        起こせず無音のままになる。少し待ってから起こし直す。
+        """
+        running = getattr(ser, "isLiveWorkerRunning", None)
+        stopper = getattr(ser, "stopLiveWorker", None)
+        starter = getattr(ser, "startLiveWorker", None)
+        if not callable(starter):
+            return
+
+        def _stale() -> bool:
+            """終了した、または後発の再開に譲るべきか。"""
+            return self._closing or gen != self._resume_gen
+
+        try:
+            for _ in range(5):
+                if _stale():
+                    return
+                if callable(running) and running():
+                    if callable(stopper):
+                        stopper(0.5)
+                    # 待った後にもう一度見る（その間に封鎖・終了があり得る）。
+                    if _stale():
+                        return
+                    time.sleep(0.05)
+                    continue
+                # 起こす直前にも見る（封鎖された線を起こさない）。
+                if _stale():
+                    return
+                if starter():
+                    return
+                time.sleep(0.1)
+            logger.error("live worker を起こし直せませんでした（塞ぎは解除済み）")
+            # print は LogPane の待ち行列経由なので裏からでも安全。
+            print("送信の再開に失敗しました。シリアルを接続し直してください")
+        except Exception as e:
+            logger.warning(f"live worker の再開で例外: {e}")
 
     def _cancel_poll(self) -> None:
         """完了取り出しの予約を取り消す。"""
@@ -656,6 +789,8 @@ class CommandRunner:
     def notify_closing(self) -> None:
         """終了処理が始まったことを知らせる。以後の後始末は受け付けない。"""
         self._closing = True
+        # 走っている再開の再試行を打ち切る（裏スレッドが居座らない）。
+        self._resume_gen += 1
 
     def shutdown(self, ser: Any) -> bool:
         """終了に先立ってコマンドを止める。

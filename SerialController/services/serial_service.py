@@ -56,7 +56,7 @@ class SenderSpec:
     """Sender 生成に要る設定値一式（tk 変数ではなく通常の値）。"""
 
     transport_name: str
-    is_show_serial: Any
+    is_show_serial: bool
     arbitration_mode: str
     arbitration_cooldown: float
     input_log_format: str
@@ -112,6 +112,10 @@ class SerialService:
         self._run_writer: Any = None
         self._run_rows = 0
         self._run_transport: Any = None
+        # 走行 CSV の書き込みと close を直列化する（送出スレッドと終了処理が
+        # 競合すると行が混ざる）。RLock なのは、書き込み失敗時に同じ錠の中で
+        # _close_run_file を呼ぶ経路があるため。
+        self._run_write_lock = threading.RLock()
         # 前走終了時のM計数。次走の差分の基準にする（初走は基準なし）。
         self.last_m: dict[str, int] | None = None
         # コード版の写し（走行開始行に付ける）。初回だけgitへ聞く。
@@ -251,6 +255,18 @@ class SerialService:
             spec.input_log_enabled,
             spec.input_log_stick_change,
         )
+
+    def set_show_serial(self, value: bool) -> None:
+        """送信内容を表示するかの切替を送信側へ押し込む（GUI スレッドから呼ぶ）。
+
+        Tk の変数を送信スレッドに読ませないための入口である。Tk の
+        変数は GUI スレッドのもので、worker から読むと GUI が忙しい間
+        （Tcl が回っていない間）そこで待たされる。送信側がまだ無い
+        とき（起動直後）は何もしない。
+        """
+        if self.sender is None:
+            return
+        self.sender.setShowSerial(bool(value))
 
     def apply_input_log(
         self, format: str, actions: str, enabled: bool, stick_change: bool
@@ -641,14 +657,15 @@ class SerialService:
 
     def _close_run_file(self) -> None:
         """記録CSVを閉じる。無ければ何もしない。"""
-        try:
-            if self._run_file is not None:
-                self._run_file.close()
-        except Exception:
-            logger.debug("記録CSVの close に失敗", exc_info=True)
-        finally:
-            self._run_file = None
-            self._run_writer = None
+        with self._run_write_lock:
+            try:
+                if self._run_file is not None:
+                    self._run_file.close()
+            except Exception:
+                logger.debug("記録CSVの close に失敗", exc_info=True)
+            finally:
+                self._run_file = None
+                self._run_writer = None
 
     def begin_command_run(self, cmd_name: Any, profile: str = "") -> None:
         """走行記録を始める。runner が開始確定後に呼ぶ。
@@ -672,6 +689,8 @@ class SerialService:
             self._run_csv_path = ""
             csv_path = ""
             if transport is not None:
+                # 途中で失敗しても必ず閉じるため、開く前から名前を用意する。
+                handle = None
                 try:
                     os.makedirs(self._log_dir, exist_ok=True)
                     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -699,8 +718,26 @@ class SerialService:
                     self._run_transport = transport
                     self._run_csv_path = csv_path
                 except Exception:
-                    logger.debug("ワイヤ記録の開始に失敗", exc_info=True)
+                    # 記録が始まらなかったことは走行日誌側で分かるが、黙って
+                    # いると CSV が無い理由が追えない。警告として残す。
+                    logger.warning(
+                        "ワイヤ記録の開始に失敗。記録なしで続行します", exc_info=True
+                    )
                     self._run_csv_path = ""
+                    # 開いていて所有権を渡していない handle は、ここで閉じる
+                    # （_close_run_file は self._run_file しか見ない）。
+                    if handle is not None:
+                        try:
+                            handle.close()
+                        except Exception:
+                            logger.debug("記録ファイルを閉じられません", exc_info=True)
+                        self._run_file = None
+                        self._run_writer = None
+                    # 差し替えだけ済んでいた場合は包みを外す（走行のたびに
+                    # 包みが重なるのを防ぐ）。
+                    instance = getattr(transport, "__dict__", None)
+                    if isinstance(instance, dict):
+                        instance.pop("send_row", None)
             self._run_active = True
             logger.info(
                 run_journal.format_run_start(
@@ -719,15 +756,23 @@ class SerialService:
     def _record_wire_row(self, writer: Any, handle: Any, at: float, row: Any) -> None:
         """送出1行をCSVへ写す。上限を超えたら記録だけ止める。"""
         try:
-            if self._run_writer is not writer or self._run_rows >= self.MAX_RUN_ROWS:
-                if self._run_rows >= self.MAX_RUN_ROWS and self._run_writer is writer:
-                    self._run_writer = None
-                    logger.warning("ワイヤ記録が上限に達したため記録を止めます")
-                return
-            writer.writerow([f"{at:.6f}", str(row)])
-            self._run_rows += 1
-            if self._run_rows % 200 == 0:
-                handle.flush()
+            # 同一性の確認も書き込みも同じ錠の中で行う（close と競合させない）。
+            with self._run_write_lock:
+                if (
+                    self._run_writer is not writer
+                    or self._run_rows >= self.MAX_RUN_ROWS
+                ):
+                    if (
+                        self._run_rows >= self.MAX_RUN_ROWS
+                        and self._run_writer is writer
+                    ):
+                        self._run_writer = None
+                        logger.warning("ワイヤ記録が上限に達したため記録を止めます")
+                    return
+                writer.writerow([f"{at:.6f}", str(row)])
+                self._run_rows += 1
+                if self._run_rows % 200 == 0:
+                    handle.flush()
         except Exception:
             logger.debug("ワイヤ記録の書き出しに失敗", exc_info=True)
 
@@ -758,8 +803,12 @@ class SerialService:
         try:
             sender = self.sender
             transport = getattr(sender, "transport", None) if sender else None
-            if transport is None or getattr(transport, "ser", None) is None:
-                logger.debug("M取得なし（serを持たない方式）")
+            if transport is None:
+                logger.debug("M取得なし（transportが無い）")
+                return
+            # 送信方式で切ってから生シリアルを取る（bcon には M を混ぜない）。
+            if run_journal.raw_serial_for_m(transport) is None:
+                logger.debug("M取得なし（生シリアルを持たない方式）")
                 return
             now = read_m_counts(transport)
             text = run_journal.format_m_delta(self.last_m, now if now else None)

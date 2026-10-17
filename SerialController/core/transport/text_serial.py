@@ -48,6 +48,10 @@ class TextSerialTransport(Transport):
       これだけを用意し、挙動を変えない。
     """
 
+    #: is_open が手元で完結する（IPC を伴わない）。送出ループからの
+    #: 問い合わせを許す印。遠隔判定の方式はこれを立てないこと。
+    is_open_is_local = True
+
     name = "legacy_text"
 
     def __init__(self, logger: Any = None) -> None:
@@ -79,6 +83,8 @@ class TextSerialTransport(Transport):
         self._rx_waiters: list[tuple[tuple[str, ...], threading.Event, dict]] = []
         self._rx_thread: threading.Thread | None = None
         self._rx_stop = threading.Event()
+        #: 受信ポンプが諦めたか（待機側が「来ない」と区別するため）。
+        self._rx_dead = False
 
     # -- 聞き手の付け外し ---------------------------------------------------
 
@@ -153,6 +159,10 @@ class TextSerialTransport(Transport):
         else:
             limit = max(0.0, min(raw, 5.0))
         if not self.rx_pump_running():
+            if self.rx_dead():
+                # ポンプが「諦めた」状態。黙って待ち直すと、来ない理由が
+                # 分からないので記録してから起こし直す。
+                self._logger.warning("受信ポンプが停止していました。起こし直します")
             # 死んだ後の復帰。止める合図がなければ起こし直す。
             if self.ser is None or self._rx_stop.is_set():
                 return None
@@ -178,6 +188,14 @@ class TextSerialTransport(Transport):
                 if entry in self._rx_waiters:
                     self._rx_waiters.remove(entry)
 
+    def rx_dead(self) -> bool:
+        """受信ポンプが諦めたか。
+
+        待機側が「まだ来ない」と「もう死んでいる」を区別するために見る。
+        立っている間は、待っても応答は来ない（起こし直しで消える）。
+        """
+        return bool(self._rx_dead)
+
     def rx_pump_running(self) -> bool:
         """読みポンプが動いているか（読むだけ）。"""
         thread = self._rx_thread
@@ -196,6 +214,8 @@ class TextSerialTransport(Transport):
             if self.ser is None:
                 return False
             self._rx_stop.clear()
+            # 起こし直しでは「死んだ」印も消す。
+            self._rx_dead = False
             thread = threading.Thread(
                 target=self._rx_loop, name="PokeConRxPump", daemon=True
             )
@@ -245,6 +265,7 @@ class TextSerialTransport(Transport):
         （止める合図が出ていないのに止まっているときだけ）。
         """
         buf = bytearray()
+        streak = 0
         while not self._rx_stop.is_set():
             ser = self.ser
             if ser is None:
@@ -252,10 +273,20 @@ class TextSerialTransport(Transport):
             try:
                 chunk = ser.read(64)
             except Exception:
-                self._logger.warning(
-                    "rx 読み取りで例外のためポンプを止めます", exc_info=True
+                # 一時的な失敗は数回まで許す（1 回で諦めると、待機側は
+                # タイムアウトを繰り返すだけで原因が分からない）。
+                streak += 1
+                if streak <= 3:  # 一時的な失敗は 3 回まで許す
+                    self._logger.debug("rx 読み取りに失敗。再試行します", exc_info=True)
+                    time.sleep(0.02)  # 少し置いてから読み直す
+                    continue
+                self._rx_dead = True
+                self._logger.error(
+                    "rx 読み取りが続けて失敗。ポンプを止めます", exc_info=True
                 )
+                print("受信が止まりました（シリアル接続を確認してください）")
                 break
+            streak = 0
             if not chunk:
                 continue
             buf.extend(chunk)
