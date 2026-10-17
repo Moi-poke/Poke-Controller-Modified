@@ -26,6 +26,8 @@
     pokecon_hold: PRESS_WORDS.concat(["hold", "おしつづける", "押し続け"]),
     pokecon_hold_end: ["ぼたん", "press", "はなす", "離す", "hold"],
     pokecon_stick: ["すてぃっく", "stick", "倒す", "たおす"],
+    pokecon_stick_release: ["すてぃっく", "stick", "はなす", "離す", "release",
+      "もどす", "戻す"],
     pokecon_wait: WAIT_WORDS.concat(["たいき"]),
     pokecon_elapsed: ["けいか", "経過", "時間", "time", "elapsed",
       "じかんぎれ", "時間切れ"],
