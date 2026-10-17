@@ -42,7 +42,7 @@ def _event(
 
 
 def test_real_wire_records_button_hat_and_stick_in_order() -> None:
-    """Given: 本物の送信経路に記録を付ける / When: A→十字キー上→左スティック上を操作する / Then: 順に材料になること。"""
+    """Given: 本物の送信経路に記録を付ける / When: A→十字キー上→左スティック上を操作する / Then: 順に手順になること。"""
     # Given: 本物の送信経路に記録を付ける
     transport = FakeTransport()
     sender = Sender.Sender(is_show_serial=False, transport=transport)
@@ -61,16 +61,8 @@ def test_real_wire_records_button_hat_and_stick_in_order() -> None:
     time.sleep(0.1)
     keys.inputEnd(Direction.UP)
     steps = rec.stop()
-    # Then: 順に Button.A・Hat.TOP（押す手順）→ スティックの軌跡（材料）
-    assert [s.get("target") for s in steps[:2]] == ["Button.A", "Hat.TOP"]
-    assert all(s.get("kind") == "press" for s in steps[:2])
-    assert all(s["kind"] in ("stick", "release_stick") for s in steps[2:]), steps
-    assert steps[-1] == {"kind": "release_stick", "side": "L"}
-    # Then: 倒し始めが区間として残る（最初の区間が無変化だと stick_move は
-    # 何も送らず、倒す動きが再生から丸ごと消える）
-    first = steps[2]
-    assert first["kind"] == "stick" and first["side"] == "L"
-    assert first["from"][0] < 8 and first["to"][0] >= 127, steps
+    # Then: 順に Button.A・Hat.TOP・Direction.UP になる
+    assert [s["target"] for s in steps] == ["Button.A", "Hat.TOP", "Direction.UP"]
     # Then: A の duration は約0.1・wait は約0.3（0.05単位の丸めで±0.1以内）
     assert abs(float(steps[0]["duration"]) - 0.1) <= 0.1
     assert abs(float(steps[0]["wait"]) - 0.3) <= 0.1

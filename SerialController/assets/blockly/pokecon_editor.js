@@ -13,21 +13,12 @@
   // 標準の disableOrphans と付け外しを共有する。
   var ORPHAN_REASON = "ORPHANED_BLOCK";
 
-  // 記録材料を入れられなかったときの一言。画面が無い検証でも落とさない。
-  function warnStep(message) {
-    try {
-      if (typeof console !== "undefined" && console.warn) {
-        console.warn("[blockly] " + message);
-      }
-    } catch (e) {
-      /* 出せなくても続ける */
-    }
-  }
-
   // motion 材料 1 件をブロックにする。press 手順なら null を返す。
   // kind: stick → pokecon_motion、stick2 → pokecon_motion2、
   // hold/hold_end → pokecon_hold/pokecon_hold_end、
-  // release_stick → pokecon_stick_release（側をそのまま渡す）。
+  // wait → pokecon_wait（sec・wait の順で秒を読む）、
+  // release_stick は直前の motion 系ブロックの END を RELEASE にする。
+  var lastMotionBlock = null;
   function pairText(pair) {
     if (!pair || pair.length < 2) { return "0,90"; }
     return String(pair[0]) + "," + String(pair[1]);
@@ -61,6 +52,7 @@
         T_MS: s.t_ms,
         END: "CONT",
       });
+      lastMotionBlock = b;
     } else if (s.kind === "stick2") {
       b = ws.newBlock("pokecon_motion2");
       setFields(b, {
@@ -71,25 +63,45 @@
         T_MS: s.t_ms,
         END: "CONT",
       });
+      lastMotionBlock = b;
     } else if (s.kind === "hold") {
       b = ws.newBlock("pokecon_hold");
-      setFields(b, {
-        TARGET: String(s.target || "Button.A"),
-        // 記録は「押した瞬間」を表す。待ちを入れると押下が延び、以後の
-        // 区間がその分ずつ後ろへずれる（記録側は待ちなしで作る）。
-        WAIT: s.wait == null ? 0 : s.wait,
-      });
+      var target = String(s.target || "Button.A");
+      // chord 連鎖の持ち時間（at_ms 由来の wait も同じ欄で来る）。
+      // 数値が無ければ従来どおり既定の 0.1。
+      var holdWait = Number(s.wait);
+      if (!isFinite(holdWait)) {
+        holdWait = 0.1;
+      }
+      setFields(b, { TARGET: target, WAIT: holdWait });
     } else if (s.kind === "hold_end") {
       b = ws.newBlock("pokecon_hold_end");
-      setFields(b, { TARGET: String(s.target || "Button.A") });
+      var endTarget = String(s.target || "Button.A");
+      setFields(b, { TARGET: endTarget });
+    } else if (s.kind === "wait") {
+      // chord 連鎖の待ち（変換器は sec・wait のどちらかで秒を載せる）。
+      // press フォールバックへ落とすと押下になるためここで受ける。
+      b = ws.newBlock("pokecon_wait");
+      var sec = Number(s.sec);
+      if (!isFinite(sec)) {
+        sec = Number(s.wait);
+      }
+      if (isFinite(sec)) {
+        setFields(b, { SEC: sec });
+      }
     } else if (s.kind === "release_stick") {
-      // 解放は専用ブロックで表す（側を保つ）。以前は直前の motion の END を
-      // 書き換えていたため、L/R 同時の記録で片側しか離せなかった。
-      b = ws.newBlock("pokecon_stick_release");
-      var side = String(s.side || "L");
-      setFields(b, {
-        STICK: side === "BOTH" ? "BOTH" : (side === "R" ? "RIGHT" : "LEFT"),
-      });
+      // 直前の motion 系の END を RELEASE にする（ブロックは増やさない）。
+      if (lastMotionBlock) {
+        try {
+          lastMotionBlock.setFieldValue("RELEASE", "END");
+        } catch (e) { /* 欄が無ければそのまま */ }
+      }
+      lastMotionBlock = null;
+      return null;
+    } else if (s.kind === "press") {
+      // chord 連鎖・motion クリップ外の press は従来の pokecon_press 扱い。
+      // 欄への具体値は insertSteps 側の press フォールバックが付ける。
+      return null;
     } else {
       return null;
     }
@@ -647,16 +659,18 @@
 
     // 記録した手順をブロックの並びにして挿入する。
     // steps は [{target, duration, wait}]（press 手順、services/blockly_record
-    // の形）か、motion 材料（{kind: stick/stick2/hold/hold_end/release_stick}）
-    // の混在。target は Button.A / Hat.TOP / Direction.UP の形で、BUTTON 欄の
+    // の形。{kind: 'press', ...} も同じ扱い）か、motion 材料（{kind:
+    // stick/stick2/hold/hold_end/wait/release_stick}）の混在。target は
+    // Button.A / Hat.TOP / Direction.UP の形で、BUTTON 欄の
     // 書式に合わせる（ボタンだけ素の名 A、方向は Hat./Direction. のまま）。
     // motion 材料は pokecon_motion / pokecon_motion2・pokecon_hold・
-    // pokecon_hold_end・pokecon_stick_release ブロックになる。
+    // pokecon_hold_end・pokecon_wait ブロックになる。
     // 挿入位置は、選択中の文ブロックがあればその直後（元の後続は最後の
     // 新ブロックの後ろへつけ直す）、無ければプログラムの DO の末尾、
     // プログラムが無ければ空いている所。全体を1つの取り消し単位にする。
     // 作ったブロックの配列を返す（描画なしで検証できる）。
     insertSteps: function (ws, steps, selected) {
+      lastMotionBlock = null;
       var made = [];
       if (!steps || !steps.length) {
         return made;
@@ -668,32 +682,25 @@
       }
       try {
         steps.forEach(function (s) {
+          // release_stick は直前の motion の END を変えるだけで、
+          // ブロックを作らない（makeMotionBlock が null を返す）。
+          // press フォールバックへ落とさないよう先に弾く。
+          if (s && s.kind === "release_stick") {
+            makeMotionBlock(ws, s);
+            return;
+          }
           var motion = makeMotionBlock(ws, s);
           if (motion) {
             made.push(motion);
             return;
           }
-          if (s && typeof s.kind === "string" && s.kind !== "press") {
-            // 知らない材料は押すブロックへ落とさない。target が無いまま作ると
-            // 選択欄が既定（A）のままになり、記録に無いボタンを押す材料になる。
-            // kind="press" は軌跡材料の中の押す手順（クリップ外の操作）。
-            warnStep("知らない記録材料を飛ばしました: " + s.kind);
-            return;
-          }
+          var b = ws.newBlock("pokecon_press");
           var target = String((s && s.target) || "A");
-          // ボタンだけ素の名（Button.A → A）、方向は Hat./Direction. のまま。
+          // ボタンだけ素の名（Button.A → A）、方向はそのまま。
           var field = target;
           if (target.indexOf("Button.") === 0) {
             field = target.slice(7);
           }
-          // 選択欄に無い値は既定（A）のまま残る。素通しすると「A を押す」
-          // 材料になり、記録に無いボタンが押される。
-          var keys = Blockly.PokeconInput && Blockly.PokeconInput.KEYS;
-          if (keys && keys.indexOf(field) < 0) {
-            warnStep("記録の対象が欄に無いため入れません: " + target);
-            return;
-          }
-          var b = ws.newBlock("pokecon_press");
           try {
             b.setFieldValue(field, "BUTTON");
           } catch (e) {

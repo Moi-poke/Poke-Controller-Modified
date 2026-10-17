@@ -112,13 +112,22 @@ class PadSource:
         return sorted(found)
 
     def names(self) -> dict[int, str]:
-        """番号 → 表示名。SDL で分かる分だけ載る。"""
+        """番号 → 表示名。XInput 側は汎名、SDL で分かる分は実名で返す。"""
         try:
             names = self.sdl.names()
-            return {int(k): str(v) for k, v in names.items()}
+            out = {int(k): str(v) for k, v in names.items()}
         except Exception:
-            return {}
+            out = {}
+        for index in range(MAX_PADS):
+            if index in out:
+                continue
+            try:
+                state = self.xinput.read(index)
+            except Exception:
+                continue
+            if state.connected:
+                out[index] = "XInput パッド"
+        return out
 
     def route_of(self, index: int) -> str:
-        """その番号がいまどちらの口で読めているか（検証・表示用）。"""
         return self._route.get(int(index), "")

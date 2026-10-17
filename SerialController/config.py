@@ -84,9 +84,9 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "is_use_keyboard": True,
             "is_use_gamepad": False,
             "gamepad_index": 0,
-            # ゲームパッドのスティック遊び（0〜8192、既定0=なし）。
-            # XInput 既定 7849・約24%、Pro コン実測ブレ考慮なら 1600〜2600。
-            "gamepad_deadzone": 0,
+            # ゲームパッドのスティック遊び（0〜8192、既定1638=最大値の5%）。
+            # XInput 既定 7849・約24% より浅く、Pro コン実測ブレ（1600前後）を抑える。
+            "gamepad_deadzone": 1638,
             "is_use_left_stick_mouse": False,
             "is_use_right_stick_mouse": False,
             "is_take_stick_log": False,
@@ -270,7 +270,7 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         "baud_rate": (9600, lambda value: value > 0),
         "fps": (45, lambda value: value in (5, 15, 30, 45, 60)),
         "gamepad_index": (0, lambda value: 0 <= value <= 3),
-        "gamepad_deadzone": (0, lambda value: 0 <= value <= 8192),
+        "gamepad_deadzone": (1638, lambda value: 0 <= value <= 8192),
     }
     for key, (default, valid) in integer_rules.items():
         try:
