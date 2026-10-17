@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import time
 
 from core import Utility as util
 from loguru import logger
@@ -30,6 +32,10 @@ TAG_ALL = "すべて"  # 絞り込みの初期状態。これを既定にしな�
 
 # 置き場所からタグを拾うとき、分類として意味を持たない階層は捨てる。
 SKIP_FOLDERS = frozenset({"Commands", "PythonCommands", "McuCommands"})
+
+#: tags.json の読み込みに失敗した（破損していた）か。立っている間は保存しない。
+#: 壊れたファイルを黙って上書きすると、手で直す余地が消える。
+_load_failed = False
 
 
 def commandName(cmd_class: type) -> str:
@@ -43,8 +49,11 @@ def loadOverrides() -> dict[str, list[str]]:
     壊れた JSON でコマンド一覧そのものが出せなくなるのは割に合わないので、
     読めなければ警告だけ出して空で続ける。
     """
+    global _load_failed
     path = util.ospath(TAGS_JSON)
     if not os.path.isfile(path):
+        # 退避したファイルを利用者が消した場合もここへ来る。保存を再び許す。
+        _load_failed = False
         return {}
 
     try:
@@ -52,14 +61,24 @@ def loadOverrides() -> dict[str, list[str]]:
             raw = json.load(fp)
     except (OSError, ValueError) as exc:
         message = f"Failed to read {TAGS_JSON}: {exc}"
+        # 壊れたファイルは退避して残す。そのうえで保存を禁じる（上書きすると
+        # 手で直す余地が消える）。一覧は空で続け、起動は妨げない。
+        _load_failed = True
+        quarantined = _quarantine(path)
+        if quarantined:
+            message += f" / 退避しました: {quarantined}"
         print(message)
-        logger.warning(message)
+        logger.error(message)
         return {}
 
     if not isinstance(raw, dict):
+        _load_failed = True
         message = f"{TAGS_JSON} must be an object of name -> tags."
+        quarantined = _quarantine(path)
+        if quarantined:
+            message += f" / 退避しました: {quarantined}"
         print(message)
-        logger.warning(message)
+        logger.error(message)
         return {}
 
     overrides: dict[str, list[str]] = {}
@@ -71,7 +90,21 @@ def loadOverrides() -> dict[str, list[str]]:
         cleaned = [str(t).strip() for t in tags if str(t).strip()]
         if cleaned:
             overrides[str(name)] = cleaned
+    # 直したファイルを読めたので、保存の拒否を解く。
+    _load_failed = False
     return overrides
+
+
+def _quarantine(path: str) -> str:
+    """壊れたファイルを退避して、その場所を返す。動かせなければ空。"""
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    target = f"{path}.corrupt-{stamp}"
+    try:
+        os.replace(path, target)
+    except OSError as exc:
+        logger.warning(f"退避に失敗: {exc}")
+        return ""
+    return target
 
 
 def saveOverrides(overrides: dict[str, list[str]]) -> bool:
@@ -81,17 +114,36 @@ def saveOverrides(overrides: dict[str, list[str]]) -> bool:
     半端な内容で残らない（settings.ini と同じ作法）。
     """
     path = util.ospath(TAGS_JSON)
-    tmp = f"{path}.tmp"
+    if _load_failed:
+        message = (
+            f"{TAGS_JSON} の読み込みに失敗しているため保存しません。"
+            "退避したファイルを直すか消してから保存し直してください"
+        )
+        print(message)
+        logger.error(message)
+        return False
+    tmp = ""
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fp:
+        # 先に場所を作る（無いと mkstemp が FileNotFoundError を投げ、公開操作
+        # から例外が漏れる）。
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=os.path.dirname(path) or ".", prefix=".tmp_tags_", suffix=".tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
             json.dump(overrides, fp, ensure_ascii=False, indent=2)
             fp.write("\n")
         os.replace(tmp, path)
-    except OSError as exc:
+    except Exception as exc:
+        # OSError 以外（型違いの json 化など）も握る。公開操作から漏らさない。
         message = f"Failed to write {TAGS_JSON}: {exc}"
         print(message)
         logger.error(message)
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         return False
 
     message = f"Saved {TAGS_JSON} ({len(overrides)} entries)."
