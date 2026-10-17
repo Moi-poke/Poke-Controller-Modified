@@ -20,6 +20,14 @@ _VERSION_RE = re.compile(
     r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})"
 )
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp"}
+#: Windows の予約名。拡張子の有無に依らず予約される（con.py も作れない）。
+_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+#: 名前に使えない文字。`:` はドライブ文字・代替 stream のため別に扱う。
+_BAD_CHARS = frozenset('<>"|?*')
 _REQUIRED_FIELDS = (
     "name",
     "version",
@@ -44,16 +52,60 @@ class PackManifest:
     templates: list[str]
 
 
+def _rel_parts(value: str) -> list[str]:
+    """zip 内の相対パスを、区切りを統一してから分解する。"""
+    return [p for p in value.replace("\\", "/").split("/") if p not in ("", ".")]
+
+
+def _segment_problem(part: str) -> str | None:
+    """1 つの区切りとして不正なら理由、正常なら None を返す。
+
+    予約名・末尾のドットや空白・不正文字・制御文字・長さをここで見る。
+    zip 内パスの検査（`_is_bad_rel`）はここを使う。import 名の検査
+    （`validate_entry_segments`）は別規則（`_SEGMENT_RE`）である。
+    """
+    if part == "..":
+        return "`..` は使えません"
+    if not part:
+        return "空の区切りは使えません"
+    if part != part.rstrip(" ."):
+        return "名前の末尾に `.` や空白は使えません（Windows で開けません）"
+    bad = sorted(set(part) & _BAD_CHARS)
+    if bad:
+        return f"`{bad[0]}` は使えません"
+    if any(ord(ch) < 32 for ch in part):
+        return "制御文字は使えません"
+    if len(part) > 255:
+        return "1 つの区切りは 255 文字以内にしてください"
+    # Windows は予約名を見るときに末尾の空白・ドットを落とす（`NUL .txt` も
+    # NUL 扱い）。同じ落とし方をしてから照合する。
+    stem = part.split(".")[0].rstrip(" .").upper()
+    if stem in _RESERVED_STEMS:
+        return f"`{part.split('.')[0]}` は Windows の予約名のため使えません"
+    return None
+
+
 def _is_bad_rel(value: str, *, need_py: bool = False) -> str | None:
-    """zip内相対パスとして不正なら理由、正常なら None を返す。"""
+    """zip内相対パスとして不正なら理由、正常なら None を返す。
+
+    区切りは `/` と `\\` の両方を受け、同じ規則で検査する。片方だけを
+    見ると `..\\..\\x.py` のような書き方が素通りする。
+    """
     if not value or not value.strip():
         return "空です"
     if value.startswith("/") or value.startswith("\\"):
         return "絶対パスは使えません（相対で書いてください）"
-    if ".." in PurePosixPath(value).parts:
+    if ".." in value.replace("\\", "/").split("/"):
         return "`..` は使えません"
     if ":" in value:
         return "`:` は使えません（ドライブ文字・代替 stream のため）"
+    parts = _rel_parts(value)
+    if not parts:
+        return "空です"
+    for part in parts:
+        reason = _segment_problem(part)
+        if reason is not None:
+            return f"{part!r}: {reason}"
     if need_py and not value.lower().endswith(".py"):
         return "末尾は `.py` にしてください"
     return None
@@ -75,6 +127,11 @@ def validate_manifest_data(data: object) -> list[str]:
         errors.append(
             "`name` は英数始まりの `[A-Za-z0-9_-]`（最大64文字）にしてください"
         )
+    else:
+        # 予約名は Windows でフォルダを作れない（Template/<name>/ に使う）。
+        reason = _segment_problem(name)
+        if reason is not None:
+            errors.append(f"`name` が不正です（{reason}）: {name!r}")
     for field in ("version", "minAppVersion"):
         value = data[field]
         if not isinstance(value, str) or _VERSION_RE.fullmatch(value) is None:

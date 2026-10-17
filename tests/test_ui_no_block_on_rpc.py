@@ -61,6 +61,13 @@ class _FakeArea:
         return "after-id"
 
 
+def _make_inbox() -> Any:
+    """GUI スレッドへの受け渡し箱（実物）。"""
+    from core.ui_inbox import UiInbox
+
+    return UiInbox()
+
+
 class _FakeRoot:
     def __init__(self) -> None:
         self.titles: list[str] = []
@@ -157,6 +164,7 @@ def test_update_title_returns_fast_with_stalled_transport(tmp_path: Any) -> None
     host._paused = False  # type: ignore[attr-defined]
     host.runner = type("R", (), {"stop_waited": 0})()  # type: ignore[attr-defined]
     host.root = _FakeRoot()  # type: ignore[attr-defined]
+    host.inbox = _make_inbox()  # type: ignore[attr-defined]
 
     began = time.perf_counter()
     Window.PokeControllerApp._update_title(host)  # type: ignore[arg-type]
@@ -208,6 +216,7 @@ def test_apply_bcon_wired_runs_setter_off_tk_thread(
     host._bcon_transport = lambda: fake  # type: ignore[method-assign]
     host.bcon_wired = _FakeVar("有線")  # type: ignore[attr-defined]
     host.root = _FakeRoot()  # type: ignore[attr-defined]
+    host.inbox = _make_inbox()  # type: ignore[attr-defined]
     refreshed: list[bool] = []
     host._refresh_bcon_rows = lambda: refreshed.append(True)  # type: ignore[method-assign]
     monkeypatch.setattr(tkmsg, "askquestion", lambda *a: "yes")
@@ -221,12 +230,9 @@ def test_apply_bcon_wired_runs_setter_off_tk_thread(
     # setter の完了前は反映の予約もないこと（Tk へ触らない）。
     assert host.root.afters == [], "setter 完了前に Tk へ触っています"  # type: ignore[attr-defined]
     fake.release.set()
-    # 反映は Tk スレッドへの予約経由であること。
-    assert _wait_for(lambda: len(host.root.afters) > 0), "after(0) 予約がありません"  # type: ignore[attr-defined]
-    for ms, cb in list(host.root.afters):  # type: ignore[attr-defined]
-        assert ms == 0
-        cb()
-    assert refreshed, "after(0) で _refresh_bcon_rows が呼ばれません"
+    # 反映は受け渡し箱（GUI スレッドの周期が取り出す）経由であること。
+    assert _wait_for(lambda: host.inbox.drain() > 0), "反映が積まれていません"  # type: ignore[attr-defined]
+    assert refreshed, "受け渡し箱経由で _refresh_bcon_rows が呼ばれません"
 
 
 def test_apply_bcon_emulate_runs_setter_off_tk_thread(
@@ -242,6 +248,7 @@ def test_apply_bcon_emulate_runs_setter_off_tk_thread(
     host._bcon_transport = lambda: fake  # type: ignore[method-assign]
     host.bcon_emulate = _FakeVar("Joy-Con (L)")  # type: ignore[attr-defined]
     host.root = _FakeRoot()  # type: ignore[attr-defined]
+    host.inbox = _make_inbox()  # type: ignore[attr-defined]
     refreshed: list[bool] = []
     host._refresh_bcon_rows = lambda: refreshed.append(True)  # type: ignore[method-assign]
     monkeypatch.setattr(tkmsg, "askquestion", lambda *a: "yes")
@@ -254,8 +261,6 @@ def test_apply_bcon_emulate_runs_setter_off_tk_thread(
     assert fake.emulate_calls[0][0] == 1
     assert host.root.afters == [], "setter 完了前に Tk へ触っています"  # type: ignore[attr-defined]
     fake.release.set()
-    assert _wait_for(lambda: len(host.root.afters) > 0), "after(0) 予約がありません"  # type: ignore[attr-defined]
-    for ms, cb in list(host.root.afters):  # type: ignore[attr-defined]
-        assert ms == 0
-        cb()
-    assert refreshed, "after(0) で _refresh_bcon_rows が呼ばれません"
+    # 反映は受け渡し箱（GUI スレッドの周期が取り出す）経由であること。
+    assert _wait_for(lambda: host.inbox.drain() > 0), "反映が積まれていません"  # type: ignore[attr-defined]
+    assert refreshed, "受け渡し箱経由で _refresh_bcon_rows が呼ばれません"

@@ -65,7 +65,8 @@ _CLR_INVALID = 0xFFFFFFFF
 _NULL_BRUSH_STOCK = 5
 
 _WINDOW_CLASS = "PokeConPreviewSurface"
-_SUPPORTED_BIT_DEPTHS = (16, 24, 32)
+#: 子窓 DC が報告しうる色深度。扱うのは 32bpp だけで、他は警告して 32bpp で作る。
+_KNOWN_BIT_DEPTHS = (16, 24, 32)
 # ノブ半径は外周の 1/10（GuiAssets.py:980 の整数除算そのまま）。
 _KNOB_RADIUS_DIVISOR = 10
 # GDI のバウンディングボックスは右端と下端を含まないので extent は
@@ -988,11 +989,16 @@ class GdiSurface:
         try:
             # GetDeviceCaps はメモリ DC だと 0 を返すので子窓の DC で問う。
             reported = self._api.get_device_caps(window_dc, _BITSPIXEL)
-            bit_count = (
-                reported
-                if reported in _SUPPORTED_BIT_DEPTHS
-                else _SUPPORTED_BIT_DEPTHS[-1]
-            )
+            # 表示の色深度に関わらず 32bpp の DIB を作る。16/24bpp の DIB に
+            # cv2.cvtColor(..., dst=back) は例外も警告も出さず dst を書かない
+            # （内部で作り直して捨てる）ため、映像が 1 画素も出ないまま
+            # compose が成功を返す。32bpp から表示深度への換算は GDI の
+            # StretchBlt が行うので、565/555 の並びを扱う必要も無くなる。
+            if reported not in _KNOWN_BIT_DEPTHS:
+                logger.warning(
+                    "報告された色深度 {}bpp は扱わないため 32bpp で作る", reported
+                )
+            bit_count = 32
             info = DibInfo(
                 bi_width=width,
                 bi_height=-height,
@@ -1040,7 +1046,19 @@ class GdiSurface:
             self._api.delete_dc(self._memory_dc)
         self._memory_dc = memory_dc
         self._size = (width, height)
-        self._back = self._wrap_bits(section, info)
+        back = self._wrap_bits(section, info)
+        # 32bpp 固定にしたので、作業バッファは必ず 4ch uint8 になる。崩れた
+        # まま合成すると cv2.cvtColor が黙って dst を書かず、映像が出ないまま
+        # compose が成功を返す。作った時点で 1 回だけ検査する。
+        if back.ndim != 3 or back.shape[2] != 4 or back.dtype != np.uint8:
+            logger.warning(
+                "プレビューの作業バッファが想定の形式でない shape={} dtype={}",
+                getattr(back, "shape", None),
+                getattr(back, "dtype", None),
+            )
+            print("プレビューの作業バッファを作れません。映像は表示されません。")
+            return False
+        self._back = back
         self._pending_frame = False
         return True
 

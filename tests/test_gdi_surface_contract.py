@@ -1466,13 +1466,17 @@ def test_window_class_is_registered_once_per_process() -> None:
     assert api.create_window_calls[-1].hwnd != api.create_window_calls[0].hwnd
 
 
-@pytest.mark.parametrize(
-    ("reported", "allowed"),
-    [(24, {24}), (32, {32}), (48, {16, 24, 32}), (0, {16, 24, 32})],
-)
+@pytest.mark.parametrize("reported", [16, 24, 32, 48, 0])
 def test_back_buffer_bit_depth_is_queried_from_the_child_window_dc(
-    reported: int, allowed: set[int]
+    reported: int,
 ) -> None:
+    """Given: 子窓 DC が報告する 1 つの BITSPIXEL / When: attach / Then: 常に 32bpp で作り、問い合わせは子窓 DC に対して行うこと。
+
+    16/24bpp の DIB に cv2.cvtColor(..., dst=back) は例外も警告も出さず
+    dst を書かない（内部で作り直して捨てる）。報告値に追従させると、映像が
+    1 画素も出ないまま compose が成功を返す。表示深度への換算は GDI の
+    StretchBlt が行うので、DIB は常に 32bpp で作る。
+    """
     # Given: a double reporting one BITSPIXEL value for the child window DC.
     module = _fresh_surface_module()
     api = RecordingGdiApi(bits_pixel=reported)
@@ -1481,10 +1485,33 @@ def test_back_buffer_bit_depth_is_queried_from_the_child_window_dc(
     surface = module.GdiSurface(api=api)
     surface.attach(_PARENT_HWND, _SIZE)
 
-    # Then: the DIB follows the queried depth, clamped into the supported set.
-    assert api.dib_headers[0].bi_bit_count in allowed
+    # Then: the DIB is 32bpp regardless of the reported depth, and the depth is
+    # still queried from the child window DC (a memory DC reports 0).
+    assert api.dib_headers[0].bi_bit_count == 32
     assert api.device_caps_calls[0][0] == api.child_dc
     assert surface.client_size() == _SIZE
+
+
+def test_back_buffer_with_a_non_four_channel_view_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Given: 4ch でない作業バッファ / When: attach / Then: 失敗を返すこと。"""
+    # Given: a double whose DIB view comes back with three channels.
+    module = _fresh_surface_module()
+    api = RecordingGdiApi()
+    surface = module.GdiSurface(api=api)
+    monkeypatch.setattr(
+        surface,
+        "_wrap_bits",
+        lambda section, info: np.zeros((720, 1280, 3), dtype=np.uint8),
+    )
+
+    # When: the surface attaches.
+    surface.attach(_PARENT_HWND, _SIZE)
+
+    # Then: it exposes no back buffer, so nothing can compose into a buffer
+    # cv2 would silently refuse to write.
+    assert surface.back_buffer is None
 
 
 def test_back_buffer_is_a_four_channel_view_created_once_at_attach() -> None:

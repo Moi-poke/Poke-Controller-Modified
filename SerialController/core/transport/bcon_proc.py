@@ -48,6 +48,9 @@ _ALLOWED_CALLS = frozenset(
         "request_color",
         "last_status",
         "last_player_info",
+        "last_rumble",
+        # 受信ポンプが諦めたか。親側にポンプが無いので子へ問う。
+        "rx_dead",
         "baud_hunt",
         "set_baud_index",
         "set_wired_mode",
@@ -504,6 +507,9 @@ class BconProcTransport(Transport):
 
     name = "switch-bcon-proc"
     capability = BCON_STATE
+    #: is_open は子プロセスへの同期往復（timeout 付き）なので、8ms の送出
+    #: ループからは問い合わせさせない（周期が崩れる）。
+    is_open_is_local = False
 
     def __init__(
         self,
@@ -1068,6 +1074,46 @@ class BconProcTransport(Transport):
             if key in result:
                 merged[key] = result[key]
         return merged
+
+    def wait_rx(self, prefixes: Any, timeout: float = 0.5) -> str | None:
+        """v1 では子へ転送しない（設計: 2026-09-22-bcon-proc-phase2.md:211）。
+
+        基底の実装は proxy 自身の受信状態を見るため、呼ばれると黙って
+        タイムアウトする。原因が分かるよう 1 回だけ error を残して None を
+        返す（規約: 公開操作から例外は出さない）。
+        """
+        if not getattr(self, "_wait_rx_warned", False):
+            self._wait_rx_warned = True
+            self._logger.error(
+                "wait_rx は switch-bcon-proc では未対応です（設計で v1 除外）"
+            )
+        return None
+
+    def rx_dead(self) -> bool:
+        """子側の受信ポンプが諦めたか。RPC 越しに問う。
+
+        親側に受信ポンプは無い（線を持っているのは子）。自前で False を
+        返すと「死んでいない」と嘘をつくことになるので、子へ問い合わせる。
+        問い合わせに失敗したときは False（死んだと決めつけない）。
+        """
+        ok, result = self._call("rx_dead", (), timeout=3.0)
+        return bool(result) if ok else False
+
+    def last_rumble(self) -> bytes:
+        """直近RUMBLE payloadの写し。未受信・失敗は空。例外は投げない。
+
+        本家 BconTransport と同じ操作面を保つために要る。欠けると
+        BconSetup の getattr(transport, "last_rumble", None) が None になり、
+        振動表示が必ず「（なし）」になる。
+        """
+        ok, result = self._call("last_rumble", (), timeout=3.0)
+        if not ok or result is None:
+            return b""
+        try:
+            return bytes(result)
+        except Exception:
+            self._logger.debug("last_rumble の結果を bytes にできません", exc_info=True)
+            return b""
 
     def last_status(self) -> dict[str, int]:
         ok, result = self._call("last_status", (), timeout=3.0)

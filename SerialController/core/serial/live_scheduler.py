@@ -83,6 +83,9 @@ class LiveScheduler:
 
         中立の読み替えは送出時（advance）に行う。ここでは畳みと
         追加だけをする。
+
+        revision の新旧は見ない。この列は「積まれた順に出す」だけで、
+        申告側（Sender）が同じ臨界区間で snapshot と push を行う責務を持つ。
         """
         with self._lock:
             self._put += 1

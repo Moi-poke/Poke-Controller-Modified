@@ -97,3 +97,32 @@ def test_entry_segments_accept_flat_and_ident_dir() -> None:
 
     assert validate_entry_segments("MyPack.py") == []
     assert validate_entry_segments("my_pack/MyPack.py") == []
+
+
+def test_reserved_names_are_rejected() -> None:
+    """Given: Windows の予約名 / When: 検証 / Then: 断ること。"""
+    data = good_data()
+    data["name"] = "CON"
+    assert any("予約名" in e for e in validate_manifest_data(data))
+
+    data = good_data()
+    data["entry"] = "con.py"
+    assert any("予約名" in e for e in validate_manifest_data(data))
+
+
+def test_backslash_traversal_is_rejected() -> None:
+    """Given: バックスラッシュの親参照 / When: 検証 / Then: 断ること（区切りを片方だけ見ない）。"""
+    data = good_data()
+    data["entry"] = "..\\..\\evil.py"
+    assert any(".." in e for e in validate_manifest_data(data))
+
+
+def test_trailing_dot_and_bad_chars_are_rejected() -> None:
+    """Given: 末尾ドット・不正文字 / When: 検証 / Then: 断ること。"""
+    data = good_data()
+    data["templates"] = ["Template/x/a?.png"]
+    assert any("使えません" in e for e in validate_manifest_data(data))
+
+    data = good_data()
+    data["templates"] = ["Template/x/a.png."]
+    assert any("末尾" in e for e in validate_manifest_data(data))

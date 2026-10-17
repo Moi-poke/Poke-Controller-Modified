@@ -13,6 +13,9 @@ import re
 import time
 from typing import Any
 
+from core.transport.base import LEGACY_ROW, PICO_LIVE_STATE
+from loguru import logger
+
 # live統計の差分を取るキー。dropped（溢れ捨て）がPC側滞留の証拠になる。
 _LIVE_KEYS = ("put", "sent", "dropped", "keepalive", "replaced")
 
@@ -140,6 +143,34 @@ def _parse_mon_counts(lines: list[str]) -> dict[str, int]:
     return found
 
 
+#: M/O の ASCII 方言を話す方式だけを列挙する。**既定は拒否**で、新しい
+#: 方式は M を話すと分かった時点でここへ足す。名指しの拒否リストにすると、
+#: 将来増えたバイナリ方式が ser 属性経由で混入する。
+_M_MONITOR_CAPS = frozenset({LEGACY_ROW, PICO_LIVE_STATE})
+
+
+def raw_serial_for_m(transport: Any) -> Any:
+    """M の注入に使ってよい生シリアルを返す。許可した方式以外は常に None。
+
+    守る不変条件は「M/O を話す方式のときだけ ASCII の M を注入する」こと。
+    get_raw_serial を持たない方式にも注入しない（生シリアルを取る正規の口が
+    無い以上、混ぜてよい根拠が無い）。capability を持たない方式は base の
+    契約どおり legacy 等価として許可する。
+    """
+    cap = getattr(transport, "capability", None)
+    if cap is not None and cap not in _M_MONITOR_CAPS:
+        return None
+    getter = getattr(transport, "get_raw_serial", None)
+    if not callable(getter):
+        return None
+    try:
+        # bcon 系は None を返す契約（base.Transport.get_raw_serial）。
+        return getter()
+    except Exception:
+        logger.warning("get_raw_serial で例外。M計数を省きます", exc_info=True)
+        return None
+
+
 def read_m_counts(
     transport: Any,
     tries: int = 4,
@@ -150,12 +181,13 @@ def read_m_counts(
 
     購読経由で読む（直読みはRXポンプと競合し空振りする）。M自体の
     即時応答（monitor on/off）で開閉を確定する。読み終えたらMを消す。
-    serを持たない方式では空辞書を返す（壊さない）。
+    生シリアルを渡さない方式では空辞書を返す（壊さない）。
     """
     collected: list[str] = []
     try:
         subscribe = getattr(transport, "subscribe_rx", None)
-        ser = getattr(transport, "ser", None)
+        # 送信方式で切ってから生シリアルを取る（binary には M を混ぜない）。
+        ser = raw_serial_for_m(transport)
         if not callable(subscribe) or ser is None:
             return {}
         unsub = subscribe(collected.append)
