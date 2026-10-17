@@ -108,3 +108,16 @@ ERROR 以上は GUI のログ欄にも流す（`LogPane.logger_sink`）。print 
 確認する（例: Transport の間引き、`CommandRunner` の状態遷移、
 未知 capability の legacy 等価動作）。
 COM ポート・キャプチャボードが要る動作は実機でのみ確認できる。
+
+
+## ワーカーと GUI の受け渡し
+
+ワーカースレッドから Tk の widget・Tk 変数・`after()` を触らない。渡したい処理は
+[core/ui_inbox.py](SerialController/core/ui_inbox.py) の `UiInbox` へ積み、GUI スレッドが
+16ms 周期（`Window._pump_inbox`）で取り出す。
+
+- 必達（`post`）は閉じるまで届ける。表示の更新（`post_latest`）は同じ key の最新 1 件だけ。
+- 終了時は `close()` を呼ぶ。残った必達は実行せず、`on_drop`（開き途中のカメラを閉じる等）
+  だけをその場で走らせる。
+- `GuiAssets.CaptureAreaProxy` もこの箱へ積む（`.widget` は非常口で、取り出した先の
+  操作は呼び出し側の責任）。
