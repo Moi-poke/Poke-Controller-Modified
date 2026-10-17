@@ -42,6 +42,9 @@ SHARED_MEMORY_NAME = "camera_image"
 
 THREAD_JOIN_TIMEOUT = 0.5  # GUI を止めずに待てる上限(秒)
 THREAD_RELEASE_TIMEOUT = 5.0  # 裏で取得スレッドの終了を待つ上限(秒)
+#: 解放を待つ合計の上限(秒)。1 回の join で諦めるとデバイスが開いたまま残り、
+#: 次の openCamera も失敗する（利用者からは「開き直せない」としか見えない）。
+RELEASE_RETRY_TOTAL_S = 20.0
 PROCESS_JOIN_TIMEOUT = 3.0
 
 # 取得失敗が続くときの待ちの下限(秒)。fps=0 では interval が 0 になり、
@@ -207,6 +210,20 @@ def _crop_image(image: np.ndarray, crop: Any, crop_ax: list | None) -> np.ndarra
 
     ax = crop_ax if crop_ax else [0, 0, CAPTURE_SIZE[0], CAPTURE_SIZE[1]]
     if crop in (1, "1"):
+        # 範囲外の要求は numpy が黙って切り詰める。挙動は変えず、記録だけ
+        # 残す（テンプレートマッチや Blockly がその挙動に依存していないかを、
+        # 実際のログから後で判断できるようにする）。
+        try:
+            x0, y0, x1, y1 = int(ax[0]), int(ax[1]), int(ax[2]), int(ax[3])
+            if x0 < 0 or y0 < 0 or x1 > image.shape[1] or y1 > image.shape[0]:
+                logger.warning(
+                    "crop が画像の範囲外です: ax={} image={}x{}",
+                    [x0, y0, x1, y1],
+                    image.shape[1],
+                    image.shape[0],
+                )
+        except (IndexError, TypeError, ValueError):
+            logger.debug("crop の範囲検査を省きました", exc_info=True)
         # ax = [x1, y1, x2, y2]
         return image[ax[1] : ax[3], ax[0] : ax[2]]
     if crop in (2, "2"):
@@ -361,6 +378,15 @@ class Camera:
         self.capture_size = capture_size
         self.capture_dir = CAPTURE_DIR
         self.frame_queue: LatestFrame = LatestFrame()
+        #: 要求と違う解像度で届いていないかを、最初の 3 枚で 1 回だけ見る。
+        #: _capture_readback はドライバが要求値をそのまま返すことがあるため、
+        #: 実際に届いたフレームで見る。知らせ先はログと GUI の 1 行だけで、
+        #: 読者の居ない状態は持たない。
+        self._size_probe_left = 3
+        #: 裏で解放待ちをしているか / 断念したか。断念は開き直しの失敗原因に
+        #: なるので、openCamera で利用者へ 1 度知らせる。
+        self.release_pending = False
+        self.release_failed = False
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -381,6 +407,16 @@ class Camera:
 
     def openCamera(self, cameraId: int) -> bool:
         """カメラを開いて取得スレッドを起動する。成否を返す。"""
+        if self.release_failed:
+            # 前回の解放を断念している。開けない原因がこれだと分かるようにする
+            # （一度知らせたら消す。毎回は出さない）。
+            self.release_failed = False
+            message = (
+                "前回のカメラ解放に失敗しています。"
+                "USB キャプチャを挿し直してから開き直してください"
+            )
+            logger.warning(message)
+            print(message)
         if self.isOpened():
             logger.debug("Camera is already opened")
             self.destroy()
@@ -403,6 +439,8 @@ class Camera:
             camera.release()
             return False
 
+        # 開き直したら検査をやり直す（2 台目、解像度を変えての再接続がある）。
+        self._size_probe_left = 3
         # 実測値を設定後に残す。警告を見逃した側にも後から渡せる。
         self._capture_readback = _configure_capture(camera, self.capture_size, self.fps)
 
@@ -472,7 +510,13 @@ class Camera:
         待つのは THREAD_JOIN_TIMEOUT までとし、間に合わなければ解放を
         別スレッドへ委ねて呼び出し元（GUI スレッド）は即座に返す。
         戻り値は「その場で解放しきれたか」。
+
+        解放待ちが上限を超えたら、断念したことを状態に残して利用者へ 1 行
+        出す（黙って諦めると「開き直せない」だけが残って原因が分からない）。
         """
+        if self.release_pending:
+            # 前回の解放がまだ裏で続いている（取得スレッドの停止待ち）。
+            logger.debug("解放待ちの最中に destroy が呼ばれました")
         self._stop_event.set()
         # 世代を進めて旧スレッドの蘇生を防ぐ（次 open が新 Event を作る）。
         self._generation += 1
@@ -503,15 +547,34 @@ class Camera:
         """
         with self._lock:
             camera, self.camera = self.camera, None
+        self.release_pending = True
 
         def waiter() -> None:
-            thread.join(timeout=THREAD_RELEASE_TIMEOUT)
+            # 1 回で諦めず、合計の上限まで分割して待つ（遅れて止まるスレッドを
+            # 取りこぼすと、デバイスが開いたまま次回の open が失敗する）。
+            deadline = time.perf_counter() + RELEASE_RETRY_TOTAL_S
+            while True:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0.0:
+                    break
+                thread.join(timeout=min(THREAD_RELEASE_TIMEOUT, remaining))
+                if not thread.is_alive():
+                    break
             if thread.is_alive():
+                # 待つのを止めたので「解放待ち」ではなくなる。
+                self.release_pending = False
+                self.release_failed = True
                 logger.error(
-                    "Camera thread is still alive. "
-                    "Skip releasing the device to avoid a crash."
+                    "Camera thread did not stop within "
+                    f"{RELEASE_RETRY_TOTAL_S}s. Skip releasing the device."
+                )
+                # 利用者の次の行動（挿し直し）が変わるので GUI にも出す。
+                print(
+                    "カメラの解放に失敗しました。"
+                    "USB キャプチャを挿し直してから開き直してください"
                 )
                 return
+            self.release_pending = False
             if camera is None:
                 return
             camera.release()
@@ -650,6 +713,32 @@ class Camera:
                 logger.error(traceback.format_exc())
                 stop_event.set()
                 break
+
+            # 要求と違う解像度で届いていないかを最初の数枚で見る。1 枚だけ
+            # 違う大きさを返すデバイスがあるので、3 枚そろってから判定する。
+            # 合わないフレームは合成側が dimension_mismatch で捨てるため、
+            # 何も知らせないと「開けたのに映らない」だけが残る。
+            # 旧世代のスレッドが新しいカウンタを減らさないよう、世代も見る。
+            if (
+                self._size_probe_left > 0
+                and frame is not None
+                and generation == self._generation
+            ):
+                self._size_probe_left -= 1
+                if self._size_probe_left == 0:
+                    got = (int(frame.shape[1]), int(frame.shape[0]))
+                    if got != tuple(self.capture_size):
+                        logger.warning(
+                            "キャプチャ解像度が要求と違います: "
+                            f"要求={tuple(self.capture_size)} 実際={got}"
+                        )
+                        # print は LogPane の待ち行列経由なので裏からでも安全。
+                        print(
+                            f"カメラが {self.capture_size[0]}x"
+                            f"{self.capture_size[1]} で映像を出していません"
+                            f"（実際: {got[0]}x{got[1]}）。"
+                            "キャプチャボードの出力解像度を確認してください。"
+                        )
 
             # 取得の瞬間。公開より前なので、ここで測って put へ渡す。
             # 将来 resize をこのスレッドへ移しても、read 直後のこの値が
