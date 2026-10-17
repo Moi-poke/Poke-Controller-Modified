@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode-go/muse-spark-1.3-contributor",
+  "plugins": ["@prevalentware/opencode-goal-plugin"],
+  "agent": {
+    "coordinator": {
+      "mode": "primary",
+      "description": "Orca統括役。設計・分割・検収のみ。ソース編集不可。",
+      "prompt": "{file:./docs/agents/coordinator.md}",
+      "permission": {
+        "edit": {
+          "*": "deny",
+          "docs/**": "allow",
+          "docs\\**": "allow"
+        },
+        "bash": "allow",
+        "task": "deny"
+      }
+    },
+    "build": {
+      "mode": "primary",
+      "description": "Orca作業役。指示書どおりに実装する。"
+    }
+  }
+}
