@@ -33,6 +33,7 @@ from core.transport.bcon_protocol import (
     T_EMULATE_MODE,
     T_HELLO,
     T_HELLO_ACK,
+    T_IMU_SAMPLE,
     T_NEUTRAL,
     T_PING,
     T_PLAYER_INFO,
@@ -59,6 +60,10 @@ EMULATE_ROLE_NAMES = ("Pro Controller", "Joy-Con (L)", "Joy-Con (R)")
 # 短く、USB 8msポーリングとも大きくは干渉しない。Phase 2で別過程へ
 # 移すときも値はそのまま持っていく。
 LIVE_INTERVAL_S = 1.0 / 120.0
+
+# IMU loopの既定周期（200Hz・§5.13）。live loopとは独立スレッドで回す。
+# STATEと同じ_write_lockで排他し、線上のSEQ順＝採番順を保つ。
+IMU_INTERVAL_S = 1.0 / 200.0
 
 # baud huntの呼び水。Picoは未確定のあいだ各rateに150ms (HUNT_DWELL_MS) ずつ
 # 留まり、同じ滞在中に有効frameが2連続で届いたときだけ確定する。HELLOの
@@ -219,6 +224,14 @@ class BconTransport(Transport):
         self._live_merged = 0
         self._live_dropped = 0
         self._live_rtt_ms: float | None = None
+        # -- IMU loop（200Hz・§5.13）の保持 --
+        # 生成器コールバックが6値タプルを返す。Noneを返したらその刻みは送らない。
+        self._imu_loop_thread: threading.Thread | None = None
+        self._imu_loop_stop = threading.Event()
+        self._imu_interval_s = IMU_INTERVAL_S
+        self._imu_source: Callable[[], tuple[int, int, int, int, int, int] | None] | None = None
+        self._imu_sent = 0
+        self._imu_dropped = 0
         # ポンプが読んだ直近フレームの記録（TYPE→(frame, 時刻)）。
         # 購読者・待機への分配とは別に残す。握手の成否判定には使わない。
         self._last_frame_by_type: dict[int, tuple[BconFrame, float]] = {}
@@ -313,6 +326,10 @@ class BconTransport(Transport):
             self.stop_live_loop()
         except Exception:
             self._logger.debug("live loopの停止に失敗", exc_info=True)
+        try:
+            self.stop_imu_loop()
+        except Exception:
+            self._logger.debug("IMU loopの停止に失敗", exc_info=True)
         try:
             if self.ser is not None:
                 with self._lock:
@@ -451,6 +468,176 @@ class BconTransport(Transport):
                 # Switch に届いていないので記録に残さない（TextSerialの
                 # _write_one が送った行だけ _notify するのと同じ約束）。
                 self._notify_tx(note if isinstance(note, str) else "")
+    def send_imu(
+        self,
+        ax: int,
+        ay: int,
+        az: int,
+        gx: int,
+        gy: int,
+        gz: int,
+    ) -> bool:
+        """IMU生値6値をIMU_SAMPLE 1発で送る。成否を返す。
+
+        値はSwitch出力生値のint16（量子化・軸変換は呼出側で完了させる）。
+        範囲外はint16へ飽和させる（黙って切らない・落とさない）。
+        採番→組立→writeは_write_lockで1単位に包む（STATE・会話との逆転防止）。
+        hunt抑え中・未開線・書込失敗はFalse。例外は投げない。
+        """
+        try:
+            vals = [int(ax), int(ay), int(az), int(gx), int(gy), int(gz)]
+        except (TypeError, ValueError):
+            self._logger.debug("bconのIMU値が数値でないため捨てます")
+            return False
+        payload = b"".join(
+            max(-32768, min(32767, v)).to_bytes(2, "little", signed=True)
+            for v in vals
+        )
+        with self._lock:
+            held = self._tx_hold
+        if held:
+            with self._lock:
+                self._imu_dropped += 1
+            return False
+        with self._write_lock:
+            with self._lock:
+                seq = self._tx_seq
+                self._tx_seq = (self._tx_seq + 1) & 0xFF
+                ser = self.ser
+                begin = self._on_write_begin
+                end = self._on_write_end
+            if ser is None:
+                self._logger.debug("bconは開いていないためIMUを送りません")
+                return False
+            try:
+                frame = frame_build(T_IMU_SAMPLE, payload, seq)
+            except Exception as e:
+                self._logger.debug(f"bconのIMU組立に失敗: {e!r}")
+                return False
+            sent_ok = bool(self._write_frame(frame, "bcon:IMU", False, begin, end, ser))
+        if sent_ok:
+            with self._lock:
+                self._imu_sent += 1
+        return sent_ok
+
+    def imu_loop_running(self) -> bool:
+        """IMU loopが回っているか（読むだけ）。例外は投げない。"""
+        try:
+            thread = self._imu_loop_thread
+            return thread is not None and thread.is_alive()
+        except Exception:
+            return False
+
+    def start_imu_loop(
+        self,
+        source: Callable[[], tuple[int, int, int, int, int, int] | None],
+        interval_s: float = IMU_INTERVAL_S,
+    ) -> bool:
+        """IMU送出loopを1本だけ起こす。動いていれば True。
+
+        sourceは毎刻み呼ぶ生成器で、6値タプルかNoneを返す。Noneの刻みは送らない。
+        確認と起動を同じ錠の中で行う。例外は投げない。
+        """
+        try:
+            with self._lock:
+                thread = self._imu_loop_thread
+                if thread is not None and thread.is_alive():
+                    return True
+                self._imu_source = source
+                self._imu_interval_s = float(interval_s)
+                self._imu_loop_stop.clear()
+                worker = threading.Thread(
+                    target=self._imu_loop_run,
+                    name="bcon-imu-loop",
+                    daemon=True,
+                )
+                self._imu_loop_thread = worker
+            worker.start()
+            return True
+        except Exception:
+            self._logger.debug("IMU loopの起動に失敗", exc_info=True)
+            return False
+
+    def stop_imu_loop(self) -> bool:
+        """IMU loopを止める。止まるまで待つ（上限0.5秒）。例外は投げない。"""
+        try:
+            self._imu_loop_stop.set()
+            with self._lock:
+                thread = self._imu_loop_thread
+            if thread is None:
+                return True
+            thread.join(0.5)
+            alive = thread.is_alive()
+            if not alive:
+                with self._lock:
+                    if self._imu_loop_thread is thread:
+                        self._imu_loop_thread = None
+            return not alive
+        except Exception:
+            self._logger.debug("IMU loopの停止に失敗", exc_info=True)
+            return False
+
+    def _imu_loop_run(self) -> None:
+        """IMU loop本体。絶対時刻で刻み、遅れは追従しbacklogを作らない。
+
+        live loopと同規律：抑え中は捨ててdroppedに数える。生成器の例外は
+        その刻みだけ捨てる。1フレーム1write・SEQ方向別。例外では落ちない。
+        """
+        try:
+            with self._lock:
+                interval = float(self._imu_interval_s)
+        except Exception:
+            interval = IMU_INTERVAL_S
+        next_tx = time.perf_counter() + interval
+        while not self._imu_loop_stop.is_set():
+            now = time.perf_counter()
+            timeout = next_tx - now
+            if timeout > 0:
+                if self._imu_loop_stop.wait(timeout):
+                    break
+            if self._imu_loop_stop.is_set():
+                break
+            now = time.perf_counter()
+            with self._lock:
+                held = self._tx_hold
+                source = self._imu_source
+            if held:
+                with self._lock:
+                    self._imu_dropped += 1
+                next_tx = now + interval
+                continue
+            if source is None:
+                next_tx = now + interval
+                continue
+            try:
+                sample = source()
+            except Exception:
+                self._logger.debug("IMU生成器で例外", exc_info=True)
+                next_tx = now + interval
+                continue
+            if sample is None:
+                next_tx = now + interval
+                continue
+            try:
+                ax, ay, az, gx, gy, gz = (int(v) for v in sample)
+            except (TypeError, ValueError):
+                self._logger.debug("IMU生成器の戻りが6値でないため捨てます")
+                next_tx = now + interval
+                continue
+            self.send_imu(ax, ay, az, gx, gy, gz)
+            now = time.perf_counter()
+            if next_tx <= now:
+                next_tx = now + interval
+            else:
+                next_tx += interval
+
+    def imu_stats(self) -> dict[str, int]:
+        """IMU送出統計の写しを返す（読むだけ・副作用なし）。例外は投げない。"""
+        try:
+            with self._lock:
+                return {"sent": int(self._imu_sent), "dropped": int(self._imu_dropped)}
+        except Exception:
+            return {"sent": 0, "dropped": 0}
 
     def flush_pending(self) -> None:
         """保留があれば送り切る。loop起動中は起こして即送させる。"""

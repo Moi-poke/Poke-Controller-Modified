@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""ImuPanel.py - ジャイロ送出の操作面（BconSetupへ組み込む部品）。
+
+BconSetupのcol_infoへLabelFrameとして組み込む。入力源の選択・波形の
+設定・送出の開始/停止・統計の表示を担う。線の操作は作業スレッドで行い、
+画面の更新だけafter()で戻す（BconSetupと同一規律）。
+
+使い方:
+    panel = ImuPanel(parent, transport_provider, settings_provider, log)
+    panel.pack(fill=tk.X, pady=(0, 8))
+    panel.close()  # 終了時に送出を止める
+"""
+
+from __future__ import annotations
+
+import queue
+import threading
+import tkinter as tk
+from collections.abc import Callable
+from tkinter import ttk
+from typing import Any
+
+SOURCE_LABELS = (
+    ("sensor", "センサー"),
+    ("hid", "ProCon直結"),
+    ("sine", "SINE波形"),
+    ("step", "STEP波形"),
+    ("rest", "静止値"),
+)
+
+
+class ImuPanel:
+    """ジャイロ送出の操作面。"""
+
+    def __init__(
+        self,
+        master: Any,
+        transport_provider: Callable[[], Any],
+        settings_provider: Callable[[], dict[str, str]],
+        settings_writer: Callable[[dict[str, str]], None],
+        log: Callable[[str], None],
+    ) -> None:
+        """transport_providerは送り先、settingsはIMU節の読み書き、logは行出し。"""
+        self._transport_provider = transport_provider
+        self._settings_provider = settings_provider
+        self._settings_writer = settings_writer
+        self._log = log
+        self._queue: queue.Queue = queue.Queue()
+        self._stop = False
+        self._streaming = False
+        self._sensor_reader: Any = None
+        self._step_gen: Any = None
+        self._stats_after: Any = None
+
+        frame = ttk.LabelFrame(master, text="ジャイロ", padding=8)
+        frame.columnconfigure(1, weight=1)
+        self.frame = frame
+
+        ttk.Label(frame, text="入力源").grid(
+            row=0, column=0, sticky=tk.W, padx=2, pady=2
+        )
+        self._source_var = tk.StringVar(value="sensor")
+        self._source_cb = ttk.Combobox(
+            frame,
+            width=10,
+            state="readonly",
+            textvariable=self._source_var,
+            values=[label for _, label in SOURCE_LABELS],
+        )
+        self._source_cb.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._btn_toggle = ttk.Button(frame, text="送出開始", command=self._on_toggle)
+        self._btn_toggle.grid(row=0, column=2, sticky=tk.EW, padx=2, pady=2)
+
+        ttk.Label(frame, text="パッド").grid(
+            row=1, column=0, sticky=tk.W, padx=2, pady=2
+        )
+        self._pad_var = tk.StringVar(value="0")
+        self._pad_cb = ttk.Combobox(
+            frame,
+            width=10,
+            state="readonly",
+            textvariable=self._pad_var,
+            values=["0", "1", "2", "3"],
+        )
+        self._pad_cb.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._btn_step = ttk.Button(frame, text="STEP発火", command=self._on_step_fire)
+        self._btn_step.grid(row=1, column=2, sticky=tk.EW, padx=2, pady=2)
+
+        self._stats_var = tk.StringVar(value="停止中")
+        ttk.Label(frame, textvariable=self._stats_var).grid(
+            row=2, column=0, columnspan=2, sticky=tk.W, padx=2, pady=2
+        )
+        self._detail_var = tk.BooleanVar(value=False)
+        self._detail_cb = ttk.Checkbutton(
+            frame,
+            text="詳細表示",
+            variable=self._detail_var,
+            command=self._on_detail_toggled,
+        )
+        self._detail_cb.grid(row=2, column=2, sticky=tk.EW, padx=2, pady=2)
+        # 詳細の可視化パネル。チェックONのときだけ同frame内に展開する。
+        self._gyro_view: Any = None
+        self._load_settings_into_vars()
+        self._poll()
+
+    def pack(self, **kwargs: Any) -> None:
+        """外枠を配置する。"""
+        self.frame.pack(**kwargs)
+
+    def _load_settings_into_vars(self) -> None:
+        """設定値を画面へ反映する。読めなければ既定のまま。"""
+        try:
+            settings = self._settings_provider()
+        except Exception:
+            return
+        try:
+            source = str(settings.get("source", "sensor"))
+            for name, label in SOURCE_LABELS:
+                if name == source:
+                    self._source_var.set(label)
+                    break
+            pad = int(settings.get("pad_index", "0"))
+            if 0 <= pad <= 3:
+                self._pad_var.set(str(pad))
+        except (TypeError, ValueError):
+            pass
+
+    def _source_name(self) -> str:
+        """画面の入力源ラベル→設定名。読めなければsensor。"""
+        label = self._source_var.get()
+        for name, text in SOURCE_LABELS:
+            if text == label:
+                return name
+        return "sensor"
+
+    def _on_toggle(self) -> None:
+        """送出の開始/停止。線操作は作業スレッドで行う。"""
+        if self._streaming:
+            thread = threading.Thread(target=self._do_stop, daemon=True)
+            thread.start()
+            return
+        source = self._source_name()
+        try:
+            pad = int(self._pad_var.get())
+        except (TypeError, ValueError):
+            pad = 0
+        try:
+            self._settings_writer({"source": source, "pad_index": str(pad)})
+        except Exception:
+            pass
+        thread = threading.Thread(
+            target=self._do_start, args=(source, pad), daemon=True
+        )
+        thread.start()
+
+    def _on_step_fire(self) -> None:
+        """STEP波形の再発火。送出中でSTEP源のときだけ効く。"""
+        gen = self._step_gen
+        if gen is None or not self._streaming:
+            self._queue.put(("log", "STEP送出中に押してください。"))
+            return
+        try:
+            gen.trigger()
+            self._queue.put(("log", "STEPを発火しました。"))
+        except Exception as e:
+            self._queue.put(("log", f"STEP発火に失敗: {e!r}"))
+
+    def _on_detail_toggled(self) -> None:
+        """詳細表示の切替。ONで同frame内に展開、OFFで畳む。送出は続ける。"""
+        try:
+            show = bool(self._detail_var.get())
+        except Exception:
+            show = False
+        if show:
+            if self._gyro_view is not None:
+                return
+            try:
+                from GyroView import GyroView
+
+                view = GyroView(self.frame, rate_range=500)
+                view.grid(row=3, column=0, columnspan=3, sticky=tk.EW)
+                reset = ttk.Button(view, text="ヨーリセット", command=view.reset_yaw)
+                reset.pack(pady=(0, 4))
+                self._gyro_view = view
+            except Exception as e:
+                self._queue.put(("log", f"詳細表示を作れません: {e!r}"))
+                try:
+                    self._detail_var.set(False)
+                except Exception:
+                    pass
+        else:
+            self._collapse_detail()
+
+    def _collapse_detail(self) -> None:
+        """詳細表示を畳む。送出は続ける。"""
+        view, self._gyro_view = self._gyro_view, None
+        if view is not None:
+            try:
+                view.close()
+            except Exception:
+                pass
+            try:
+                view.destroy()
+            except Exception:
+                pass
+
+    def _build_source(self, source: str, pad: int) -> Any:
+        """入力源の生成器を作る。失敗はNone。"""
+        try:
+            settings = self._settings_provider()
+        except Exception:
+            settings = {}
+        try:
+            acc_z = int(settings.get("acc_z", "4096"))
+        except (TypeError, ValueError):
+            acc_z = 4096
+        if source == "sensor":
+            try:
+                from core.sdl_sensor import SdlSensorReader
+
+                reader = SdlSensorReader()
+                self._apply_axis_settings(reader, settings)
+                if not reader.open(pad):
+                    return None
+                self._sensor_reader = reader
+                return reader.read
+            except Exception:
+                return None
+        if source == "hid":
+            try:
+                from core.nintendo_hid import NintendoHidReader
+
+                reader = NintendoHidReader()
+                if not reader.open():
+                    return None
+                self._sensor_reader = reader
+                return reader.read
+            except Exception:
+                return None
+        if source == "sine":
+            try:
+                from core.imu_wave import SineWave
+
+                axis = int(settings.get("sine_axis", "2"))
+                amp = int(settings.get("sine_amp", "4096"))
+                period = float(settings.get("sine_period_s", "2.0"))
+                return SineWave(axis=axis, amp=amp, period_s=period, acc_z=acc_z)
+            except (TypeError, ValueError):
+                return None
+        if source == "step":
+            try:
+                from core.imu_wave import StepWave
+
+                axis = int(settings.get("step_axis", "2"))
+                raw = int(settings.get("step_raw", "5899"))
+                duration = float(settings.get("step_duration_s", "4.0"))
+                gen = StepWave(axis=axis, raw=raw, duration_s=duration, acc_z=acc_z)
+                gen.trigger()
+                self._step_gen = gen
+                return gen
+            except (TypeError, ValueError):
+                return None
+        try:
+            from core.imu_wave import StaticRest
+
+            return StaticRest(acc_z=acc_z)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _apply_axis_settings(reader: Any, settings: dict[str, str]) -> None:
+        """軸変換・バイアス設定をreaderへ適用する。読めない項目は飛ばす。"""
+        try:
+            from config import parse_imu_axis_map, parse_imu_bias
+        except Exception:
+            return
+        try:
+            aa = parse_imu_axis_map(str(settings.get("accel_axes", "")), (0, 1, 2))
+            as_ = parse_imu_axis_map(str(settings.get("accel_signs", "")), (-1, 1))
+            ga = parse_imu_axis_map(str(settings.get("gyro_axes", "")), (0, 1, 2))
+            gs = parse_imu_axis_map(str(settings.get("gyro_signs", "")), (-1, 1))
+            if aa is not None and as_ is not None and ga is not None and gs is not None:
+                reader.set_axis_map(aa, as_, ga, gs)
+            bias = parse_imu_bias(str(settings.get("gyro_bias", "")))
+            if bias is not None:
+                reader.set_gyro_bias(bias)
+        except Exception:
+            pass
+
+    def _do_start(self, source: str, pad: int) -> None:
+        """送出開始の実体（作業スレッド）。"""
+        try:
+            transport = self._transport_provider()
+        except Exception:
+            transport = None
+        if transport is None:
+            self._queue.put(("log", "シリアルが開いていません。先に接続してください。"))
+            return
+        try:
+            opened = bool(transport.is_open())
+        except Exception:
+            opened = False
+        if not opened:
+            self._queue.put(("log", "シリアルが開いていません。先に接続してください。"))
+            return
+        gen = self._build_source(source, pad)
+        if gen is None:
+            if source == "sensor":
+                self._queue.put(
+                    (
+                        "log",
+                        f"センサーが開けません: pad={pad}。対応パッドを繋いでください。",
+                    )
+                )
+            elif source == "hid":
+                self._queue.put(
+                    ("log", "ProConが開けません。USB接続を確認してください。")
+                )
+            else:
+                self._queue.put(
+                    ("log", f"波形の生成に失敗: {source}。設定を確認してください。")
+                )
+            return
+        # 可視化へ送出値を流す。窓の開閉に追従するため都度引き直す。
+        inner = gen
+        panel = self
+
+        def watched() -> Any:
+            sample = inner()
+            if sample is not None:
+                try:
+                    view = panel._gyro_view
+                except Exception:
+                    view = None
+                if view is not None:
+                    try:
+                        ax, ay, az, gx, gy, gz = (int(v) for v in sample)
+                        view.push_raw(ax, ay, az, gx, gy, gz)
+                    except Exception:
+                        pass
+            return sample
+
+        gen = watched
+        try:
+            start = getattr(transport, "start_imu_loop", None)
+            ok = bool(start(gen)) if callable(start) else False
+        except Exception:
+            ok = False
+        if not ok:
+            self._queue.put(("log", "IMU送出の開始に失敗しました。"))
+            self._close_source()
+            return
+        self._streaming = True
+        self._queue.put(("state", "streaming"))
+        self._queue.put(("log", f"IMU送出を開始: {source}。"))
+
+    def _do_stop(self) -> None:
+        """送出停止の実体（作業スレッド）。"""
+        try:
+            transport = self._transport_provider()
+        except Exception:
+            transport = None
+        if transport is not None:
+            try:
+                stop = getattr(transport, "stop_imu_loop", None)
+                if callable(stop):
+                    stop()
+            except Exception:
+                pass
+        self._close_source()
+        self._streaming = False
+        self._queue.put(("state", "stopped"))
+        self._queue.put(("log", "IMU送出を停止しました。"))
+
+    def _close_source(self) -> None:
+        """入力源を閉じる。例外は投げない。"""
+        reader, self._sensor_reader = self._sensor_reader, None
+        self._step_gen = None
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:
+                pass
+
+    def _poll(self) -> None:
+        """作業スレッドからの届けを画面へ出す。"""
+        if self._stop:
+            return
+        try:
+            while True:
+                try:
+                    kind, payload = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if kind == "log":
+                    try:
+                        self._log(str(payload))
+                    except Exception:
+                        pass
+                elif kind == "state":
+                    try:
+                        if payload == "streaming":
+                            self._btn_toggle.configure(text="送出停止")
+                        else:
+                            self._btn_toggle.configure(text="送出開始")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            self._refresh_stats()
+        except Exception:
+            pass
+        try:
+            self.frame.after(500, self._poll)
+        except Exception:
+            pass
+
+    def _refresh_stats(self) -> None:
+        """統計表示を更新する。送出中のみ読む。"""
+        if not self._streaming:
+            try:
+                self._stats_var.set("停止中")
+            except Exception:
+                pass
+            return
+        try:
+            transport = self._transport_provider()
+            stats = getattr(transport, "imu_stats", None)
+            info = stats() if callable(stats) else None
+        except Exception:
+            info = None
+        try:
+            if isinstance(info, dict):
+                self._stats_var.set(
+                    f"送出中 sent={info.get('sent', 0)} dropped={info.get('dropped', 0)}"
+                )
+            else:
+                self._stats_var.set("送出中")
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """送出を止めて予約を消す。例外は投げない。"""
+        self._stop = True
+        try:
+            self._collapse_detail()
+        except Exception:
+            pass
+        if self._streaming:
+            thread = threading.Thread(target=self._do_stop, daemon=True)
+            thread.start()
+            try:
+                thread.join(1.0)
+            except Exception:
+                pass
+        else:
+            self._close_source()

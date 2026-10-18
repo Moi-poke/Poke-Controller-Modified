@@ -252,10 +252,23 @@ class SdlPadReader:
         gc = self._gc()
         if gc is None:
             return (None, None)
+        # Steam起動中はHIDの奪い合いでopenが不安定になる実測（SDL#3450）。
+        # 失敗時は少し待って最大3回まで試す。
+        import time as _time
+
+        gc_stick: Any = None
+        for _attempt in range(3):
+            try:
+                if not bool(gc.is_controller(int(index))):
+                    return (None, None)
+                gc_stick = gc.Controller(int(index))
+                break
+            except Exception:
+                gc_stick = None
+                _time.sleep(0.2)
+        if gc_stick is None:
+            return (None, None)
         try:
-            if not bool(gc.is_controller(int(index))):
-                return (None, None)
-            gc_stick = gc.Controller(int(index))
             raw_stick: Any | None = None
             try:
                 import pygame.joystick as _joy
