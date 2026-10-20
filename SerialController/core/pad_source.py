@@ -94,9 +94,9 @@ class PadSource:
             return PadState()
         try:
             if self._hid is None:
-                from core.nintendo_hid import NintendoHidReader
+                from core.nintendo_hid import get_shared_reader
 
-                self._hid = NintendoHidReader()
+                self._hid = get_shared_reader()
                 self._hid_opened = False
             reader = self._hid
             is_open = getattr(reader, "is_open", None)

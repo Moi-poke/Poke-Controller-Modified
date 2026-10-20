@@ -191,6 +191,18 @@ def test_decode_player_flags_imu_vib() -> None:
     assert decode_player_flags(0xFF) == (True, True)
 
 
+def test_decode_player_imu_range_bits() -> None:
+    """flags bit3-4=gyro・bit5-6=accel の要求レンジ復号。"""
+    from BconSetup import decode_player_imu_range
+
+    assert decode_player_imu_range(0x00) == ("±250dps", "±8G")
+    assert decode_player_imu_range(0x18) == ("±2000dps", "±8G")  # gyro sel=3
+    # IMU/vib/saved (bit0-2) は範囲に影響しない。
+    assert decode_player_imu_range(0x07) == ("±250dps", "±8G")
+    # accel sel=2 (±2G)
+    assert decode_player_imu_range(0x18 | (2 << 5)) == ("±2000dps", "±2G")
+
+
 def test_player_lamp_s2_edge_no_raise() -> None:
     """S2端: 予約/空/1byteでも落とさない（据え置き or 全消灯）。
 

@@ -38,23 +38,42 @@ def test_nintendo_hid_parses_latest_sample():
     import threading
 
     reader._lock = threading.Lock()
-    reader._dev = _FakeHidDevice([report])
+    reader._latest = report
     reader._packet = 0
     assert reader.read() == (13, 14, 15, 16, 17, 18)
 
 
-def test_nintendo_hid_skips_non_30_reports():
+def test_nintendo_hid_ignores_non_30_cache():
+    """読み取りスレッドは0x30以外を_cacheへ入れない。念のためIDでも弾く。"""
     import core.nintendo_hid as nh
 
-    other = bytes([0x21] + [0] * 63)
-    good = _report_30(1, 2, 4096, 3, 4, 5)
     reader = nh.NintendoHidReader.__new__(nh.NintendoHidReader)
     import threading
 
     reader._lock = threading.Lock()
-    reader._dev = _FakeHidDevice([other, good])
+    reader._latest = bytes([0x21] + [0] * 63)
     reader._packet = 0
-    assert reader.read() == (1, 2, 4096, 3, 4, 5)
+    assert reader.read() is None
+
+
+def test_nintendo_hid_poller_caches_latest_30():
+    """専用スレッドが0x30だけを保持し、read()はそれを返す。"""
+    import time
+
+    import core.nintendo_hid as nh
+
+    other = bytes([0x21] + [0] * 63)
+    good = _report_30(1, 2, 4096, 3, 4, 5)
+    reader = nh.NintendoHidReader()
+    reader._dev = _FakeHidDevice([other, good])
+    reader._latest = None
+    reader._start_poller_locked()
+    deadline = time.monotonic() + 2.0
+    while reader.read() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    reader.close()
+    assert reader.read() is None  # closeでcacheも消える
+    assert reader._replies and reader._replies[0] == other
 
 
 def test_nintendo_hid_closed_returns_none():
@@ -64,3 +83,23 @@ def test_nintendo_hid_closed_returns_none():
     assert reader.read() is None
     assert reader.is_open() is False
     reader.close()
+
+
+def test_nintendo_hid_shared_reader_is_singleton():
+    """パッド読みとIMU送出は同一ハンドルを共有する（二重open防止）。"""
+    import core.nintendo_hid as nh
+
+    nh._shared_reader = None
+    first = nh.get_shared_reader()
+    second = nh.get_shared_reader()
+    assert first is second
+    nh._shared_reader = None
+
+
+def test_nintendo_hid_stick_y_polarity() -> None:
+    """Switch生値は上が大きい。XInputへは反転しない（上下逆の回帰防止）。"""
+    import core.nintendo_hid as nh
+
+    assert nh._stick12_to_short(0x800) == 0
+    assert nh._stick12_to_short(0xFFF) > 0  # 上 = 正
+    assert nh._stick12_to_short(0x000) < 0  # 下 = 負

@@ -64,3 +64,43 @@ def test_imu_section_keeps_valid():
     assert not [c for c in before if c.startswith("IMU.")]
     assert parser["IMU"]["source"] == "step"
     assert parser["IMU"]["gyro_bias"] == "0.01,-0.02,0.0"
+
+
+def test_apply_gyro_deadband_zeroes_small_axes() -> None:
+    """不感帯はジャイロのみ・各軸独立。加速度と閾値超えは残す。"""
+    from core.imu_wave import apply_gyro_deadband
+
+    sample = (100, -200, 4096, 20, -49, 50)
+    assert apply_gyro_deadband(sample, 0.0) == sample
+    # 50raw未満だけ0（20→0、-49→0、50は残る）
+    assert apply_gyro_deadband(sample, 50.0) == (100, -200, 4096, 0, 0, 50)
+    assert apply_gyro_deadband(sample, 1000.0) == (100, -200, 4096, 0, 0, 0)
+
+
+def test_sample_transform_identity_and_signs() -> None:
+    """HID直結の軸・符号変換。恒等ならNone、指定時は軸と符号を適用。"""
+    from ImuPanel import ImuPanel
+
+    ident = {
+        "accel_axes": "0,1,2",
+        "accel_signs": "1,1,1",
+        "gyro_axes": "0,1,2",
+        "gyro_signs": "1,1,1",
+    }
+    assert ImuPanel._sample_transform(ident) is None
+
+    signs = dict(ident)
+    signs["gyro_signs"] = "1,-1,-1"
+    fn = ImuPanel._sample_transform(signs)
+    assert fn is not None
+    assert fn((100, 200, 300, 10, 20, 30)) == (100, 200, 300, 10, -20, -30)
+
+    axes = {
+        "accel_axes": "2,0,1",
+        "accel_signs": "-1,-1,1",
+        "gyro_axes": "2,0,1",
+        "gyro_signs": "-1,-1,1",
+    }
+    fn2 = ImuPanel._sample_transform(axes)
+    assert fn2 is not None
+    assert fn2((1, 2, 3, 4, 5, 6)) == (-3, -1, 2, -6, -4, 5)

@@ -330,6 +330,21 @@ def decode_player_save(byte: int) -> bool:
     return bool(value & PLAYER_FLAG_CAP_SAVED)
 
 
+# PLAYER_INFO flags bit3-4/bit5-6 は Switch が 0x41 で要求した IMU レンジ。
+# FW が ACK 時に保持した値を可視化用に載せている（旧FWは0のまま）。
+GYRO_RANGE_LABELS = ("±250dps", "±500dps", "±1000dps", "±2000dps")
+ACCEL_RANGE_LABELS = ("±8G", "±4G", "±2G", "±16G")
+
+
+def decode_player_imu_range(byte: int) -> tuple[str, str]:
+    """PLAYER_INFO flags の IMU要求レンジを表示名へ。未知bitは見ない。"""
+    value = int(byte) & 0xFF
+    return (
+        GYRO_RANGE_LABELS[(value >> 3) & 0x3],
+        ACCEL_RANGE_LABELS[(value >> 5) & 0x3],
+    )
+
+
 def _pre_status_snapshot(transport: Any) -> dict[str, Any] | None:
     """送出前のSTATUS写しを取る。線に触れず、口が無ければNone。
 
@@ -1096,6 +1111,31 @@ class BconSetup:
                 continue
         # 保存証拠は表示と別に覚える。BEACONでは立てない。
         self._note_player_save(flags)
+        self._note_player_imu_range(flags)
+
+    def _note_player_imu_range(self, flags: Any) -> None:
+        """Switchが要求したIMUレンジ(0x41)を変化時だけログへ1行出す。
+
+        bit7は「0x41を実際に受信したか」。未受信のときの値は既定
+        (±2000dps/±8G) なので、要求と取り違えないよう明示する。
+        """
+        try:
+            value = int(flags) & 0xFF
+            gyro, accel = decode_player_imu_range(value)
+        except (TypeError, ValueError):
+            return
+        seen = bool(value & 0x80)
+        shown = (gyro, accel, seen)
+        if shown == getattr(self, "_imu_range_shown", None):
+            return
+        self._imu_range_shown = shown
+        note = "" if seen else "（この起動では0x41未受信＝既定値）"
+        try:
+            self._append(
+                f"IMU感度要求(0x41): ジャイロ {gyro} / 加速度 {accel}{note}"
+            )
+        except Exception:
+            pass
 
     def _note_player_save(self, flags: Any) -> None:
         """PLAYER_INFO flags bit2を見たら保存済みを覚える。例外は出さない。"""

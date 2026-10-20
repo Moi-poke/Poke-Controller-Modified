@@ -25,6 +25,26 @@ def _clamp_i16(value: int) -> int:
     return max(-32768, min(32767, int(value)))
 
 
+def apply_gyro_deadband(
+    sample: tuple[int, int, int, int, int, int], dead_raw: float
+) -> tuple[int, int, int, int, int, int]:
+    """ジャイロ各軸を不感帯以下で0にする（加速度は触らない）。
+
+    dead_rawはSwitch生値。0以下なら無変換。静止時の残余バイアスで
+    ゲーム側のスイング判定が誤発火する場合に使う。
+    """
+    if dead_raw <= 0.0:
+        return sample
+    ax, ay, az, gx, gy, gz = (int(v) for v in sample)
+    if abs(gx) < dead_raw:
+        gx = 0
+    if abs(gy) < dead_raw:
+        gy = 0
+    if abs(gz) < dead_raw:
+        gz = 0
+    return (ax, ay, az, gx, gy, gz)
+
+
 @dataclass
 class SineWave:
     """SINE波形。指定軸のgyroだけを振り、他は静止値。"""
@@ -85,9 +105,15 @@ class StepWave:
 
 @dataclass(frozen=True, slots=True)
 class StaticRest:
-    """静止値。IMU loopの疎通確認用。"""
+    """静止値。IMU loopの疎通確認用。
+
+    acc_x/acc_y は実入力の静止ベクトルを再現するためのもの。値そのものを
+    固定したまま入力源だけを差し替え、Switch側の反応を比較できる。
+    """
 
     acc_z: int = 4096
+    acc_x: int = 0
+    acc_y: int = 0
 
     def __call__(self) -> tuple[int, int, int, int, int, int]:
-        return (0, 0, int(self.acc_z), 0, 0, 0)
+        return (int(self.acc_x), int(self.acc_y), int(self.acc_z), 0, 0, 0)

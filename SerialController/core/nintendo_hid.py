@@ -21,6 +21,7 @@ SDLを使わないためSteam・pygameと干渉しない。
 
 from __future__ import annotations
 
+import collections
 import struct
 import threading
 import time
@@ -29,6 +30,10 @@ from typing import Any
 _RUMBLE_NEUTRAL = bytes([0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40])
 _REPORT_LEN = 64
 _READ_TIMEOUT_MS = 200
+
+# プロセス内で共有するHID実体（パッド読みとIMU送出で同一ハンドルを使う）。
+_shared_lock = threading.Lock()
+_shared_reader: "NintendoHidReader | None" = None
 
 NINTENDO_VID = 0x057E
 PROCON_PID = 0x2009
@@ -53,7 +58,11 @@ _BUTTON_BITS: dict[str, int] = {
 
 
 def _stick12_to_short(value: int, invert: bool = False) -> int:
-    """12bitスティック（中央0x800）→ SHORT。Yはinvertで上が正に。"""
+    """12bitスティック（中央0x800）→ SHORT。
+
+    Switch生値は上/右が大きい（Y反転はPico側packの4096-Yが担う）。
+    そのためXInput（上/右が正）へはinvert不要。
+    """
     v = max(0, min(0xFFF, int(value))) - 0x800
     if invert:
         v = -v
@@ -68,6 +77,12 @@ class NintendoHidReader:
         self._dev: Any = None
         self._packet = 0
         self._pad_packet = 0
+        # 読み取り専用スレッドが最新0x30を保持する。呼び出し側はここを見る
+        # だけで済み、ブロッキング読みが送出ループを止めない。
+        self._latest: bytes | None = None
+        self._replies: collections.deque[bytes] = collections.deque(maxlen=16)
+        self._poller: threading.Thread | None = None
+        self._poll_stop = threading.Event()
 
     @staticmethod
     def available() -> bool:
@@ -108,6 +123,8 @@ class NintendoHidReader:
 
     def _open_once(self, path: bytes | None) -> bool:
         """1回のopen試行。成功で True。"""
+        # 旧ハンドルの読み取りスレッドを先に止める（錠の外でjoin）。
+        self._stop_poller()
         with self._lock:
             self._close_locked()
             try:
@@ -141,10 +158,72 @@ class NintendoHidReader:
                     if report is None or len(report) < 49 or report[0] != 0x30:
                         self._close_locked()
                         return False
+                # 以降は専用スレッドが読み続け、呼び出し側は最新値を見る。
+                self._start_poller_locked()
                 return True
             except Exception:
                 self._close_locked()
                 return False
+
+    def _start_poller_locked(self) -> None:
+        """読み取り専用スレッドを起こす（錠内で呼ぶ）。"""
+        self._latest = None
+        self._replies.clear()
+        self._poll_stop.clear()
+        if self._poller is not None and self._poller.is_alive():
+            return
+        worker = threading.Thread(
+            target=self._poll_run,
+            name="nintendo-hid-poll",
+            daemon=True,
+        )
+        self._poller = worker
+        worker.start()
+
+    def _poll_run(self) -> None:
+        """デバイスを読み続け、最新0x30と応答を保持する。
+
+        読み取りが連続で空振りする（USB再列挙でハンドルが死んだ）ときは
+        自分で閉じる。閉じると is_open() が false になり、パッド側とIMU側が
+        次の読みで開き直せる。
+        """
+        idle = 0
+        while not self._poll_stop.is_set():
+            with self._lock:
+                dev = self._dev
+            if dev is None:
+                break
+            try:
+                data = dev.read(_REPORT_LEN, timeout_ms=_READ_TIMEOUT_MS)
+            except Exception:
+                with self._lock:
+                    self._close_locked()
+                break
+            if not data:
+                idle += 1
+                # 0x30は約15ms毎に来る。200ms×3回の空振りは切断扱い。
+                if idle >= 3:
+                    with self._lock:
+                        self._close_locked()
+                    break
+                continue
+            idle = 0
+            report = bytes(data)
+            if len(report) < 2:
+                continue
+            with self._lock:
+                if report[0] == 0x30:
+                    self._latest = report
+                else:
+                    self._replies.append(report)
+
+    def _stop_poller(self) -> None:
+        """読み取りスレッドを止める（錠の外でjoinする）。"""
+        self._poll_stop.set()
+        worker = self._poller
+        self._poller = None
+        if worker is not None and worker.is_alive():
+            worker.join(0.5)
 
     def _write_locked(self, data: bytes) -> bool:
         """64B output reportを書く。"""
@@ -220,8 +299,9 @@ class NintendoHidReader:
         return None
 
     def _close_locked(self) -> None:
-        """錠内で閉じる。"""
+        """錠内で閉じる。cacheも消す（閉じた後のreadはNone）。"""
         dev, self._dev = self._dev, None
+        self._latest = None
         if dev is not None:
             try:
                 dev.close()
@@ -230,8 +310,10 @@ class NintendoHidReader:
 
     def close(self) -> None:
         """閉じる。例外は投げない。"""
+        self._poll_stop.set()
         with self._lock:
             self._close_locked()
+        self._stop_poller()
 
     def is_open(self) -> bool:
         """開いているか。"""
@@ -250,17 +332,12 @@ class NintendoHidReader:
             return None
 
     def _read_030(self) -> bytes | None:
-        """0x30レポート1件を読む。失敗はNone。"""
+        """最新の0x30レポートを返す。読み取りは専用スレッドが行う。"""
         with self._lock:
-            if self._dev is None:
+            report = self._latest
+            if report is None or len(report) < 49 or report[0] != 0x30:
                 return None
-            for _ in range(3):
-                report = self._read_report_locked()
-                if report is None or len(report) < 49:
-                    return None
-                if report[0] == 0x30:
-                    return report
-            return None
+            return report
 
     def read_pad(self) -> Any:
         """ボタン・スティックをPadStateで読む。失敗は未接続。
@@ -331,11 +408,32 @@ class NintendoHidReader:
                 left_trigger=lt,
                 right_trigger=rt,
                 thumb_lx=_stick12_to_short(lx),
-                thumb_ly=_stick12_to_short(ly, invert=True),
+                thumb_ly=_stick12_to_short(ly),
                 thumb_rx=_stick12_to_short(rx),
-                thumb_ry=_stick12_to_short(ry, invert=True),
+                thumb_ry=_stick12_to_short(ry),
                 packet=packet,
                 pressed=frozenset(pressed),
             )
         except Exception:
             return PadState()
+
+
+def get_shared_reader() -> NintendoHidReader:
+    """プロセス内で1本のHIDハンドルを共有する。
+
+    ProConを2つの口（パッド読みとIMU送出）から同時に開くと、出力レポート
+    のpacket採番とサブコマンド応答が食い違い、片方の読みが壊れる恐れが
+    ある。実体を1つに固定して開閉の競合を避ける（SdlPadReader._shared_sdl
+    と同じ規律）。
+    """
+    global _shared_reader
+    with _shared_lock:
+        if _shared_reader is None:
+            _shared_reader = NintendoHidReader()
+        return _shared_reader
+
+
+def is_shared_reader(reader: object) -> bool:
+    """その実体がプロセス共有のHIDリーダーか。"""
+    with _shared_lock:
+        return _shared_reader is not None and _shared_reader is reader

@@ -260,6 +260,10 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "step_duration_s": 4.0,
             # 静止加速度Z（Switch生値。既定4096=1g）。
             "acc_z": 4096,
+            # 静止値ソースの加速度X/Y（Switch生値）。実入力の静止ベクトルを
+            # 再現し、値そのものと入力経路を切り分けるための診断用。
+            "acc_x": 0,
+            "acc_y": 0,
             # 軸変換（SDL→Switch）。既定はSDLのSwitch→SDL変換の逆写像
             # （Sw_X=-SDL_Z・Sw_Y=-SDL_X・Sw_Z=+SDL_Y）。
             "accel_axes": "2,0,1",
@@ -268,6 +272,12 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "gyro_signs": "-1,-1,1",
             # ジャイロバイアス（rad/s・3要素）。補正値の永続先。
             "gyro_bias": "0.0,0.0,0.0",
+            # ジャイロの不感帯（dps）。静止時の残余バイアス・ノイズで
+            # ゲーム側のスイング判定が誤発火する場合に広げる。0で無効。
+            "gyro_dead_dps": 0.0,
+            # ジャイロ出力の倍率。1.0で生値そのまま。コンソール側の
+            # スケール解釈が想定と違う場合の実測用トリム（0.01〜4.0）。
+            "gyro_scale": 1.0,
         },
     }
 def _parse_axis_map(text: str, valid: tuple[int, ...]) -> tuple[int, int, int] | None:
@@ -468,6 +478,8 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
             "step_axis": ("2", lambda value: 0 <= value <= 2),
             "step_raw": ("5899", lambda value: -32768 <= value <= 32767),
             "acc_z": ("4096", lambda value: -32768 <= value <= 32767),
+            "acc_x": ("0", lambda value: -32768 <= value <= 32767),
+            "acc_y": ("0", lambda value: -32768 <= value <= 32767),
         }
         for key, (dflt, ok) in int_rules.items():
             try:
@@ -480,6 +492,8 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         float_rules = {
             "sine_period_s": ("2.0", lambda value: value > 0),
             "step_duration_s": ("4.0", lambda value: value > 0),
+            "gyro_dead_dps": ("0.0", lambda value: 0 <= value <= 100),
+            "gyro_scale": ("1.0", lambda value: 0.01 <= value <= 4.0),
         }
         for key, (dflt, ok) in float_rules.items():
             try:

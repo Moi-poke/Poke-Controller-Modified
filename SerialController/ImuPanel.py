@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import ttk
@@ -52,6 +53,15 @@ class ImuPanel:
         self._sensor_reader: Any = None
         self._step_gen: Any = None
         self._stats_after: Any = None
+        # 直近1秒の最大振幅。表示は瞬時値のため、単発の跳び(spike)を
+        # 見落とす。Switch側の誤動作切り分け用に統計行へ出す。
+        self._peak_g = 0.0
+        self._peak_a = 0.0
+        self._acc_min: list[int | None] = [None, None, None]
+        self._acc_max: list[int | None] = [None, None, None]
+        # 送出レート表示用（前回の累計と時刻）。
+        self._last_sent: int | None = None
+        self._last_sent_t: float | None = None
 
         frame = ttk.LabelFrame(master, text="ジャイロ", padding=8)
         frame.columnconfigure(1, weight=1)
@@ -215,6 +225,14 @@ class ImuPanel:
             acc_z = int(settings.get("acc_z", "4096"))
         except (TypeError, ValueError):
             acc_z = 4096
+        try:
+            acc_x = int(settings.get("acc_x", "0"))
+        except (TypeError, ValueError):
+            acc_x = 0
+        try:
+            acc_y = int(settings.get("acc_y", "0"))
+        except (TypeError, ValueError):
+            acc_y = 0
         if source == "sensor":
             try:
                 from core.sdl_sensor import SdlSensorReader
@@ -229,13 +247,44 @@ class ImuPanel:
                 return None
         if source == "hid":
             try:
-                from core.nintendo_hid import NintendoHidReader
+                from core.nintendo_hid import get_shared_reader
 
-                reader = NintendoHidReader()
-                if not reader.open():
+                reader = get_shared_reader()
+                if not reader.is_open() and not reader.open():
                     return None
                 self._sensor_reader = reader
-                return reader.read
+                transform = self._sample_transform(settings)
+                inner_read = reader.read
+                last_try = {"t": 0.0}
+
+                def read_with_reopen() -> Any:
+                    # USB再列挙（UF2書き込み等）でハンドルが死んだ場合、
+                    # パッド側が動いていなくてもIMU側から開き直す。
+                    if not reader.is_open():
+                        now = time.monotonic()
+                        if now - last_try["t"] >= 1.0:
+                            last_try["t"] = now
+                            try:
+                                reader.open(retries=1)
+                            except Exception:
+                                return None
+                        if not reader.is_open():
+                            return None
+                    return inner_read()
+
+                if transform is None:
+                    return read_with_reopen
+
+                def mapped() -> Any:
+                    sample = read_with_reopen()
+                    if sample is None:
+                        return None
+                    try:
+                        return transform(sample)
+                    except Exception:
+                        return None
+
+                return mapped
             except Exception:
                 return None
         if source == "sine":
@@ -264,9 +313,41 @@ class ImuPanel:
         try:
             from core.imu_wave import StaticRest
 
-            return StaticRest(acc_z=acc_z)
+            return StaticRest(acc_z=acc_z, acc_x=acc_x, acc_y=acc_y)
         except Exception:
             return None
+
+    @staticmethod
+    def _sample_transform(
+        settings: dict[str, str],
+    ) -> Any | None:
+        """IMU軸・符号の変換関数を作る。恒等ならNone。
+
+        HID直結は生値がSwitchフレームのため、通常は軸=0,1,2・符号=1,1,1。
+        コンソール側の反転解釈を打ち消す実測（例: 符号=1,-1,-1）にも使う。
+        """
+        try:
+            from config import parse_imu_axis_map
+        except Exception:
+            return None
+        aa = parse_imu_axis_map(str(settings.get("accel_axes", "")), (0, 1, 2))
+        as_ = parse_imu_axis_map(str(settings.get("accel_signs", "")), (-1, 1))
+        ga = parse_imu_axis_map(str(settings.get("gyro_axes", "")), (0, 1, 2))
+        gs = parse_imu_axis_map(str(settings.get("gyro_signs", "")), (-1, 1))
+        if aa is None or as_ is None or ga is None or gs is None:
+            return None
+        if aa == (0, 1, 2) and ga == (0, 1, 2) and as_ == (1, 1, 1) and gs == (1, 1, 1):
+            return None
+
+        def apply(sample: Any) -> tuple[int, int, int, int, int, int]:
+            ax, ay, az, gx, gy, gz = (int(v) for v in sample)
+            acc = (ax, ay, az)
+            gyr = (gx, gy, gz)
+            ca = tuple(acc[aa[i]] * as_[i] for i in range(3))
+            cg = tuple(gyr[ga[i]] * gs[i] for i in range(3))
+            return (ca[0], ca[1], ca[2], cg[0], cg[1], cg[2])
+
+        return apply
 
     @staticmethod
     def _apply_axis_settings(reader: Any, settings: dict[str, str]) -> None:
@@ -325,21 +406,79 @@ class ImuPanel:
         # 可視化へ送出値を流す。窓の開閉に追従するため都度引き直す。
         inner = gen
         panel = self
+        try:
+            settings_now = self._settings_provider()
+        except Exception:
+            settings_now = {}
+        try:
+            dead_dps = float(settings_now.get("gyro_dead_dps", "0.0") or 0.0)
+        except (TypeError, ValueError):
+            dead_dps = 0.0
+        try:
+            gyro_scale = float(settings_now.get("gyro_scale", "1.0") or 1.0)
+        except (TypeError, ValueError):
+            gyro_scale = 1.0
+        if not 0.01 <= gyro_scale <= 4.0:
+            gyro_scale = 1.0
+        dead_raw = max(0.0, dead_dps) / 0.06103
+        first_sample = {"done": False}
 
         def watched() -> Any:
             sample = inner()
-            if sample is not None:
+            if sample is None:
+                return None
+            try:
+                ax, ay, az, gx, gy, gz = (int(v) for v in sample)
+            except (TypeError, ValueError):
+                return None
+            if gyro_scale != 1.0:
+                # コンソール側のスケール解釈が想定と違う場合の実測トリム。
+                gx = max(-32768, min(32767, int(round(gx * gyro_scale))))
+                gy = max(-32768, min(32767, int(round(gy * gyro_scale))))
+                gz = max(-32768, min(32767, int(round(gz * gyro_scale))))
+            if dead_raw > 0.0:
+                # 静止時の残余バイアスでゲーム側の判定が誤発火する
+                # 場合の不感帯。各軸独立に潰す（実スイングは残る）。
                 try:
-                    view = panel._gyro_view
+                    from core.imu_wave import apply_gyro_deadband
+
+                    ax, ay, az, gx, gy, gz = apply_gyro_deadband(
+                        (ax, ay, az, gx, gy, gz), dead_raw
+                    )
                 except Exception:
-                    view = None
-                if view is not None:
-                    try:
-                        ax, ay, az, gx, gy, gz = (int(v) for v in sample)
-                        view.push_raw(ax, ay, az, gx, gy, gz)
-                    except Exception:
-                        pass
-            return sample
+                    pass
+
+            # 瞬時表示では見えない単発の跳びを1秒窓の最大値で拾う。
+            if not first_sample["done"]:
+                first_sample["done"] = True
+                panel._queue.put(
+                    (
+                        "log",
+                        f"IMU不感帯={dead_dps:.1f}dps 初回サンプル:"
+                        f" acc=({ax},{ay},{az}) gyro=({gx},{gy},{gz})",
+                    )
+                )
+            peak_g = max(abs(gx), abs(gy), abs(gz)) * 0.06103
+            peak_a = max(abs(ax), abs(ay), abs(az)) * 0.000244
+            if peak_g > panel._peak_g:
+                panel._peak_g = peak_g
+            if peak_a > panel._peak_a:
+                panel._peak_a = peak_a
+            # 軸ごとの最小/最大。定値源なら0、FWのtimeout復帰や
+            # 読みの取りこぼしで跳べば幅として見える。
+            for i, v in enumerate((ax, ay, az)):
+                lo = panel._acc_min[i]
+                hi = panel._acc_max[i]
+                panel._acc_min[i] = v if lo is None or v < lo else lo
+                panel._acc_max[i] = v if hi is None or v > hi else hi
+            view = getattr(panel, "_gyro_view", None)
+            if view is not None:
+                try:
+                    view.push_raw(ax, ay, az, gx, gy, gz)
+                except Exception:
+                    pass
+            # 加工後の値を送出する（不感帯を実際に効かせる）。
+            return (ax, ay, az, gx, gy, gz)
 
         gen = watched
         try:
@@ -374,14 +513,26 @@ class ImuPanel:
         self._queue.put(("log", "IMU送出を停止しました。"))
 
     def _close_source(self) -> None:
-        """入力源を閉じる。例外は投げない。"""
+        """入力源を閉じる。例外は投げない。
+
+        HID直結はパッド読みと共有しているため、ここでは閉じない
+        （閉じるとボタン入力が止まる）。プロセス終了時に任せる。
+        """
         reader, self._sensor_reader = self._sensor_reader, None
         self._step_gen = None
-        if reader is not None:
-            try:
-                reader.close()
-            except Exception:
-                pass
+        if reader is None:
+            return
+        try:
+            from core.nintendo_hid import is_shared_reader
+
+            if is_shared_reader(reader):
+                return
+        except Exception:
+            pass
+        try:
+            reader.close()
+        except Exception:
+            pass
 
     def _poll(self) -> None:
         """作業スレッドからの届けを画面へ出す。"""
@@ -420,11 +571,25 @@ class ImuPanel:
     def _refresh_stats(self) -> None:
         """統計表示を更新する。送出中のみ読む。"""
         if not self._streaming:
+            self._peak_g = 0.0
+            self._peak_a = 0.0
             try:
                 self._stats_var.set("停止中")
             except Exception:
                 pass
             return
+        peak_g = self._peak_g
+        peak_a = self._peak_a
+        self._peak_g = 0.0
+        self._peak_a = 0.0
+        spans = []
+        for i in range(3):
+            lo = self._acc_min[i]
+            hi = self._acc_max[i]
+            spans.append(0.0 if lo is None or hi is None else (hi - lo) * 0.000244)
+        self._acc_min = [None, None, None]
+        self._acc_max = [None, None, None]
+        span_txt = f"ΔA=({spans[0]:.2f},{spans[1]:.2f},{spans[2]:.2f})G"
         try:
             transport = self._transport_provider()
             stats = getattr(transport, "imu_stats", None)
@@ -433,11 +598,24 @@ class ImuPanel:
             info = None
         try:
             if isinstance(info, dict):
+                sent_now = int(info.get("sent", 0))
+                now = time.monotonic()
+                rate_txt = ""
+                if self._last_sent is not None and self._last_sent_t is not None:
+                    span = now - self._last_sent_t
+                    if span > 0:
+                        rate_txt = f" rate={(sent_now - self._last_sent) / span:.0f}/s"
+                self._last_sent = sent_now
+                self._last_sent_t = now
                 self._stats_var.set(
-                    f"送出中 sent={info.get('sent', 0)} dropped={info.get('dropped', 0)}"
+                    f"送出中 sent={info.get('sent', 0)}"
+                    f" dropped={info.get('dropped', 0)}{rate_txt}"
+                    f" peak|g|={peak_g:.1f}dps peak|a|={peak_a:.2f}G {span_txt}"
                 )
             else:
-                self._stats_var.set("送出中")
+                self._stats_var.set(
+                    f"送出中 peak|g|={peak_g:.1f}dps peak|a|={peak_a:.2f}G {span_txt}"
+                )
         except Exception:
             pass
 
