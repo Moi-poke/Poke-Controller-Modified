@@ -20,7 +20,7 @@ import serial
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "SerialController"))
 
-from core.nintendo_hid import NintendoHidReader  # noqa: E402
+from core.nintendo_hid import _RUMBLE_NEUTRAL, NintendoHidReader  # noqa: E402
 from core.transport.bcon_protocol import (  # noqa: E402
     T_IMU_SAMPLE,
     T_NEUTRAL,
@@ -40,17 +40,18 @@ def _procon_path() -> bytes | None:
         try:
             dev.open_path(path)
             dev.set_nonblocking(False)
-            dev.write(bytes([0x80, 0x01]) + bytes(62))
-            time.sleep(0.05)
-            dev.write(
-                bytes([0x01, 0])
-                + bytes([0x00, 0x01, 0x40, 0x40, 0, 1, 0x40, 0x40])
-                + bytes([0x02])
-                + bytes(54)
-            )
-            for _ in range(6):
-                r = dev.read(64, timeout_ms=150)
-                if r and len(r) >= 18 and r[0] == 0x21 and r[14] == 0x02:
+            # 既存セッションの後では 80 01 だけでは応答しない。80 02/80 04 まで
+            # 送ってから種別を問い合わせる（実測）。
+            for cmd in (bytes([0x80, 0x01]), bytes([0x80, 0x02]), bytes([0x80, 0x04])):
+                dev.write(bytes(cmd) + bytes(64 - len(cmd)))
+                time.sleep(0.05)
+                # 0x30連送中でもコマンドが通るよう多めに読み捨てる（実測）。
+                for _ in range(5):
+                    dev.read(64, timeout_ms=60)
+            dev.write(bytes([0x01, 0]) + _RUMBLE_NEUTRAL + bytes([0x02]) + bytes(53))
+            for _ in range(40):
+                r = dev.read(64, timeout_ms=100)
+                if r and len(r) >= 18 and r[0] in (0x21, 0x81) and r[14] == 0x02:
                     if r[17] == 3:
                         return bytes(path)
                     break
