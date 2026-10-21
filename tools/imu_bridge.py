@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "SerialControll
 
 from core.nintendo_hid import _RUMBLE_NEUTRAL, NintendoHidReader  # noqa: E402
 from core.transport.bcon_protocol import (  # noqa: E402
+    T_EMULATE_MODE,
     T_IMU_SAMPLE,
     T_NEUTRAL,
     frame_build,
@@ -69,6 +70,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="ProCon IMU → Pico 中継")
     ap.add_argument("port", nargs="?", default="COM3")
     ap.add_argument("--baud", type=int, default=1000000)
+    ap.add_argument(
+        "--role",
+        type=int,
+        choices=(0, 1, 2),
+        default=None,
+        help="EMULATE_MODEを送る (2=Joy-Con R)。変更時はFWが自動再起動する",
+    )
     args = ap.parse_args()
 
     path = _procon_path()
@@ -87,6 +95,15 @@ def main() -> int:
         return 1
     seq = 0
     try:
+        if args.role is not None:
+            for _ in range(3):
+                ser.write(frame_build(T_EMULATE_MODE, bytes([args.role]), seq))
+                seq = (seq + 1) & 0xFF
+                time.sleep(0.05)
+            print(f"EMULATE={args.role} を送信。再起動待ち...", flush=True)
+            ser.close()
+            time.sleep(3.0)
+            ser = serial.Serial(args.port, args.baud, timeout=0.05)
         for _ in range(60):
             ser.write(frame_build(T_NEUTRAL, b"", seq))
             seq = (seq + 1) & 0xFF
