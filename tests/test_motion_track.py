@@ -54,6 +54,7 @@ def test_player_rejects_broken_files():
         player2 = MotionPlayer(short)
         assert player2.load() is False
 
+
 def test_player_generator_ends_with_none():
     from core.motion_track import MotionPlayer, MotionRecorder
 
@@ -100,5 +101,13 @@ def test_recorder_header_layout():
             "<4sHHIIIQI", header
         )
         assert magic == b"PGYR"
-        assert (ver, hsize, period, count, flags, off, res) == (1, 32, 5000, 1, 0, 12345, 0)
+        assert (ver, hsize, period, count, flags, off, res) == (
+            1,
+            32,
+            5000,
+            1,
+            0,
+            12345,
+            0,
+        )
         assert body == struct.pack("<6h", 1, 2, 3, 4, 5, 6)

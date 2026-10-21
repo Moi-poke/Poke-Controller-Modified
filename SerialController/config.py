@@ -280,6 +280,8 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "gyro_scale": 1.0,
         },
     }
+
+
 def _parse_axis_map(text: str, valid: tuple[int, ...]) -> tuple[int, int, int] | None:
     """軸変換の3要素を読む。読めなければNone。"""
     try:
@@ -306,7 +308,9 @@ def _parse_bias(text: str) -> tuple[float, float, float] | None:
     return (parts[0], parts[1], parts[2])
 
 
-def parse_imu_axis_map(text: str, valid: tuple[int, ...]) -> tuple[int, int, int] | None:
+def parse_imu_axis_map(
+    text: str, valid: tuple[int, ...]
+) -> tuple[int, int, int] | None:
     """UI側から軸変換を読む口（バリデーションと同一規則）。"""
     return _parse_axis_map(text, valid)
 
@@ -314,7 +318,6 @@ def parse_imu_axis_map(text: str, valid: tuple[int, ...]) -> tuple[int, int, int
 def parse_imu_bias(text: str) -> tuple[float, float, float] | None:
     """UI側からバイアスを読む口（バリデーションと同一規則）。"""
     return _parse_bias(text)
-
 
 
 def complete_missing(parser: configparser.ConfigParser) -> list[str]:
@@ -468,7 +471,13 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
             changed.append("PreviewFilter.mode")
     if parser.has_section("IMU"):
         imu = parser["IMU"]
-        if imu.get("source", "").strip() not in ("sensor", "hid", "sine", "step", "rest"):
+        if imu.get("source", "").strip() not in (
+            "sensor",
+            "hid",
+            "sine",
+            "step",
+            "rest",
+        ):
             imu["source"] = "sensor"
             changed.append("IMU.source")
         int_rules = {
@@ -503,13 +512,13 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
             if value is None or not ok(value):
                 imu[key] = dflt
                 changed.append(f"IMU.{key}")
-        for key, valid, dflt in (
+        for axes_key, valid_axes, dflt in (
             ("accel_axes", (0, 1, 2), "2,0,1"),
             ("gyro_axes", (0, 1, 2), "2,0,1"),
         ):
-            if _parse_axis_map(imu.get(key, ""), valid) is None:
-                imu[key] = dflt
-                changed.append(f"IMU.{key}")
+            if _parse_axis_map(imu.get(axes_key, ""), valid_axes) is None:
+                imu[axes_key] = dflt
+                changed.append(f"IMU.{axes_key}")
         for key in ("accel_signs", "gyro_signs"):
             if _parse_axis_map(imu.get(key, ""), (-1, 1)) is None:
                 imu[key] = "-1,-1,1"

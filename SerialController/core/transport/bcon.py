@@ -229,7 +229,9 @@ class BconTransport(Transport):
         self._imu_loop_thread: threading.Thread | None = None
         self._imu_loop_stop = threading.Event()
         self._imu_interval_s = IMU_INTERVAL_S
-        self._imu_source: Callable[[], tuple[int, int, int, int, int, int] | None] | None = None
+        self._imu_source: (
+            Callable[[], tuple[int, int, int, int, int, int] | None] | None
+        ) = None
         self._imu_sent = 0
         self._imu_dropped = 0
         # ポンプが読んだ直近フレームの記録（TYPE→(frame, 時刻)）。
@@ -468,6 +470,7 @@ class BconTransport(Transport):
                 # Switch に届いていないので記録に残さない（TextSerialの
                 # _write_one が送った行だけ _notify するのと同じ約束）。
                 self._notify_tx(note if isinstance(note, str) else "")
+
     def send_imu(
         self,
         ax: int,
@@ -490,8 +493,7 @@ class BconTransport(Transport):
             self._logger.debug("bconのIMU値が数値でないため捨てます")
             return False
         payload = b"".join(
-            max(-32768, min(32767, v)).to_bytes(2, "little", signed=True)
-            for v in vals
+            max(-32768, min(32767, v)).to_bytes(2, "little", signed=True) for v in vals
         )
         with self._lock:
             held = self._tx_hold

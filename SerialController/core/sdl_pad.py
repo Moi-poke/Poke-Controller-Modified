@@ -256,17 +256,17 @@ class SdlPadReader:
         # 失敗時は少し待って最大3回まで試す。
         import time as _time
 
-        gc_stick: Any = None
+        opened_gc: Any = None
         for _attempt in range(3):
             try:
                 if not bool(gc.is_controller(int(index))):
                     return (None, None)
-                gc_stick = gc.Controller(int(index))
+                opened_gc = gc.Controller(int(index))
                 break
             except Exception:
-                gc_stick = None
+                opened_gc = None
                 _time.sleep(0.2)
-        if gc_stick is None:
+        if opened_gc is None:
             return (None, None)
         try:
             raw_stick: Any | None = None
@@ -289,8 +289,8 @@ class SdlPadReader:
         except Exception:
             return (None, None)
         with self._lock:
-            self._sticks[int(index)] = (gc_stick, joy_stick, dev_id)
-        return (gc_stick, joy_stick)
+            self._sticks[int(index)] = (opened_gc, joy_stick, dev_id)
+        return (opened_gc, joy_stick)
 
     def read(self, index: int = 0) -> PadState:
         """指定番号のパッドを読む。繋がっていなければ未接続を返す。"""

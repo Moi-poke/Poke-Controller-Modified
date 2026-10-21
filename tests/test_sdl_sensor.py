@@ -1,5 +1,6 @@
 """SDLセンサー換算のhostベクタ（実機不要）。"""
 
+
 def test_accel_1g_is_4096():
     from core.sdl_sensor import accel_to_raw
 

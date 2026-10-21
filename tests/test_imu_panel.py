@@ -93,7 +93,6 @@ def _make_panel() -> tuple[Any, Any, _FakeTransport, _FakeSettings, tk.Tk]:
     return panel, root, transport, settings, root
 
 
-
 def test_imu_panel_builds_with_source_and_pad():
     panel, root, _transport, _settings, _root = _make_panel()
     try:
@@ -144,6 +143,7 @@ def test_imu_panel_closed_serial_logs_and_stays_stopped():
     finally:
         panel.close()
         root.destroy()
+
 
 def test_imu_panel_detail_expands_and_collapses():
     panel, root, _transport, _settings, _root = _make_panel()
