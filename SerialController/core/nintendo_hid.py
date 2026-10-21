@@ -283,11 +283,30 @@ class NintendoHidReader:
         return True
 
     def _subcmd_locked(self, sub: int, arg: bytes) -> bytes | None:
-        """サブコマンドを送り0x21応答を返す。失敗はNone。"""
+        """サブコマンドを送り0x21応答を返す。失敗はNone。
+
+        open後は受信スレッドが回っているため、応答は `_replies` から拾う
+        （直接readするとスレッドに奪われて必ず失敗する）。
+        """
         packet = self._packet & 0xF
         self._packet += 1
         out = bytes([0x01, packet]) + _RUMBLE_NEUTRAL + bytes([sub & 0xFF]) + bytes(arg)
         if not self._write_locked(out):
+            return None
+        poller = self._poller
+        if poller is not None and poller.is_alive():
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline:
+                with self._lock:
+                    for i, rep in enumerate(self._replies):
+                        if (
+                            len(rep) >= 15
+                            and rep[0] == 0x21
+                            and rep[14] == (sub & 0xFF)
+                        ):
+                            del self._replies[i]
+                            return rep
+                time.sleep(0.005)
             return None
         for _ in range(5):
             report = self._read_report_locked()
