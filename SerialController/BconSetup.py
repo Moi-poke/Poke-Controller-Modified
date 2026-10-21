@@ -1125,15 +1125,21 @@ class BconSetup:
         except (TypeError, ValueError):
             return
         seen = bool(value & 0x80)
-        shown = (gyro, accel, seen)
+        # bit0=0x40(IMU有効化)受信。0x41未着でも、こちらが立っていれば
+        # USB OUTのサブコマンド経路自体は生きていると判断できる。
+        imu_on = bool(value & 0x01)
+        shown = (gyro, accel, seen, imu_on)
         if shown == getattr(self, "_imu_range_shown", None):
             return
         self._imu_range_shown = shown
-        note = "" if seen else "（この起動では0x41未受信＝既定値）"
+        if seen:
+            note = "（Switch要求値）"
+        elif imu_on:
+            note = "（0x41は未着。0x40受信済み＝受信経路は正常。既定値で動作）"
+        else:
+            note = "（0x40/0x41とも未受信。接続直後は出ないことがある）"
         try:
-            self._append(
-                f"IMU感度要求(0x41): ジャイロ {gyro} / 加速度 {accel}{note}"
-            )
+            self._append(f"IMU感度: ジャイロ {gyro} / 加速度 {accel}{note}")
         except Exception:
             pass
 
