@@ -451,7 +451,8 @@ class ImuPanel:
                     return None
                 self._sensor_reader = reader
                 transform = self._sample_transform(settings)
-                inner_read = reader.read
+                # 0x30の3サンプルを5msごとに順に送る（階段化を避ける）。
+                inner_read = reader.read_next
                 last_try = {"t": 0.0}
 
                 def read_with_reopen() -> Any:

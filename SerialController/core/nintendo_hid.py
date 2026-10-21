@@ -80,6 +80,10 @@ class NintendoHidReader:
         # 読み取り専用スレッドが最新0x30を保持する。呼び出し側はここを見る
         # だけで済み、ブロッキング読みが送出ループを止めない。
         self._latest: bytes | None = None
+        # 0x30の3スロットを順に供給するためのキュー（古い順）。
+        self._samples: collections.deque[tuple[int, int, int, int, int, int]] = (
+            collections.deque(maxlen=8)
+        )
         self._replies: collections.deque[bytes] = collections.deque(maxlen=16)
         self._poller: threading.Thread | None = None
         self._poll_stop = threading.Event()
@@ -214,6 +218,16 @@ class NintendoHidReader:
             with self._lock:
                 if report[0] == 0x30:
                     self._latest = report
+                    # 0x30は5ms間隔の3サンプルを持つ。最新だけだと送信側で
+                    # 15msの階段になるため、3件を順にキューへ積む。
+                    if len(report) >= 49:
+                        for _off in (13, 25, 37):
+                            try:
+                                self._samples.append(
+                                    struct.unpack_from("<6h", report, _off)
+                                )
+                            except struct.error:
+                                break
                 else:
                     self._replies.append(report)
 
@@ -338,6 +352,13 @@ class NintendoHidReader:
         """開いているか。"""
         with self._lock:
             return self._dev is not None
+
+    def read_next(self) -> tuple[int, int, int, int, int, int] | None:
+        """キューから古い順に1件。空なら最新値（保持）。"""
+        with self._lock:
+            if self._samples:
+                return self._samples.popleft()
+        return self.read()
 
     def read(self) -> tuple[int, int, int, int, int, int] | None:
         """最新IMU 1件（Switch生値6値）を読む。失敗はNone。"""

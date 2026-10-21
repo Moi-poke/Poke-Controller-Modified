@@ -112,7 +112,7 @@ def main() -> int:
         n = 0
         t_end = time.perf_counter() + 1.0
         while True:
-            sample = reader.read()
+            sample = reader.read_next()
             if sample is None:
                 time.sleep(0.002)
                 continue
