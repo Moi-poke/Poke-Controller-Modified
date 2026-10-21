@@ -30,6 +30,24 @@ SOURCE_LABELS = (
     ("rest", "静止値"),
 )
 
+# PC側で重ねる反転の組み合わせ（FW側の変換を打ち消す実測用）。
+# 値は (accel_signs, gyro_signs)。符号は1か-1のみ。
+INVERT_LABELS = (
+    ("none", "なし"),
+    ("accel", "加速度"),
+    ("gyro", "ジャイロ"),
+    ("both", "両方"),
+)
+INVERT_SIGNS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
+    "none": ((1, 1, 1), (1, 1, 1)),
+    "accel": ((1, -1, -1), (1, 1, 1)),
+    "gyro": ((1, 1, 1), (1, -1, -1)),
+    "both": ((1, -1, -1), (1, -1, -1)),
+}
+
+# ジャイロ出力倍率のプリセット（実機比較用）。
+SCALE_PRESETS = ("1.0", "0.5", "0.25", "0.125", "0.0625")
+
 
 class ImuPanel:
     """ジャイロ送出の操作面。"""
@@ -101,6 +119,28 @@ class ImuPanel:
         ttk.Label(frame, textvariable=self._stats_var).grid(
             row=2, column=0, columnspan=2, sticky=tk.W, padx=2, pady=2
         )
+        ttk.Label(frame, text="反転").grid(row=3, column=0, sticky=tk.W, padx=2, pady=2)
+        self._invert_var = tk.StringVar(value="なし")
+        self._invert_cb = ttk.Combobox(
+            frame,
+            width=10,
+            state="readonly",
+            textvariable=self._invert_var,
+            values=[label for _, label in INVERT_LABELS],
+        )
+        self._invert_cb.grid(row=3, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._invert_cb.bind("<<ComboboxSelected>>", self._on_invert_changed, add="+")
+        ttk.Label(frame, text="感度").grid(row=4, column=0, sticky=tk.W, padx=2, pady=2)
+        self._scale_var = tk.StringVar(value="1.0")
+        self._scale_cb = ttk.Combobox(
+            frame,
+            width=10,
+            state="readonly",
+            textvariable=self._scale_var,
+            values=list(SCALE_PRESETS),
+        )
+        self._scale_cb.grid(row=4, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._scale_cb.bind("<<ComboboxSelected>>", self._on_scale_changed, add="+")
         self._detail_var = tk.BooleanVar(value=False)
         self._detail_cb = ttk.Checkbutton(
             frame,
@@ -133,8 +173,56 @@ class ImuPanel:
             pad = int(settings.get("pad_index", "0"))
             if 0 <= pad <= 3:
                 self._pad_var.set(str(pad))
+            acc = tuple(
+                int(v) for v in str(settings.get("accel_signs", "1,1,1")).split(",")
+            )
+            gyr = tuple(
+                int(v) for v in str(settings.get("gyro_signs", "1,1,1")).split(",")
+            )
+            for name, label in INVERT_LABELS:
+                if INVERT_SIGNS[name] == (acc, gyr):
+                    self._invert_var.set(label)
+                    break
+            scale = float(settings.get("gyro_scale", "1.0") or 1.0)
+            self._scale_var.set(f"{scale:g}")
         except (TypeError, ValueError):
             pass
+
+    def _invert_mode(self) -> str:
+        """画面の反転ラベル→設定名。既定none。"""
+        label = self._invert_var.get()
+        for name, text in INVERT_LABELS:
+            if text == label:
+                return name
+        return "none"
+
+    def _on_invert_changed(self, _event: Any = None) -> None:
+        """反転の組み合わせを設定へ書く（次の送出開始から効く）。"""
+        acc, gyr = INVERT_SIGNS[self._invert_mode()]
+        try:
+            self._settings_writer(
+                {
+                    "accel_signs": ",".join(str(v) for v in acc),
+                    "gyro_signs": ",".join(str(v) for v in gyr),
+                }
+            )
+        except Exception:
+            pass
+        self._queue.put(
+            ("log", f"IMU反転: {self._invert_var.get()}（次の送出開始から）")
+        )
+
+    def _on_scale_changed(self, _event: Any = None) -> None:
+        """ジャイロ倍率を設定へ書く（次の送出開始から効く）。"""
+        try:
+            value = float(self._scale_var.get())
+        except (TypeError, ValueError):
+            return
+        try:
+            self._settings_writer({"gyro_scale": f"{value:g}"})
+        except Exception:
+            pass
+        self._queue.put(("log", f"ジャイロ倍率: {value:g}（次の送出開始から）"))
 
     def _source_name(self) -> str:
         """画面の入力源ラベル→設定名。読めなければsensor。"""
@@ -155,8 +243,21 @@ class ImuPanel:
             pad = int(self._pad_var.get())
         except (TypeError, ValueError):
             pad = 0
+        acc, gyr = INVERT_SIGNS[self._invert_mode()]
         try:
-            self._settings_writer({"source": source, "pad_index": str(pad)})
+            scale_text = f"{float(self._scale_var.get()):g}"
+        except (TypeError, ValueError):
+            scale_text = "1"
+        try:
+            self._settings_writer(
+                {
+                    "source": source,
+                    "pad_index": str(pad),
+                    "accel_signs": ",".join(str(v) for v in acc),
+                    "gyro_signs": ",".join(str(v) for v in gyr),
+                    "gyro_scale": scale_text,
+                }
+            )
         except Exception:
             pass
         thread = threading.Thread(
