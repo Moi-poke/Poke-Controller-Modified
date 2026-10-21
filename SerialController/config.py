@@ -264,6 +264,10 @@ def default_sections() -> dict[str, dict[str, Any]]:
             # 再現し、値そのものと入力経路を切り分けるための診断用。
             "acc_x": 0,
             "acc_y": 0,
+            # 手動入力ソースのジャイロ6軸（加速度はacc_x/y/zを共用）。
+            "manual_gx": 0,
+            "manual_gy": 0,
+            "manual_gz": 0,
             # 軸変換（SDL→Switch）。既定はSDLのSwitch→SDL変換の逆写像
             # （Sw_X=-SDL_Z・Sw_Y=-SDL_X・Sw_Z=+SDL_Y）。
             "accel_axes": "2,0,1",
@@ -477,6 +481,7 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
             "sine",
             "step",
             "rest",
+            "manual",
         ):
             imu["source"] = "sensor"
             changed.append("IMU.source")
@@ -488,6 +493,9 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
             "step_raw": ("5899", lambda value: -32768 <= value <= 32767),
             "acc_z": ("4096", lambda value: -32768 <= value <= 32767),
             "acc_x": ("0", lambda value: -32768 <= value <= 32767),
+            "manual_gx": ("0", lambda value: -32768 <= value <= 32767),
+            "manual_gy": ("0", lambda value: -32768 <= value <= 32767),
+            "manual_gz": ("0", lambda value: -32768 <= value <= 32767),
             "acc_y": ("0", lambda value: -32768 <= value <= 32767),
         }
         for key, (dflt, ok) in int_rules.items():

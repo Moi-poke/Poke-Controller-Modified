@@ -28,6 +28,7 @@ SOURCE_LABELS = (
     ("sine", "SINE波形"),
     ("step", "STEP波形"),
     ("rest", "静止値"),
+    ("manual", "手動入力"),
 )
 
 # PC側で重ねる反転の組み合わせ（FW側の変換を打ち消す実測用）。
@@ -149,6 +150,36 @@ class ImuPanel:
             command=self._on_detail_toggled,
         )
         self._detail_cb.grid(row=2, column=2, sticky=tk.EW, padx=2, pady=2)
+        # 手動入力: 6軸の生値を直接指定して送る。入力源が「手動入力」の
+        # ときだけ表示する。値はtraceでメインスレッドから取り込み、
+        # 送出スレッドはスナップショット(int6)だけを読む。
+        self._manual_values = [0, 0, 4096, 0, 0, 0]
+        self._manual_vars: list[tk.StringVar] = []
+        self._manual_frame = ttk.LabelFrame(
+            frame, text="手動入力（生値 LSB）", padding=4
+        )
+        for i, (name, dflt) in enumerate(
+            zip(("AX", "AY", "AZ", "GX", "GY", "GZ"), self._manual_values)
+        ):
+            ttk.Label(self._manual_frame, text=name).grid(
+                row=0, column=i * 2, sticky=tk.W, padx=(4 if i else 2, 0)
+            )
+            var = tk.StringVar(value=str(dflt))
+            spin = ttk.Spinbox(
+                self._manual_frame,
+                from_=-32768,
+                to=32767,
+                width=7,
+                textvariable=var,
+            )
+            spin.grid(row=0, column=i * 2 + 1, sticky=tk.W, padx=(0, 2))
+            var.trace_add("write", self._make_manual_trace(i, var))
+            self._manual_vars.append(var)
+        self._manual_frame.grid(
+            row=4, column=0, columnspan=3, sticky=tk.EW, pady=(4, 0)
+        )
+        self._manual_frame.grid_remove()
+        self._source_cb.bind("<<ComboboxSelected>>", self._on_source_changed, add="")
         # 詳細の可視化パネル。チェックONのときだけ同frame内に展開する。
         self._gyro_view: Any = None
         self._load_settings_into_vars()
@@ -185,8 +216,53 @@ class ImuPanel:
                     break
             scale = float(settings.get("gyro_scale", "1.0") or 1.0)
             self._scale_var.set(f"{scale:g}")
+            for i, key in enumerate(
+                ("acc_x", "acc_y", "acc_z", "manual_gx", "manual_gy", "manual_gz")
+            ):
+                try:
+                    self._manual_vars[i].set(str(int(settings.get(key, "0"))))
+                except (TypeError, ValueError, IndexError):
+                    pass
+            self._on_source_changed()
         except (TypeError, ValueError):
             pass
+
+    def _make_manual_trace(
+        self, index: int, var: tk.StringVar
+    ) -> Callable[[str, str, str], None]:
+        """手動入力欄の変更をintへ取り込むハンドラを作る（メインスレッド）。"""
+
+        def _apply(*_args: str) -> None:
+            try:
+                value = int(var.get())
+            except (TypeError, ValueError):
+                return
+            self._manual_values[index] = max(-32768, min(32767, value))
+
+        return _apply
+
+    def _on_source_changed(self, _event: Any = None) -> None:
+        """入力源の切り替え。手動入力のときだけ6軸欄を出す。"""
+        if self._source_name() == "manual":
+            self._manual_frame.grid()
+        else:
+            self._manual_frame.grid_remove()
+
+    def _manual_reader(self) -> Any:
+        """手動入力の読み取り関数。送出スレッドから呼ばれる。"""
+        snapshot = self._manual_values
+
+        def _read() -> tuple[int, int, int, int, int, int]:
+            return (
+                snapshot[0],
+                snapshot[1],
+                snapshot[2],
+                snapshot[3],
+                snapshot[4],
+                snapshot[5],
+            )
+
+        return _read
 
     def _invert_mode(self) -> str:
         """画面の反転ラベル→設定名。既定none。"""
@@ -232,6 +308,22 @@ class ImuPanel:
                 return name
         return "sensor"
 
+    def _save_manual_values(self) -> None:
+        """手動入力の6軸を設定へ書く（次回起動でも同じ値を使う）。"""
+        try:
+            self._settings_writer(
+                {
+                    "acc_x": str(self._manual_values[0]),
+                    "acc_y": str(self._manual_values[1]),
+                    "acc_z": str(self._manual_values[2]),
+                    "manual_gx": str(self._manual_values[3]),
+                    "manual_gy": str(self._manual_values[4]),
+                    "manual_gz": str(self._manual_values[5]),
+                }
+            )
+        except Exception:
+            pass
+
     def _on_toggle(self) -> None:
         """送出の開始/停止。線操作は作業スレッドで行う。"""
         if self._streaming:
@@ -239,6 +331,8 @@ class ImuPanel:
             thread.start()
             return
         source = self._source_name()
+        if source == "manual":
+            self._save_manual_values()
         try:
             pad = int(self._pad_var.get())
         except (TypeError, ValueError):
@@ -318,6 +412,8 @@ class ImuPanel:
 
     def _build_source(self, source: str, pad: int) -> Any:
         """入力源の生成器を作る。失敗はNone。"""
+        if source == "manual":
+            return self._manual_reader()
         try:
             settings = self._settings_provider()
         except Exception:
