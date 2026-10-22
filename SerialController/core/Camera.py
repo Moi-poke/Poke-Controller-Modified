@@ -417,9 +417,23 @@ class Camera:
             )
             logger.warning(message)
             print(message)
-        if self.isOpened():
-            logger.debug("Camera is already opened")
-            self.destroy()
+        try:
+            if self.isOpened():
+                logger.debug("Camera is already opened")
+                self.destroy()
+        except Exception:
+            # 既存ハンドルが壊れていると isOpened() も destroy() も投げる。
+            # ここで漏らすと Tk コールバックまで例外が抜けるため bool 契約へ倒す。
+            logger.error(f"Camera ID {cameraId} cannot open.")
+            logger.error(traceback.format_exc())
+            # 壊れたハンドルを残すと次の open も同じ例外で失敗し続ける。
+            broken, self.camera = self.camera, None
+            if broken is not None:
+                try:
+                    broken.release()
+                except Exception:
+                    logger.error(traceback.format_exc())
+            return False
 
         self.frame_queue.clear()
         # 旧スレッドの Event を clear で蘇らせない。新世代の Event を作る。
@@ -427,22 +441,37 @@ class Camera:
         self._stop_event = threading.Event()
         self._error = None
 
-        if os.name == "nt":
-            logger.debug("NT OS")
-            camera = cv2.VideoCapture(cameraId, cv2.CAP_DSHOW)
-        else:
-            logger.debug("Not NT OS")
-            camera = cv2.VideoCapture(cameraId)
+        camera: Any = None
+        try:
+            if os.name == "nt":
+                logger.debug("NT OS")
+                camera = cv2.VideoCapture(cameraId, cv2.CAP_DSHOW)
+            else:
+                logger.debug("Not NT OS")
+                camera = cv2.VideoCapture(cameraId)
 
-        if not camera.isOpened():
+            if not camera.isOpened():
+                logger.error(f"Camera ID {cameraId} cannot open.")
+                camera.release()
+                return False
+
+            # 開き直したら検査をやり直す（2 台目、解像度を変えての再接続がある）。
+            self._size_probe_left = 3
+            # 実測値を設定後に残す。警告を見逃した側にも後から渡せる。
+            self._capture_readback = _configure_capture(
+                camera, self.capture_size, self.fps
+            )
+        except Exception:
+            # バックエンド例外は呼び出し元（Tk コールバック）へ漏らさない。
+            # 失敗は bool とログだけで伝えるという公開契約を守る。
             logger.error(f"Camera ID {cameraId} cannot open.")
-            camera.release()
+            logger.error(traceback.format_exc())
+            if camera is not None:
+                try:
+                    camera.release()
+                except Exception:
+                    logger.error(traceback.format_exc())
             return False
-
-        # 開き直したら検査をやり直す（2 台目、解像度を変えての再接続がある）。
-        self._size_probe_left = 3
-        # 実測値を設定後に残す。警告を見逃した側にも後から渡せる。
-        self._capture_readback = _configure_capture(camera, self.capture_size, self.fps)
 
         with self._lock:
             self.camera = camera
@@ -877,21 +906,49 @@ class CameraController:
             self.closeSharedMemory()
 
     def openCamera(self) -> None:
-        if self.camera is not None and self.camera.isOpened():
-            logger.debug("Camera is already opened")
-            return
-
-        if os.name == "nt":
-            self.camera = cv2.VideoCapture(self.cameraId, cv2.CAP_DSHOW)
-        else:
-            self.camera = cv2.VideoCapture(self.cameraId)
-
-        if not self.camera.isOpened():
+        try:
+            if self.camera is not None and self.camera.isOpened():
+                logger.debug("Camera is already opened")
+                return
+        except Exception:
+            # 既存ハンドルが壊れていても子プロセスを落とさない。
             logger.error(f"Camera ID {self.cameraId} cannot open.")
+            logger.error(traceback.format_exc())
+            # 壊れたハンドルを残すと次の open も同じ例外で失敗し続ける。
+            broken, self.camera = self.camera, None
+            if broken is not None:
+                try:
+                    broken.release()
+                except Exception:
+                    logger.error(traceback.format_exc())
             self.camera_process_status.value = False
             return
 
-        _configure_capture(self.camera, self.capture_size, self.fps.value)
+        self.camera = None
+        try:
+            if os.name == "nt":
+                self.camera = cv2.VideoCapture(self.cameraId, cv2.CAP_DSHOW)
+            else:
+                self.camera = cv2.VideoCapture(self.cameraId)
+
+            if not self.camera.isOpened():
+                logger.error(f"Camera ID {self.cameraId} cannot open.")
+                self.camera_process_status.value = False
+                return
+
+            _configure_capture(self.camera, self.capture_size, self.fps.value)
+        except Exception:
+            # 子プロセスを落とさず、失敗は status=False とログで伝える。
+            logger.error(f"Camera ID {self.cameraId} cannot open.")
+            logger.error(traceback.format_exc())
+            camera, self.camera = self.camera, None
+            if camera is not None:
+                try:
+                    camera.release()
+                except Exception:
+                    logger.error(traceback.format_exc())
+            self.camera_process_status.value = False
+            return
 
         logger.debug(f"Camera ID {self.cameraId} opened successfully.")
         self.camera_process_status.value = True
