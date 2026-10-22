@@ -3,6 +3,8 @@
 """csv_replay.py - IMUビューアのCSVをPicoへそのまま再生する。
 
 想定CSV: 1行目がコメント、2行目がヘッダ t_s,slot,ax,ay,az,gx,gy,gz。
+送出は t_s の差分ではなく、1行=1サンプル=5ms固定（ビューアCSVは
+1レポートの3スロットを同じt_sで書くため）。
 Pure-Switch の記録（実Joy-Con R）を bcon 経由で流し、0x30へ
 同じ3サンプルを載せて純正と同じ挙動になるかを確かめる。
 
@@ -73,19 +75,23 @@ def main() -> int:
             ser.write(frame_build(T_NEUTRAL, b"", seq))
             seq = (seq + 1) & 0xFF
             time.sleep(0.02)
+        # ビューアCSVは1レポートの3スロットを同一t_sで3行に分けて書く。
+        # t_sの差分ではなく「1行=1サンプル=5ms」で送る（指示）。
+        period = 0.005
         while True:
-            t0 = time.perf_counter()
-            base = rows[0][0]
-            for t_s, _slot, vals in rows:
-                target = t0 + (t_s - base)
-                now = time.perf_counter()
-                if target > now:
-                    time.sleep(target - now)
+            deadline = time.perf_counter()
+            for _t_s, _slot, vals in rows:
                 payload = b"".join(
                     int(v).to_bytes(2, "little", signed=True) for v in vals
                 )
                 ser.write(frame_build(T_IMU_SAMPLE, payload, seq))
                 seq = (seq + 1) & 0xFF
+                deadline += period
+                delay = deadline - time.perf_counter()
+                if delay > 0:
+                    time.sleep(delay)
+                else:
+                    deadline = time.perf_counter()
             if not args.loop:
                 break
             time.sleep(0.05)
