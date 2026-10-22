@@ -376,7 +376,7 @@ def load_blockly(app_dir: str | Path, stem: str) -> LoadResult:
         return LoadResult(status="failed", message=f"編集データがありません: {stem}")
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         logger.warning(f"Blockly読込に失敗: {e}")
         return LoadResult(status="failed", message=f"開けません: {e}")
     errors = blockly_validate.validate_workspace_json(text)

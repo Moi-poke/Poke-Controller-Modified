@@ -129,7 +129,7 @@ def load(profile: str = "") -> list[HistoryEntry]:
     try:
         with open(path, encoding="utf-8") as fp:
             data = json.load(fp)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         logger.warning(f"実行履歴を読めませんでした: {e}")
         return []
     if not isinstance(data, list):
