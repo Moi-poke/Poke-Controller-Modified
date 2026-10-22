@@ -26,6 +26,10 @@ def test_imu_section_defaults():
     assert imu["acc_z"] == "4096"
     assert imu["accel_axes"] == "2,0,1"
     assert imu["gyro_signs"] == "-1,-1,1"
+    assert imu["hid_accel_axes"] == "0,1,2"
+    assert imu["hid_accel_signs"] == "1,1,1"
+    assert imu["hid_gyro_axes"] == "0,1,2"
+    assert imu["hid_gyro_signs"] == "1,1,1"
     assert imu["gyro_bias"] == "0.0,0.0,0.0"
 
 
@@ -40,6 +44,8 @@ def test_imu_section_repairs_invalid():
     parser["IMU"]["step_raw"] = "99999"
     parser["IMU"]["accel_axes"] = "0,5,1"
     parser["IMU"]["gyro_signs"] = "2,1,1"
+    parser["IMU"]["hid_accel_axes"] = "9,9,9"
+    parser["IMU"]["hid_gyro_signs"] = "1,0,1"
     parser["IMU"]["gyro_bias"] = "nan,0,0"
     changed = config.complete_missing(parser)
     imu = parser["IMU"]
@@ -50,6 +56,8 @@ def test_imu_section_repairs_invalid():
     assert imu["step_raw"] == "5899"
     assert imu["accel_axes"] == "2,0,1"
     assert imu["gyro_signs"] == "-1,-1,1"
+    assert imu["hid_accel_axes"] == "0,1,2"
+    assert imu["hid_gyro_signs"] == "1,1,1"
     assert imu["gyro_bias"] == "0.0,0.0,0.0"
     assert any(c.startswith("IMU.") for c in changed)
 
@@ -78,7 +86,7 @@ def test_apply_gyro_deadband_zeroes_small_axes() -> None:
 
 
 def test_sample_transform_identity_and_signs() -> None:
-    """HID直結の軸・符号変換。恒等ならNone、指定時は軸と符号を適用。"""
+    """軸・符号変換（接頭辞なし＝SDL路）。恒等ならNone、指定時は軸と符号を適用。"""
     from ImuPanel import ImuPanel
 
     ident = {
@@ -104,3 +112,33 @@ def test_sample_transform_identity_and_signs() -> None:
     fn2 = ImuPanel._sample_transform(axes)
     assert fn2 is not None
     assert fn2((1, 2, 3, 4, 5, 6)) == (-3, -1, 2, -6, -4, 5)
+
+
+def test_sample_transform_hid_uses_own_keys() -> None:
+    """HID直結は hid_* キーだけを見る。SDL用の既定値に引きずられない。"""
+    from ImuPanel import ImuPanel
+
+    sdl_defaults = {
+        "accel_axes": "2,0,1",
+        "accel_signs": "-1,-1,1",
+        "gyro_axes": "2,0,1",
+        "gyro_signs": "-1,-1,1",
+        "hid_accel_axes": "0,1,2",
+        "hid_accel_signs": "1,1,1",
+        "hid_gyro_axes": "0,1,2",
+        "hid_gyro_signs": "1,1,1",
+    }
+    assert ImuPanel._sample_transform(sdl_defaults, hid=True) is None
+    # SDL路は従来どおり接頭辞なしキーで回転が掛かる。
+    assert ImuPanel._sample_transform(sdl_defaults) is not None
+
+    # hid_* が無い旧プロファイルでも恒等（None）へ倒す。
+    legacy = {k: v for k, v in sdl_defaults.items() if not k.startswith("hid_")}
+    assert ImuPanel._sample_transform(legacy, hid=True) is None
+
+    # hid_* を明示すればHIDでも反転を掛けられる。
+    flipped = dict(sdl_defaults)
+    flipped["hid_gyro_signs"] = "1,-1,-1"
+    fn = ImuPanel._sample_transform(flipped, hid=True)
+    assert fn is not None
+    assert fn((100, 200, 300, 10, 20, 30)) == (100, 200, 300, 10, -20, -30)

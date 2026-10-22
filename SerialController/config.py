@@ -274,6 +274,12 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "accel_signs": "-1,-1,1",
             "gyro_axes": "2,0,1",
             "gyro_signs": "-1,-1,1",
+            # HID直結用の軸変換。HIDの生値は既にSwitchフレームなので恒等が
+            # 正しい。接頭辞なしの accel_axes/… は SDL センサー用。
+            "hid_accel_axes": "0,1,2",
+            "hid_accel_signs": "1,1,1",
+            "hid_gyro_axes": "0,1,2",
+            "hid_gyro_signs": "1,1,1",
             # ジャイロバイアス（rad/s・3要素）。補正値の永続先。
             "gyro_bias": "0.0,0.0,0.0",
             # ジャイロの不感帯（dps）。静止時の残余バイアス・ノイズで
@@ -523,13 +529,20 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         for axes_key, valid_axes, dflt in (
             ("accel_axes", (0, 1, 2), "2,0,1"),
             ("gyro_axes", (0, 1, 2), "2,0,1"),
+            ("hid_accel_axes", (0, 1, 2), "0,1,2"),
+            ("hid_gyro_axes", (0, 1, 2), "0,1,2"),
         ):
             if _parse_axis_map(imu.get(axes_key, ""), valid_axes) is None:
                 imu[axes_key] = dflt
                 changed.append(f"IMU.{axes_key}")
-        for key in ("accel_signs", "gyro_signs"):
+        for key, dflt in (
+            ("accel_signs", "-1,-1,1"),
+            ("gyro_signs", "-1,-1,1"),
+            ("hid_accel_signs", "1,1,1"),
+            ("hid_gyro_signs", "1,1,1"),
+        ):
             if _parse_axis_map(imu.get(key, ""), (-1, 1)) is None:
-                imu[key] = "-1,-1,1"
+                imu[key] = dflt
                 changed.append(f"IMU.{key}")
         if _parse_bias(imu.get("gyro_bias", "")) is None:
             imu["gyro_bias"] = "0.0,0.0,0.0"

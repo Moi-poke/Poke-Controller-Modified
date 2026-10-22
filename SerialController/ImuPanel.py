@@ -450,7 +450,7 @@ class ImuPanel:
                 if not reader.is_open() and not reader.open():
                     return None
                 self._sensor_reader = reader
-                transform = self._sample_transform(settings)
+                transform = self._sample_transform(settings, hid=True)
                 # 0x30の3サンプルを5msごとに順に送る（階段化を避ける）。
                 inner_read = reader.read_next
                 last_try = {"t": 0.0}
@@ -518,20 +518,24 @@ class ImuPanel:
     @staticmethod
     def _sample_transform(
         settings: dict[str, str],
+        hid: bool = False,
     ) -> Any | None:
         """IMU軸・符号の変換関数を作る。恒等ならNone。
 
-        HID直結は生値がSwitchフレームのため、通常は軸=0,1,2・符号=1,1,1。
+        HID直結は生値がSwitchフレームのため `hid_*` キー（既定は恒等）を使う。
+        接頭辞なしのキーはSDLセンサー用（Switch→SDL変換の逆写像）であり、
         コンソール側の反転解釈を打ち消す実測（例: 符号=1,-1,-1）にも使う。
+        読めないキーはNone（＝無変換）に倒す。
         """
         try:
             from config import parse_imu_axis_map
         except Exception:
             return None
-        aa = parse_imu_axis_map(str(settings.get("accel_axes", "")), (0, 1, 2))
-        as_ = parse_imu_axis_map(str(settings.get("accel_signs", "")), (-1, 1))
-        ga = parse_imu_axis_map(str(settings.get("gyro_axes", "")), (0, 1, 2))
-        gs = parse_imu_axis_map(str(settings.get("gyro_signs", "")), (-1, 1))
+        pre = "hid_" if hid else ""
+        aa = parse_imu_axis_map(str(settings.get(pre + "accel_axes", "")), (0, 1, 2))
+        as_ = parse_imu_axis_map(str(settings.get(pre + "accel_signs", "")), (-1, 1))
+        ga = parse_imu_axis_map(str(settings.get(pre + "gyro_axes", "")), (0, 1, 2))
+        gs = parse_imu_axis_map(str(settings.get(pre + "gyro_signs", "")), (-1, 1))
         if aa is None or as_ is None or ga is None or gs is None:
             return None
         if aa == (0, 1, 2) and ga == (0, 1, 2) and as_ == (1, 1, 1) and gs == (1, 1, 1):
