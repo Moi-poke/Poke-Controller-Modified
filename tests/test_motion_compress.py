@@ -115,8 +115,8 @@ def test_line_through_center_splits_with_bounded_error() -> None:
     assert worst <= 2.5 + 1.2
 
 
-def test_refine_quantized_adds_midpoint_and_stops_at_depth() -> None:
-    """Given: 誤差超過のtrackと2点の量子化列 / When: _refine_quantizedを直接呼ぶ / Then: 中点が追加され深さ上限で止まること。"""
+def test_refine_quantized_reaches_the_error_bound() -> None:
+    """Given: 誤差超過のtrackと2点の量子化列 / When: _refine_quantizedを直接呼ぶ / Then: 誤差がε以下になること。"""
     x0, y0 = motion.polar_to_xy(100.0, 90.0)
     x1, y1 = motion.polar_to_xy(40.0, 135.0)
     x2, y2 = motion.polar_to_xy(100.0, 180.0)
@@ -129,8 +129,30 @@ def test_refine_quantized_adds_midpoint_and_stops_at_depth() -> None:
     out = motion._refine_quantized(track, list(quant), 2.5)
     assert len(out) > len(quant)
     assert [w.t for w in out] == sorted(w.t for w in out)
-    capped = motion._refine_quantized(track, list(quant), 2.5, depth=4)
-    assert capped == quant
+    # 以前は深さ上限で打ち切って ε 未達のまま無言で返していた。
+    after = motion._max_error_xy(
+        track, [motion.Waypoint(float(w.t), float(w.r), float(w.th)) for w in out]
+    )
+    assert after <= 2.5, (before, after, out)
+
+
+def test_neutral_plateau_between_two_tilts_stays_cheap() -> None:
+    """Given: 倒す→中立で1.5秒→倒す / When: 圧縮 / Then: 点が増えず間も中立のままであること。"""
+    t0 = 8000.0
+    samples: list[tuple[float, float, float]] = []
+    for i in range(13):  # 0〜0.1 秒で上へ倒す
+        samples.append((t0 + i * 0.008, 128.0, 128.0 - 100.0 * i / 12))
+    for i in range(1, 189):  # 0.1〜1.6 秒は中立（解放したまま）
+        samples.append((t0 + 0.1 + i * 0.008, 128.0, 128.0))
+    for i in range(13):  # 1.6〜1.7 秒で右へ倒す
+        samples.append((t0 + 1.6 + i * 0.008, 128.0 + 100.0 * i / 12, 128.0))
+    pts = motion.compress_track(samples, t0, 2.5)
+    assert pts
+    # 中立の点ごとに区間を切ると 2 点×190 区間になり、ブロックが数百個になる。
+    assert len(pts) <= 16, [(p.t, p.r) for p in pts]
+    for t_ms in (300.0, 700.0, 1100.0, 1500.0):
+        x, y = motion.restore_xy(pts, t_ms)
+        assert math.hypot(x - 128.0, y - 128.0) < 8.0, (t_ms, x, y)
 
 
 def test_clockwise_turn_accumulates_negative() -> None:

@@ -63,7 +63,8 @@ class PadSource:
 
         xinput1_4.dllを先に掴むとSDLのProCon USB接続が開けなくなる実測
         （Couldn't setup USB mode。2026-10-18）。初期化順序はSDL優先で、
-        選択順序（read/scan）は従来どおりXInput優先のまま変えない。
+        readの選択順序もSDL→HID→XInput（XInputは最後）に揃える。
+        scanは3つの口の和集合を返す。
         """
         try:
             sdl_ok = bool(self.sdl.available)
@@ -174,7 +175,7 @@ class PadSource:
         return sorted(found)
 
     def names(self) -> dict[int, str]:
-        """番号 → 表示名。SDL で分かる分＋HID直結を載せる。"""
+        """番号 → 表示名。XInput 側は汎名、SDL で分かる分は実名、HID直結も載せる。"""
         try:
             names = self.sdl.names()
             out = {int(k): str(v) for k, v in names.items()}
@@ -194,8 +195,16 @@ class PadSource:
                     out[0] = product if product else "Pro Controller (HID直結)"
             except Exception:
                 pass
+        for index in range(MAX_PADS):
+            if index in out:
+                continue
+            try:
+                state = self.xinput.read(index)
+            except Exception:
+                continue
+            if state.connected:
+                out[index] = "XInput パッド"
         return out
 
     def route_of(self, index: int) -> str:
-        """その番号がいまどちらの口で読めているか（検証・表示用）。"""
         return self._route.get(int(index), "")

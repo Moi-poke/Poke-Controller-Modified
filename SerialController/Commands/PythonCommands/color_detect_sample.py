@@ -147,8 +147,10 @@ class ColorDetectSampleCommand(ImageProcPythonCommand):
 
     def create_slider_window(self) -> None:
         # Toplevelウィンドウの作成（スライダーと検出ボタンを表示するウィンドウ）
-        # self.gui は描画代理（CaptureAreaProxy）のため、実物を取り出して
-        # 親にする。代理のままでは別スレッドで部品を作る形になる。
+        # 注意: ここはコマンドのワーカースレッドで、Tk の部品を作っている。
+        # 規約（ワーカーから Tk を触らない）に反したままの未対応箇所なので、
+        # 直すまではこの注記を残す（.widget は非常口で、安全の保証ではない）。
+        # 直すなら CaptureAreaProxy に GUI スレッドで作らせる口を足す。
         parent = getattr(self.gui, "widget", self.gui)
         self.slider_window = tk.Toplevel(parent)
         self.slider_window.title("HSV Thresholds")

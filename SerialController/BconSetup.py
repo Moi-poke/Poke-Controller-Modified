@@ -62,6 +62,7 @@ from core.transport.bcon_protocol import (
     T_PLAYER_INFO,
     T_RUMBLE,
 )
+from loguru import logger
 from ui.tooltip import Tooltip
 
 BCON_WINDOW_TITLE = "Switch-Bcon設定"
@@ -1928,6 +1929,8 @@ class BconSetup:
                 rumble_fn = getattr(transport, "last_rumble", None)
                 rumble = bytes(rumble_fn()) if callable(rumble_fn) else b""
             except Exception:
+                # 規約: except にはログ。振動は表示だけなので操作は続ける。
+                logger.debug("RUMBLE の取得に失敗", exc_info=True)
                 rumble = b""
             if rumble:
                 try:

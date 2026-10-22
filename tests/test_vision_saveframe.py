@@ -51,3 +51,22 @@ def test_saveframe_normal_still_writes(tmp_path: Path) -> None:
     out = mix.saveFrame(name="frame", folder=folder)
     assert out != ""
     assert os.path.isfile(out)
+
+
+def test_saveframe_default_folder_is_under_base_dir(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Given: folder を省く / When: 保存する / Then: cwd ではなく BASE_DIR の下へ置くこと。"""
+    from core import CommandVision
+
+    # 実装は BASE_DIR と結ぶ（Utility.ospath は区切りを直すだけなので、
+    # そちらを差し替えても実際の解決は検証できない）。
+    monkeypatch.setattr(CommandVision, "BASE_DIR", str(tmp_path))
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    mix = VisionMixin()
+    mix._initVision(_FakeCam(img))
+
+    out = mix.saveFrame(name="既定")
+
+    assert out != ""
+    assert out.startswith(str(tmp_path / "Debug")), out

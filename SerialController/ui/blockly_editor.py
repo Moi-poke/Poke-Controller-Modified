@@ -110,6 +110,13 @@ _BREAKPOINTS: frozenset[str] = frozenset()
 #: 本体の操作の記録（マクロ記録）。送信線（host.serial.sender.transport）に
 #: 付けて PRESS/RELEASE を溜める。付け外しは GUI スレッドで行う。
 _RECORDER = blockly_record.Recorder()
+_RECORD_BLOCKED: Callable[[], str | None] | None = None
+
+
+def _set_record_blocked(predicate: Callable[[], str | None] | None) -> None:
+    """記録の開始可否の判定口を差し替える（開く時・検証用）。"""
+    global _RECORD_BLOCKED
+    _RECORD_BLOCKED = predicate
 
 
 def _set_run_host(host: Any) -> None:
@@ -144,6 +151,46 @@ def _follow_record_transport() -> None:
     transport = getattr(sender, "transport", None)
     if transport is not None:
         _RECORDER.follow(transport)
+
+
+def is_recording() -> bool:
+    """いま操作を記録中かを返す（通常コマンド側の開始拒否用）。"""
+    try:
+        return bool(_RECORDER.recording)
+    except Exception:
+        return False
+
+
+def _observe_record_owners() -> None:
+    """記録中に本体側の操作が混ざっていないか見る（汚染 latch 用）。
+
+    GUI スレッドの見回りから呼ぶ。sender の所有者の写しと調停の様子を
+    渡す。持たない線では握って何もしない（記録自体は続ける）。
+    """
+    if not _RECORDER.recording:
+        return
+    host = _RUN_HOST
+    sender = getattr(getattr(host, "serial", None), "sender", None)
+    owners: dict[str, Any] | None = None
+    arbitration: dict[str, Any] | None = None
+    get_owners = getattr(sender, "getOwners", None)
+    if callable(get_owners):
+        try:
+            got = get_owners()
+            owners = got if isinstance(got, dict) else None
+        except Exception:
+            owners = None
+    get_arb = getattr(sender, "getArbitration", None)
+    if callable(get_arb):
+        try:
+            got_arb = get_arb()
+            arbitration = got_arb if isinstance(got_arb, dict) else None
+        except Exception:
+            arbitration = None
+    try:
+        _RECORDER.observe_owners(owners, arbitration)
+    except Exception:
+        pass
 
 
 def drain_gui_calls() -> None:
@@ -750,6 +797,15 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                     False,
                     "試し実行中は記録できません（試し実行を止めてから始めてください）",
                 )
+            blocked = _RECORD_BLOCKED
+            if blocked is not None:
+                try:
+                    reason = blocked()
+                except Exception:
+                    reason = None
+                if reason:
+                    # 通常コマンドの操作まで記録に混ざるため断る。
+                    return (False, str(reason))
             serial = getattr(host, "serial", None)
             sender = getattr(serial, "sender", None)
             transport = getattr(sender, "transport", None)
@@ -779,24 +835,35 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             )
             return
 
-        def _detach() -> tuple[bool, list[dict[str, Any]]]:
+        def _detach() -> tuple[bool, list[dict[str, Any]], list[Any], bool]:
             was = _RECORDER.recording
-            steps = _RECORDER.stop()
-            return (was, steps if isinstance(steps, list) else [])
+            warnings: list[Any] = []
+            steps = _RECORDER.stop(warnings)
+            contaminated = bool(_RECORDER.contaminated)
+            return (
+                was,
+                steps if isinstance(steps, list) else [],
+                warnings,
+                contaminated,
+            )
 
         try:
-            was_recording, steps = _call_on_gui(_detach)
+            was_recording, steps, warnings, contaminated = _call_on_gui(_detach)
         except Exception as e:
             self._reply(False, f"本体が応答しません: {e}")
             return
         if not was_recording:
             self._reply(False, "記録していません（記録ボタンで始めてください）")
             return
-        self._reply(
-            True,
-            f"{len(steps)} 個の操作を記録しました",
-            {"steps": steps},
-        )
+        message = f"{len(steps)} 個の操作を記録しました"
+        if contaminated:
+            message += "（本体側の操作が混ざった可能性があります）"
+        extra: dict[str, Any] = {"steps": steps}
+        if warnings:
+            extra["warnings"] = warnings
+        if contaminated:
+            extra["contaminated"] = True
+        self._reply(True, message, extra)
 
     def _reply(
         self, ok: bool, message: str, extra: dict[str, Any] | None = None
@@ -901,11 +968,14 @@ def open_blockly_editor(
     reload_commands: Callable[[], None],
     get_frame: Callable[[], bytes | None] | None = None,
     run_host: Any = None,
+    record_blocked: Callable[[], str | None] | None = None,
 ) -> None:
     """エディタを開く。終わったら一覧を作り直す。
 
     run_host は試し実行の司令塔（本体）。start_external_command・stopPlay・
     set_running_paused・syncPauseState・runner を持つ。無ければ試し実行しない。
+    record_blocked は記録の開始可否（拒否理由、無ければ None）。無ければ
+    試し実行中だけを見て、通常コマンド実行中は断らない（従来どおり）。
     """
     import tkinter as tk
     import tkinter.messagebox as tkmsg
@@ -917,7 +987,7 @@ def open_blockly_editor(
     global _GET_FRAME
     _GET_FRAME = get_frame
     _set_run_host(run_host)
-    _stop_server()
+    _set_record_blocked(record_blocked)
     global _server, _thread
     _server = _bind_server()
     port = _server.server_address[1]
@@ -977,6 +1047,10 @@ def open_blockly_editor(
             pass
         try:
             _follow_record_transport()
+        except Exception:
+            pass
+        try:
+            _observe_record_owners()
         except Exception:
             pass
         sync = getattr(run_host, "syncPauseState", None)

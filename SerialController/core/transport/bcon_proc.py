@@ -28,32 +28,38 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from typing import Any
 
 from core.transport.base import BCON_STATE, Transport
-from core.transport.bcon import BconTransport
+from core.transport.bcon import IMU_INTERVAL_S, BconTransport
 
 PROC_PRESET_NAME = "switch-bcon-proc"
 PROC_PRESET_DESCRIPTION = "Switch-bconを別プロセスで送出（GUI負荷切り離し）"
 PROC_RPC_MARGIN_S = 5.0
 PROC_ALIVE_POLL_S = 0.2
 
-# 子へ送ってよい会話op（親の公開口と1:1）。増やすときは子実装と同時に。
+# 子へ送ってよいop（親の公開口と1:1）。増やすときは子実装と同時に。
 _ALLOWED_CALLS = frozenset(
     {
         "is_open",
         "hello",
+        "hello_established",
         "ping",
         "request_status",
         "request_color",
         "last_status",
         "last_player_info",
+        "last_rumble",
+        # 受信ポンプが諦めたか。親側にポンプが無いので子へ問う。
+        "rx_dead",
         "baud_hunt",
         "set_baud_index",
         "set_wired_mode",
         "set_emulate_mode",
         "send_beacon",
         "send_config",
+        "send_imu",
         "start_live_loop",
         "stop_live_loop",
         "live_loop_running",
@@ -504,6 +510,9 @@ class BconProcTransport(Transport):
 
     name = "switch-bcon-proc"
     capability = BCON_STATE
+    #: is_open は子プロセスへの同期往復（timeout 付き）なので、8ms の送出
+    #: ループからは問い合わせさせない（周期が崩れる）。
+    is_open_is_local = False
 
     def __init__(
         self,
@@ -542,6 +551,15 @@ class BconProcTransport(Transport):
         self._rpc_log_t = 0.0
         self._rx_fanout_total = 0
         self._rx_fanout_last = 0
+        # IMU送出loopは親で回す。生成器（callable）はpickleできないため、
+        # 子へは6値だけをsend_imuで渡す。
+        self._imu_lock = threading.Lock()
+        self._imu_thread: Any = None
+        self._imu_stop = threading.Event()
+        self._imu_source: Any = None
+        self._imu_interval_s = IMU_INTERVAL_S
+        self._imu_sent = 0
+        self._imu_dropped = 0
         try:
             atexit.register(self._terminate_worker)
         except Exception:
@@ -938,6 +956,152 @@ class BconProcTransport(Transport):
         except Exception:
             pass
 
+    # -- IMU送出（生成器は親・6値だけ子へ） --------------------------------
+
+    def send_imu(
+        self,
+        ax: int,
+        ay: int,
+        az: int,
+        gx: int,
+        gy: int,
+        gz: int,
+    ) -> bool:
+        """IMU生値6値を子へ渡す。成否を返す。例外は投げない。
+
+        組立・送出は子側の BconTransport.send_imu が担う。値の量子化・
+        軸変換は本家と同じく呼出側で済ませておくこと。
+        """
+        try:
+            args = (int(ax), int(ay), int(az), int(gx), int(gy), int(gz))
+        except (TypeError, ValueError):
+            self._count_imu(False)
+            return False
+        ok = self._rpc_bool("send_imu", args, 1.0)
+        self._count_imu(ok)
+        return ok
+
+    def _count_imu(self, sent: bool) -> None:
+        try:
+            with self._imu_lock:
+                if sent:
+                    self._imu_sent += 1
+                else:
+                    self._imu_dropped += 1
+        except Exception:
+            pass
+
+    def imu_stats(self) -> dict[str, int]:
+        """IMU送出統計の写しを返す（読むだけ・副作用なし）。例外は投げない。"""
+        try:
+            with self._imu_lock:
+                return {"sent": int(self._imu_sent), "dropped": int(self._imu_dropped)}
+        except Exception:
+            return {"sent": 0, "dropped": 0}
+
+    def imu_loop_running(self) -> bool:
+        """IMU loopが回っているか（読むだけ）。例外は投げない。"""
+        try:
+            thread = self._imu_thread
+            return thread is not None and thread.is_alive()
+        except Exception:
+            return False
+
+    def start_imu_loop(
+        self,
+        source: Callable[[], tuple[int, int, int, int, int, int] | None],
+        interval_s: float = IMU_INTERVAL_S,
+    ) -> bool:
+        """IMU送出loopを1本だけ起こす。動いていれば True。
+
+        生成器（source）はpickleできないため子へは渡せない。親で刻み、
+        6値だけを send_imu で子へ渡す。例外は投げない。
+        """
+        try:
+            with self._imu_lock:
+                thread = self._imu_thread
+                if thread is not None and thread.is_alive():
+                    return True
+                self._imu_source = source
+                self._imu_interval_s = float(interval_s)
+                self._imu_stop.clear()
+                worker = threading.Thread(
+                    target=self._imu_loop_run,
+                    name="bcon-proc-imu-loop",
+                    daemon=True,
+                )
+                self._imu_thread = worker
+            worker.start()
+            return True
+        except Exception:
+            self._warn("bcon-procのIMU loop起動に失敗しました")
+            return False
+
+    def stop_imu_loop(self) -> bool:
+        """IMU loopを止める。止まるまで待つ（上限0.5秒）。例外は投げない。"""
+        try:
+            self._imu_stop.set()
+            with self._imu_lock:
+                thread = self._imu_thread
+            if thread is None:
+                return True
+            thread.join(0.5)
+            alive = thread.is_alive()
+            if not alive:
+                with self._imu_lock:
+                    if self._imu_thread is thread:
+                        self._imu_thread = None
+            return not alive
+        except Exception:
+            return False
+
+    def _imu_loop_run(self) -> None:
+        """IMU loop本体。絶対時刻で刻み、遅れは追従しbacklogを作らない。
+
+        live loopと同規律：サンプル取得の失敗はその刻みだけ捨てる。
+        1サンプル1RPC・生成器の例外では落ちない。
+        """
+        try:
+            with self._imu_lock:
+                interval = float(self._imu_interval_s)
+        except Exception:
+            interval = IMU_INTERVAL_S
+        next_tx = time.perf_counter() + interval
+        while not self._imu_stop.is_set():
+            now = time.perf_counter()
+            timeout = next_tx - now
+            if timeout > 0:
+                if self._imu_stop.wait(timeout):
+                    break
+            if self._imu_stop.is_set():
+                break
+            try:
+                with self._imu_lock:
+                    source = self._imu_source
+            except Exception:
+                source = None
+            if source is None:
+                next_tx = time.perf_counter() + interval
+                continue
+            try:
+                sample = source()
+            except Exception:
+                sample = None
+            if sample is None:
+                next_tx = time.perf_counter() + interval
+                continue
+            try:
+                ax, ay, az, gx, gy, gz = (int(v) for v in sample)
+            except (TypeError, ValueError):
+                next_tx = time.perf_counter() + interval
+                continue
+            self.send_imu(ax, ay, az, gx, gy, gz)
+            now = time.perf_counter()
+            if next_tx <= now:
+                next_tx = now + interval
+            else:
+                next_tx += interval
+
     def add_listener(self, func: Any) -> bool:
         """送信行を受け取る相手を足す。入力ログはここへ繋ぐ。
 
@@ -1040,6 +1204,11 @@ class BconProcTransport(Transport):
     def hello(self, timeout: float = 3.0, quiet: bool = False) -> bool:
         return self._rpc_bool("hello", (timeout, quiet), timeout)
 
+    def hello_established(self) -> bool:
+        """HELLO確立済みか。子へ問う。失敗はFalse（決めつけない）。"""
+        ok, result = self._call("hello_established", (), timeout=3.0)
+        return bool(result) if ok else False
+
     def ping(self, timeout: float = 1.0, quiet: bool = False) -> float | None:
         ok, result = self._call("ping", (timeout, quiet), timeout=timeout)
         if not ok or result is None:
@@ -1068,6 +1237,46 @@ class BconProcTransport(Transport):
             if key in result:
                 merged[key] = result[key]
         return merged
+
+    def wait_rx(self, prefixes: Any, timeout: float = 0.5) -> str | None:
+        """v1 では子へ転送しない（設計: 2026-09-22-bcon-proc-phase2.md:211）。
+
+        基底の実装は proxy 自身の受信状態を見るため、呼ばれると黙って
+        タイムアウトする。原因が分かるよう 1 回だけ error を残して None を
+        返す（規約: 公開操作から例外は出さない）。
+        """
+        if not getattr(self, "_wait_rx_warned", False):
+            self._wait_rx_warned = True
+            self._logger.error(
+                "wait_rx は switch-bcon-proc では未対応です（設計で v1 除外）"
+            )
+        return None
+
+    def rx_dead(self) -> bool:
+        """子側の受信ポンプが諦めたか。RPC 越しに問う。
+
+        親側に受信ポンプは無い（線を持っているのは子）。自前で False を
+        返すと「死んでいない」と嘘をつくことになるので、子へ問い合わせる。
+        問い合わせに失敗したときは False（死んだと決めつけない）。
+        """
+        ok, result = self._call("rx_dead", (), timeout=3.0)
+        return bool(result) if ok else False
+
+    def last_rumble(self) -> bytes:
+        """直近RUMBLE payloadの写し。未受信・失敗は空。例外は投げない。
+
+        本家 BconTransport と同じ操作面を保つために要る。欠けると
+        BconSetup の getattr(transport, "last_rumble", None) が None になり、
+        振動表示が必ず「（なし）」になる。
+        """
+        ok, result = self._call("last_rumble", (), timeout=3.0)
+        if not ok or result is None:
+            return b""
+        try:
+            return bytes(result)
+        except Exception:
+            self._logger.debug("last_rumble の結果を bytes にできません", exc_info=True)
+            return b""
 
     def last_status(self) -> dict[str, int]:
         ok, result = self._call("last_status", (), timeout=3.0)

@@ -223,4 +223,37 @@ def test_apply_input_log_no_crash() -> None:
     service.build_sender(make_spec())
     service.apply_input_log("simple", "", True, False)
     service.set_input_log_enabled(False)
+
+
+def test_set_show_serial_pushes_the_value_into_the_sender() -> None:
+    """表示の切替を、画面から送信側へ押し込めること。
+
+    Tk 変数を送信スレッドに読ませると、GUI が忙しい間そこで待たされる。
+    画面側が変わった時に値を渡し、送信側はそれを使う。
+
+    Given: 表示しない側で作った Sender を持つサービス
+    When : 表示の切替を押し込む
+    Then : 送信側（GUI 以外のスレッドから見た値）がそれに従う
+    """
+    service, _ = make_service()
+    service.sender = Sender.Sender(is_show_serial=False, transport=FakeTransport())
+    assert service.sender is not None
+
+    service.set_show_serial(True)
+    assert service.sender._should_show_serial() is True
+    service.set_show_serial(False)
+    assert service.sender._should_show_serial() is False
+
+
+def test_set_show_serial_without_sender_never_raises() -> None:
+    """送信側がまだ無いとき（起動直後）でも落ちない。
+
+    Given: Sender を持たないサービス
+    When : 表示の切替を押し込む
+    Then : 例外を出さずに戻る
+    """
+    service, _ = make_service()
+    service.set_show_serial(True)
+    service.set_show_serial(False)
+    assert service.sender is None
     service.set_arbitration("off", 2.0)
