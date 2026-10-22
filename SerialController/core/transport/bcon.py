@@ -202,6 +202,10 @@ class BconTransport(Transport):
         }
         self._last_hello_time = 0.0
         self._hello_version: tuple[int, int] | None = None
+        # HELLO_ACK成立の印。hunt確定（=PicoのTX再開）まではSTATUSの
+        # 欠落・復号ノイズが必ず出るため、立つまでは実エラーとして
+        # 見せない。open・baud切替でFalseへ戻す。
+        self._hello_established = False
         # baud huntのlast-good先頭用。hello成功で更新する。
         self._last_good_baud = BCON_DEFAULT_BAUDRATE
         # hunt中のSTATE抑え。Trueのあいだsend_rowは捨てる（HELLO等の
@@ -309,6 +313,8 @@ class BconTransport(Transport):
             self._live_merged = 0
             self._live_dropped = 0
             self._live_rtt_ms = None
+            # 開き直しは新しい握手。HELLO_ACKを受けるまで抑止を続ける。
+            self._hello_established = False
         if old is not None:
             try:
                 old.close()
@@ -345,6 +351,7 @@ class BconTransport(Transport):
             ser, self.ser = self.ser, None
             # 欠片を持ち越すと次回接続の先頭整列を乱すため捨てる。
             self._parser = BconParser()
+            self._hello_established = False
         if ser is None:
             return
         try:
@@ -1167,6 +1174,14 @@ class BconTransport(Transport):
             self._logger.debug("STATUS保持で例外", exc_info=True)
             return
         if errcode != 0 and errcode != old:
+            if not self.hello_established():
+                # hunt確定前の復号ノイズ。実エラーとして見せない。
+                self._logger.debug(
+                    "HELLO確立前のSTATUS異常を抑えました"
+                    f"(errcode=0x{errcode:02X} {self._describe_errcode(errcode)}"
+                    f" flags=0x{flags:02X} err_crc={err_crc} err_drop={err_drop})。"
+                )
+                return
             msg = (
                 "bconのSTATUS異常を検出しました"
                 f"(errcode=0x{errcode:02X} {self._describe_errcode(errcode)}"
@@ -1196,14 +1211,18 @@ class BconTransport(Transport):
                     try:
                         payload = frame[1]
                         if len(payload) == 4:
+                            adopted = int(payload[0]) & 0xFF
+                            result = int(payload[3]) & 0xFF
                             self._last_hello_ack = {
-                                "adopted": int(payload[0]) & 0xFF,
+                                "adopted": adopted,
                                 "major": int(payload[1]) & 0xFF,
                                 "minor": int(payload[2]) & 0xFF,
-                                "result": int(payload[3]) & 0xFF,
+                                "result": result,
                             }
                             self._last_hello_time = now
-                            adopted = int(payload[0]) & 0xFF
+                            if adopted == PROTO_VER and result == RESULT_OK:
+                                # 握手成立。ここから先のSTATUSは実データとして扱う。
+                                self._hello_established = True
                             if adopted == PROTO_VER:
                                 try:
                                     self._hello_version = (
@@ -1347,6 +1366,9 @@ class BconTransport(Transport):
             if ser is None:
                 return False
             ser.baudrate = int(rate)
+            # rateが変われば握手も切れる。HELLOでadoptを確かめるまで戻す。
+            with self._lock:
+                self._hello_established = False
             return True
         except (TypeError, ValueError, AttributeError) as e:
             self._logger.debug(f"baud切替に失敗: {e!r}")
@@ -1628,6 +1650,19 @@ class BconTransport(Transport):
                 "errcode": 0,
             }
 
+    def hello_established(self) -> bool:
+        """HELLO_ACKが成立しているか。線に触れない。例外は投げない。
+
+        baud hunt確定まではPicoがTXを止め、切替中の復号ノイズが
+        STATUSのerrcodeへ載る。成立前のSTATUS欠落・異常を実エラーと
+        して見せないための判定に使う。open・baud切替でFalseへ戻る。
+        """
+        try:
+            with self._lock:
+                return bool(self._hello_established)
+        except Exception:
+            return False
+
     def last_player_info(self) -> bytes:
         """直近PLAYER_INFO payloadの写し。未受信は空。例外は投げない。"""
         try:
@@ -1695,8 +1730,14 @@ class BconTransport(Transport):
                     self._gui(msg, quiet)
                     return None
                 if not done.wait(limit):
-                    msg = f"bconのSTATUSが来ませんでした({limit:.1f}s)。"
-                    self._gui(msg, quiet)
+                    if self.hello_established():
+                        msg = f"bconのSTATUSが来ませんでした({limit:.1f}s)。"
+                        self._gui(msg, quiet)
+                    else:
+                        # hunt確定前はFW仕様で返らない。実エラーとして見せない。
+                        self._logger.debug(
+                            f"HELLO確立前のSTATUS欠落を抑えました({limit:.1f}s)。"
+                        )
                     return None
                 return self.last_status()
             finally:
