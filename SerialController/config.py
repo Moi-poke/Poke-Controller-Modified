@@ -247,6 +247,17 @@ def default_sections() -> dict[str, dict[str, Any]]:
     }
 
 
+def _parse_bool(value: Any) -> bool | None:
+    """configparser が受ける真偽値表記を bool へ直す。読めなければ None。
+
+    表そのものは configparser に任せる（1/yes/true/on/0/no/false/off、
+    大小文字を問わない）。保存時は True / False の正規形へ揃える。
+    """
+    if not isinstance(value, str):
+        return None
+    return configparser.ConfigParser.BOOLEAN_STATES.get(value.strip().lower())
+
+
 def complete_missing(parser: configparser.ConfigParser) -> list[str]:
     """不足項目と不正値を既定値へ補正する。直した箇所の一覧を返す。
 
@@ -280,6 +291,34 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if value is None or not valid(value):
             general[key] = str(default)
             changed.append(f"General Setting.{key}")
+    # 真偽値。configparser の getboolean は "maybe" のような値を読む側で
+    # ValueError にするため、先に正規形（True / False）へ揃えておく。
+    # 読めない値は既定へ戻す。表記は configparser と同じものを受ける。
+    boolean_rules = {
+        "General Setting": (
+            "is_show_realtime",
+            "is_show_serial",
+            "is_use_keyboard",
+            "is_use_gamepad",
+            "is_use_left_stick_mouse",
+            "is_use_right_stick_mouse",
+            "is_take_stick_log",
+        ),
+        "Window": ("restore_geometry", "show_tabs", "show_log"),
+        "Input Log": ("enabled", "log_stick_change"),
+        "Log View": ("show_time", "wrap", "group_similar", "collect_problems"),
+        "Audio": ("monitor_enabled",),
+    }
+    for section, keys in boolean_rules.items():
+        proxy = parser[section]
+        for key in keys:
+            parsed = _parse_bool(proxy.get(key, ""))
+            if parsed is None:
+                parsed = bool(defaults[section][key])
+            normalized = "True" if parsed else "False"
+            if proxy.get(key, "") != normalized:
+                proxy[key] = normalized
+                changed.append(f"{section}.{key}")
     # プレビューの固定サイズと表示モード。候補は core.display_mode が正で、
     # このファイルは core を読める（tkinter を引き込まない）ため複製しない。
     if general.get("show_size", "") not in SHOW_SIZES:
@@ -326,9 +365,6 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
             changed.append("Arbitration.cooldown")
     if parser.has_section("Audio"):
         audio = parser["Audio"]
-        if audio.get("monitor_enabled", "").strip() not in ("True", "False"):
-            audio["monitor_enabled"] = "False"
-            changed.append("Audio.monitor_enabled")
         try:
             volume = float(audio.get("monitor_volume", ""))
         except (TypeError, ValueError):
@@ -342,6 +378,15 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
     # normalize_profile_color で審査し、正規化形で残す。
     if parser.has_section("Window"):
         window = parser["Window"]
+        # ログ欄の仕切り位置。0.0〜1.0 の外・非数値は既定へ戻す
+        # （範囲内への丸めは WindowGeometry.clampRatio が受け持つ）。
+        try:
+            ratio = float(window.get("log_sash_ratio", ""))
+        except (TypeError, ValueError):
+            ratio = None
+        if ratio is None or not 0.0 <= ratio <= 1.0:
+            window["log_sash_ratio"] = str(defaults["Window"]["log_sash_ratio"])
+            changed.append("Window.log_sash_ratio")
         if window.get("layout", "") not in LAYOUTS:
             window["layout"] = DEFAULT_LAYOUT
             changed.append("Window.layout")
