@@ -31,7 +31,13 @@ RUMBLE_NEUTRAL = bytes([0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40])
 
 
 def _list() -> list[dict]:
-    return hid.enumerate(VID, PID)
+    # 実Joy-Con R (BT, PID 2007) も採れるよう全PIDを列挙する。
+    return hid.enumerate(VID, 0)
+
+
+def _is_usb(path: bytes) -> bool:
+    """USB HIDパスか。BTは0x80系ハンドシェイクを持たない。"""
+    return b"USB" in path.upper() and b"BTH" not in path.upper()
 
 
 def _open(path: bytes | None) -> hid.device:
@@ -53,13 +59,14 @@ def _read(dev: hid.device, timeout_ms: int = 200) -> bytes | None:
     return bytes(data) if data else None
 
 
-def _handshake(dev: hid.device) -> None:
+def _handshake(dev: hid.device, path: bytes | None = None) -> None:
     """0x30を出させる最小の手順。応答は読み捨てる。"""
-    for cmd in (bytes([0x80, 0x01]), bytes([0x80, 0x02]), bytes([0x80, 0x04])):
-        _write(dev, cmd)
-        time.sleep(0.05)
-        for _ in range(2):
-            _read(dev, 100)
+    if path is None or _is_usb(path):
+        for cmd in (bytes([0x80, 0x01]), bytes([0x80, 0x02]), bytes([0x80, 0x04])):
+            _write(dev, cmd)
+            time.sleep(0.05)
+            for _ in range(2):
+                _read(dev, 100)
     packet = 0
     for sub, arg in ((0x40, b"\x01"), (0x03, b"\x30")):
         _write(
@@ -88,9 +95,12 @@ def main() -> int:
 
     devs = _list()
     if args.list or not devs:
-        print(f"候補 {len(devs)} 件 (VID=057E PID=2009)")
+        print(f"候補 {len(devs)} 件 (VID=057E)")
         for i, d in enumerate(devs):
-            print(f"  [{i}] {d.get('product_string')} path={d.get('path')}")
+            print(
+                f"  [{i}] pid={d.get('product_id') and hex(d['product_id'])} "
+                f"{d.get('product_string')} path={d.get('path')}"
+            )
         if args.list:
             return 0
         if not devs:
@@ -99,7 +109,7 @@ def main() -> int:
     dev = _open(path)
     print(f"open: path={path}")
     try:
-        _handshake(dev)
+        _handshake(dev, path)
         stamps: list[float] = []
         rows: list[tuple[float, bytes]] = []
         end = time.perf_counter() + args.seconds
@@ -113,13 +123,13 @@ def main() -> int:
         print(f"0x30: {len(rows)} 件 / {args.seconds:.1f}s")
         if len(rows) < 2:
             return 1
-        d = [(b - a) * 1000.0 for a, b in zip(stamps, stamps[1:])]
+        deltas = [(b - a) * 1000.0 for a, b in zip(stamps, stamps[1:])]
         print(
             "間隔ms: mean=%.2f median=%.2f min=%.2f max=%.2f"
             % (
-                statistics.fmean(d),
-                statistics.median(d),
-                min(d),
+                statistics.fmean(deltas),
+                statistics.median(deltas),
+                min(deltas),
                 max(d),
             )
         )

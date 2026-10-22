@@ -20,8 +20,13 @@ sys.path.insert(0, "SerialController")
 from core.nintendo_hid import _RUMBLE_NEUTRAL  # noqa: E402
 
 
-def _find_pico() -> bytes | None:
-    """0x02が2(Joy-Con R)を返す個体を選ぶ。"""
+def _is_usb(path: bytes) -> bool:
+    """USB HIDパスか（BTは0x80系を持たない）。"""
+    return b"USB" in path.upper() and b"BTH" not in path.upper()
+
+
+def _find_pico(want_type: int) -> bytes | None:
+    """0x02が want_type を返す個体を選ぶ。"""
     for d in hid.enumerate(0x057E, 0):
         path = d.get("path")
         if not path:
@@ -30,11 +35,16 @@ def _find_pico() -> bytes | None:
         try:
             dev.open_path(path)
             dev.set_nonblocking(False)
-            for cmd in (bytes([0x80, 0x01]), bytes([0x80, 0x02]), bytes([0x80, 0x04])):
-                dev.write(bytes(cmd) + bytes(64 - len(cmd)))
-                time.sleep(0.05)
-                for _ in range(5):
-                    dev.read(64, timeout_ms=50)
+            if _is_usb(bytes(path)):
+                for cmd in (
+                    bytes([0x80, 0x01]),
+                    bytes([0x80, 0x02]),
+                    bytes([0x80, 0x04]),
+                ):
+                    dev.write(bytes(cmd) + bytes(64 - len(cmd)))
+                    time.sleep(0.05)
+                    for _ in range(5):
+                        dev.read(64, timeout_ms=50)
             dev.write(bytes([0x01, 0]) + _RUMBLE_NEUTRAL + bytes([0x02]) + bytes(53))
             typ = None
             for _ in range(30):
@@ -42,7 +52,7 @@ def _find_pico() -> bytes | None:
                 if r and len(r) > 17 and r[0] in (0x21, 0x81) and r[14] == 0x02:
                     typ = r[17]
                     break
-            if typ == 2:
+            if typ == want_type:
                 return bytes(path)
         except Exception:
             pass
@@ -54,16 +64,17 @@ def _find_pico() -> bytes | None:
     return None
 
 
-def _open(path: bytes) -> "hid.device":
+def _open(path: bytes, do_hs: bool = True) -> "hid.device":
     dev = hid.device()
     dev.open_path(path)
     dev.set_nonblocking(False)
     wr = lambda b: dev.write(bytes(b) + bytes(64 - len(b)))  # noqa: E731
-    for cmd in (bytes([0x80, 0x01]), bytes([0x80, 0x02]), bytes([0x80, 0x04])):
-        wr(cmd)
-        time.sleep(0.05)
-        for _ in range(5):
-            dev.read(64, timeout_ms=50)
+    if do_hs:
+        for cmd in (bytes([0x80, 0x01]), bytes([0x80, 0x02]), bytes([0x80, 0x04])):
+            wr(cmd)
+            time.sleep(0.05)
+            for _ in range(5):
+                dev.read(64, timeout_ms=50)
     return dev
 
 
@@ -85,12 +96,13 @@ def main() -> int:
     ap.add_argument("--start", type=lambda s: int(s, 0), default=0x6000)
     ap.add_argument("--end", type=lambda s: int(s, 0), default=0x8040)
     ap.add_argument("--chunk", type=int, default=0x1C, help="<=44")
+    ap.add_argument("--type", type=int, default=2, help="0x02種別 (2=Joy-Con R)")
     args = ap.parse_args()
-    path = _find_pico()
+    path = _find_pico(args.type)
     if path is None:
         print("Pico(Joy-Con R)が見つかりません")
         return 1
-    dev = _open(path)
+    dev = _open(path, _is_usb(path))
     try:
         addr = args.start
         while addr < args.end:
