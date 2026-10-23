@@ -101,18 +101,22 @@ class ImuPanel:
         self._btn_toggle = ttk.Button(frame, text="送出開始", command=self._on_toggle)
         self._btn_toggle.grid(row=0, column=2, sticky=tk.EW, padx=2, pady=2)
 
-        ttk.Label(frame, text="パッド").grid(
-            row=1, column=0, sticky=tk.W, padx=2, pady=2
+        # パッド番号は SDL センサー入力のときだけ意味がある。行ごと
+        # 出し分け、ラベルで説明しない（レイアウトで示す）。
+        self._pad_frame = ttk.Frame(frame)
+        ttk.Label(self._pad_frame, text="パッド").grid(
+            row=0, column=0, sticky=tk.W, padx=2, pady=2
         )
         self._pad_var = tk.StringVar(value="0")
         self._pad_cb = ttk.Combobox(
-            frame,
+            self._pad_frame,
             width=10,
             state="readonly",
             textvariable=self._pad_var,
             values=["0", "1", "2", "3"],
         )
-        self._pad_cb.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._pad_cb.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._pad_frame.grid(row=1, column=0, columnspan=2, sticky=tk.EW)
         self._btn_step = ttk.Button(frame, text="STEP発火", command=self._on_step_fire)
         self._btn_step.grid(row=1, column=2, sticky=tk.EW, padx=2, pady=2)
 
@@ -176,10 +180,11 @@ class ImuPanel:
             var.trace_add("write", self._make_manual_trace(i, var))
             self._manual_vars.append(var)
         self._manual_frame.grid(
-            row=4, column=0, columnspan=3, sticky=tk.EW, pady=(4, 0)
+            row=5, column=0, columnspan=3, sticky=tk.EW, pady=(4, 0)
         )
         self._manual_frame.grid_remove()
         self._source_cb.bind("<<ComboboxSelected>>", self._on_source_changed, add="")
+        self._on_source_changed()
         # 詳細の可視化パネル。チェックONのときだけ同frame内に展開する。
         self._gyro_view: Any = None
         self._load_settings_into_vars()
@@ -249,8 +254,17 @@ class ImuPanel:
         return _apply
 
     def _on_source_changed(self, _event: Any = None) -> None:
-        """入力源の切り替え。手動入力のときだけ6軸欄を出す。"""
-        if self._source_name() == "manual":
+        """入力源に応じて行を出し分ける（ラベルで説明しない）。"""
+        source = self._source_name()
+        if source == "sensor":
+            self._pad_frame.grid()
+        else:
+            self._pad_frame.grid_remove()
+        if source == "step":
+            self._btn_step.grid()
+        else:
+            self._btn_step.grid_remove()
+        if source == "manual":
             self._manual_frame.grid()
         else:
             self._manual_frame.grid_remove()
