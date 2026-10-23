@@ -28,8 +28,8 @@ class ControllerDock:
 
     companion_factory を渡すと、操作盤の下に連れの部品（ジャイロ欄など）も
     一緒に置き、別窓への出し入れに追従させる。factoryは (master) → 部品
-    （close() を持つこと）を返す関数。送出状態はtransport側が持つため、
-    UI作り直しでも送出は継続する。
+    （close() を持つこと）を返す関数。部品の作り直し時は旧部品の close()
+    が走るため、ジャイロ送出は止まる（再開は新しい部品で操作する）。
     """
 
     def __init__(

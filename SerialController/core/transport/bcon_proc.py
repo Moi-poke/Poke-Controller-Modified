@@ -554,6 +554,7 @@ class BconProcTransport(Transport):
         self._imu_loop_thread: threading.Thread | None = None
         self._imu_loop_stop = threading.Event()
         self._imu_lock = threading.Lock()
+        self._imu_stats_lock = threading.Lock()
         self._imu_sent = 0
         self._imu_dropped = 0
         try:
@@ -800,7 +801,11 @@ class BconProcTransport(Transport):
             }
 
     def _call(
-        self, method: str, args: tuple = (), timeout: float | None = None
+        self,
+        method: str,
+        args: tuple = (),
+        timeout: float | None = None,
+        margin: float | None = None,
     ) -> tuple[bool, Any]:
         """子へ会話opを送り応答を待つ。(成否, 結果)を返す。"""
         if not self._worker_alive():
@@ -822,7 +827,8 @@ class BconProcTransport(Transport):
             self._mark_dead()
             return False, None
         limit = float(timeout) if timeout else 10.0
-        if not event.wait(limit + PROC_RPC_MARGIN_S):
+        extra = PROC_RPC_MARGIN_S if margin is None else float(margin)
+        if not event.wait(limit + extra):
             with self._pending_lock:
                 self._pending.pop(call_id, None)
             if not self._worker_alive():
@@ -892,6 +898,11 @@ class BconProcTransport(Transport):
 
     def close(self) -> None:
         """線を閉じて子を畳む。二重安全。例外は投げない。"""
+        try:
+            # 親側のIMUループを先に止める（子を畳むとRPCが失敗し続ける）。
+            self.stop_imu_loop()
+        except Exception:
+            pass
         try:
             if self._worker_alive():
                 with self._pending_lock:
@@ -1085,7 +1096,18 @@ class BconProcTransport(Transport):
         gy: int,
         gz: int,
     ) -> bool:
-        return self._rpc_bool("send_imu", (ax, ay, az, gx, gy, gz), 3.0)
+        # 5ms周期のループから呼ばれるため、待ちは周期より十分短くする
+        # （既定の +5秒マージンだと子の多忙時に数秒ブロックする）。
+        ok, result = self._call(
+            "send_imu", (ax, ay, az, gx, gy, gz), timeout=0.02, margin=0.0
+        )
+        sent = bool(ok and result)
+        with self._imu_stats_lock:
+            if sent:
+                self._imu_sent += 1
+            else:
+                self._imu_dropped += 1
+        return sent
 
     def imu_loop_running(self) -> bool:
         thread = self._imu_loop_thread
@@ -1122,13 +1144,9 @@ class BconProcTransport(Transport):
                 sample = None
             if sample is not None:
                 try:
-                    ok = self.send_imu(*sample)
+                    self.send_imu(*sample)
                 except Exception:
-                    ok = False
-                if ok:
-                    self._imu_sent += 1
-                else:
-                    self._imu_dropped += 1
+                    pass
             remain = deadline - time.perf_counter()
             if remain > 0:
                 self._imu_loop_stop.wait(remain)
@@ -1136,15 +1154,28 @@ class BconProcTransport(Transport):
                 deadline = time.perf_counter()
 
     def stop_imu_loop(self) -> bool:
+        """止まるまで待つ。死んでいなければ handle を残す（bcon と同じ契約）。
+
+        0.5秒で join を打ち切ったときに handle を消すと、次の start が
+        二本目のループを起こし、古いスレッドも停止イベントのクリアで
+        生き返って二重送出になる。
+        """
         self._imu_loop_stop.set()
-        thread = self._imu_loop_thread
-        if thread is not None:
-            thread.join(0.5)
-        self._imu_loop_thread = None
-        return True
+        with self._imu_lock:
+            thread = self._imu_loop_thread
+        if thread is None:
+            return True
+        thread.join(0.5)
+        alive = thread.is_alive()
+        if not alive:
+            with self._imu_lock:
+                if self._imu_loop_thread is thread:
+                    self._imu_loop_thread = None
+        return not alive
 
     def imu_stats(self) -> dict[str, int]:
-        return {"sent": int(self._imu_sent), "dropped": int(self._imu_dropped)}
+        with self._imu_stats_lock:
+            return {"sent": int(self._imu_sent), "dropped": int(self._imu_dropped)}
 
     def live_stats(self) -> dict[str, Any]:
         ok, result = self._call("live_stats", (), timeout=3.0)

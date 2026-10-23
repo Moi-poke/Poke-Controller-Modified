@@ -183,6 +183,13 @@ class ImuPanel:
         # 詳細の可視化パネル。チェックONのときだけ同frame内に展開する。
         self._gyro_view: Any = None
         self._load_settings_into_vars()
+        # この部品は Window.loadSettings() より先に作られる。設定がまだ
+        # 無い状態の既定値で送出開始→保存すると保存値を潰すため、
+        # イベントループ開始後に読み直す。
+        try:
+            self.frame.after_idle(self._load_settings_into_vars)
+        except Exception:
+            pass
         self._poll()
 
     def pack(self, **kwargs: Any) -> None:
