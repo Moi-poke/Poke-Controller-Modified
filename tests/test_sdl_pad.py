@@ -124,6 +124,66 @@ def _install_fake_gc(
     monkeypatch.setitem(sys.modules, "pygame._sdl2.controller", fake_controller)
 
 
+def test_read_pumps_even_when_no_controller(monkeypatch) -> None:
+    """未接続でも event.pump を呼ぶ（SDLの到着イベント処理に必須）。"""
+    calls = {"pump": 0}
+    _install_fake_gc(monkeypatch, {}, {})
+    import pygame as _pg
+
+    _pg.event.pump = lambda: calls.__setitem__("pump", calls["pump"] + 1)
+    reader = SdlPadReader()
+    state = reader.read(0)
+    assert state.connected is False
+    assert calls["pump"] == 1
+
+
+def test_ensure_retries_after_failure(monkeypatch) -> None:
+    """初回init失敗は恒久化せず、間隔後に再試行する。"""
+    import sys
+    import types
+
+    import core.sdl_pad as sdl_pad
+
+    monkeypatch.setattr(sdl_pad, "ENSURE_RETRY_S", 0.0)
+    attempts = {"n": 0}
+
+    def _init() -> None:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("init failed")
+
+    fake_pygame = types.ModuleType("pygame")
+    fake_pygame.init = _init  # type: ignore[attr-defined]
+    fake_controller = types.ModuleType("pygame._sdl2.controller")
+    fake_controller.init = lambda: None  # type: ignore[attr-defined]
+    fake_sdl2 = types.ModuleType("pygame._sdl2")
+    fake_sdl2.controller = fake_controller  # type: ignore[attr-defined]
+    fake_pygame._sdl2 = fake_sdl2  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pygame", fake_pygame)
+    monkeypatch.setitem(sys.modules, "pygame._sdl2", fake_sdl2)
+    monkeypatch.setitem(sys.modules, "pygame._sdl2.controller", fake_controller)
+
+    reader = SdlPadReader()
+    assert reader.available is False
+    assert reader.available is True
+
+
+def test_missing_pad_resets_sdl(monkeypatch) -> None:
+    """未接続が続いたら SDL を作り直す。"""
+    import core.sdl_pad as sdl_pad
+
+    monkeypatch.setattr(sdl_pad, "RESET_MISSING_S", 0.0)
+    quits = {"n": 0}
+    _install_fake_gc(monkeypatch, {}, {})
+    import pygame as _pg
+
+    _pg.quit = lambda: quits.__setitem__("n", quits["n"] + 1)
+    reader = SdlPadReader()
+    assert reader.read(0).connected is False
+    assert reader.read(0).connected is False
+    assert quits["n"] >= 1
+
+
 def test_sdl_reads_buttons_hat_stick(monkeypatch) -> None:
     stick = FakeController()
     # 標準番号: 0=A・6=START・11/14=十字上右・15=MISC(CAPTURE)

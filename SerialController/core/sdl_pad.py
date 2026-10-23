@@ -37,9 +37,18 @@ XInput に対応していないコントローラ（Switch Pro コンなど）�
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from core.xinput import MAX_PADS, PadState, pressed_names
+
+# SDL初期化に失敗したときの再試行間隔(秒)。一度の失敗を永久に
+# 引きずると、以降ずっと「ゲームパッドが見つかりません」になる。
+ENSURE_RETRY_S = 2.0
+
+# 未接続が続いたときに SDL を作り直すまでの時間(秒)。HIDの奪い合い
+# などで SDL の列挙が古くなったままになる実測がある。
+RESET_MISSING_S = 2.0
 
 # GameController 標準ボタン番号 → XInput と同じ名前。
 # Pro コンの CAPTURE/HOME は標準に無いため、MISC→CAPTURE・
@@ -132,6 +141,8 @@ class SdlPadReader:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._ready: bool | None = None
+        self._retry_at = 0.0
+        self._missing_since: float | None = None
         self._sticks: dict[int, Any] = {}
         # パッドごとの前回内容と連番。内容が変わったときだけ進める。
         self._last_key: dict[int, Any] = {}
@@ -150,9 +161,16 @@ class SdlPadReader:
             self._seen.add(int(index))
 
     def _ensure(self) -> bool:
-        """pygame と GameController を使える状態にする。成功で True。"""
-        if self._ready is not None:
-            return self._ready
+        """pygame と GameController を使える状態にする。成功で True。
+
+        失敗は恒久ではない。ENSURE_RETRY_S 経過後に再試行する
+        （一度のinit失敗で永久に未接続になるのを防ぐ）。
+        """
+        if self._ready is True:
+            return True
+        now = time.monotonic()
+        if self._ready is False and now < self._retry_at:
+            return False
         try:
             import pygame
             from pygame._sdl2 import controller as _gc
@@ -162,7 +180,25 @@ class SdlPadReader:
             self._ready = True
         except Exception:
             self._ready = False
+            self._retry_at = now + ENSURE_RETRY_S
         return self._ready
+
+    def _reset_sdl(self) -> None:
+        """SDL を作り直して列挙をやり直す。失敗しても落とさない。"""
+        try:
+            import pygame
+            from pygame._sdl2 import controller as gc
+
+            try:
+                gc.quit()
+            except Exception:
+                pass
+            pygame.quit()
+        except Exception:
+            pass
+        with self._lock:
+            self._sticks.clear()
+        self._ready = None
 
     @property
     def available(self) -> bool:
@@ -286,18 +322,26 @@ class SdlPadReader:
         gc = self._gc()
         if gc is None:
             return PadState()
-        gc_stick, joy_stick = self._stick(index)
-        if gc_stick is None or joy_stick is None:
-            return PadState()
-        # イベントポンプは必須（呼ばないと状態が進まない）。
-        # 軸は生joystick から読むため、GameController 軸の張り付きは
-        # 影響しない。
+        # イベントポンプは未接続時も必須。SDL は pump でデバイスの
+        # 到着/離脱を処理するため、接続後だけ呼ぶと一度見失った後に
+        # 到着イベントを拾えず永久に復帰しない。
         try:
             import pygame as _pg
 
             _pg.event.pump()
         except Exception:
             pass
+        gc_stick, joy_stick = self._stick(index)
+        if gc_stick is None or joy_stick is None:
+            now = time.monotonic()
+            if self._missing_since is None:
+                self._missing_since = now
+            elif now - self._missing_since >= RESET_MISSING_S:
+                # 未接続が続く: SDL を作り直して列挙をやり直す。
+                self._missing_since = now
+                self._reset_sdl()
+            return PadState()
+        self._missing_since = None
         try:
             pressed: set[str] = set()
             for num, name in _GC_BUTTON_NAMES.items():
