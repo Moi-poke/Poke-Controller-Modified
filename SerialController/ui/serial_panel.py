@@ -281,7 +281,9 @@ class SerialPanelMixin:
 
         # 種別は有線/無線と同じ行に並べると幅を取るので、自分の行へ。
         self.bcon_emulate_label = ttk.Label(self.serial_lf)
-        self.bcon_emulate_label.config(text="種別: ")
+        # この欄は「Picoが何を名乗るか」の要求値。入力元の選択ではない。
+        # 端末側の実状態を読戻してはいない（初期値は常にPro Controller）。
+        self.bcon_emulate_label.config(text="種別(Pico名乗り): ")
         self.bcon_emulate_label.grid(column=0, padx="5", pady="2", row=4, sticky="w")
 
         self.bcon_emulate = tk.StringVar(value="Pro Controller")
@@ -294,6 +296,14 @@ class SerialPanelMixin:
         )
         self.bcon_emulate_cb.grid(column=1, padx="5", pady="2", row=4, sticky="w")
         self.bcon_emulate_cb.bind("<<ComboboxSelected>>", self.applyBconEmulate, add="")
+        self.bcon_emulate_note = ttk.Label(self.serial_lf)
+        self.bcon_emulate_note.config(
+            text="※エミュレーションする種類。入力元の選択ではありません。"
+            "変更するとPicoが再起動します。",
+            wraplength="240p",
+            justify="left",
+        )
+        self.bcon_emulate_note.grid(column=0, columnspan=2, padx="5", row=5, sticky="w")
         fit_combo_width(self.bcon_emulate_cb, min_chars=8, max_chars=20)
         # 値の列を伸ばし、広い窓では長いポート名・機器名を省略せずに出す。
         self.serial_lf.columnconfigure(1, weight=1)
@@ -380,17 +390,68 @@ class SerialPanelMixin:
         self._gamepad_after = None
         self.refreshGamepads()
         self._poll_gamepads()
+
+        # ジャイロ送出。コントローラの機能のためこのタブに置く。
+        # 仮想コントローラと連れにして別窓にも一緒に連れて行く。
+        # 送り先・設定は都度引く（作り直し・切替に追従する）。
+        def _make_imu_panel(master: Any) -> Any:
+            from ImuPanel import ImuPanel
+
+            return ImuPanel(
+                master,
+                lambda: getattr(self.serial.sender, "transport", None),
+                self._read_imu_settings,
+                self._write_imu_settings,
+                lambda text: print(text),
+            )
+
         # 仮想コントローラ。タブの中に常に置き、別ウィンドウへも出せる
         # （ui/controller_dock.py）。送り先は開くたびに今の物を引く。
         dock_area = ttk.Frame(self.tab_controller)
         dock_area.pack(fill="both", expand=True, padx=5, pady=(0, 5))
-        self.controller_dock = ControllerDock(
-            self.root,
-            dock_area,
-            lambda: self.serial.sender,
-            viewport=getattr(self, "tabs_scroll", None),
-        )
+        try:
+            self.controller_dock = ControllerDock(
+                self.root,
+                dock_area,
+                lambda: self.serial.sender,
+                viewport=getattr(self, "tabs_scroll", None),
+                companion_factory=_make_imu_panel,
+            )
+        except Exception as e:
+            logger.warning(f"コントローラ欄を作れませんでした: {e}")
+            self.controller_dock = ControllerDock(
+                self.root,
+                dock_area,
+                lambda: self.serial.sender,
+                viewport=getattr(self, "tabs_scroll", None),
+            )
         self.simpleConButton = self.controller_dock.pop_button
+
+    def _read_imu_settings(self) -> dict[str, str]:
+        """IMU節を読む。無ければ空辞書（呼出側が既定で補う）。"""
+        try:
+            parser = getattr(self.settings, "setting", None)
+            if parser is None or not parser.has_section("IMU"):
+                return {}
+            return dict(parser["IMU"])
+        except Exception:
+            return {}
+
+    def _write_imu_settings(self, values: dict[str, str]) -> None:
+        """IMU節を書いて保存する。失敗は捨てる（送出は続ける）。"""
+        try:
+            parser = getattr(self.settings, "setting", None)
+            if parser is None:
+                return
+            if not parser.has_section("IMU"):
+                parser.add_section("IMU")
+            for key, value in values.items():
+                parser["IMU"][str(key)] = str(value)
+            save = getattr(self.settings, "save", None)
+            if callable(save):
+                save()
+        except Exception:
+            pass
 
     def _currentBaudRate(self) -> int:
         """Baud Rate を通常の int で返す。数値として読めないときだけ既定。

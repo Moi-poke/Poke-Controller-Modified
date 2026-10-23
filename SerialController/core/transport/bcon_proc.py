@@ -31,7 +31,7 @@ import traceback
 from typing import Any
 
 from core.transport.base import BCON_STATE, Transport
-from core.transport.bcon import BconTransport
+from core.transport.bcon import IMU_INTERVAL_S, BconTransport
 
 PROC_PRESET_NAME = "switch-bcon-proc"
 PROC_PRESET_DESCRIPTION = "Switch-bconを別プロセスで送出（GUI負荷切り離し）"
@@ -63,6 +63,8 @@ _ALLOWED_CALLS = frozenset(
         "live_stats",
         "request_bootsel",
         "request_reconnect",
+        "hello_established",
+        "send_imu",
     }
 )
 
@@ -548,6 +550,12 @@ class BconProcTransport(Transport):
         self._rpc_log_t = 0.0
         self._rx_fanout_total = 0
         self._rx_fanout_last = 0
+        # IMU loopは親側で回す（sourceはコールバックのため子へ渡せない）。
+        self._imu_loop_thread: threading.Thread | None = None
+        self._imu_loop_stop = threading.Event()
+        self._imu_lock = threading.Lock()
+        self._imu_sent = 0
+        self._imu_dropped = 0
         try:
             atexit.register(self._terminate_worker)
         except Exception:
@@ -1064,6 +1072,79 @@ class BconProcTransport(Transport):
 
     def stop_live_loop(self) -> bool:
         return self._rpc_bool("stop_live_loop", (), 5.0)
+
+    def hello_established(self) -> bool:
+        return self._rpc_bool("hello_established", (), 3.0)
+
+    def send_imu(
+        self,
+        ax: int,
+        ay: int,
+        az: int,
+        gx: int,
+        gy: int,
+        gz: int,
+    ) -> bool:
+        return self._rpc_bool("send_imu", (ax, ay, az, gx, gy, gz), 3.0)
+
+    def imu_loop_running(self) -> bool:
+        thread = self._imu_loop_thread
+        return bool(thread is not None and thread.is_alive())
+
+    def start_imu_loop(self, source: Any, interval_s: float = IMU_INTERVAL_S) -> bool:
+        """親側でサンプルを読み、子の send_imu をRPCで呼ぶ。
+
+        source は関数のため子プロセスへ渡せない。送出は子が行うので、
+        親は読むだけの薄いループを持つ。
+        """
+        with self._imu_lock:
+            thread = self._imu_loop_thread
+            if thread is not None and thread.is_alive():
+                return True
+            self._imu_loop_stop.clear()
+            worker = threading.Thread(
+                target=self._imu_loop_run,
+                args=(source, float(interval_s)),
+                name="bcon-proc-imu",
+                daemon=True,
+            )
+            self._imu_loop_thread = worker
+            worker.start()
+        return True
+
+    def _imu_loop_run(self, source: Any, interval_s: float) -> None:
+        deadline = time.perf_counter()
+        while not self._imu_loop_stop.is_set():
+            deadline += interval_s
+            try:
+                sample = source()
+            except Exception:
+                sample = None
+            if sample is not None:
+                try:
+                    ok = self.send_imu(*sample)
+                except Exception:
+                    ok = False
+                if ok:
+                    self._imu_sent += 1
+                else:
+                    self._imu_dropped += 1
+            remain = deadline - time.perf_counter()
+            if remain > 0:
+                self._imu_loop_stop.wait(remain)
+            else:
+                deadline = time.perf_counter()
+
+    def stop_imu_loop(self) -> bool:
+        self._imu_loop_stop.set()
+        thread = self._imu_loop_thread
+        if thread is not None:
+            thread.join(0.5)
+        self._imu_loop_thread = None
+        return True
+
+    def imu_stats(self) -> dict[str, int]:
+        return {"sent": int(self._imu_sent), "dropped": int(self._imu_dropped)}
 
     def live_stats(self) -> dict[str, Any]:
         ok, result = self._call("live_stats", (), timeout=3.0)

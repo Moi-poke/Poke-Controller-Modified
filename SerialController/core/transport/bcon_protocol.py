@@ -15,6 +15,7 @@ PROTO_MAX_PAYLOAD = 32
 T_STATE = 0x01
 T_NEUTRAL = 0x02
 T_PING = 0x03
+T_IMU_SAMPLE = 0x04
 T_HELLO = 0x10
 T_HELLO_ACK = 0x11
 T_STATUS = 0x20
@@ -80,6 +81,7 @@ def proto_expected_len(type_: int) -> int:
         T_STATE: 8,
         T_NEUTRAL: 0,
         T_PING: 0,
+        T_IMU_SAMPLE: 12,
         T_HELLO: 2,
         T_HELLO_ACK: 4,
         T_STATUS: 7,

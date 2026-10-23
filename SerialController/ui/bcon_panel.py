@@ -68,7 +68,7 @@ class BconPanelMixin:
                 self.tab_bcon,
                 self.serial.sender,
                 embedded=True,
-                # 送り先は serial サービスが作り直しうる。握り込まず引き直す
+                # 送り先はserialサービスが作り直しうる。握り込まず引き直す
                 sender_provider=lambda: self.serial.sender,
             )
         except Exception:
