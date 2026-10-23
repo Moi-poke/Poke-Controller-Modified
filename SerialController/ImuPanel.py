@@ -101,7 +101,7 @@ class ImuPanel:
             values=[label for _, label in SOURCE_LABELS],
         )
         self._source_cb.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
-        self._btn_toggle = ttk.Button(frame, text="送出開始", command=self._on_toggle)
+        self._btn_toggle = ttk.Button(frame, text="開始", command=self._on_toggle)
         self._btn_toggle.grid(row=0, column=2, sticky=tk.EW, padx=2, pady=2)
 
         # パッド番号は SDL センサー入力のときだけ意味がある。行ごと
@@ -365,7 +365,7 @@ class ImuPanel:
         except Exception:
             pass
         self._queue.put(
-            ("log", f"IMU反転: {self._invert_var.get()}（次の送出開始から）")
+            ("log", f"反転: {self._invert_var.get()}（次回から）")
         )
 
     def _on_scale_changed(self, _event: Any = None) -> None:
@@ -378,7 +378,7 @@ class ImuPanel:
             self._settings_writer({"gyro_scale": f"{value:g}"})
         except Exception:
             pass
-        self._queue.put(("log", f"ジャイロ倍率: {value:g}（次の送出開始から）"))
+        self._queue.put(("log", f"倍率: {value:g}（次回から）"))
 
     def _source_name(self) -> str:
         """画面の入力源ラベル→設定名。読めなければsensor。"""
@@ -703,7 +703,6 @@ class ImuPanel:
         if not 0.01 <= gyro_scale <= 4.0:
             gyro_scale = 1.0
         dead_raw = max(0.0, dead_dps) / 0.06103
-        first_sample = {"done": False}
 
         def watched() -> Any:
             sample = inner()
@@ -730,16 +729,6 @@ class ImuPanel:
                 except Exception:
                     pass
 
-            # 瞬時表示では見えない単発の跳びを1秒窓の最大値で拾う。
-            if not first_sample["done"]:
-                first_sample["done"] = True
-                panel._queue.put(
-                    (
-                        "log",
-                        f"IMU不感帯={dead_dps:.1f}dps 初回サンプル:"
-                        f" acc=({ax},{ay},{az}) gyro=({gx},{gy},{gz})",
-                    )
-                )
             peak_g = max(abs(gx), abs(gy), abs(gz)) * 0.06103
             peak_a = max(abs(ax), abs(ay), abs(az)) * 0.000244
             if peak_g > panel._peak_g:
@@ -769,12 +758,12 @@ class ImuPanel:
         except Exception:
             ok = False
         if not ok:
-            self._queue.put(("log", "IMU送出の開始に失敗しました。"))
+            self._queue.put(("log", "ジャイロ送信を開始できませんでした。"))
             self._close_source()
             return
         self._streaming = True
         self._queue.put(("state", "streaming"))
-        self._queue.put(("log", f"IMU送出を開始: {source}。"))
+        self._queue.put(("log", "ジャイロ送信を開始しました。"))
 
     def _do_stop(self) -> None:
         """送出停止の実体（作業スレッド）。"""
@@ -792,7 +781,7 @@ class ImuPanel:
         self._close_source()
         self._streaming = False
         self._queue.put(("state", "stopped"))
-        self._queue.put(("log", "IMU送出を停止しました。"))
+        self._queue.put(("log", "ジャイロ送信を停止しました。"))
 
     def _close_source(self) -> None:
         """入力源を閉じる。例外は投げない。
@@ -834,9 +823,9 @@ class ImuPanel:
                 elif kind == "state":
                     try:
                         if payload == "streaming":
-                            self._btn_toggle.configure(text="送出停止")
+                            self._btn_toggle.configure(text="停止")
                         else:
-                            self._btn_toggle.configure(text="送出開始")
+                            self._btn_toggle.configure(text="開始")
                     except Exception:
                         pass
         except Exception:

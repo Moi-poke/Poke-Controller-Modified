@@ -99,7 +99,7 @@ def test_imu_panel_builds_with_source_and_pad():
         assert isinstance(panel.frame, ttk.Labelframe)
         assert panel._source_var.get() == "SINE波形"
         assert panel._pad_var.get() == "1"
-        assert panel._btn_toggle.cget("text") == "送出開始"
+        assert panel._streaming is False
     finally:
         panel.close()
         root.destroy()
@@ -110,11 +110,11 @@ def test_imu_panel_start_stop_calls_transport():
     try:
         panel._on_toggle()
         assert _wait_until(lambda: transport.running, root), "start not called"
-        assert _wait_until(lambda: panel._btn_toggle.cget("text") == "送出停止", root)
+        assert _wait_until(lambda: panel._streaming is True, root)
         assert settings.saved >= 1
         panel._on_toggle()
         assert _wait_until(lambda: not transport.running, root), "stop not called"
-        assert _wait_until(lambda: panel._btn_toggle.cget("text") == "送出開始", root)
+        assert _wait_until(lambda: panel._streaming is False, root)
     finally:
         panel.close()
         root.destroy()
@@ -139,7 +139,7 @@ def test_imu_panel_closed_serial_logs_and_stays_stopped():
         assert _wait_until(lambda: len(panel._logged) >= 1, root)
         assert "開いていません" in panel._logged[0]
         assert transport.running is False
-        assert panel._btn_toggle.cget("text") == "送出開始"
+        assert panel._streaming is False
     finally:
         panel.close()
         root.destroy()

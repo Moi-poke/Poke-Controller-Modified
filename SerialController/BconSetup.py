@@ -750,7 +750,7 @@ class BconSetup:
                     outline="#4D4D4D",
                 )
             )
-        self._imu_label = ttk.Label(grp_state, text="IMU: 未受信")
+        self._imu_label = ttk.Label(grp_state, text="ジャイロ: なし")
         self._imu_label.grid(row=1, column=0, sticky=tk.W, padx=2, pady=2)
         self._vib_label = ttk.Label(grp_state, text="振動: 未受信")
         self._vib_label.grid(row=1, column=1, sticky=tk.W, padx=2, pady=2)
@@ -1085,7 +1085,7 @@ class BconSetup:
                 # 閉じた後・stubなど、描けない時は色だけ諦める。
                 pass
         for name, label, detected in (
-            ("_imu_label", "IMU", imu),
+            ("_imu_label", "ジャイロ", imu),
             ("_vib_label", "振動", vibration),
         ):
             widget = getattr(self, name, None)
@@ -1119,13 +1119,13 @@ class BconSetup:
             return
         self._imu_range_shown = shown
         if seen:
-            note = "（Switch要求値）"
+            note = ""
         elif imu_on:
-            note = "（0x41は未着。0x40受信済み＝受信経路は正常。既定値で動作）"
+            note = "（未指定のため既定値）"
         else:
-            note = "（0x40/0x41とも未受信。接続直後は出ないことがある）"
+            note = "（未接続）"
         try:
-            self._append(f"IMU感度: ジャイロ {gyro} / 加速度 {accel}{note}")
+            self._append(f"ジャイロ感度: {gyro} / {accel}{note}")
         except Exception:
             pass
 
