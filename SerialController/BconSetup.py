@@ -523,14 +523,6 @@ class BconSetup:
         self._col_ops = col_ops
         self._col_info = col_info
 
-        # 短い案内だけ外に置く。詳しい注意は各ボタンの吹き出しへ移した
-        # （長い1行が列の幅を決めないよう短く保つ）。
-        ttk.Label(
-            col_ops,
-            text="シリアルを開いてから「接続」を押してください。",
-            justify=tk.LEFT,
-            wraplength="240p" if embedded else 0,
-        ).pack(anchor=tk.W, pady=(0, 8))
         # 実行中は全ボタンを止める。止めた旨の表示だけ別に置く。
         self._busy_label = ttk.Label(col_ops, text="")
         self._busy_label.pack(anchor=tk.W)
@@ -686,13 +678,6 @@ class BconSetup:
             command=lambda: self._on_emulate_set(2),
         )
         self._btn_e2.grid(row=1, column=3, sticky=tk.EW, padx=2, pady=2)
-        ttk.Label(
-            grp_mode,
-            text="切替後は約0.5秒で再起動します。"
-            "復帰したら「接続」からやり直してください。",
-            justify=tk.LEFT,
-            wraplength="240p" if embedded else 0,
-        ).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=2, pady=2)
 
         # 取り消せない操作だけ集める。他のボタンはここへ置かない
         # （押し間違いを防ぐための隔離であり、処理は何も変えない）。
