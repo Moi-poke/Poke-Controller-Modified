@@ -22,9 +22,12 @@ from collections.abc import Callable
 from tkinter import ttk
 from typing import Any
 
+# 通常運用では使わない入力源。デバッグ時だけ選べる。
+DEBUG_SOURCES = frozenset({"sine", "step", "rest", "manual"})
+
 SOURCE_LABELS = (
     ("sensor", "センサー"),
-    ("hid", "ProCon直結"),
+    ("hid", "HID直結"),
     ("sine", "SINE波形"),
     ("step", "STEP波形"),
     ("rest", "静止値"),
@@ -124,7 +127,8 @@ class ImuPanel:
         ttk.Label(frame, textvariable=self._stats_var).grid(
             row=2, column=0, columnspan=2, sticky=tk.W, padx=2, pady=2
         )
-        ttk.Label(frame, text="反転").grid(row=3, column=0, sticky=tk.W, padx=2, pady=2)
+        self._invert_label = ttk.Label(frame, text="反転")
+        self._invert_label.grid(row=3, column=0, sticky=tk.W, padx=2, pady=2)
         self._invert_var = tk.StringVar(value="なし")
         self._invert_cb = ttk.Combobox(
             frame,
@@ -135,7 +139,8 @@ class ImuPanel:
         )
         self._invert_cb.grid(row=3, column=1, sticky=tk.EW, padx=2, pady=2)
         self._invert_cb.bind("<<ComboboxSelected>>", self._on_invert_changed, add="+")
-        ttk.Label(frame, text="感度").grid(row=4, column=0, sticky=tk.W, padx=2, pady=2)
+        self._scale_label = ttk.Label(frame, text="感度")
+        self._scale_label.grid(row=4, column=0, sticky=tk.W, padx=2, pady=2)
         self._scale_var = tk.StringVar(value="1.0")
         self._scale_cb = ttk.Combobox(
             frame,
@@ -146,6 +151,14 @@ class ImuPanel:
         )
         self._scale_cb.grid(row=4, column=1, sticky=tk.EW, padx=2, pady=2)
         self._scale_cb.bind("<<ComboboxSelected>>", self._on_scale_changed, add="+")
+        self._debug_var = tk.BooleanVar(value=False)
+        self._debug_cb = ttk.Checkbutton(
+            frame,
+            text="デバッグ",
+            variable=self._debug_var,
+            command=self._on_debug_toggled,
+        )
+        self._debug_cb.grid(row=2, column=2, sticky=tk.EW, padx=2, pady=2)
         self._detail_var = tk.BooleanVar(value=False)
         self._detail_cb = ttk.Checkbutton(
             frame,
@@ -153,7 +166,7 @@ class ImuPanel:
             variable=self._detail_var,
             command=self._on_detail_toggled,
         )
-        self._detail_cb.grid(row=2, column=2, sticky=tk.EW, padx=2, pady=2)
+        self._detail_cb.grid(row=6, column=0, sticky=tk.W, padx=2, pady=2)
         # 手動入力: 6軸の生値を直接指定して送る。入力源が「手動入力」の
         # ときだけ表示する。値はtraceでメインスレッドから取り込み、
         # 送出スレッドはスナップショット(int6)だけを読む。
@@ -184,7 +197,7 @@ class ImuPanel:
         )
         self._manual_frame.grid_remove()
         self._source_cb.bind("<<ComboboxSelected>>", self._on_source_changed, add="")
-        self._on_source_changed()
+        self._apply_visibility()
         # 詳細の可視化パネル。チェックONのときだけ同frame内に展開する。
         self._gyro_view: Any = None
         self._load_settings_into_vars()
@@ -235,7 +248,10 @@ class ImuPanel:
                     self._manual_vars[i].set(str(int(settings.get(key, "0"))))
                 except (TypeError, ValueError, IndexError):
                     pass
-            self._on_source_changed()
+            if source in DEBUG_SOURCES:
+                self._debug_var.set(True)
+            self._refresh_source_choices()
+            self._apply_visibility()
         except (TypeError, ValueError):
             pass
 
@@ -255,7 +271,12 @@ class ImuPanel:
 
     def _on_source_changed(self, _event: Any = None) -> None:
         """入力源に応じて行を出し分ける（ラベルで説明しない）。"""
+        self._apply_visibility()
+
+    def _apply_visibility(self) -> None:
+        """通常は実機の2源だけ。診断用の行はデバッグ時だけ出す。"""
         source = self._source_name()
+        debug = bool(self._debug_var.get())
         if source == "sensor":
             self._pad_frame.grid()
         else:
@@ -268,6 +289,44 @@ class ImuPanel:
             self._manual_frame.grid()
         else:
             self._manual_frame.grid_remove()
+        for widget in (self._invert_label, self._invert_cb):
+            if debug:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        for widget in (self._scale_label, self._scale_cb):
+            if debug:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        if debug:
+            self._detail_cb.grid()
+        else:
+            self._detail_cb.grid_remove()
+        if not debug and source in DEBUG_SOURCES:
+            # デバッグ源を選んだまま通常へ戻したら実機源へ寄せる。
+            for name, label in SOURCE_LABELS:
+                if name == "hid":
+                    self._source_var.set(label)
+                    break
+            self._refresh_source_choices()
+
+    def _refresh_source_choices(self) -> None:
+        """デバッグ時だけ診断用の入力源を候補に出す。"""
+        debug = bool(self._debug_var.get())
+        values = [
+            label
+            for name, label in SOURCE_LABELS
+            if debug or name not in DEBUG_SOURCES
+        ]
+        try:
+            self._source_cb.config(values=values)
+        except Exception:
+            pass
+
+    def _on_debug_toggled(self) -> None:
+        self._refresh_source_choices()
+        self._apply_visibility()
 
     def _manual_reader(self) -> Any:
         """手動入力の読み取り関数。送出スレッドから呼ばれる。"""
