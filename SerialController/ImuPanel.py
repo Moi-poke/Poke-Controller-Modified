@@ -26,7 +26,7 @@ from typing import Any
 DEBUG_SOURCES = frozenset({"sine", "step", "rest", "manual"})
 
 SOURCE_LABELS = (
-    ("sensor", "センサー"),
+    ("sensor", "パッドAPI"),
     ("hid", "HID直結"),
     ("sine", "SINE波形"),
     ("step", "STEP波形"),
