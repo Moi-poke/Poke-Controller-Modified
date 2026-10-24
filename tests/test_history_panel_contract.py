@@ -116,12 +116,17 @@ def host(tk_root: tk.Tk) -> Iterator[_Host]:
         # ダミー関数が返らないよう、実体のリストを持たせる。
         h.py_all_names = list(h.py_map)
         h.mcu_all_names = list(h.mcu_map)
+        # applyCommandFilter はタグ表と使用履歴も走査する。__getattr__ の
+        # ダミー関数ではなく、空の実体を渡す。
+        h.py_tags = {}
+        h.mcu_tags = {}
+        h.command_stats = {}
         h._shown_names = {
-            h.py_cb: {"PyCmd表示": "PyCmd", "PyCmd2表示": "PyCmd2"},
-            h.mcu_cb: {"McuCmd表示": "McuCmd"},
+            h.py_cb: {"PyCmd": "PyCmd", "PyCmd2": "PyCmd2"},
+            h.mcu_cb: {"McuCmd": "McuCmd"},
         }
-        h.py_cb["values"] = ("PyCmd表示", "PyCmd2表示")
-        h.mcu_cb["values"] = ("McuCmd表示",)
+        h.py_cb["values"] = ("PyCmd", "PyCmd2")
+        h.mcu_cb["values"] = ("McuCmd",)
         now = datetime(2026, 1, 2, 3, 4, 5)
         entries: list[Any] = []
         missing = CommandHistory.begin(
@@ -179,7 +184,7 @@ def test_double_click_runs_the_python_command(host: _Host) -> None:
     _double_click(host.history_tv, box[0] + box[2] // 2, box[1] + box[3] // 2)
     host.root.update()
     # Then: その命令が選ばれて開始が 1 回呼ばれる
-    assert host.py_cb.get() == "PyCmd表示"
+    assert host.py_cb.get() == "PyCmd"
     assert host.start_calls == ["start"]
 
 
@@ -197,7 +202,7 @@ def test_enter_on_mcu_row_selects_mcu_page_and_runs(host: _Host) -> None:
     host.root.update()
     # Then: MCU 側の頁が選ばれて開始が呼ばれる
     assert host.Command_nb.index(host.Command_nb.select()) == 1
-    assert host.mcu_cb.get() == "McuCmd表示"
+    assert host.mcu_cb.get() == "McuCmd"
     assert host.start_calls == ["start"]
 
 
@@ -309,7 +314,7 @@ def test_select_only_chooses_without_running(host: _Host) -> None:
     host.root.update()
     # Then: 開始は呼ばず、コマンドタブが開く
     assert host.start_calls == []
-    assert host.py_cb.get() == "PyCmd表示"
+    assert host.py_cb.get() == "PyCmd"
     assert host.setting_nb.select() == str(host.tab_command)
 
 
