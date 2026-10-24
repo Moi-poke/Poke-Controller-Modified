@@ -315,9 +315,7 @@ class ImuPanel:
         """デバッグ時だけ診断用の入力源を候補に出す。"""
         debug = bool(self._debug_var.get())
         values = [
-            label
-            for name, label in SOURCE_LABELS
-            if debug or name not in DEBUG_SOURCES
+            label for name, label in SOURCE_LABELS if debug or name not in DEBUG_SOURCES
         ]
         try:
             self._source_cb.config(values=values)
@@ -364,9 +362,7 @@ class ImuPanel:
             )
         except Exception:
             pass
-        self._queue.put(
-            ("log", f"反転: {self._invert_var.get()}（次回から）")
-        )
+        self._queue.put(("log", f"反転: {self._invert_var.get()}（次回から）"))
 
     def _on_scale_changed(self, _event: Any = None) -> None:
         """ジャイロ倍率を設定へ書く（次の送出開始から効く）。"""
