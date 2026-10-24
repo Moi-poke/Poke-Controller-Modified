@@ -71,6 +71,7 @@ class PadSource:
         sdl: SdlPadReader | None = None,
         hid: Any | None = None,
         allow_sdl: bool | None = None,
+        allow_hid: bool = True,
     ) -> None:
         self.xinput = xinput if xinput is not None else XInputReader()
         if sdl is not None:
@@ -100,9 +101,12 @@ class PadSource:
         # `allow_sdl=PadSource.sdl_debug_enabled()` を明示して、通常は
         # HID有線に固定する。
         self.allow_sdl = True if allow_sdl is None else bool(allow_sdl)
-        self._hid_present = hid is not None
+        # HidHideが未導入・未設定ならHID直結は使わない。Steam/SDLと
+        # 同じHIDを奪い合うため、無効のままHIDを開かない。
+        self.allow_hid = bool(allow_hid)
+        self._hid_present = self.allow_hid and hid is not None
         self._hid_probe_at = 0.0
-        if not self._hid_present:
+        if self.allow_hid and not self._hid_present:
             self._hid_present = self._probe_hid()
         # HID open は handshake/subcmd で最大数秒かかる。8ms の読み取り
         # スレッドで待つと、その間コントローラ操作が一切通らなくなる
@@ -127,6 +131,8 @@ class PadSource:
 
     def _route_order(self) -> tuple[str, ...]:
         """通常はHID有線、デバッグ時だけSDLを先に試す。"""
+        if not self.allow_hid:
+            return ("sdl", "xinput")
         if self.allow_sdl:
             return ("sdl", "hid", "xinput")
         if not self._hid_present:
@@ -146,7 +152,7 @@ class PadSource:
         （Couldn't setup USB mode。2026-10-18）。初期化順序はSDL優先で、
         選択順序（read/scan）は従来どおりXInput優先のまま変えない。
         """
-        if not self.allow_sdl and self._hid_present:
+        if self.allow_hid and not self.allow_sdl and self._hid_present:
             return True
         try:
             sdl_ok = bool(self.sdl.available)
@@ -201,7 +207,7 @@ class PadSource:
 
     def _read_hid(self, index: int) -> PadState:
         """ProCon直読み。index 0のみ。開いていなければ開く。"""
-        if int(index) != 0:
+        if not self.allow_hid or int(index) != 0:
             return PadState()
         try:
             if self._hid is None:
@@ -325,7 +331,7 @@ class PadSource:
         トリガは HID のまま、スティックだけ SDL で補う。
         GameController を開けなくても生joystick は読めることがある。
         """
-        if not self.allow_sdl:
+        if not self.allow_sdl or not self.allow_hid:
             return state
         if not bool(getattr(state, "connected", False)):
             return state
@@ -403,7 +409,7 @@ class PadSource:
 
     def scan(self) -> list[int]:
         """繋がっている番号の一覧。XInput・SDL・HID の和集合。"""
-        if not self.allow_sdl and self._hid_present:
+        if self.allow_hid and not self.allow_sdl and self._hid_present:
             return [0]
         found: set[int] = set()
         for reader in (self.xinput, self.sdl):
@@ -424,7 +430,7 @@ class PadSource:
 
     def names(self) -> dict[int, str]:
         """番号 → 表示名。SDLの実名＋HID直結＋XInputの汎名。"""
-        if not self.allow_sdl and self._hid_present:
+        if self.allow_hid and not self.allow_sdl and self._hid_present:
             return {0: "Pro Controller (HID直結)"}
         try:
             names = self.sdl.names()

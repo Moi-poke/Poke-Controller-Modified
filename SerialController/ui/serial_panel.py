@@ -317,6 +317,31 @@ class SerialPanelMixin:
     def _build_control_frame(self) -> None:
         self.control_lf = ttk.Labelframe(self.tab_controller)
 
+        # HidHideが未設定なら、Switch HIDのパッド/ジャイロだけを無効にする。
+        # Xbox/SDLコントローラはHidHideなしでも動くため、タブごとは消さない。
+        self.hidhide_notice: Any = None
+        try:
+            from core.hidhide import detect_hidhide
+
+            status = detect_hidhide()
+            if not status.ready:
+                self.hidhide_notice = ttk.Label(
+                    self.control_lf,
+                    text=(
+                        "HidHideが未設定のため、Switch HIDコントローラ/ジャイロは"
+                        "無効です。READMEのHidHide手順を確認してください。"
+                        f"（{status.summary()}）"
+                    ),
+                    wraplength=520,
+                    foreground="#9a5b00",
+                    justify="left",
+                )
+                self.hidhide_notice.grid(
+                    row=10, column=0, columnspan=2, padx=10, pady=(4, 2), sticky="w"
+                )
+        except Exception:
+            pass
+
         self.is_use_keyboard = tk.BooleanVar()
         self.cb_use_keyboard = ttk.Checkbutton(self.control_lf)
         self.cb_use_keyboard.config(
@@ -1439,9 +1464,10 @@ class SerialPanelMixin:
     def _refresh_gamepads_worker(self) -> None:
         """パッド一覧の列挙（ワーカー）。Tk には触らず inbox へ積む。"""
         try:
+            from core.hidhide import hidhide_ready
             from core.pad_source import PadSource, sdl_debug_enabled
 
-            source = PadSource(allow_sdl=sdl_debug_enabled())
+            source = PadSource(allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready())
             names = source.names()
             # 名前と識別子を続けて取る。列挙の間に抜き差しが起きても、
             # ずれは次の巡回で直る（片方だけ古いまま固定しない）。
@@ -1577,6 +1603,7 @@ class SerialPanelMixin:
         """キャッシュ破棄と再列挙（ワーカー）。Tk には触らない。"""
         err: str | None = None
         try:
+            from core.hidhide import hidhide_ready
             from core.pad_source import PadSource, sdl_debug_enabled
 
             # 動いている読取器の経路・実体をまず捨てる。止めるのは
@@ -1588,7 +1615,7 @@ class SerialPanelMixin:
                     invalidated_live = bool(live())
                 except Exception as e:
                     logger.debug(f"読取器のキャッシュ破棄で例外: {e}")
-            source = PadSource(allow_sdl=sdl_debug_enabled())
+            source = PadSource(allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready())
             if not invalidated_live:
                 # 実体が無い（無効中）ときも、共有 SDL のキャッシュは
                 # ここで捨てる。一覧の取得前に列挙をやり直すため。

@@ -12,6 +12,14 @@ import tkinter as tk
 import tkinter.ttk as ttk
 from typing import Any
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _hidhide_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HidHideの有無に依存せず、IMUパネルのHID契約をテストする。"""
+    monkeypatch.setattr("core.hidhide.hidhide_ready", lambda **kwargs: True)
+
 
 class _FakeTransport:
     def __init__(self) -> None:

@@ -261,6 +261,16 @@ class ImuPanel:
             return
         try:
             source = str(settings.get("source", "sensor"))
+            if source == "hid":
+                try:
+                    from core.hidhide import hidhide_ready
+
+                    if not hidhide_ready():
+                        # HidHide未設定でHIDを開くとSteam/SDLと競合する。
+                        # 起動時は安全なパッドAPIへ寄せる。
+                        source = "sensor"
+                except Exception:
+                    source = "sensor"
             for name, label in SOURCE_LABELS:
                 if name == source:
                     self._source_var.set(label)
@@ -469,8 +479,17 @@ class ImuPanel:
     def _refresh_source_choices(self) -> None:
         """デバッグ時だけ診断用の入力源を候補に出す。"""
         debug = bool(self._debug_var.get())
+        hid_ok = True
+        try:
+            from core.hidhide import hidhide_ready
+
+            hid_ok = bool(hidhide_ready())
+        except Exception:
+            hid_ok = False
         values = [
-            label for name, label in SOURCE_LABELS if debug or name not in DEBUG_SOURCES
+            label
+            for name, label in SOURCE_LABELS
+            if (debug or name not in DEBUG_SOURCES) and (name != "hid" or hid_ok)
         ]
         try:
             self._source_cb.config(values=values)
@@ -731,6 +750,13 @@ class ImuPanel:
                 return None
         if source == "hid":
             try:
+                from core.hidhide import hidhide_ready
+
+                if not hidhide_ready():
+                    return None
+            except Exception:
+                return None
+            try:
                 from core.nintendo_hid import get_shared_reader
 
                 reader = get_shared_reader()
@@ -907,6 +933,13 @@ class ImuPanel:
             reader = get_shared_reader()
             is_open = getattr(reader, "is_open", None)
             is_armed = getattr(reader, "is_armed", None)
+            from core.hidhide import hidhide_ready
+
+            if not hidhide_ready():
+                return (
+                    "HidHideが未導入・未設定のためHID直結を使えません。"
+                    "READMEのHidHide手順を確認してください。"
+                )
             if callable(is_open) and callable(is_armed) and is_open():
                 if not is_armed():
                     return (

@@ -302,6 +302,10 @@ PC に接続したコントローラを
 Xbox 系（XInput）に加え、Switch Pro コンなど XInput 非対応品も
 SDL 経由で読めます。
 
+> **Switch Pro コントローラの HID 直結（ジャイロ含む）を使う場合**
+> Steam / SDL との HID 競合を避けるため、[HidHide の設定](docs/HIDHIDE.md)が必要です。
+> HidHide が未設定のときは、Switch HID のパッド/ジャイロ機能だけが無効になります。
+
 | Switchコントローラ | ゲームパッド |
 | ---- | ---- |
 | A, B, X, Y | A, B, X, Y ボタン |

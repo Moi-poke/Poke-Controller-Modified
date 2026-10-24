@@ -1007,3 +1007,18 @@ def test_pad_source_hid_only_does_not_touch_sdl() -> None:
     assert source.identities() == {}
     assert source.scan() == [0]
     assert sdl.read_calls == 0
+
+
+def test_pad_source_hid_disabled_uses_sdl() -> None:
+    """HidHide未設定時はHIDを開かず、SDL/XInputだけを使う。"""
+    from core.pad_source import PadSource
+
+    sdl = _CountingPad(connected=True)
+    hid = _FakeHidPad()
+    source = PadSource(
+        xinput=_NoPad(), sdl=sdl, hid=hid, allow_sdl=False, allow_hid=False
+    )
+    assert source.read(0).connected is True
+    assert source.route_of(0) == "sdl"
+    assert hid.open_calls == 0
+    assert sdl.read_calls == 1
