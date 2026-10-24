@@ -910,3 +910,29 @@ def test_read_pad_learns_stick_range() -> None:
         assert state.thumb_ry == -32767
     finally:
         reader.close()
+
+
+def test_identical_030_reports_go_stale_after_watchdog() -> None:
+    """全バイト同一の0x30が続くフリーズ状態を未接続扱いにする。
+
+    中華コンが押下/倒しの最後のレポートを再送し続けると、packetが
+    変わらずSwitch側が入力を持ち続ける。timer/IMUも含めて完全同一なら
+    個体のフリーズとみなし、Gamepadが中立を送れるよう未接続にする。
+    """
+    import time
+
+    import core.nintendo_hid as nh
+
+    now = time.monotonic()
+    report = _report_30(1, 2, 3, 4, 5, 6, timer=7)
+    reader = nh.NintendoHidReader()
+    reader._accept_030_locked(report, now)
+    assert reader.read_pad().connected is True
+    reader._accept_030_locked(report, now + 0.5)
+    assert reader.read_pad().connected is True
+    reader._accept_030_locked(report, now + 1.1)
+    assert reader.read_pad().connected is False
+    changed = bytearray(report)
+    changed[1] = (changed[1] + 1) & 0xFF
+    reader._accept_030_locked(bytes(changed), now + 1.2)
+    assert reader.read_pad().connected is True

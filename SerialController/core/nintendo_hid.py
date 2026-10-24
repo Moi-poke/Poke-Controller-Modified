@@ -40,6 +40,10 @@ _LATEST_TTL_S = 0.3
 # 読み取りスレッドが0x30を見失ってからハンドルを閉じるまで。
 # 空読み3回（_READ_TIMEOUT_MS×3）と同じ猶予。
 _POLL_STALE_S = 0.6
+# 0x30が全バイト同一のまま続いたら、コントローラ側が固まって最後の
+# 入力（押しっぱなし）を再送しているとみなす猶予。正常時はtimer/IMUの
+# ノイズで毎回変わるため、1秒同一なら入力解放へ倒す。
+_STUCK_REPORT_TTL_S = 1.0
 # サブコマンド応答（0x21）を待つ上限。実機の応答は数msで返る。
 _ARM_REPLY_TIMEOUT_S = 0.4
 # 80ハンドシェイク応答（0x81）を待つ上限。
@@ -115,6 +119,10 @@ class NintendoHidReader:
         # 合わせる。初回は中央のままなので、最初の全倒しで学習する。
         self._stick_lo = [0x800, 0x800, 0x800, 0x800]
         self._stick_hi = [0x800, 0x800, 0x800, 0x800]
+        # 0x30の全バイトが同一のまま続く状態（コントローラのフリーズ）を
+        # 検出するための直前レポートと時刻。内容のdedupeとは別に持つ。
+        self._last_raw_030: bytes | None = None
+        self._last_raw_t = 0.0
         # 読み取り専用スレッドが最新0x30を保持する。呼び出し側はここを見る
         # だけで済み、ブロッキング読みが送出ループを止めない。
         self._latest: bytes | None = None
@@ -427,6 +435,22 @@ class NintendoHidReader:
         同じでも新しいレポートとして受け入れる（復帰時に古い姿勢を
         返さない）。
         """
+        # 全バイト同一の0x30が続くのは、個体がフリーズして最後の押下/
+        # 倒しを再送している状態（実機の中華コンで5秒間スタック）。
+        # timer/IMUが動いている正常な保持とは区別できる。一定時間で
+        # 未接続扱いにし、Gamepad側に中立を送らせる。次に別レポートが
+        # 来たら自動で復帰する。
+        last_raw = getattr(self, "_last_raw_030", None)
+        last_t = getattr(self, "_last_raw_t", now)
+        if last_raw == report:
+            if now - last_t > _STUCK_REPORT_TTL_S:
+                self._latest = None
+                self._latest_t = 0.0
+            else:
+                self._latest_t = now
+            return
+        self._last_raw_030 = bytes(report)
+        self._last_raw_t = now
         prev = self._latest
         fresh = now - self._latest_t <= _LATEST_TTL_S
         if (
@@ -639,6 +663,8 @@ class NintendoHidReader:
         self._pad_key = None
         self._stick_lo = [0x800, 0x800, 0x800, 0x800]
         self._stick_hi = [0x800, 0x800, 0x800, 0x800]
+        self._last_raw_030 = None
+        self._last_raw_t = 0.0
         self._armed = False
         if dev is not None:
             try:
