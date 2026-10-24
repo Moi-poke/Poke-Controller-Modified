@@ -514,3 +514,41 @@ def test_imu_panel_source_side_can_leave_signs_to_watched() -> None:
     fn = ImuPanel._sample_transform(settings, apply_signs=False)
     assert fn is not None
     assert fn((1, 2, 3, 4, 5, 6)) == (3, 1, 2, 6, 4, 5)
+
+
+def test_imu_panel_hid_source_rearms_through_ensure_live(
+    tk_root: tk.Tk, monkeypatch
+) -> None:
+    """HIDが開いたまま0x30が古い場合も、開始時にensure_liveで再武装する。"""
+    import core.nintendo_hid as nintendo_hid
+
+    class _FakeHid:
+        def __init__(self) -> None:
+            self.ensure_calls = 0
+            self.is_open_calls = 0
+
+        def is_open(self) -> bool:
+            self.is_open_calls += 1
+            return True
+
+        def ensure_live(self) -> bool:
+            self.ensure_calls += 1
+            return True
+
+        def read_next(self):
+            return (1, 2, 3, 4, 5, 6)
+
+    fake = _FakeHid()
+    monkeypatch.setattr(nintendo_hid, "get_shared_reader", lambda: fake)
+    panel, root, _transport, _settings, _root = _make_panel(tk_root, {"source": "hid"})
+    try:
+        source = panel._build_source("hid", 0)
+        assert source is not None
+        assert source() == (1, 2, 3, 4, 5, 6)
+        assert fake.ensure_calls == 1
+        # 0x30が返っている間は再武装しない。
+        source()
+        assert fake.ensure_calls == 1
+    finally:
+        panel.close()
+        root.destroy()

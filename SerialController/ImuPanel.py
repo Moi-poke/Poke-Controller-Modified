@@ -697,7 +697,13 @@ class ImuPanel:
                 from core.nintendo_hid import get_shared_reader
 
                 reader = get_shared_reader()
-                if not reader.is_open() and not reader.open():
+                ensure_live = getattr(reader, "ensure_live", None)
+                if callable(ensure_live):
+                    # 開いているのに0x30が古い/IMU未有効のハンドルも、
+                    # 開始時に再武装する（HID直結でジャイロが取れない対策）。
+                    if not ensure_live():
+                        return None
+                elif not reader.is_open() and not reader.open():
                     return None
                 self._sensor_reader = reader
                 # 符号は watched() が毎サンプル適用する（二重適用防止）。
@@ -709,19 +715,22 @@ class ImuPanel:
                 last_try = {"t": 0.0}
 
                 def read_with_reopen() -> Any:
-                    # USB再列挙（UF2書き込み等）でハンドルが死んだ場合、
-                    # パッド側が動いていなくてもIMU側から開き直す。
-                    if not reader.is_open():
-                        now = time.monotonic()
-                        if now - last_try["t"] >= 1.0:
-                            last_try["t"] = now
-                            try:
+                    # USB再列挙（UF2書き込み等）でハンドルが死んだ場合や、
+                    # 開いたまま0x30が途絶えた場合に、IMU側から再武装する。
+                    sample = inner_read()
+                    if sample is not None:
+                        return sample
+                    now = time.monotonic()
+                    if now - last_try["t"] >= 1.0:
+                        last_try["t"] = now
+                        try:
+                            if callable(ensure_live):
+                                ensure_live()
+                            elif not reader.is_open():
                                 reader.open(retries=1)
-                            except Exception:
-                                return None
-                        if not reader.is_open():
+                        except Exception:
                             return None
-                    return inner_read()
+                    return None
 
                 if transform is None:
                     return read_with_reopen
