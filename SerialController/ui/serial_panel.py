@@ -1467,7 +1467,7 @@ class SerialPanelMixin:
             from core.hidhide import hidhide_ready
             from core.pad_source import PadSource, sdl_debug_enabled
 
-            source = PadSource(allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready())
+            source = PadSource(allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready)
             names = source.names()
             # 名前と識別子を続けて取る。列挙の間に抜き差しが起きても、
             # ずれは次の巡回で直る（片方だけ古いまま固定しない）。
@@ -1615,7 +1615,7 @@ class SerialPanelMixin:
                     invalidated_live = bool(live())
                 except Exception as e:
                     logger.debug(f"読取器のキャッシュ破棄で例外: {e}")
-            source = PadSource(allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready())
+            source = PadSource(allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready)
             if not invalidated_live:
                 # 実体が無い（無効中）ときも、共有 SDL のキャッシュは
                 # ここで捨てる。一覧の取得前に列挙をやり直すため。

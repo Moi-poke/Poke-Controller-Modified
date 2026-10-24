@@ -487,7 +487,7 @@ class SerialService:
                     on_display=self._gamepad_display,
                     deadzone=deadzone,
                     reader=PadSource(
-                        allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready()
+                        allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready
                     ),
                 )
                 self.gamepad.listen()
@@ -553,7 +553,7 @@ class SerialService:
             from core.pad_source import PadSource, sdl_debug_enabled
 
             return PadSource(
-                allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready()
+                allow_sdl=sdl_debug_enabled(), allow_hid=hidhide_ready
             ).scan()
         except Exception:
             return []
