@@ -24,6 +24,11 @@ LOCAL_ONLY = {
     "remove_listener",
     "set_hooks",
     "start_rx_pump",
+    # IMU loopは親側で回す（sourceがコールバックで子へ渡せない）。
+    "start_imu_loop",
+    "stop_imu_loop",
+    "imu_loop_running",
+    "imu_stats",
     "stop_rx_pump",
     "rx_pump_running",
     "subscribe_rx",

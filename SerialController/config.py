@@ -244,7 +244,90 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "Hat.TOP_LEFT": "",
             "Hat.CENTER": "",
         },
+        "IMU": {
+            # ジャイロ入力源。sensor … 実コントローラのSDLセンサー /
+            # sine … SINE波形 / step … STEP波形 / rest … 静止値。
+            "source": "sensor",
+            # センサー用パッド番号（SdlPadReaderと同じ番号空間）。
+            "pad_index": 0,
+            # SINE波形のgyro軸（0..2）・振幅raw・周期秒。
+            "sine_axis": 2,
+            "sine_amp": 4096,
+            "sine_period_s": 2.0,
+            # STEP波形のgyro軸（0..2）・値raw・継続秒。
+            "step_axis": 2,
+            "step_raw": 5899,
+            "step_duration_s": 4.0,
+            # 静止加速度Z（Switch生値。既定4096=1g）。
+            "acc_z": 4096,
+            # 静止値ソースの加速度X/Y（Switch生値）。実入力の静止ベクトルを
+            # 再現し、値そのものと入力経路を切り分けるための診断用。
+            "acc_x": 0,
+            "acc_y": 0,
+            # 手動入力ソースのジャイロ6軸（加速度はacc_x/y/zを共用）。
+            "manual_gx": 0,
+            "manual_gy": 0,
+            "manual_gz": 0,
+            # 軸変換（SDL→Switch）。既定はSDLのSwitch→SDL変換の逆写像
+            # （Sw_X=-SDL_Z・Sw_Y=-SDL_X・Sw_Z=+SDL_Y）。
+            "accel_axes": "2,0,1",
+            "accel_signs": "-1,-1,1",
+            "gyro_axes": "2,0,1",
+            "gyro_signs": "-1,-1,1",
+            # HID直結用の軸変換。HIDの生値は既にSwitchフレームなので恒等が
+            # 正しい。接頭辞なしの accel_axes/… は SDL センサー用。
+            "hid_accel_axes": "0,1,2",
+            "hid_accel_signs": "1,1,1",
+            "hid_gyro_axes": "0,1,2",
+            "hid_gyro_signs": "1,1,1",
+            # ジャイロバイアス（rad/s・3要素）。補正値の永続先。
+            "gyro_bias": "0.0,0.0,0.0",
+            # ジャイロの不感帯（dps）。静止時の残余バイアス・ノイズで
+            # ゲーム側のスイング判定が誤発火するため既定3dps。0で無効。
+            "gyro_dead_dps": 3.0,
+            # ジャイロ出力の倍率。1.0で生値そのまま。コンソール側の
+            # スケール解釈が想定と違う場合の実測用トリム（0.01〜4.0）。
+            "gyro_scale": 1.0,
+        },
     }
+
+
+def _parse_axis_map(text: str, valid: tuple[int, ...]) -> tuple[int, int, int] | None:
+    """軸変換の3要素を読む。読めなければNone。"""
+    try:
+        parts = [int(v.strip()) for v in str(text).split(",")]
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if len(parts) != 3 or any(v not in valid for v in parts):
+        return None
+    return (parts[0], parts[1], parts[2])
+
+
+def _parse_bias(text: str) -> tuple[float, float, float] | None:
+    """バイアスの3要素を読む。読めなければNone。"""
+    try:
+        parts = [float(v.strip()) for v in str(text).split(",")]
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if len(parts) != 3:
+        return None
+    import math
+
+    if not all(math.isfinite(v) for v in parts):
+        return None
+    return (parts[0], parts[1], parts[2])
+
+
+def parse_imu_axis_map(
+    text: str, valid: tuple[int, ...]
+) -> tuple[int, int, int] | None:
+    """UI側から軸変換を読む口（バリデーションと同一規則）。"""
+    return _parse_axis_map(text, valid)
+
+
+def parse_imu_bias(text: str) -> tuple[float, float, float] | None:
+    """UI側からバイアスを読む口（バリデーションと同一規則）。"""
+    return _parse_bias(text)
 
 
 def complete_missing(parser: configparser.ConfigParser) -> list[str]:
@@ -396,6 +479,74 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if filt.get("mode", "").strip() not in ("gray_out", "mask"):
             filt["mode"] = "gray_out"
             changed.append("PreviewFilter.mode")
+    if parser.has_section("IMU"):
+        imu = parser["IMU"]
+        if imu.get("source", "").strip() not in (
+            "sensor",
+            "hid",
+            "sine",
+            "step",
+            "rest",
+            "manual",
+        ):
+            imu["source"] = "sensor"
+            changed.append("IMU.source")
+        int_rules = {
+            "pad_index": ("0", lambda value: 0 <= value <= 3),
+            "sine_axis": ("2", lambda value: 0 <= value <= 2),
+            "sine_amp": ("4096", lambda value: 0 <= value <= 32767),
+            "step_axis": ("2", lambda value: 0 <= value <= 2),
+            "step_raw": ("5899", lambda value: -32768 <= value <= 32767),
+            "acc_z": ("4096", lambda value: -32768 <= value <= 32767),
+            "acc_x": ("0", lambda value: -32768 <= value <= 32767),
+            "manual_gx": ("0", lambda value: -32768 <= value <= 32767),
+            "manual_gy": ("0", lambda value: -32768 <= value <= 32767),
+            "manual_gz": ("0", lambda value: -32768 <= value <= 32767),
+            "acc_y": ("0", lambda value: -32768 <= value <= 32767),
+        }
+        for key, (dflt, ok) in int_rules.items():
+            try:
+                value = int(imu.get(key, ""))
+            except (TypeError, ValueError):
+                value = None
+            if value is None or not ok(value):
+                imu[key] = dflt
+                changed.append(f"IMU.{key}")
+        float_rules = {
+            "sine_period_s": ("2.0", lambda value: value > 0),
+            "step_duration_s": ("4.0", lambda value: value > 0),
+            "gyro_dead_dps": ("3.0", lambda value: 0 <= value <= 100),
+            "gyro_scale": ("1.0", lambda value: 0.01 <= value <= 4.0),
+        }
+        for key, (dflt, ok) in float_rules.items():
+            try:
+                value = float(imu.get(key, ""))
+            except (TypeError, ValueError):
+                value = None
+            if value is None or not ok(value):
+                imu[key] = dflt
+                changed.append(f"IMU.{key}")
+        for axes_key, valid_axes, dflt in (
+            ("accel_axes", (0, 1, 2), "2,0,1"),
+            ("gyro_axes", (0, 1, 2), "2,0,1"),
+            ("hid_accel_axes", (0, 1, 2), "0,1,2"),
+            ("hid_gyro_axes", (0, 1, 2), "0,1,2"),
+        ):
+            if _parse_axis_map(imu.get(axes_key, ""), valid_axes) is None:
+                imu[axes_key] = dflt
+                changed.append(f"IMU.{axes_key}")
+        for key, dflt in (
+            ("accel_signs", "-1,-1,1"),
+            ("gyro_signs", "-1,-1,1"),
+            ("hid_accel_signs", "1,1,1"),
+            ("hid_gyro_signs", "1,1,1"),
+        ):
+            if _parse_axis_map(imu.get(key, ""), (-1, 1)) is None:
+                imu[key] = dflt
+                changed.append(f"IMU.{key}")
+        if _parse_bias(imu.get("gyro_bias", "")) is None:
+            imu["gyro_bias"] = "0.0,0.0,0.0"
+            changed.append("IMU.gyro_bias")
     return changed
 
 

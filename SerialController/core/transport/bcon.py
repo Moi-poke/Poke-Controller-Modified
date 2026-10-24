@@ -33,6 +33,7 @@ from core.transport.bcon_protocol import (
     T_EMULATE_MODE,
     T_HELLO,
     T_HELLO_ACK,
+    T_IMU_SAMPLE,
     T_NEUTRAL,
     T_PING,
     T_PLAYER_INFO,
@@ -59,6 +60,10 @@ EMULATE_ROLE_NAMES = ("Pro Controller", "Joy-Con (L)", "Joy-Con (R)")
 # 短く、USB 8msポーリングとも大きくは干渉しない。Phase 2で別過程へ
 # 移すときも値はそのまま持っていく。
 LIVE_INTERVAL_S = 1.0 / 120.0
+
+# IMU loopの既定周期（200Hz・§5.13）。live loopとは独立スレッドで回す。
+# STATEと同じ_write_lockで排他し、線上のSEQ順＝採番順を保つ。
+IMU_INTERVAL_S = 1.0 / 200.0
 
 # baud huntの呼び水。Picoは未確定のあいだ各rateに150ms (HUNT_DWELL_MS) ずつ
 # 留まり、同じ滞在中に有効frameが2連続で届いたときだけ確定する。HELLOの
@@ -203,6 +208,10 @@ class BconTransport(Transport):
         }
         self._last_hello_time = 0.0
         self._hello_version: tuple[int, int] | None = None
+        # HELLO_ACK成立の印。hunt確定（=PicoのTX再開）まではSTATUSの
+        # 欠落・復号ノイズが必ず出るため、立つまでは実エラーとして
+        # 見せない。open・baud切替でFalseへ戻す。
+        self._hello_established = False
         # baud huntのlast-good先頭用。hello成功で更新する。
         self._last_good_baud = BCON_DEFAULT_BAUDRATE
         # hunt中のSTATE抑え。Trueのあいだsend_rowは捨てる（HELLO等の
@@ -225,6 +234,16 @@ class BconTransport(Transport):
         self._live_merged = 0
         self._live_dropped = 0
         self._live_rtt_ms: float | None = None
+        # -- IMU loop（200Hz・§5.13）の保持 --
+        # 生成器コールバックが6値タプルを返す。Noneを返したらその刻みは送らない。
+        self._imu_loop_thread: threading.Thread | None = None
+        self._imu_loop_stop = threading.Event()
+        self._imu_interval_s = IMU_INTERVAL_S
+        self._imu_source: (
+            Callable[[], tuple[int, int, int, int, int, int] | None] | None
+        ) = None
+        self._imu_sent = 0
+        self._imu_dropped = 0
         # ポンプが読んだ直近フレームの記録（TYPE→(frame, 時刻)）。
         # 購読者・待機への分配とは別に残す。握手の成否判定には使わない。
         self._last_frame_by_type: dict[int, tuple[BconFrame, float]] = {}
@@ -300,6 +319,8 @@ class BconTransport(Transport):
             self._live_merged = 0
             self._live_dropped = 0
             self._live_rtt_ms = None
+            # 開き直しは新しい握手。HELLO_ACKを受けるまで抑止を続ける。
+            self._hello_established = False
         if old is not None:
             try:
                 old.close()
@@ -320,6 +341,10 @@ class BconTransport(Transport):
         except Exception:
             self._logger.debug("live loopの停止に失敗", exc_info=True)
         try:
+            self.stop_imu_loop()
+        except Exception:
+            self._logger.debug("IMU loopの停止に失敗", exc_info=True)
+        try:
             if self.ser is not None:
                 with self._lock:
                     held = self._tx_hold
@@ -332,6 +357,7 @@ class BconTransport(Transport):
             ser, self.ser = self.ser, None
             # 欠片を持ち越すと次回接続の先頭整列を乱すため捨てる。
             self._parser = BconParser()
+            self._hello_established = False
         if ser is None:
             return
         try:
@@ -457,6 +483,176 @@ class BconTransport(Transport):
                 # Switch に届いていないので記録に残さない（TextSerialの
                 # _write_one が送った行だけ _notify するのと同じ約束）。
                 self._notify_tx(note if isinstance(note, str) else "")
+
+    def send_imu(
+        self,
+        ax: int,
+        ay: int,
+        az: int,
+        gx: int,
+        gy: int,
+        gz: int,
+    ) -> bool:
+        """IMU生値6値をIMU_SAMPLE 1発で送る。成否を返す。
+
+        値はSwitch出力生値のint16（量子化・軸変換は呼出側で完了させる）。
+        範囲外はint16へ飽和させる（黙って切らない・落とさない）。
+        採番→組立→writeは_write_lockで1単位に包む（STATE・会話との逆転防止）。
+        hunt抑え中・未開線・書込失敗はFalse。例外は投げない。
+        """
+        try:
+            vals = [int(ax), int(ay), int(az), int(gx), int(gy), int(gz)]
+        except (TypeError, ValueError):
+            self._logger.debug("bconのIMU値が数値でないため捨てます")
+            return False
+        payload = b"".join(
+            max(-32768, min(32767, v)).to_bytes(2, "little", signed=True) for v in vals
+        )
+        with self._lock:
+            held = self._tx_hold
+        if held:
+            with self._lock:
+                self._imu_dropped += 1
+            return False
+        with self._write_lock:
+            with self._lock:
+                seq = self._tx_seq
+                self._tx_seq = (self._tx_seq + 1) & 0xFF
+                ser = self.ser
+                begin = self._on_write_begin
+                end = self._on_write_end
+            if ser is None:
+                self._logger.debug("bconは開いていないためIMUを送りません")
+                return False
+            try:
+                frame = frame_build(T_IMU_SAMPLE, payload, seq)
+            except Exception as e:
+                self._logger.debug(f"bconのIMU組立に失敗: {e!r}")
+                return False
+            sent_ok = bool(self._write_frame(frame, "bcon:IMU", False, begin, end, ser))
+        if sent_ok:
+            with self._lock:
+                self._imu_sent += 1
+        return sent_ok
+
+    def imu_loop_running(self) -> bool:
+        """IMU loopが回っているか（読むだけ）。例外は投げない。"""
+        try:
+            thread = self._imu_loop_thread
+            return thread is not None and thread.is_alive()
+        except Exception:
+            return False
+
+    def start_imu_loop(
+        self,
+        source: Callable[[], tuple[int, int, int, int, int, int] | None],
+        interval_s: float = IMU_INTERVAL_S,
+    ) -> bool:
+        """IMU送出loopを1本だけ起こす。動いていれば True。
+
+        sourceは毎刻み呼ぶ生成器で、6値タプルかNoneを返す。Noneの刻みは送らない。
+        確認と起動を同じ錠の中で行う。例外は投げない。
+        """
+        try:
+            with self._lock:
+                thread = self._imu_loop_thread
+                if thread is not None and thread.is_alive():
+                    return True
+                self._imu_source = source
+                self._imu_interval_s = float(interval_s)
+                self._imu_loop_stop.clear()
+                worker = threading.Thread(
+                    target=self._imu_loop_run,
+                    name="bcon-imu-loop",
+                    daemon=True,
+                )
+                self._imu_loop_thread = worker
+            worker.start()
+            return True
+        except Exception:
+            self._logger.debug("IMU loopの起動に失敗", exc_info=True)
+            return False
+
+    def stop_imu_loop(self) -> bool:
+        """IMU loopを止める。止まるまで待つ（上限0.5秒）。例外は投げない。"""
+        try:
+            self._imu_loop_stop.set()
+            with self._lock:
+                thread = self._imu_loop_thread
+            if thread is None:
+                return True
+            thread.join(0.5)
+            alive = thread.is_alive()
+            if not alive:
+                with self._lock:
+                    if self._imu_loop_thread is thread:
+                        self._imu_loop_thread = None
+            return not alive
+        except Exception:
+            self._logger.debug("IMU loopの停止に失敗", exc_info=True)
+            return False
+
+    def _imu_loop_run(self) -> None:
+        """IMU loop本体。絶対時刻で刻み、遅れは追従しbacklogを作らない。
+
+        live loopと同規律：抑え中は捨ててdroppedに数える。生成器の例外は
+        その刻みだけ捨てる。1フレーム1write・SEQ方向別。例外では落ちない。
+        """
+        try:
+            with self._lock:
+                interval = float(self._imu_interval_s)
+        except Exception:
+            interval = IMU_INTERVAL_S
+        next_tx = time.perf_counter() + interval
+        while not self._imu_loop_stop.is_set():
+            now = time.perf_counter()
+            timeout = next_tx - now
+            if timeout > 0:
+                if self._imu_loop_stop.wait(timeout):
+                    break
+            if self._imu_loop_stop.is_set():
+                break
+            now = time.perf_counter()
+            with self._lock:
+                held = self._tx_hold
+                source = self._imu_source
+            if held:
+                with self._lock:
+                    self._imu_dropped += 1
+                next_tx = now + interval
+                continue
+            if source is None:
+                next_tx = now + interval
+                continue
+            try:
+                sample = source()
+            except Exception:
+                self._logger.debug("IMU生成器で例外", exc_info=True)
+                next_tx = now + interval
+                continue
+            if sample is None:
+                next_tx = now + interval
+                continue
+            try:
+                ax, ay, az, gx, gy, gz = (int(v) for v in sample)
+            except (TypeError, ValueError):
+                self._logger.debug("IMU生成器の戻りが6値でないため捨てます")
+                next_tx = now + interval
+                continue
+            self.send_imu(ax, ay, az, gx, gy, gz)
+            now = time.perf_counter()
+            if next_tx <= now:
+                next_tx = now + interval
+            else:
+                next_tx += interval
+
+    def imu_stats(self) -> dict[str, int]:
+        """IMU送出統計の写しを返す（読むだけ・副作用なし）。例外は投げない。"""
+        try:
+            with self._lock:
+                return {"sent": int(self._imu_sent), "dropped": int(self._imu_dropped)}
+        except Exception:
+            return {"sent": 0, "dropped": 0}
 
     def flush_pending(self) -> None:
         """保留があれば送り切る。loop起動中は起こして即送させる。"""
@@ -994,6 +1190,14 @@ class BconTransport(Transport):
             self._logger.debug("STATUS保持で例外", exc_info=True)
             return
         if errcode != 0 and errcode != old:
+            if not self.hello_established():
+                # hunt確定前の復号ノイズ。実エラーとして見せない。
+                self._logger.debug(
+                    "HELLO確立前のSTATUS異常を抑えました"
+                    f"(errcode=0x{errcode:02X} {self._describe_errcode(errcode)}"
+                    f" flags=0x{flags:02X} err_crc={err_crc} err_drop={err_drop})。"
+                )
+                return
             msg = (
                 "bconのSTATUS異常を検出しました"
                 f"(errcode=0x{errcode:02X} {self._describe_errcode(errcode)}"
@@ -1023,14 +1227,18 @@ class BconTransport(Transport):
                     try:
                         payload = frame[1]
                         if len(payload) == 4:
+                            adopted = int(payload[0]) & 0xFF
+                            result = int(payload[3]) & 0xFF
                             self._last_hello_ack = {
-                                "adopted": int(payload[0]) & 0xFF,
+                                "adopted": adopted,
                                 "major": int(payload[1]) & 0xFF,
                                 "minor": int(payload[2]) & 0xFF,
-                                "result": int(payload[3]) & 0xFF,
+                                "result": result,
                             }
                             self._last_hello_time = now
-                            adopted = int(payload[0]) & 0xFF
+                            if adopted == PROTO_VER and result == RESULT_OK:
+                                # 握手成立。ここから先のSTATUSは実データとして扱う。
+                                self._hello_established = True
                             if adopted == PROTO_VER:
                                 try:
                                     self._hello_version = (
@@ -1183,6 +1391,9 @@ class BconTransport(Transport):
             if ser is None:
                 return False
             ser.baudrate = int(rate)
+            # rateが変われば握手も切れる。HELLOでadoptを確かめるまで戻す。
+            with self._lock:
+                self._hello_established = False
             return True
         except (TypeError, ValueError, AttributeError) as e:
             self._logger.debug(f"baud切替に失敗: {e!r}")
@@ -1464,6 +1675,19 @@ class BconTransport(Transport):
                 "errcode": 0,
             }
 
+    def hello_established(self) -> bool:
+        """HELLO_ACKが成立しているか。線に触れない。例外は投げない。
+
+        baud hunt確定まではPicoがTXを止め、切替中の復号ノイズが
+        STATUSのerrcodeへ載る。成立前のSTATUS欠落・異常を実エラーと
+        して見せないための判定に使う。open・baud切替でFalseへ戻る。
+        """
+        try:
+            with self._lock:
+                return bool(self._hello_established)
+        except Exception:
+            return False
+
     def last_player_info(self) -> bytes:
         """直近PLAYER_INFO payloadの写し。未受信は空。例外は投げない。"""
         try:
@@ -1531,8 +1755,14 @@ class BconTransport(Transport):
                     self._gui(msg, quiet)
                     return None
                 if not done.wait(limit):
-                    msg = f"bconのSTATUSが来ませんでした({limit:.1f}s)。"
-                    self._gui(msg, quiet)
+                    if self.hello_established():
+                        msg = f"bconのSTATUSが来ませんでした({limit:.1f}s)。"
+                        self._gui(msg, quiet)
+                    else:
+                        # hunt確定前はFW仕様で返らない。実エラーとして見せない。
+                        self._logger.debug(
+                            f"HELLO確立前のSTATUS欠落を抑えました({limit:.1f}s)。"
+                        )
                     return None
                 return self.last_status()
             finally:

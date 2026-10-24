@@ -252,10 +252,23 @@ class SdlPadReader:
         gc = self._gc()
         if gc is None:
             return (None, None)
+        # Steam起動中はHIDの奪い合いでopenが不安定になる実測（SDL#3450）。
+        # 失敗時は少し待って最大3回まで試す。
+        import time as _time
+
+        opened_gc: Any = None
+        for _attempt in range(3):
+            try:
+                if not bool(gc.is_controller(int(index))):
+                    return (None, None)
+                opened_gc = gc.Controller(int(index))
+                break
+            except Exception:
+                opened_gc = None
+                _time.sleep(0.2)
+        if opened_gc is None:
+            return (None, None)
         try:
-            if not bool(gc.is_controller(int(index))):
-                return (None, None)
-            gc_stick = gc.Controller(int(index))
             raw_stick: Any | None = None
             try:
                 import pygame.joystick as _joy
@@ -276,8 +289,8 @@ class SdlPadReader:
         except Exception:
             return (None, None)
         with self._lock:
-            self._sticks[int(index)] = (gc_stick, joy_stick, dev_id)
-        return (gc_stick, joy_stick)
+            self._sticks[int(index)] = (opened_gc, joy_stick, dev_id)
+        return (opened_gc, joy_stick)
 
     def read(self, index: int = 0) -> PadState:
         """指定番号のパッドを読む。繋がっていなければ未接続を返す。"""

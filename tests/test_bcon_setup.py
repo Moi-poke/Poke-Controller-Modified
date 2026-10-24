@@ -191,6 +191,18 @@ def test_decode_player_flags_imu_vib() -> None:
     assert decode_player_flags(0xFF) == (True, True)
 
 
+def test_decode_player_imu_range_bits() -> None:
+    """flags bit3-4=gyro・bit5-6=accel の要求レンジ復号。"""
+    from BconSetup import decode_player_imu_range
+
+    assert decode_player_imu_range(0x00) == ("±250dps", "±8G")
+    assert decode_player_imu_range(0x18) == ("±2000dps", "±8G")  # gyro sel=3
+    # IMU/vib/saved (bit0-2) は範囲に影響しない。
+    assert decode_player_imu_range(0x07) == ("±250dps", "±8G")
+    # accel sel=2 (±2G)
+    assert decode_player_imu_range(0x18 | (2 << 5)) == ("±2000dps", "±2G")
+
+
 def test_player_lamp_s2_edge_no_raise() -> None:
     """S2端: 予約/空/1byteでも落とさない（据え置き or 全消灯）。
 
@@ -545,7 +557,7 @@ def test_player_info_frame_reaches_lamps_via_queue_and_poll() -> None:
     # GUIスレッドの _poll を手で1回まわす（after予約は stub が捨てる）。
     obj._poll()
     _assert_lamps(obj, 0x05)
-    assert obj._imu_label.text == "IMU: あり"
+    assert obj._imu_label.text == "ジャイロ: あり"
     assert obj._vib_label.text == "振動: あり"
 
     # PLAYER_INFO以外（STATUS 0x20）は拾わない。
@@ -584,7 +596,7 @@ def test_on_status_refreshes_lamps_from_last_player_info() -> None:
     obj._on_status()
     obj._poll()
     _assert_lamps(obj, 0x0A)
-    assert obj._imu_label.text == "IMU: あり"
+    assert obj._imu_label.text == "ジャイロ: あり"
     assert obj._vib_label.text == "振動: なし"
     assert "PLAYER_INFO: 0a 01" in obj._log.text
 
@@ -1041,7 +1053,7 @@ def test_flood_rumble_playerinfo_last_wins_single_update() -> None:
     assert "L=99" in obj._log.text
     assert "R=156" in obj._log.text
     _assert_lamps(obj, 99 & 0x0F)
-    assert obj._imu_label.text == "IMU: あり"
+    assert obj._imu_label.text == "ジャイロ: あり"
     assert obj._vib_label.text == "振動: あり"
 
 
