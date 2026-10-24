@@ -79,6 +79,8 @@ class PadSource:
         self._fallback_logged = False
         # HID で読んでいる間に SDL を試し直す次回時刻。
         self._sdl_reprobe_at = 0.0
+        # スティック補正に SDL 軸を使えなかったことを1回だけ残す。
+        self._axis_warned = False
 
     @property
     def available(self) -> bool:
@@ -111,6 +113,7 @@ class PadSource:
         self._hid_opened = False
         self._fallback_logged = False
         self._sdl_reprobe_at = 0.0
+        self._axis_warned = False
         try:
             self.sdl.invalidate()
         except Exception as e:
@@ -214,8 +217,14 @@ class PadSource:
             # HID直結は ProCon 1台。同じ番号に別機種がいても混ぜない。
             values = read_axes(int(index), name_hint="pro controller")
         except Exception:
-            return state
+            values = None
         if values is None:
+            if not self._axis_warned:
+                self._axis_warned = True
+                logger.warning(
+                    "HID直結のスティック補正にSDLの生joystickを使えません。"
+                    "全倒しに届かない場合は「再接続」を試してください"
+                )
             return state
         lx, ly, rx, ry, _lt, _rt, raw_axes = values
         return replace(
