@@ -147,6 +147,11 @@ class PokeControllerApp(
         self.root.title(f"{NAME} {VERSION}")  # UI 構築後に詳細版へ更新する
 
         self._init_state()
+        # 裏スレッドからの受け渡し箱。ワーカーは積むだけにし、取り出しは
+        # GUI スレッドが行う。_build_ui が起動するパッド列挙などの
+        # ワーカーも使うため、UI 構築より先に作る。
+        self.inbox = UiInbox()
+        self._inbox_after_id: str | None = None
         self._build_ui()
 
         # 標準出力をログエリアにリダイレクト
@@ -163,11 +168,6 @@ class PokeControllerApp(
         self._display_after_id: Any = self.logArea.after(
             LogPane.FLUSH_INTERVAL_MS, self.display_text
         )
-        # 裏スレッドからの受け渡し箱。ワーカーは積むだけにし、取り出しはここ
-        # （GUI スレッド）が行う。裏から after を呼ぶと、呼び出し側スレッドが
-        # main の処理を待って止まり、終了時の join と噛み合うと固まる。
-        self.inbox = UiInbox()
-        self._inbox_after_id: str | None = None
         self.loadSettings()
         self._apply_settings_to_widgets()
         self._setup_camera_name()
