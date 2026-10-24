@@ -112,6 +112,10 @@ def host(tk_root: tk.Tk) -> Iterator[_Host]:
         h._build_command_frame()
         h.py_map = {"PyCmd": _PyCmd, "PyCmd2": _PyCmd}
         h.mcu_map = {"McuCmd": _McuCmd}
+        # applyCommandFilter は一覧のキーをそのまま走査する。__getattr__ の
+        # ダミー関数が返らないよう、実体のリストを持たせる。
+        h.py_all_names = list(h.py_map)
+        h.mcu_all_names = list(h.mcu_map)
         h._shown_names = {
             h.py_cb: {"PyCmd表示": "PyCmd", "PyCmd2表示": "PyCmd2"},
             h.mcu_cb: {"McuCmd表示": "McuCmd"},
