@@ -477,12 +477,15 @@ class SerialService:
             return message
         if self.gamepad is None:
             try:
+                from core.pad_source import PadSource, sdl_debug_enabled
+
                 self.gamepad = SwitchGamepadController(
                     self.sender,
                     pad_index=pad_index,
                     is_active=self._gamepad_active,
                     on_display=self._gamepad_display,
                     deadzone=deadzone,
+                    reader=PadSource(allow_sdl=sdl_debug_enabled()),
                 )
                 self.gamepad.listen()
             except Exception as e:
@@ -543,9 +546,9 @@ class SerialService:
     def list_gamepads(self) -> list[int]:
         """繋がっているパッド番号の一覧。読めなければ空リスト。"""
         try:
-            from core.pad_source import PadSource
+            from core.pad_source import PadSource, sdl_debug_enabled
 
-            return PadSource().scan()
+            return PadSource(allow_sdl=sdl_debug_enabled()).scan()
         except Exception:
             return []
 

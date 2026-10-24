@@ -1439,9 +1439,9 @@ class SerialPanelMixin:
     def _refresh_gamepads_worker(self) -> None:
         """パッド一覧の列挙（ワーカー）。Tk には触らず inbox へ積む。"""
         try:
-            from core.pad_source import PadSource
+            from core.pad_source import PadSource, sdl_debug_enabled
 
-            source = PadSource()
+            source = PadSource(allow_sdl=sdl_debug_enabled())
             names = source.names()
             # 名前と識別子を続けて取る。列挙の間に抜き差しが起きても、
             # ずれは次の巡回で直る（片方だけ古いまま固定しない）。
@@ -1577,7 +1577,7 @@ class SerialPanelMixin:
         """キャッシュ破棄と再列挙（ワーカー）。Tk には触らない。"""
         err: str | None = None
         try:
-            from core.pad_source import PadSource
+            from core.pad_source import PadSource, sdl_debug_enabled
 
             # 動いている読取器の経路・実体をまず捨てる。止めるのは
             # GUI 側の掴み直し（_restart_gamepad_at）に任せる。
@@ -1588,7 +1588,7 @@ class SerialPanelMixin:
                     invalidated_live = bool(live())
                 except Exception as e:
                     logger.debug(f"読取器のキャッシュ破棄で例外: {e}")
-            source = PadSource()
+            source = PadSource(allow_sdl=sdl_debug_enabled())
             if not invalidated_live:
                 # 実体が無い（無効中）ときも、共有 SDL のキャッシュは
                 # ここで捨てる。一覧の取得前に列挙をやり直すため。

@@ -991,3 +991,19 @@ def test_pad_source_hid_open_does_not_block_read() -> None:
     assert thread is not None
     thread.join(2.0)
     assert source.read(0).connected is True
+
+
+def test_pad_source_hid_only_does_not_touch_sdl() -> None:
+    """通常はHID有線に固定し、SDLを初期化・読み取りしない。"""
+    from core.pad_source import PadSource
+
+    sdl = _CountingPad(connected=True)
+    hid = _FakeHidPad()
+    source = PadSource(xinput=_NoPad(), sdl=sdl, hid=hid, allow_sdl=False)
+    assert source.read(0).connected is True
+    assert source.route_of(0) == "hid"
+    assert sdl.read_calls == 0
+    assert source.names() == {0: "Pro Controller (HID直結)"}
+    assert source.identities() == {}
+    assert source.scan() == [0]
+    assert sdl.read_calls == 0

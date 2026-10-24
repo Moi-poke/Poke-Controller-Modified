@@ -25,6 +25,7 @@ read(index) / scan() / available に加え、選択肢の表示名（names）と
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import replace
@@ -33,6 +34,16 @@ from typing import Any
 from core.sdl_pad import SdlPadReader
 from core.xinput import MAX_PADS, PadState, XInputReader
 from loguru import logger
+
+
+def sdl_debug_enabled() -> bool:
+    """SDL経路をデバッグ用に解禁するか（環境変数 POKECON_SDL_DEBUG）。"""
+    return os.environ.get("POKECON_SDL_DEBUG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 class PadSource:
@@ -59,6 +70,7 @@ class PadSource:
         xinput: XInputReader | None = None,
         sdl: SdlPadReader | None = None,
         hid: Any | None = None,
+        allow_sdl: bool | None = None,
     ) -> None:
         self.xinput = xinput if xinput is not None else XInputReader()
         if sdl is not None:
@@ -81,12 +93,50 @@ class PadSource:
         self._sdl_reprobe_at = 0.0
         # スティック補正に SDL 軸を使えなかったことを1回だけ残す。
         self._axis_warned = False
+        # HID直結を通常経路にし、SDLはデバッグ時だけ解禁する。
+        # HidHideでSteam/SDLから実機を隠したうえで、アプリ内部でも
+        # SDLとHIDの二重オープン（レポートモード競合）を避ける。
+        # 既定は従来互換（SDLを試す）。アプリ本体は
+        # `allow_sdl=PadSource.sdl_debug_enabled()` を明示して、通常は
+        # HID有線に固定する。
+        self.allow_sdl = True if allow_sdl is None else bool(allow_sdl)
+        self._hid_present = hid is not None
+        self._hid_probe_at = 0.0
+        if not self._hid_present:
+            self._hid_present = self._probe_hid()
         # HID open は handshake/subcmd で最大数秒かかる。8ms の読み取り
         # スレッドで待つと、その間コントローラ操作が一切通らなくなる
         # （実機の中華コンで5秒スタック）。open は専用スレッドで行い、
         # 読み取り側は未接続を返して次のtickへ進む。
         self._hid_open_thread: threading.Thread | None = None
         self._hid_open_lock = threading.Lock()
+
+    @staticmethod
+    def sdl_debug_enabled() -> bool:
+        """後方互換の入口。実体はモジュール関数。"""
+        return sdl_debug_enabled()
+
+    def _probe_hid(self) -> bool:
+        """Nintendo HIDが存在するか（列挙のみ・openしない）。"""
+        try:
+            from core.nintendo_hid import NintendoHidReader
+
+            return bool(NintendoHidReader.enumerate())
+        except Exception:
+            return False
+
+    def _route_order(self) -> tuple[str, ...]:
+        """通常はHID有線、デバッグ時だけSDLを先に試す。"""
+        if self.allow_sdl:
+            return ("sdl", "hid", "xinput")
+        if not self._hid_present:
+            now = time.monotonic()
+            if now >= self._hid_probe_at:
+                self._hid_probe_at = now + 5.0
+                self._hid_present = self._probe_hid()
+        if self._hid_present:
+            return ("hid",)
+        return ("sdl", "xinput")
 
     @property
     def available(self) -> bool:
@@ -96,6 +146,8 @@ class PadSource:
         （Couldn't setup USB mode。2026-10-18）。初期化順序はSDL優先で、
         選択順序（read/scan）は従来どおりXInput優先のまま変えない。
         """
+        if not self.allow_sdl and self._hid_present:
+            return True
         try:
             sdl_ok = bool(self.sdl.available)
         except Exception:
@@ -273,6 +325,8 @@ class PadSource:
         トリガは HID のまま、スティックだけ SDL で補う。
         GameController を開けなくても生joystick は読めることがある。
         """
+        if not self.allow_sdl:
+            return state
         if not bool(getattr(state, "connected", False)):
             return state
         read_axes = getattr(self.sdl, "read_axes", None)
@@ -315,7 +369,7 @@ class PadSource:
         state = PadState()
         tried: set[str] = set()
         route = self._route.get(int(index))
-        if route == "hid":
+        if route == "hid" and self.allow_sdl:
             # HID に固定されたまま校正済みの SDL 軸へ戻れないのを防ぐ。
             now = time.monotonic()
             if now >= self._sdl_reprobe_at:
@@ -330,7 +384,7 @@ class PadSource:
             if state.connected:
                 return state
             self._route.pop(int(index), None)
-        for name in ("sdl", "hid", "xinput"):
+        for name in self._route_order():
             if name in tried:
                 continue
             state = self._read_route(name, index)
@@ -347,6 +401,8 @@ class PadSource:
 
     def scan(self) -> list[int]:
         """繋がっている番号の一覧。XInput・SDL・HID の和集合。"""
+        if not self.allow_sdl and self._hid_present:
+            return [0]
         found: set[int] = set()
         for reader in (self.xinput, self.sdl):
             try:
@@ -366,6 +422,8 @@ class PadSource:
 
     def names(self) -> dict[int, str]:
         """番号 → 表示名。SDLの実名＋HID直結＋XInputの汎名。"""
+        if not self.allow_sdl and self._hid_present:
+            return {0: "Pro Controller (HID直結)"}
         try:
             names = self.sdl.names()
             out = {int(k): str(v) for k, v in names.items()}
@@ -403,6 +461,8 @@ class PadSource:
         パスを使う。XInput は個体を跨いで安定な ID を取れないため
         載せない（番号のまま追従する）。
         """
+        if not self.allow_sdl:
+            return {}
         try:
             out = {int(k): str(v) for k, v in self.sdl.identities().items()}
         except Exception:

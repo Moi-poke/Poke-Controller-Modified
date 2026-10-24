@@ -169,7 +169,7 @@ class _Panel(SerialPanelMixin):
 def _install_source(monkeypatch: pytest.MonkeyPatch, source: _Source) -> None:
     import core.pad_source as pad_source
 
-    monkeypatch.setattr(pad_source, "PadSource", lambda: source)
+    monkeypatch.setattr(pad_source, "PadSource", lambda **kwargs: source)
 
 
 def _settle(panel: _Panel, timeout: float = 3.0) -> None:
