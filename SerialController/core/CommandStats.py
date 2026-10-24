@@ -68,7 +68,7 @@ def load(profile: str = "") -> dict[str, dict]:
     try:
         with open(path, encoding="utf-8") as fp:
             data = json.load(fp)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         logger.warning(f"使用履歴を読めませんでした: {e}")
         return {}
     if not isinstance(data, dict):
