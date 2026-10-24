@@ -1,5 +1,4 @@
 import math
-import queue
 import threading
 import time
 import tkinter as tk
@@ -8,12 +7,16 @@ from collections import deque
 COL = ("#e74c3c", "#2ecc71", "#3498db")  # X, Y, Z
 BG = "#1e1e1e"
 
+#: 未描画サンプルの上限。描画より入力が速いぶんだけ溜まるが、
+#: GUIが詰まったときに古いサンプルを抱え続けないよう新しい側を残す。
+MAX_QUEUED_SAMPLES = 32
+
 
 class GyroView(tk.Frame):
     """ジャイロ可視化パネル（姿勢計＋ヨー方位＋角速度バー＋時系列）"""
 
     def __init__(
-        self, master, rate_range=2000.0, history=300, alpha=0.98, fps=60, **kw
+        self, master, rate_range=2000.0, history=150, alpha=0.98, fps=30, **kw
     ):
         if fps is None or fps <= 0:
             raise ValueError(f"fpsは正です: {fps!r}")
@@ -25,7 +28,9 @@ class GyroView(tk.Frame):
             raise ValueError(f"alphaは0..1です: {alpha!r}")
         kw.setdefault("bg", BG)
         super().__init__(master, **kw)
-        self.q = queue.SimpleQueue()  # 別スレッドから push 可能
+        # 別スレッドから push 可能。上限を超えたら最も古いものを捨てる
+        # （append/popleftはCPythonでは原子的）。
+        self.q: deque = deque(maxlen=MAX_QUEUED_SAMPLES)
         self.rate_range = float(rate_range)  # 表示レンジ [deg/s]
         self.alpha = float(alpha)  # 相補フィルタ係数
         self.interval = max(1, int(1000 / fps))
@@ -59,7 +64,7 @@ class GyroView(tk.Frame):
     # ---------- 外部API ----------
     def push(self, gx, gy, gz, ax=None, ay=None, az=None, dt=0.005):
         """gx,gy,gz: deg/s, ax,ay,az: G（任意）, dt: s"""
-        self.q.put((gx, gy, gz, ax, ay, az, dt))
+        self.q.append((gx, gy, gz, ax, ay, az, dt))
 
     def push_raw(self, ax, ay, az, gx, gy, gz, dt=0.005):
         """Switch生値int16を換算してpushする。送出値の監視用。"""
@@ -75,7 +80,7 @@ class GyroView(tk.Frame):
 
     def reset_yaw(self):
         """ヨーを0に戻す。描画スレッドで実行するためキュー経由。"""
-        self.q.put(None)
+        self.q.append(None)
 
     # ---------- UI構築 ----------
     def _build(self):
@@ -158,10 +163,10 @@ class GyroView(tk.Frame):
             return
         try:
             got = False
-            while True:
+            while self.q:
                 try:
-                    item = self.q.get_nowait()
-                except queue.Empty:
+                    item = self.q.popleft()
+                except IndexError:
                     break
                 if item is None:
                     self.yaw = 0.0

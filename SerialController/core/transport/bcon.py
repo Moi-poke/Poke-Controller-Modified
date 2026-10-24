@@ -238,6 +238,9 @@ class BconTransport(Transport):
         # 生成器コールバックが6値タプルを返す。Noneを返したらその刻みは送らない。
         self._imu_loop_thread: threading.Thread | None = None
         self._imu_loop_stop = threading.Event()
+        # 世代番号。停止要求中で旧スレッドがまだ生きている間に
+        # startが来ても、旧スレッドは自分の世代でないと気づいて抜ける。
+        self._imu_gen = 0
         self._imu_interval_s = IMU_INTERVAL_S
         self._imu_source: (
             Callable[[], tuple[int, int, int, int, int, int] | None] | None
@@ -519,8 +522,6 @@ class BconTransport(Transport):
                 seq = self._tx_seq
                 self._tx_seq = (self._tx_seq + 1) & 0xFF
                 ser = self.ser
-                begin = self._on_write_begin
-                end = self._on_write_end
             if ser is None:
                 self._logger.debug("bconは開いていないためIMUを送りません")
                 return False
@@ -529,7 +530,10 @@ class BconTransport(Transport):
             except Exception as e:
                 self._logger.debug(f"bconのIMU組立に失敗: {e!r}")
                 return False
-            sent_ok = bool(self._write_frame(frame, "bcon:IMU", False, begin, end, ser))
+            # IMUは入力行ではないためSenderの書き出しフックを呼ばない。
+            # 200HzでSenderの錠・procイベントを叩くとGUI側が重くなる。
+            # IMUの成否はimu_statsが持つ。
+            sent_ok = bool(self._write_frame(frame, "bcon:IMU", False, None, None, ser))
         if sent_ok:
             with self._lock:
                 self._imu_sent += 1
@@ -552,17 +556,31 @@ class BconTransport(Transport):
 
         sourceは毎刻み呼ぶ生成器で、6値タプルかNoneを返す。Noneの刻みは送らない。
         確認と起動を同じ錠の中で行う。例外は投げない。
+
+        停止要求中（stop_imu_loopのjoinが0.5秒で諦めた直後など）に
+        旧スレッドが生きていても、ここでTrueを返してsourceを差し替え
+        ないと「開始したのに送出0」になる。世代番号を進めて新しい
+        スレッドを起こし、旧スレッドは自分の世代でないと気づき次第
+        抜ける（停止イベントは旧世代のものが既に立っている）。
         """
         try:
             with self._lock:
                 thread = self._imu_loop_thread
-                if thread is not None and thread.is_alive():
+                if (
+                    thread is not None
+                    and thread.is_alive()
+                    and not self._imu_loop_stop.is_set()
+                ):
                     return True
+                self._imu_gen += 1
+                generation = self._imu_gen
                 self._imu_source = source
                 self._imu_interval_s = float(interval_s)
-                self._imu_loop_stop.clear()
+                stop = threading.Event()
+                self._imu_loop_stop = stop
                 worker = threading.Thread(
                     target=self._imu_loop_run,
+                    args=(generation, stop),
                     name="bcon-imu-loop",
                     daemon=True,
                 )
@@ -576,9 +594,13 @@ class BconTransport(Transport):
     def stop_imu_loop(self) -> bool:
         """IMU loopを止める。止まるまで待つ（上限0.5秒）。例外は投げない。"""
         try:
-            self._imu_loop_stop.set()
+            # 停止イベントとスレッドを同じ錠で読む。startが並行して
+            # 次世代を起こしても、別世代のイベントだけを立てて別の
+            # スレッドをjoinする取り違えを避ける。
             with self._lock:
+                stop = self._imu_loop_stop
                 thread = self._imu_loop_thread
+            stop.set()
             if thread is None:
                 return True
             thread.join(0.5)
@@ -592,11 +614,13 @@ class BconTransport(Transport):
             self._logger.debug("IMU loopの停止に失敗", exc_info=True)
             return False
 
-    def _imu_loop_run(self) -> None:
+    def _imu_loop_run(self, generation: int, stop: threading.Event) -> None:
         """IMU loop本体。絶対時刻で刻み、遅れは追従しbacklogを作らない。
 
         live loopと同規律：抑え中は捨ててdroppedに数える。生成器の例外は
         その刻みだけ捨てる。1フレーム1write・SEQ方向別。例外では落ちない。
+        stopはこの世代専用のイベント。startが次の世代を起こした場合は
+        世代番号の不一致で抜ける（旧sourceで送り続けない）。
         """
         try:
             with self._lock:
@@ -604,16 +628,18 @@ class BconTransport(Transport):
         except Exception:
             interval = IMU_INTERVAL_S
         next_tx = time.perf_counter() + interval
-        while not self._imu_loop_stop.is_set():
+        while not stop.is_set():
             now = time.perf_counter()
             timeout = next_tx - now
             if timeout > 0:
-                if self._imu_loop_stop.wait(timeout):
+                if stop.wait(timeout):
                     break
-            if self._imu_loop_stop.is_set():
+            if stop.is_set():
                 break
             now = time.perf_counter()
             with self._lock:
+                if self._imu_gen != generation:
+                    break
                 held = self._tx_hold
                 source = self._imu_source
             if held:
@@ -639,6 +665,9 @@ class BconTransport(Transport):
                 self._logger.debug("IMU生成器の戻りが6値でないため捨てます")
                 next_tx = now + interval
                 continue
+            with self._lock:
+                if self._imu_gen != generation:
+                    break
             self.send_imu(ax, ay, az, gx, gy, gz)
             now = time.perf_counter()
             if next_tx <= now:
