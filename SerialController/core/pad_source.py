@@ -81,6 +81,12 @@ class PadSource:
         self._sdl_reprobe_at = 0.0
         # スティック補正に SDL 軸を使えなかったことを1回だけ残す。
         self._axis_warned = False
+        # HID open は handshake/subcmd で最大数秒かかる。8ms の読み取り
+        # スレッドで待つと、その間コントローラ操作が一切通らなくなる
+        # （実機の中華コンで5秒スタック）。open は専用スレッドで行い、
+        # 読み取り側は未接続を返して次のtickへ進む。
+        self._hid_open_thread: threading.Thread | None = None
+        self._hid_open_lock = threading.Lock()
 
     @property
     def available(self) -> bool:
@@ -179,13 +185,23 @@ class PadSource:
                 opener = getattr(reader, "open", None)
                 if not callable(opener):
                     return PadState()
-                # 8ms周期から5回×0.3秒の再試行を呼ばない。1回だけ試し、
-                # 失敗したら HID_RETRY_S 待ってから開き直す。
-                if not opener(retries=1):
-                    self._hid_retry_at = time.monotonic() + self.HID_RETRY_S
+                # open は handshake/subcmd で最大数秒かかる。ここで
+                # 同期実行すると Gamepad の読み取りが止まり、スタック中
+                # の操作が一切通らなくなる。専用スレッドへ投げ、この
+                # tick は未接続で返す。完了後の read から使う。
+                if not self._start_hid_open(reader, opener):
                     return PadState()
-                self._hid_retry_at = 0.0
-                self._hid_opened = True
+                # テスト用の即時openや、既に完了したopenはこのtickで
+                # 拾う。実機のhandshakeは数msを超えるため、ここで待つのは
+                # ごく短時間だけにし、待ち切れなければ次のtickへ回す。
+                thread = self._hid_open_thread
+                if thread is not None:
+                    thread.join(0.002)
+                try:
+                    if not callable(is_open) or not bool(is_open()):
+                        return PadState()
+                except Exception:
+                    return PadState()
             read_pad = getattr(reader, "read_pad", None)
             if not callable(read_pad):
                 return PadState()
@@ -197,6 +213,47 @@ class PadSource:
             return self._with_sdl_sticks(index, state)
         except Exception:
             return PadState()
+
+    def _start_hid_open(self, reader: Any, opener: Any) -> bool:
+        """HID open を専用スレッドで開始する（既に実行中なら何もしない）。
+
+        8ms 周期の読み取りを open の handshake 待ちで止めないための入口。
+        戻り値は「新しく開始したか」。実行中・直近失敗のバックオフ中は
+        False を返し、呼び出し側は未接続のまま次のtickへ進む。
+        """
+        now = time.monotonic()
+        with self._hid_open_lock:
+            thread = self._hid_open_thread
+            if thread is not None and thread.is_alive():
+                return False
+            if now < self._hid_retry_at:
+                return False
+            worker = threading.Thread(
+                target=self._hid_open_worker,
+                args=(reader, opener),
+                name="pad-hid-open",
+                daemon=True,
+            )
+            self._hid_open_thread = worker
+            worker.start()
+            return True
+
+    def _hid_open_worker(self, reader: Any, opener: Any) -> None:
+        """HID open の実体（読み取りスレッドを止めない）。"""
+        ok = False
+        try:
+            ok = bool(opener(retries=1))
+        except Exception:
+            ok = False
+        try:
+            if ok:
+                self._hid_opened = True
+                self._hid_retry_at = 0.0
+            else:
+                self._hid_retry_at = time.monotonic() + self.HID_RETRY_S
+        finally:
+            with self._hid_open_lock:
+                self._hid_open_thread = None
 
     def _with_sdl_sticks(self, index: int, state: PadState) -> PadState:
         """HID直結の未校正スティックを SDL の校正済み軸で置き換える。

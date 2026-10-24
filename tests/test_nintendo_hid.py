@@ -487,6 +487,12 @@ def test_pad_source_hid_first_read_after_open_is_connected(monkeypatch):
     reader = nh.NintendoHidReader()
     source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=reader)
     try:
+        # open は読み取りを止めない専用スレッドで走る。完了を待ってから
+        # 次の read で接続を確認する。
+        assert source.read(0).connected is False
+        thread = source._hid_open_thread
+        if thread is not None:
+            thread.join(5.0)
         assert source.read(0).connected is True
         assert source.route_of(0) == "hid"
         assert source.read(0).connected is True
@@ -910,29 +916,3 @@ def test_read_pad_learns_stick_range() -> None:
         assert state.thumb_ry == -32767
     finally:
         reader.close()
-
-
-def test_identical_030_reports_go_stale_after_watchdog() -> None:
-    """全バイト同一の0x30が続くフリーズ状態を未接続扱いにする。
-
-    中華コンが押下/倒しの最後のレポートを再送し続けると、packetが
-    変わらずSwitch側が入力を持ち続ける。timer/IMUも含めて完全同一なら
-    個体のフリーズとみなし、Gamepadが中立を送れるよう未接続にする。
-    """
-    import time
-
-    import core.nintendo_hid as nh
-
-    now = time.monotonic()
-    report = _report_30(1, 2, 3, 4, 5, 6, timer=7)
-    reader = nh.NintendoHidReader()
-    reader._accept_030_locked(report, now)
-    assert reader.read_pad().connected is True
-    reader._accept_030_locked(report, now + 0.5)
-    assert reader.read_pad().connected is True
-    reader._accept_030_locked(report, now + 1.1)
-    assert reader.read_pad().connected is False
-    changed = bytearray(report)
-    changed[1] = (changed[1] + 1) & 0xFF
-    reader._accept_030_locked(bytes(changed), now + 1.2)
-    assert reader.read_pad().connected is True

@@ -954,3 +954,40 @@ def test_raw_open_failure_backs_off(monkeypatch) -> None:
     reader._raw_retry_at[0] = 0.0
     assert reader.read(0).connected is False
     assert calls["n"] == 2
+
+
+def test_pad_source_hid_open_does_not_block_read() -> None:
+    """HID openのhandshake待ちで8msの読み取りを止めない。"""
+    import time
+
+    from core.pad_source import PadSource
+
+    class _SlowHid:
+        def __init__(self) -> None:
+            self.opened = False
+
+        def is_open(self) -> bool:
+            return self.opened
+
+        def is_opening(self) -> bool:
+            return False
+
+        def open(self, retries: int = 5) -> bool:
+            time.sleep(0.4)
+            self.opened = True
+            return True
+
+        def read_pad(self) -> PadState:
+            return PadState(connected=self.opened)
+
+    hid = _SlowHid()
+    source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+    started = time.monotonic()
+    first = source.read(0)
+    elapsed = time.monotonic() - started
+    assert first.connected is False
+    assert elapsed < 0.1  # openの0.4秒を待たない
+    thread = source._hid_open_thread
+    assert thread is not None
+    thread.join(2.0)
+    assert source.read(0).connected is True
