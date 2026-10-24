@@ -47,9 +47,14 @@ from loguru import logger
 # 引きずると、以降ずっと「ゲームパッドが見つかりません」になる。
 ENSURE_RETRY_S = 2.0
 
-# 未接続が続いたときに SDL を作り直すまでの時間(秒)。HIDの奪い合い
-# などで SDL の列挙が古くなったままになる実測がある。
+# 未接続が続いたときに、掴んだ実体と列挙キャッシュを捨てるまでの
+# 時間(秒)。HIDの奪い合いなどで SDL の列挙が古くなったままになる
+# 実測がある。SDL 全体は落とさない（下の invalidate を参照）。
 RESET_MISSING_S = 2.0
+
+# GameController の open に失敗した次の再試行までの時間(秒)。
+# read は 8ms 周期で呼ばれるため、待たずに諦めて次の周期へ回す。
+OPEN_RETRY_S = 0.5
 
 # GameController 標準ボタン番号 → XInput と同じ名前。
 # Pro コンの CAPTURE/HOME は標準に無いため、MISC→CAPTURE・
@@ -145,6 +150,14 @@ class SdlPadReader:
         self._retry_at = 0.0
         self._missing_since: float | None = None
         self._sticks: dict[int, Any] = {}
+        # 生joystick だけのキャッシュ。GameController を開けない個体でも
+        # 校正済みの軸は読める（HID直結の未校正スティックの代替）。
+        self._raw_sticks: dict[int, tuple[Any, Any]] = {}
+        # 名前から引いた生joystick（番号がずれた HID 補正用）。短時間だけ持つ。
+        self._named_raw: dict[str, tuple[Any, float]] = {}
+        # open失敗の番号ごとの次回試行時刻。8ms周期の読みから
+        # sleep で待つと読み取り全体が止まるため、時刻だけ覚える。
+        self._open_retry_at: dict[int, float] = {}
         # パッドごとの前回内容と連番。内容が変わったときだけ進める。
         self._last_key: dict[int, Any] = {}
         self._packet: dict[int, int] = {}
@@ -196,22 +209,64 @@ class SdlPadReader:
             self._warn_once(f"ensure:{e!r}", f"SDLを初期化できません: {e}")
         return self._ready
 
-    def _reset_sdl(self) -> None:
-        """SDL を作り直して列挙をやり直す。失敗しても落とさない。"""
-        try:
-            import pygame
-            from pygame._sdl2 import controller as gc
+    def invalidate(self, *, close_raw: bool = True) -> None:
+        """掴んだ実体と失敗の記憶を捨て、次の読みで列挙し直す。
 
+        pygame.quit() は呼ばない。SDL はプロセス共有であり、
+        ジャイロの SdlSensorReader が同じ SDL の実体を ctypes で
+        掴んでいる。全体を落とすとそのハンドルが宙に浮くうえ、
+        未接続が続く間の再初期化（実測1秒超）で GUI が止まる。
+        ここではハンドルを閉じてキャッシュを捨てるだけに留める。
+        列挙の更新は次の read の event.pump が行う。
+
+        close_raw=False は自動の列挙やり直し用。生joystick だけを
+        使う経路（HID直結のスティック補正）を止めないため、生の
+        キャッシュは残す。壊れた実体は使うときに ID で弾かれる。
+        """
+        with self._lock:
+            pairs = list(self._sticks.values())
+            raw = [pair[0] for pair in self._raw_sticks.values()] if close_raw else []
+            self._sticks.clear()
+            if close_raw:
+                self._raw_sticks.clear()
+            self._named_raw.clear()
+            self._open_retry_at.clear()
+        closed: set[int] = set()
+        for gc_stick, joy_stick, _dev_id in pairs:
+            for handle in (joy_stick, gc_stick):
+                if id(handle) in closed:
+                    continue
+                closed.add(id(handle))
+                try:
+                    handle.quit()
+                except Exception:
+                    pass
+        for joy_stick in raw:
+            if id(joy_stick) in closed:
+                continue
+            closed.add(id(joy_stick))
             try:
-                gc.quit()
+                joy_stick.quit()
             except Exception:
                 pass
-            pygame.quit()
-        except Exception:
-            pass
-        with self._lock:
-            self._sticks.clear()
-        self._ready = None
+
+    def _any_controller(self) -> bool:
+        """1台でも GameController として列挙できているか。
+
+        未接続のリセットを「選択番号が読めない」だけで行うと、
+        番号がずれているだけの間ずっとキャッシュを捨て続ける。
+        列挙そのものが空のときだけやり直す。
+        """
+        gc = self._gc()
+        if gc is None:
+            return False
+        for index in range(MAX_PADS):
+            try:
+                if bool(gc.is_controller(int(index))):
+                    return True
+            except Exception:
+                continue
+        return False
 
     @property
     def available(self) -> bool:
@@ -247,8 +302,11 @@ class SdlPadReader:
     def names(self) -> dict[int, str]:
         """繋がっているパッド番号 → 名前。選択肢の表示用。
 
-        GameController と生joystick の和集合を返す。抜き差しで
-        両者の番号がずれても、どちらかにいれば選べる。
+        read() が読める番号（GameController として認識された
+        生joystick）だけを載せる。gc.get_count() は「コントローラの
+        本数」であり番号の上限ではないため、番号は 0..MAX_PADS-1 を
+        直接問い合わせる。読めない番号を選択肢へ出すと、選んでも
+        未接続のままになる（生joystick にだけ見える個体）。
         取得の前に pump する（操作OFF中でもホットプラグを反映する）。
         """
         gc = self._gc()
@@ -256,28 +314,33 @@ class SdlPadReader:
         # pump は GameController が使えない環境でも呼ぶ（SDL の到着/離脱を
         # 処理するのは pygame 側であり、生joystick の列挙にも効く）。
         self._pump_events()
-        if gc is not None:
-            try:
-                for i in range(int(gc.get_count())):
-                    try:
-                        out[i] = str(gc.name_forindex(i))
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+        if gc is None:
+            return out
+        joy: Any | None = None
         try:
             import pygame.joystick as _joy
 
             _joy.init()
-            for i in range(int(_joy.get_count())):
-                if i in out:
-                    continue
-                try:
-                    out[i] = str(_joy.Joystick(i).get_name())
-                except Exception:
-                    continue
+            joy = _joy
         except Exception:
-            pass
+            joy = None
+        for i in range(MAX_PADS):
+            try:
+                if not bool(gc.is_controller(i)):
+                    continue
+            except Exception:
+                continue
+            name = ""
+            try:
+                name = str(gc.name_forindex(i) or "")
+            except Exception:
+                name = ""
+            if not name and joy is not None:
+                try:
+                    name = str(joy.Joystick(i).get_name())
+                except Exception:
+                    name = ""
+            out[i] = name or f"パッド{i}"
         return out
 
     def identities(self) -> dict[int, str]:
@@ -287,8 +350,10 @@ class SdlPadReader:
         使い回されない。抜き差しで番号（index）が詰め直されても、
         同じ個体を選び続けるための鍵として使う。取れない環境・
         古い pygame では空を返す（呼び側は番号だけで追従する）。
+        names() と同じく、read() が読める番号だけを載せる。
         """
-        if self._gc() is None:
+        gc = self._gc()
+        if gc is None:
             return {}
         self._pump_events()
         out: dict[int, str] = {}
@@ -296,15 +361,135 @@ class SdlPadReader:
             import pygame.joystick as _joy
 
             _joy.init()
-            count = int(_joy.get_count())
         except Exception:
             return out
-        for i in range(count):
+        for i in range(MAX_PADS):
+            try:
+                if not bool(gc.is_controller(i)):
+                    continue
+            except Exception:
+                continue
             try:
                 out[i] = str(int(_joy.Joystick(i).get_instance_id()))
             except Exception:
                 continue
         return out
+
+    def _raw_stick(self, index: int) -> Any | None:
+        """生joystick の実体を返す。GameController の可否に依存しない。
+
+        GameController として認識されない・open できない個体でも、
+        生joystick は校正済みの軸を返すことがある（実測）。軸だけを
+        読む経路と、ボタンと組にする経路の両方で使い回す。
+        """
+        key = int(index)
+        with self._lock:
+            cached = self._raw_sticks.get(key)
+        if cached is not None:
+            handle, dev_id = cached
+            try:
+                handle.get_numaxes()
+                if dev_id is None or handle.get_instance_id() == dev_id:
+                    return handle
+            except Exception:
+                pass
+            with self._lock:
+                self._raw_sticks.pop(key, None)
+        try:
+            import pygame.joystick as _joy
+
+            _joy.init()
+            if not 0 <= key < int(_joy.get_count()):
+                return None
+            handle = _joy.Joystick(key)
+            handle.init()
+            # 開いた時点の ID を控える。番号を使い回した別個体を弾く。
+            try:
+                dev_id = handle.get_instance_id()
+            except Exception:
+                dev_id = None
+        except Exception:
+            return None
+        with self._lock:
+            self._raw_sticks[key] = (handle, dev_id)
+        return handle
+
+    def _named_raw_stick(self, name_hint: str, *, ttl: float = 2.0) -> Any | None:
+        """名前が一致する生joystick を1台だけ探す（短時間キャッシュ）。
+
+        HID と SDL で番号がずれることがある（HIDはProCon 1台を0番に
+        載せる）。一意に決まるときだけ使う。同名が複数なら混ぜない。
+        """
+        key = name_hint.lower()
+        now = time.monotonic()
+        with self._lock:
+            cached = self._named_raw.get(key)
+        if cached is not None and now < cached[1]:
+            return cached[0]
+        found: list[Any] = []
+        for i in range(MAX_PADS):
+            handle = self._raw_stick(i)
+            if handle is None:
+                continue
+            try:
+                if key in str(handle.get_name()).lower():
+                    found.append(handle)
+            except Exception:
+                continue
+        handle = found[0] if len(found) == 1 else None
+        with self._lock:
+            self._named_raw[key] = (handle, now + ttl)
+        return handle
+
+    def read_axes(
+        self, index: int = 0, *, name_hint: str = ""
+    ) -> tuple[int, int, int, int, int, int, tuple[float, ...]] | None:
+        """生joystick の軸だけを読む。読めなければ None。
+
+        GameController の open が失敗しても、生joystick の軸は読める
+        ことがある。ProCon の HID 直読み（12bit）は校正が無く全倒しに
+        届かないため、PadSource はこの値でスティックを置き換える。
+        name_hint を渡すと、同じ番号の別機種を混ぜないよう名前で確かめる。
+        """
+        if not 0 <= int(index) < MAX_PADS:
+            return None
+        handle = self._raw_stick(index)
+        if name_hint:
+            same = False
+            if handle is not None:
+                try:
+                    same = name_hint.lower() in str(handle.get_name()).lower()
+                except Exception:
+                    same = False
+            if not same:
+                # 番号がずれている（HIDが0番、SDLが別番号など）ことがある。
+                handle = self._named_raw_stick(name_hint)
+            if handle is None:
+                return None
+        elif handle is None:
+            return None
+        try:
+            axes = [_normalize_axis(handle.get_axis(a)) for a in range(6)]
+        except Exception:
+            with self._lock:
+                self._raw_sticks.pop(int(index), None)
+                self._named_raw.clear()
+            return None
+        lx = _axis_to_short(axes[0])
+        ly = _axis_to_short(-axes[1])
+        rx = _axis_to_short(axes[2])
+        ry = _axis_to_short(-axes[3])
+        lt = _trigger_to_byte(axes[4])
+        rt = _trigger_to_byte(axes[5])
+        return (
+            lx,
+            ly,
+            rx,
+            ry,
+            lt,
+            rt,
+            tuple(round(float(v), 4) for v in axes),
+        )
 
     def _stick(self, index: int) -> tuple[Any | None, Any | None]:
         """(GameController, 生joystick) の組。掴めなければ (None, None)。
@@ -335,7 +520,7 @@ class SdlPadReader:
                 # 再接続で変わり、使い回されない（SDL_JoystickID 仕様）。
                 # 古い実体のまま読むと別物の軸が残り、中立で倒れ続ける。
                 try:
-                    if joy_stick.get_instance_id() != dev_id:
+                    if dev_id is not None and joy_stick.get_instance_id() != dev_id:
                         alive = False
                 except Exception:
                     pass
@@ -347,61 +532,39 @@ class SdlPadReader:
         if gc is None:
             return (None, None)
         # Steam起動中はHIDの奪い合いでopenが不安定になる実測（SDL#3450）。
-        # 失敗時は少し待って最大3回まで試す。
-        import time as _time
-
-        opened_gc: Any = None
-        last_exc: Exception | None = None
-        for _attempt in range(3):
-            try:
-                if not bool(gc.is_controller(int(index))):
-                    self._warn_once(
-                        f"not_controller:{index}",
-                        f"SDLがパッド{index}をGameControllerとして認識しません",
-                    )
-                    return (None, None)
-                opened_gc = gc.Controller(int(index))
-                break
-            except Exception as e:
-                opened_gc = None
-                last_exc = e
-                # 毎tick同じ失敗を出さない。理由（例外）ごとに1回だけ。
-                self._warn_once(
-                    f"controller_open:{index}:{e!r}",
-                    f"SDLでパッド{index}を開けません: {e}",
-                )
-                _time.sleep(0.2)
-        if opened_gc is None:
-            try:
-                present = bool(gc.is_controller(int(index)))
-            except Exception:
-                present = False
-            if present and last_exc is None:
-                self._warn_once(
-                    f"controller_open_failed:{index}",
-                    f"SDLでパッド{index}を開けません（3回試行）",
-                )
+        # read は 8ms 周期で呼ばれるため、ここで sleep して3回試すと
+        # 読み取りが0.6秒止まり、その間の入力が飛ぶ。失敗は時刻だけ
+        # 覚え、OPEN_RETRY_S 後に次の read が試す。
+        now = time.monotonic()
+        retry_at = self._open_retry_at.get(int(index), 0.0)
+        if now < retry_at:
             return (None, None)
         try:
-            raw_stick: Any | None = None
-            try:
-                import pygame.joystick as _joy
-
-                _joy.init()
-                if 0 <= int(index) < _joy.get_count():
-                    raw_stick = _joy.Joystick(int(index))
-                    raw_stick.init()
-            except Exception:
-                raw_stick = None
-            joy_stick = raw_stick
-            if joy_stick is None:
+            if not bool(gc.is_controller(int(index))):
+                self._warn_once(
+                    f"not_controller:{index}",
+                    f"SDLがパッド{index}をGameControllerとして認識しません",
+                )
                 return (None, None)
-            try:
-                dev_id = joy_stick.get_instance_id()
-            except Exception:
-                dev_id = None
-        except Exception:
+            opened_gc: Any = gc.Controller(int(index))
+        except Exception as e:
+            with self._lock:
+                self._open_retry_at[int(index)] = now + OPEN_RETRY_S
+            # 毎tick同じ失敗を出さない。理由（例外）ごとに1回だけ。
+            self._warn_once(
+                f"controller_open:{index}:{e!r}",
+                f"SDLでパッド{index}を開けません: {e}",
+            )
             return (None, None)
+        with self._lock:
+            self._open_retry_at.pop(int(index), None)
+        joy_stick = self._raw_stick(index)
+        if joy_stick is None:
+            return (None, None)
+        try:
+            dev_id = joy_stick.get_instance_id()
+        except Exception:
+            dev_id = None
         with self._lock:
             self._sticks[int(index)] = (opened_gc, joy_stick, dev_id)
         return (opened_gc, joy_stick)
@@ -423,9 +586,12 @@ class SdlPadReader:
             if self._missing_since is None:
                 self._missing_since = now
             elif now - self._missing_since >= RESET_MISSING_S:
-                # 未接続が続く: SDL を作り直して列挙をやり直す。
+                # 未接続が続く: 1台も列挙できていないときだけ、
+                # 掴んだ実体を捨てて列挙をやり直す。番号がずれている
+                # だけなら捨てない（列挙は生きている）。
                 self._missing_since = now
-                self._reset_sdl()
+                if not self._any_controller():
+                    self.invalidate(close_raw=False)
             return PadState()
         self._missing_since = None
         try:

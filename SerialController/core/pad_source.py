@@ -18,12 +18,16 @@ read(index) / scan() / available に加え、選択肢の表示名（names）と
   ・番号ごとに XInput → SDL の順で読み、繋がっている方を使う。
   ・一度選んだら覚える。毎回両方読むと、抜き差しのたびに遅くなる。
   ・抜けたら選び直す（繋がっていない読みが続いたら忘れる）。
+  ・HID直読み（ProCon）はボタンの受け皿だが、12bitスティックの校正が
+    無い。SDL の生joystick が同じ個体の軸を読めるなら、スティックだけ
+    SDL（校正済み -1..1）で置き換える。
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from typing import Any
 
 from core.sdl_pad import SdlPadReader
@@ -43,6 +47,12 @@ class PadSource:
     # HID open失敗後の再試行間隔(秒)。8ms周期の読みから毎回
     # 5回×0.3秒の再試行を呼ぶと、その間の読みが止まる。
     HID_RETRY_S = 0.5
+
+    # HID で読んでいる間に SDL を試し直す間隔(秒)。SDL の列挙は
+    # 起動直後に間に合わないことがあり、その一度の失敗で HID に
+    # 固定されると、校正済みの軸（SDL）へ戻れない。open は失敗時
+    # 0.5秒バックオフするため、ここから試しても読みは止まらない。
+    SDL_REPROBE_S = 5.0
 
     def __init__(
         self,
@@ -67,6 +77,8 @@ class PadSource:
         # HID open失敗の次回試行時刻と、SDL→HIDフォールバックのログ済み印。
         self._hid_retry_at = 0.0
         self._fallback_logged = False
+        # HID で読んでいる間に SDL を試し直す次回時刻。
+        self._sdl_reprobe_at = 0.0
 
     @property
     def available(self) -> bool:
@@ -86,6 +98,33 @@ class PadSource:
         except Exception:
             pass
         return sdl_ok
+
+    def invalidate(self) -> None:
+        """読み取り口のキャッシュを捨て、次の read で列挙し直す。
+
+        手動の「再接続」と、SDL の列挙が空になったときの復帰で使う。
+        HID のハンドルは閉じない（IMU 側と共有しており、閉じると
+        ジャイロが途切れる）。閉じているかは毎回 is_open で見る。
+        """
+        self._route.clear()
+        self._hid_retry_at = 0.0
+        self._hid_opened = False
+        self._fallback_logged = False
+        self._sdl_reprobe_at = 0.0
+        try:
+            self.sdl.invalidate()
+        except Exception as e:
+            logger.debug(f"SDLのキャッシュ破棄で例外: {e}")
+
+    def _read_route(self, route: str, index: int) -> PadState:
+        """名前で選んだ読み取り口から1回読む。"""
+        if route == "xinput":
+            return self._read_xinput(index)
+        if route == "sdl":
+            return self._read_sdl(index)
+        if route == "hid":
+            return self._read_hid(index)
+        return PadState()
 
     def _read_xinput(self, index: int) -> PadState:
         try:
@@ -152,9 +191,41 @@ class PadSource:
             # 開いている間は open を呼ばない（動いているハンドルを閉じる）。
             # ハンドルが閉じていれば次の読みで開き直す。
             self._hid_opened = bool(getattr(state, "connected", False))
-            return state
+            return self._with_sdl_sticks(index, state)
         except Exception:
             return PadState()
+
+    def _with_sdl_sticks(self, index: int, state: PadState) -> PadState:
+        """HID直結の未校正スティックを SDL の校正済み軸で置き換える。
+
+        ProCon の 0x30 12bit は 0..4095 の全域を使わない（実機実測で
+        左X 456..3545）。nintendo_hid の換算は中心0x800・フル0x800
+        なので、HID だけでは全倒しが約78%にしかならない。SDL の
+        生joystick は同じ個体を校正済みの -1..1 で返すため、ボタン・
+        トリガは HID のまま、スティックだけ SDL で補う。
+        GameController を開けなくても生joystick は読めることがある。
+        """
+        if not bool(getattr(state, "connected", False)):
+            return state
+        read_axes = getattr(self.sdl, "read_axes", None)
+        if not callable(read_axes):
+            return state
+        try:
+            # HID直結は ProCon 1台。同じ番号に別機種がいても混ぜない。
+            values = read_axes(int(index), name_hint="pro controller")
+        except Exception:
+            return state
+        if values is None:
+            return state
+        lx, ly, rx, ry, _lt, _rt, raw_axes = values
+        return replace(
+            state,
+            thumb_lx=int(lx),
+            thumb_ly=int(ly),
+            thumb_rx=int(rx),
+            thumb_ry=int(ry),
+            raw_axes=tuple(raw_axes),
+        )
 
     def read(self, index: int = 0) -> PadState:
         """指定番号を読む。どれも繋がっていなければ未接続を返す。
@@ -162,41 +233,41 @@ class PadSource:
         未選択の番号はSDL→HID→XInputの順に試す。SDL優先はXInputの
         DLL掴みが先行するとSDLのProCon USB接続が開けなくなる実測のため。
         HIDはSteam起動中のSDL不通時の受け皿（ProCon直読み）。
+        一度失敗した口は同じ回では読み直さない（SDLのopen失敗は
+        0.5秒バックオフするため、二重に呼ぶと無駄に待つ）。
         """
         if not 0 <= int(index) < MAX_PADS:
             return PadState()
+        state = PadState()
+        tried: set[str] = set()
         route = self._route.get(int(index))
-        if route == "xinput":
-            state = self._read_xinput(index)
+        if route == "hid":
+            # HID に固定されたまま校正済みの SDL 軸へ戻れないのを防ぐ。
+            now = time.monotonic()
+            if now >= self._sdl_reprobe_at:
+                self._sdl_reprobe_at = now + self.SDL_REPROBE_S
+                sdl_state = self._read_sdl(index)
+                if sdl_state.connected:
+                    self._route[int(index)] = "sdl"
+                    return sdl_state
+        if route:
+            tried.add(route)
+            state = self._read_route(route, index)
             if state.connected:
                 return state
             self._route.pop(int(index), None)
-        elif route == "sdl":
-            state = self._read_sdl(index)
-            if state.connected:
-                return state
-            self._route.pop(int(index), None)
-        elif route == "hid":
-            state = self._read_hid(index)
-            if state.connected:
-                return state
-            self._route.pop(int(index), None)
-        state = self._read_sdl(index)
-        if state.connected:
-            self._route[int(index)] = "sdl"
-            return state
-        state = self._read_hid(index)
-        if state.connected:
-            self._route[int(index)] = "hid"
-            if not self._fallback_logged:
+        for name in ("sdl", "hid", "xinput"):
+            if name in tried:
+                continue
+            state = self._read_route(name, index)
+            if not state.connected:
+                continue
+            self._route[int(index)] = name
+            if name == "hid" and not self._fallback_logged:
                 self._fallback_logged = True
                 logger.warning(
                     "SDLでパッドを読めないため、HID直結（ProCon）へ切り替えました"
                 )
-            return state
-        state = self._read_xinput(index)
-        if state.connected:
-            self._route[int(index)] = "xinput"
             return state
         return state
 

@@ -506,6 +506,26 @@ class SerialService:
                 logger.warning(f"ゲームパッドの停止で例外: {e}")
             self.gamepad = None
 
+    def invalidate_gamepad(self) -> bool:
+        """生きている読取器のキャッシュを捨てる（手動再接続用）。
+
+        止めも作り直しもしない。捨てた（実体があった）ら True。
+        実体が無いときは False を返し、呼び出し側が列挙用の
+        読み取り口だけを破棄できるようにする。
+        """
+        gamepad = self.gamepad
+        if gamepad is None:
+            return False
+        invalidate = getattr(gamepad, "invalidate_reader", None)
+        if not callable(invalidate):
+            return False
+        try:
+            invalidate()
+            return True
+        except Exception as e:
+            logger.warning(f"ゲームパッドの読み取り口を破棄できません: {e}")
+            return False
+
     def set_gamepad_display(self, fn: Callable[[dict[str, Any]], None] | None) -> None:
         """ゲームパッド入力の表示先を差し替える（仮想パッドの鏡用）。
 

@@ -221,9 +221,11 @@ def test_route_switch_resets_packet_and_hold() -> None:
     # 同じ番号でも変化なしとして省かれる
     assert pad.poll_once() is True
     assert sender.calls == []
-    # 口が切り替わったら同番号でも申告し直す
+    # 口が切り替わったら同番号でも申告し直す。前の口で押していた
+    # 扱いを残さないよう、いったん解放してから押し直す。
     reader.route = "sdl"
     assert pad.poll_once() is True
+    assert ("release", (int(Button.A),), "gamepad") in sender.calls
     assert ("press", (int(Button.A),), "gamepad") in sender.calls
 
 
@@ -320,8 +322,11 @@ def test_service_gamepad_lifecycle() -> None:
     assert service.set_gamepad_enabled(False) is None
     service.sender = FakeSender()  # type: ignore[assignment]
     assert service.set_gamepad_enabled(True, 0) is None
+    # 読取器のキャッシュ破棄は実体があるときだけ True。
+    assert service.invalidate_gamepad() is True
     service.stop_gamepad()
     assert service.gamepad is None
+    assert service.invalidate_gamepad() is False
     # 切断・終了でも止まる
     assert service.set_gamepad_enabled(True, 0) is None
     service.disconnect()
@@ -333,3 +338,25 @@ def test_gamepad_is_human_source() -> None:
 
     assert Arbiter.is_human_source("gamepad") is True
     assert Arbiter.is_human_source("GAMEPAD") is True
+
+
+def test_invalidate_reader_drops_the_reader_cache() -> None:
+    """手動再接続用の破棄は、読取器のキャッシュだけを捨てる。"""
+
+    class _Invalidatable(ScriptedReader):
+        def __init__(self, states):
+            super().__init__(states)
+            self.invalidate_calls = 0
+
+        def invalidate(self) -> None:
+            self.invalidate_calls += 1
+
+    reader = _Invalidatable([_pad()])
+    pad = SwitchGamepadController(FakeSender(), reader=reader)  # type: ignore[arg-type]
+    pad.invalidate_reader()
+    assert reader.invalidate_calls == 1
+
+
+def test_invalidate_reader_is_safe_without_the_hook() -> None:
+    pad = SwitchGamepadController(FakeSender(), reader=ScriptedReader([_pad()]))  # type: ignore[arg-type]
+    pad.invalidate_reader()

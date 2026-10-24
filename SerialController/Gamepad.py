@@ -221,6 +221,21 @@ class SwitchGamepadController:
         thread = self._thread
         return thread is not None and thread.is_alive()
 
+    def invalidate_reader(self) -> None:
+        """読み取り口のキャッシュを捨てる（手動再接続用）。止めはしない。
+
+        読取スレッドはそのまま回す。次回の read が列挙からやり直し、
+        掴んだままの古い実体を捨てる。停止・作り直しは呼び出し側
+        （SerialService / UI）が行う。
+        """
+        invalidate = getattr(self.reader, "invalidate", None)
+        if not callable(invalidate):
+            return
+        try:
+            invalidate()
+        except Exception as e:
+            logger.debug(f"ゲームパッドの読み取り口を破棄できません: {e}")
+
     # -- 読み取り ------------------------------------------------------
 
     def _poll_loop(self) -> None:
@@ -291,7 +306,15 @@ class SwitchGamepadController:
             except Exception:
                 route = None
         if route != getattr(self, "_last_route", None):
+            # 口の切り替えは「別の番号空間」への移動であり、前口で
+            # 押していた扱いをそのまま持ち越せない。押しっぱなしを
+            # 残さないよう、先に中立を申告してから保持を捨てる。
             self._last_route = route
+            if self._has_held():
+                try:
+                    self._release_all()
+                except Exception as e:
+                    logger.warning(f"ゲームパッドの解放で例外: {e}")
             self._last_packet = None
             self._last_mapped = None
             self._held_btn.clear()

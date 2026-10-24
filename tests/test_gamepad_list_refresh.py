@@ -51,6 +51,16 @@ class _Spin:
         return self if self.focused else None
 
 
+class _Button:
+    """ttk.Button の代役。state() の呼び出しだけ覚える。"""
+
+    def __init__(self) -> None:
+        self.states: list[Any] = []
+
+    def state(self, states: Any) -> None:
+        self.states.append(states)
+
+
 class _Settings:
     def __init__(self, index: int, deadzone: int) -> None:
         self.gamepad_index = _Var(index)
@@ -62,11 +72,17 @@ class _Serial:
         self.events: list[Any] = []
         self.thread_ids: list[int] = []
         self.gate: threading.Event | None = None
+        self.has_gamepad = False
+        self.invalidate_calls = 0
 
     def _record(self) -> None:
         self.thread_ids.append(threading.get_ident())
         if self.gate is not None:
             self.gate.wait(3.0)
+
+    def invalidate_gamepad(self) -> bool:
+        self.invalidate_calls += 1
+        return self.has_gamepad
 
     def stop_gamepad(self) -> None:
         self._record()
@@ -87,6 +103,7 @@ class _Source:
         self.thread_ids: list[int] = []
         self.gate: threading.Event | None = None
         self.names_calls = 0
+        self.invalidate_calls = 0
 
     def names(self) -> dict[int, str]:
         self.names_calls += 1
@@ -97,6 +114,9 @@ class _Source:
 
     def identities(self) -> dict[int, str]:
         return dict(self.id_map)
+
+    def invalidate(self) -> None:
+        self.invalidate_calls += 1
 
 
 class _Panel(SerialPanelMixin):
@@ -112,13 +132,16 @@ class _Panel(SerialPanelMixin):
         self.settings = _Settings(index, deadzone)
         self.gamepad_cb = _Combo()
         self.gamepad_choice = _Var("")
+        self.gamepad_reconnect_btn = _Button()
         self._gamepad_map: dict[str, int] = {}
         self.gamepad_dz = _Var(field)
         self.gamepad_dz_spin = _Spin(focused)
         self.is_use_gamepad = _Var(enabled)
         self.serial = _Serial()
         self._gamepad_ids: dict[int, str] = {}
+        self._gamepad_names: dict[int, str] = {}
         self._gamepad_identity = ""
+        self._gamepad_name = ""
         self.calls: list[str] = []
         # 列挙と掴み直しはワーカー。結果は inbox 経由で GUI へ戻す。
         self.inbox = UiInbox()
@@ -127,6 +150,9 @@ class _Panel(SerialPanelMixin):
         self._gamepad_restart_busy = False
         self._gamepad_restart_thread: threading.Thread | None = None
         self._gamepad_restart_pending: Any = None
+        self._gamepad_reconnect_busy = False
+        self._gamepad_reconnect_thread: threading.Thread | None = None
+        self._gamepad_skip_auto_restart = False
 
     def refreshGamepads(self) -> None:
         """ワーカーを回し、テストでは完了まで待ってから返す。"""
@@ -154,9 +180,11 @@ def _settle(panel: _Panel, timeout: float = 3.0) -> None:
         threads = (
             getattr(panel, "_gamepad_refresh_thread", None),
             getattr(panel, "_gamepad_restart_thread", None),
+            getattr(panel, "_gamepad_reconnect_thread", None),
         )
         busy = any(t is not None and t.is_alive() for t in threads)
         busy = busy or panel._gamepad_refresh_busy or panel._gamepad_restart_busy
+        busy = busy or getattr(panel, "_gamepad_reconnect_busy", False)
         if not busy and panel.inbox.pending() == 0:
             return
         time.sleep(0.005)
@@ -329,3 +357,135 @@ def test_follow_does_not_chase_a_device_that_is_gone(
     assert panel.settings.gamepad_index.get() == 1
     assert panel.gamepad_choice.get() == "1: C"
     assert panel._gamepad_identity == "c"
+
+
+def test_refresh_follows_a_replugged_device_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """再接続で instance_id が変わっても、一意な名前なら同じ個体を選ぶ。"""
+    source = _Source({0: "A", 1: "B"}, {0: "a", 1: "b"})
+    panel = _Panel(index=1, enabled=True)
+    _install_source(monkeypatch, source)
+    panel.refreshGamepads()
+    assert panel._gamepad_name == "B"
+
+    # B を抜き差しして番号0へ。A は番号1へ詰め直された。
+    source.names_map = {0: "B", 1: "A"}
+    source.id_map = {0: "b-new", 1: "a"}
+    panel.refreshGamepads()
+
+    assert panel.settings.gamepad_index.get() == 0
+    assert panel.gamepad_choice.get() == "0: B"
+    assert panel._gamepad_identity == "b-new"
+    assert panel.serial.events == ["stop", ("enable", True, 0, 1638)]
+
+
+def test_refresh_moves_a_stale_index_to_the_only_pad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """設定に残った古い番号でも、繋がっているのが1台なら選び直す。"""
+    source = _Source({0: "A"}, {0: "a"})
+    panel = _Panel(index=1)
+    _install_source(monkeypatch, source)
+
+    panel.refreshGamepads()
+
+    assert panel.settings.gamepad_index.get() == 0
+    assert panel.gamepad_choice.get() == "0: A"
+
+
+def test_refresh_moves_to_the_only_pad_when_the_selected_one_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """選んでいた個体が抜け、1台だけ残ったならその1台へ復帰する。"""
+    source = _Source({0: "A", 1: "B"}, {0: "a", 1: "b"})
+    panel = _Panel(index=1, enabled=True)
+    _install_source(monkeypatch, source)
+    panel.refreshGamepads()
+
+    source.names_map = {0: "A"}
+    source.id_map = {0: "a"}
+    panel.refreshGamepads()
+
+    assert panel.settings.gamepad_index.get() == 0
+    assert panel.gamepad_choice.get() == "0: A"
+    assert panel.serial.events == ["stop", ("enable", True, 0, 1638)]
+
+
+def test_manual_reconnect_invalidates_and_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """手動再接続はキャッシュを捨て、同じ番号でも掴み直す。"""
+    source = _Source({0: "A"}, {0: "a"})
+    panel = _Panel(index=0, enabled=True)
+    _install_source(monkeypatch, source)
+    panel.refreshGamepads()
+    source.invalidate_calls = 0
+    panel.serial.events.clear()
+
+    panel._on_gamepad_reconnect()
+    _settle(panel)
+
+    assert source.invalidate_calls == 1
+    assert panel.serial.invalidate_calls == 1
+    assert panel.serial.events == ["stop", ("enable", True, 0, 1638)]
+    assert panel._gamepad_reconnect_busy is False
+    assert panel.gamepad_reconnect_btn.states == [["disabled"], ["!disabled"]]
+
+
+def test_manual_reconnect_does_not_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _Source({0: "A"}, {0: "a"})
+    source.gate = threading.Event()
+    panel = _Panel(index=0)
+    _install_source(monkeypatch, source)
+
+    panel._on_gamepad_reconnect()
+    panel._on_gamepad_reconnect()
+    source.gate.set()
+    _settle(panel)
+
+    assert source.invalidate_calls == 1
+    assert source.names_calls == 1
+
+
+def test_manual_reconnect_uses_the_live_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """動いている読取器があるときは、その実体のキャッシュを捨てる。"""
+    source = _Source({0: "A"}, {0: "a"})
+    panel = _Panel(index=0, enabled=True)
+    panel.serial.has_gamepad = True
+    _install_source(monkeypatch, source)
+    panel.refreshGamepads()
+    source.invalidate_calls = 0
+
+    panel._on_gamepad_reconnect()
+    _settle(panel)
+
+    assert panel.serial.invalidate_calls == 1
+    # 実体の破棄は読取器側が行う。一覧用の別実体は捨て直さない。
+    assert source.invalidate_calls == 0
+
+
+def test_manual_reconnect_when_disabled_only_relists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _Source({0: "A"}, {0: "a"})
+    panel = _Panel(index=0, enabled=False)
+    _install_source(monkeypatch, source)
+
+    panel._on_gamepad_reconnect()
+    _settle(panel)
+
+    assert panel.serial.events == []
+    assert panel._gamepad_restart_busy is False
+    assert panel.gamepad_choice.get() == "0: A"
+
+
+def test_restart_is_a_noop_when_disabled() -> None:
+    panel = _Panel(index=0, enabled=False)
+    panel._restart_gamepad_at(1)
+    assert panel._gamepad_restart_busy is False
+    assert panel.serial.events == []
