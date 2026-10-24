@@ -327,6 +327,125 @@ def test_proc_socket_framing_round_trip_and_eof():
         getter.close()
 
 
+def test_proc_send_imu_queues_without_rpc(monkeypatch):
+    """IMUは同期RPCを通らず、子が50フレーム書く。統計は親側で数える。"""
+    import time as _time
+
+    import core.transport.bcon as _bcon
+    from core.transport import bcon_proc
+    from core.transport.bcon_protocol import T_IMU_SAMPLE
+
+    sers: list[_ScriptedSer] = []
+
+    def _factory(*args: Any, **kwargs: Any) -> _ScriptedSer:
+        ser = _ScriptedSer()
+        sers.append(ser)
+        return ser
+
+    monkeypatch.setattr(_bcon.serial, "Serial", _factory)
+    made = bcon_proc.BconProcTransport(_spawn=_fake_spawn)
+    calls: list[str] = []
+    real_call = made._call
+
+    def _counting(method: str, args: tuple = (), **kwargs: Any) -> tuple[bool, Any]:
+        calls.append(method)
+        return real_call(method, args, **kwargs)
+
+    made._call = _counting  # type: ignore[method-assign]
+    try:
+        assert made.open(3, "COM3", 1000000) is True
+        for i in range(50):
+            assert made.send_imu(i, 0, 4096, 0, 0, 0) is True
+        assert calls == [], f"IMUが同期RPCを通った: {calls}"
+        assert made.imu_stats() == {"sent": 50, "dropped": 0}
+        deadline = _time.perf_counter() + 5.0
+        frames: list[bytes] = []
+        while _time.perf_counter() < deadline:
+            frames = [
+                f
+                for f in _all_written(sers)
+                if len(f) >= 2 and f[0] == 0xAB and f[1] == T_IMU_SAMPLE
+            ]
+            if len(frames) >= 50:
+                break
+            _time.sleep(0.005)
+        assert len(frames) == 50, f"子のIMUフレームが{len(frames)}件"
+        assert all(f[2] == 12 for f in frames)
+    finally:
+        made.close()
+
+
+def test_proc_sockets_enable_tcp_nodelay(monkeypatch):
+    """accept側・connect側の両方でTCP_NODELAYを立てる。"""
+    import socket as _socket
+
+    import core.transport.bcon_proc as _proc
+    from core.transport import bcon_proc_child
+
+    nodelay = (_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+    got_accepted: list[tuple[int, int, int]] = []
+    got_connected: list[tuple[int, int, int]] = []
+
+    class _Sock:
+        def __init__(self, log: list[tuple[int, int, int]] | None = None) -> None:
+            self._log = log
+
+        def setsockopt(self, level: int, opt: int, value: int) -> None:
+            if self._log is not None:
+                self._log.append((level, opt, value))
+
+        def setblocking(self, flag: bool) -> None:
+            pass
+
+        def settimeout(self, value: Any) -> None:
+            pass
+
+        def getsockname(self) -> tuple[str, int]:
+            return ("127.0.0.1", 4321)
+
+        def sendall(self, data: bytes) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    conn = _Sock(got_accepted)
+
+    class _Listener(_Sock):
+        def bind(self, addr: Any) -> None:
+            pass
+
+        def listen(self, backlog: int) -> None:
+            pass
+
+        def accept(self) -> tuple[Any, tuple[str, int]]:
+            return conn, ("127.0.0.1", 1)
+
+    class _Proc:
+        def terminate(self) -> None:
+            pass
+
+    monkeypatch.setattr(_proc.socket, "socket", lambda *a, **k: _Listener())
+    monkeypatch.setattr(_proc.subprocess, "Popen", lambda *a, **k: _Proc())
+    monkeypatch.setattr(_proc.secrets, "token_hex", lambda n: "tok")
+    monkeypatch.setattr(_proc, "_recv_framed", lambda sock: ("hello-child", "tok"))
+    _proc._default_spawn(None, {})
+
+    child_sock = _Sock(got_connected)
+    monkeypatch.setattr(
+        bcon_proc_child.socket, "create_connection", lambda *a, **k: child_sock
+    )
+    monkeypatch.setattr(_proc, "_worker_main", lambda *a, **k: None)
+    import base64
+    import pickle
+
+    cfg_b64 = base64.b64encode(pickle.dumps({})).decode("ascii")
+    assert bcon_proc_child._child_main(4321, "tok", cfg_b64) == 0
+
+    assert got_accepted == [nodelay]
+    assert got_connected == [nodelay]
+
+
 def test_proc_live_loop_and_hooks(monkeypatch):
     import time as _time
 

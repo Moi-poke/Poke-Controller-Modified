@@ -16,7 +16,11 @@ import sys
 
 
 def _child_main(port: int, token: str, cfg_b64: str) -> int:
-    from core.transport.bcon_proc import _SocketQueue, _worker_main
+    from core.transport.bcon_proc import (
+        _SocketQueue,
+        _enable_tcp_nodelay,
+        _worker_main,
+    )
 
     try:
         cfg = pickle.loads(base64.b64decode(cfg_b64.encode("ascii")))
@@ -28,6 +32,7 @@ def _child_main(port: int, token: str, cfg_b64: str) -> int:
         sock = socket.create_connection(("127.0.0.1", int(port)), timeout=10.0)
     except Exception:
         return 2
+    _enable_tcp_nodelay(sock)
     try:
         payload = ("hello-child", str(token))
         raw = pickle.dumps(payload, protocol=4)

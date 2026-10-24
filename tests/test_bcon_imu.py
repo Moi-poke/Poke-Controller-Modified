@@ -1,6 +1,7 @@
 """IMU_SAMPLE送受信のhostベクタ（実機不要）。"""
 
 import struct
+import threading
 import time
 
 
@@ -118,6 +119,68 @@ def test_imu_loop_sends_periodic():
         for frame in made.ser.written:
             assert frame[1] == 0x04
     finally:
+        made.close()
+
+
+def test_send_imu_does_not_fire_write_hooks():
+    """IMUは入力行ではないのでSenderのフックを呼ばない（send_rowは従来どおり）。"""
+    made = _open_transport()
+    calls = []
+    made.set_hooks(
+        lambda row, show=True: calls.append(("begin", row)),
+        lambda row, show=True: calls.append(("end", row)),
+    )
+    try:
+        assert made.send_imu(0, 0, 4096, 100, -100, 0) is True
+        assert calls == []
+        made.send_row("10 08")
+        assert [kind for kind, _row in calls] == ["begin", "end"]
+    finally:
+        made.close()
+
+
+def test_imu_loop_restart_after_stuck_stop_uses_new_source():
+    """停止joinが0.5秒で諦めた直後の開始でも、新しいsourceで送出する。"""
+    import struct
+
+    from core.transport.bcon_protocol import T_IMU_SAMPLE
+
+    made = _open_transport()
+    release = threading.Event()
+    entered = threading.Event()
+
+    def _slow() -> tuple[int, int, int, int, int, int]:
+        entered.set()
+        release.wait(2.0)
+        return (1, 0, 4096, 0, 0, 0)
+
+    try:
+        assert made.start_imu_loop(_slow, interval_s=0.01) is True
+        assert entered.wait(1.0), "旧loopがsourceを呼ばない"
+        # 旧スレッドはsource内で止まっているためjoinがtimeoutする。
+        assert made.stop_imu_loop() is False
+        sent_before = made.imu_stats()["sent"]
+        assert (
+            made.start_imu_loop(lambda: (2, 0, 4096, 0, 0, 0), interval_s=0.01) is True
+        )
+        assert made.imu_loop_running() is True
+        release.set()
+        deadline = time.time() + 2.0
+        while made.imu_stats()["sent"] <= sent_before and time.time() < deadline:
+            time.sleep(0.01)
+        assert made.imu_stats()["sent"] > sent_before
+        axes = [
+            struct.unpack("<6h", f[3:15])[0]
+            for f in made.ser.written
+            if len(f) >= 15 and f[1] == T_IMU_SAMPLE
+        ]
+        assert axes, "再開後にIMUが線へ出ない"
+        assert 2 in axes, "新しいsourceの値が送られていない"
+        assert 1 not in axes, "停止した旧sourceが送り続けている"
+        assert made.stop_imu_loop() is True
+        assert made.imu_loop_running() is False
+    finally:
+        release.set()
         made.close()
 
 

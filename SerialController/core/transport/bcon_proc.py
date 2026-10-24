@@ -96,6 +96,19 @@ def _picklable(value: Any) -> bool:
     return True
 
 
+def _enable_tcp_nodelay(sock: Any) -> None:
+    """ループバックの小包をNagle/遅延ACKで溜めない（失敗は握る）。
+
+    IMUは5ms刻みの小さなopを親→子へ流す。Nagleが効くと20ms級に
+    まとめられ、子の送出周期と噛み合わず遅延・取りこぼしになる。
+    設定できない環境（非TCPの差し替え等）でも続行する。
+    """
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception:
+        pass
+
+
 class _PeerGone(EOFError):
     """相手が死んだ（ソケットEOF）。"""
 
@@ -310,6 +323,15 @@ def _worker_main(cmd_q: Any, evt_q: Any, cfg: dict) -> None:
                     traceback.print_exc()
                 _reply(call_id, True, True)
                 continue
+            if op == "imu":
+                # 返信しない。親はキュー投入までを成功とみなし、成否を
+                # 待たない（200HzのIPC往復を無くすための専用op）。
+                _, ax, ay, az, gx, gy, gz = msg[:7]
+                try:
+                    transport.send_imu(ax, ay, az, gx, gy, gz)
+                except Exception:
+                    traceback.print_exc()
+                continue
             if op == "open":
                 _, call_id, port_num, port_name, baudrate = msg[:5]
                 try:
@@ -434,6 +456,7 @@ def _default_spawn(entry: Any, cfg: dict) -> tuple[Any, Any, Any]:
             except Exception:
                 pass
             raise RuntimeError("proc child did not connect")
+        _enable_tcp_nodelay(conn)
         try:
             conn.settimeout(15.0)
             hello = _recv_framed(conn)
@@ -553,6 +576,7 @@ class BconProcTransport(Transport):
         # IMU loopは親側で回す（sourceはコールバックのため子へ渡せない）。
         self._imu_loop_thread: threading.Thread | None = None
         self._imu_loop_stop = threading.Event()
+        self._imu_gen = 0
         self._imu_lock = threading.Lock()
         self._imu_stats_lock = threading.Lock()
         self._imu_sent = 0
@@ -1096,37 +1120,59 @@ class BconProcTransport(Transport):
         gy: int,
         gz: int,
     ) -> bool:
-        # 5ms周期のループから呼ばれるため、待ちは周期より十分短くする
-        # （既定の +5秒マージンだと子の多忙時に数秒ブロックする）。
-        ok, result = self._call(
-            "send_imu", (ax, ay, az, gx, gy, gz), timeout=0.02, margin=0.0
-        )
-        sent = bool(ok and result)
-        with self._imu_stats_lock:
-            if sent:
-                self._imu_sent += 1
-            else:
+        """子のIMU送出キューへ載せるだけ。同期RPCしない。
+
+        200Hzで親子のIPC往復（Event待ち）を行うとGUIスレッドが詰まる
+        ため、返信不要の "imu" op を投げて投入成否だけ返す。子側の
+        write成否は待たない（厳密な数えは子のlive_stats/別統計の領分）。
+        送信統計 sent/dropped は親側の投入結果で維持する。
+        """
+        if not self._worker_alive():
+            with self._imu_stats_lock:
                 self._imu_dropped += 1
-        return sent
+            return False
+        try:
+            self._cmd_q.put(("imu", ax, ay, az, gx, gy, gz))
+        except Exception:
+            with self._imu_stats_lock:
+                self._imu_dropped += 1
+            if not self._worker_alive():
+                self._mark_dead()
+            return False
+        with self._imu_stats_lock:
+            self._imu_sent += 1
+        return True
 
     def imu_loop_running(self) -> bool:
         thread = self._imu_loop_thread
         return bool(thread is not None and thread.is_alive())
 
     def start_imu_loop(self, source: Any, interval_s: float = IMU_INTERVAL_S) -> bool:
-        """親側でサンプルを読み、子の send_imu をRPCで呼ぶ。
+        """親側でサンプルを読み、子のIMUキューへ載せる。
 
         source は関数のため子プロセスへ渡せない。送出は子が行うので、
         親は読むだけの薄いループを持つ。
+
+        停止要求中に旧スレッドが生き残っていても（stopのjoinが0.5秒で
+        諦めた場合）、世代を進めて新しいsourceで起こす。旧スレッドは
+        自分の世代でないと気づき次第抜けるため「開始したのに送出0」に
+        ならない。
         """
         with self._imu_lock:
             thread = self._imu_loop_thread
-            if thread is not None and thread.is_alive():
+            if (
+                thread is not None
+                and thread.is_alive()
+                and not self._imu_loop_stop.is_set()
+            ):
                 return True
-            self._imu_loop_stop.clear()
+            self._imu_gen += 1
+            generation = self._imu_gen
+            stop = threading.Event()
+            self._imu_loop_stop = stop
             worker = threading.Thread(
                 target=self._imu_loop_run,
-                args=(source, float(interval_s)),
+                args=(generation, stop, source, float(interval_s)),
                 name="bcon-proc-imu",
                 daemon=True,
             )
@@ -1134,35 +1180,48 @@ class BconProcTransport(Transport):
             worker.start()
         return True
 
-    def _imu_loop_run(self, source: Any, interval_s: float) -> None:
+    def _imu_loop_run(
+        self,
+        generation: int,
+        stop: threading.Event,
+        source: Any,
+        interval_s: float,
+    ) -> None:
         deadline = time.perf_counter()
-        while not self._imu_loop_stop.is_set():
+        while not stop.is_set():
             deadline += interval_s
+            with self._imu_lock:
+                if self._imu_gen != generation:
+                    break
             try:
                 sample = source()
             except Exception:
                 sample = None
             if sample is not None:
+                with self._imu_lock:
+                    if self._imu_gen != generation:
+                        break
                 try:
                     self.send_imu(*sample)
                 except Exception:
                     pass
             remain = deadline - time.perf_counter()
             if remain > 0:
-                self._imu_loop_stop.wait(remain)
+                stop.wait(remain)
             else:
                 deadline = time.perf_counter()
 
     def stop_imu_loop(self) -> bool:
-        """止まるまで待つ。死んでいなければ handle を残す（bcon と同じ契約）。
+        """止まるまで待つ（上限0.5秒）。死んでいなければ handle を残す。
 
-        0.5秒で join を打ち切ったときに handle を消すと、次の start が
-        二本目のループを起こし、古いスレッドも停止イベントのクリアで
-        生き返って二重送出になる。
+        joinを打ち切ってもhandleを消さないのは、startが「まだ生きている
+        旧スレッド」を把握して世代を進めるため。停止イベントは世代ごとに
+        別物なので、旧スレッドが次世代の開始で生き返ることはない。
         """
-        self._imu_loop_stop.set()
         with self._imu_lock:
+            stop = self._imu_loop_stop
             thread = self._imu_loop_thread
+        stop.set()
         if thread is None:
             return True
         thread.join(0.5)
