@@ -394,7 +394,9 @@ class PadSource:
             if name == "hid" and not self._fallback_logged:
                 self._fallback_logged = True
                 logger.warning(
-                    "SDLでパッドを読めないため、HID直結（ProCon）へ切り替えました"
+                    "HID直結（ProCon）でパッドを読みます"
+                    if not self.allow_sdl
+                    else "SDLでパッドを読めないため、HID直結（ProCon）へ切り替えました"
                 )
             return state
         return state
