@@ -240,11 +240,19 @@ class PadSource:
 
     def _hid_open_worker(self, reader: Any, opener: Any) -> None:
         """HID open の実体（読み取りスレッドを止めない）。"""
+        started = time.monotonic()
         ok = False
         try:
             ok = bool(opener(retries=1))
         except Exception:
             ok = False
+        duration = time.monotonic() - started
+        if duration >= 1.0:
+            # この待ちが以前は Gamepad の読み取りを止め、操作不能の
+            # 5秒スタックになっていた。非同期化後も原因切り分け用に残す。
+            logger.warning(f"HID openに{duration:.1f}秒かかりました (ok={ok})")
+        else:
+            logger.debug(f"HID open {duration:.3f}s (ok={ok})")
         try:
             if ok:
                 self._hid_opened = True
