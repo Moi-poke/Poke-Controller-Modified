@@ -100,7 +100,17 @@ class PadSource:
                 self._hid_opened = False
             reader = self._hid
             is_open = getattr(reader, "is_open", None)
-            if not self._hid_opened or (callable(is_open) and not is_open()):
+            if callable(is_open):
+                handle_open = bool(is_open())
+                if not handle_open:
+                    self._hid_opened = False
+            else:
+                # 判定口が無い実体は従来どおり `_hid_opened` を信じる。
+                handle_open = self._hid_opened
+            # 開いているハンドルにはopenを呼ばない。openは既存ハンドルを
+            # 閉じて開き直すため、IMU側が開いた直後やprobe直後に呼ぶと
+            # close→openの往復になり、パッド読みが未接続で返る。
+            if not handle_open:
                 opener = getattr(reader, "open", None)
                 if not callable(opener) or not opener():
                     return PadState()
@@ -109,8 +119,10 @@ class PadSource:
             if not callable(read_pad):
                 return PadState()
             state = read_pad()
-            if not getattr(state, "connected", False):
-                self._hid_opened = False
+            # 未接続は「ハンドルが閉じた」か「0x30が鮮度切れ」のどちらか。
+            # 開いている間は open を呼ばない（動いているハンドルを閉じる）。
+            # ハンドルが閉じていれば次の読みで開き直す。
+            self._hid_opened = bool(getattr(state, "connected", False))
             return state
         except Exception:
             return PadState()

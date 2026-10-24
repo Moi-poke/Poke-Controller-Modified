@@ -8,6 +8,7 @@ Switch Pro コンなど XInput に対応していないパッドは SDL（pygame
 from __future__ import annotations
 
 from core.sdl_pad import SdlPadReader, _axis_to_short, _trigger_to_byte
+from core.xinput import PadState
 
 
 def test_axis_conversion() -> None:
@@ -311,3 +312,86 @@ def test_sdl_names_listing(monkeypatch) -> None:
     stick = FakeController()
     _install_fake_gc(monkeypatch, {0: stick}, {0: "Pro Controller"})
     assert SdlPadReader().names() == {0: "Pro Controller"}
+
+
+class _NoPad:
+    """XInput/SDL の代役。常に未接続。"""
+
+    available = False
+
+    def read(self, index: int) -> PadState:
+        return PadState()
+
+    def scan(self) -> list[int]:
+        return []
+
+    def names(self) -> dict[int, str]:
+        return {}
+
+
+class _FakeHidPad:
+    """HID直読みの代役。open/close回数を数える。"""
+
+    def __init__(self, connected: bool = True) -> None:
+        self.opened = False
+        self.open_calls = 0
+        self.close_calls = 0
+        self.connected = connected
+
+    def is_open(self) -> bool:
+        return self.opened
+
+    def open(self) -> bool:
+        self.open_calls += 1
+        self.opened = True
+        return True
+
+    def read_pad(self) -> PadState:
+        return PadState(connected=self.opened and self.connected)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.opened = False
+
+
+def test_pad_source_hid_opens_once() -> None:
+    """probe保持で初回から接続扱いになり、開き直さない。"""
+    from core.pad_source import PadSource
+
+    hid = _FakeHidPad()
+    source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+    assert source.read(0).connected is True
+    assert source.read(0).connected is True
+    assert source.route_of(0) == "hid"
+    assert hid.open_calls == 1
+    assert hid.close_calls == 0
+
+
+def test_pad_source_hid_never_reopens_open_handle() -> None:
+    """開いているハンドルはprobe未取得でもopenを呼ばない。
+
+    route が "hid" のまま未接続だと同一tickで _read_hid が2回呼ばれる。
+    その両方で open を呼ぶと close→open が繰り返される。
+    """
+    from core.pad_source import PadSource
+
+    hid = _FakeHidPad(connected=False)
+    hid.opened = True  # IMU側が開いた直後（まだ0x30が無い）
+    source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+    source._route[0] = "hid"
+    assert source.read(0).connected is False
+    assert source.read(0).connected is False
+    assert hid.open_calls == 0
+    assert hid.close_calls == 0
+
+
+def test_pad_source_hid_reopens_after_external_close() -> None:
+    """USB再列挙でハンドルが閉じたら次の読みで開き直す。"""
+    from core.pad_source import PadSource
+
+    hid = _FakeHidPad()
+    source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+    assert source.read(0).connected is True
+    hid.opened = False  # 読み取りスレッドが閉じた
+    assert source.read(0).connected is True
+    assert hid.open_calls == 2
