@@ -296,7 +296,7 @@ class GuiSettings:
             return
         try:
             loaded = self.setting.read(self.setting_path, encoding="utf-8")
-        except (configparser.Error, OSError) as exc:
+        except (configparser.Error, OSError, UnicodeDecodeError) as exc:
             logger.error(f"設定ファイルを読めないため既定値を使います: {exc}")
             self.setting.clear()
             return
