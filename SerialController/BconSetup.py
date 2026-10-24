@@ -331,6 +331,21 @@ def decode_player_save(byte: int) -> bool:
     return bool(value & PLAYER_FLAG_CAP_SAVED)
 
 
+# PLAYER_INFO flags bit3-4/bit5-6 は Switch が 0x41 で要求した IMU レンジ。
+# FW が ACK 時に保持した値を可視化用に載せている（旧FWは0のまま）。
+GYRO_RANGE_LABELS = ("±250dps", "±500dps", "±1000dps", "±2000dps")
+ACCEL_RANGE_LABELS = ("±8G", "±4G", "±2G", "±16G")
+
+
+def decode_player_imu_range(byte: int) -> tuple[str, str]:
+    """PLAYER_INFO flags の IMU要求レンジを表示名へ。未知bitは見ない。"""
+    value = int(byte) & 0xFF
+    return (
+        GYRO_RANGE_LABELS[(value >> 3) & 0x3],
+        ACCEL_RANGE_LABELS[(value >> 5) & 0x3],
+    )
+
+
 def _pre_status_snapshot(transport: Any) -> dict[str, Any] | None:
     """送出前のSTATUS写しを取る。線に触れず、口が無ければNone。
 
@@ -508,14 +523,6 @@ class BconSetup:
         self._col_ops = col_ops
         self._col_info = col_info
 
-        # 短い案内だけ外に置く。詳しい注意は各ボタンの吹き出しへ移した
-        # （長い1行が列の幅を決めないよう短く保つ）。
-        ttk.Label(
-            col_ops,
-            text="シリアルを開いてから「接続」を押してください。",
-            justify=tk.LEFT,
-            wraplength="240p" if embedded else 0,
-        ).pack(anchor=tk.W, pady=(0, 8))
         # 実行中は全ボタンを止める。止めた旨の表示だけ別に置く。
         self._busy_label = ttk.Label(col_ops, text="")
         self._busy_label.pack(anchor=tk.W)
@@ -671,13 +678,6 @@ class BconSetup:
             command=lambda: self._on_emulate_set(2),
         )
         self._btn_e2.grid(row=1, column=3, sticky=tk.EW, padx=2, pady=2)
-        ttk.Label(
-            grp_mode,
-            text="切替後は約0.5秒で再起動します。"
-            "復帰したら「接続」からやり直してください。",
-            justify=tk.LEFT,
-            wraplength="240p" if embedded else 0,
-        ).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=2, pady=2)
 
         # 取り消せない操作だけ集める。他のボタンはここへ置かない
         # （押し間違いを防ぐための隔離であり、処理は何も変えない）。
@@ -750,7 +750,7 @@ class BconSetup:
                     outline="#4D4D4D",
                 )
             )
-        self._imu_label = ttk.Label(grp_state, text="IMU: 未受信")
+        self._imu_label = ttk.Label(grp_state, text="ジャイロ: なし")
         self._imu_label.grid(row=1, column=0, sticky=tk.W, padx=2, pady=2)
         self._vib_label = ttk.Label(grp_state, text="振動: 未受信")
         self._vib_label.grid(row=1, column=1, sticky=tk.W, padx=2, pady=2)
@@ -1085,7 +1085,7 @@ class BconSetup:
                 # 閉じた後・stubなど、描けない時は色だけ諦める。
                 pass
         for name, label, detected in (
-            ("_imu_label", "IMU", imu),
+            ("_imu_label", "ジャイロ", imu),
             ("_vib_label", "振動", vibration),
         ):
             widget = getattr(self, name, None)
@@ -1097,6 +1097,37 @@ class BconSetup:
                 continue
         # 保存証拠は表示と別に覚える。BEACONでは立てない。
         self._note_player_save(flags)
+        self._note_player_imu_range(flags)
+
+    def _note_player_imu_range(self, flags: Any) -> None:
+        """Switchが要求したIMUレンジ(0x41)を変化時だけログへ1行出す。
+
+        bit7は「0x41を実際に受信したか」。未受信のときの値は既定
+        (±2000dps/±8G) なので、要求と取り違えないよう明示する。
+        """
+        try:
+            value = int(flags) & 0xFF
+            gyro, accel = decode_player_imu_range(value)
+        except (TypeError, ValueError):
+            return
+        seen = bool(value & 0x80)
+        # bit0=0x40(IMU有効化)受信。0x41未着でも、こちらが立っていれば
+        # USB OUTのサブコマンド経路自体は生きていると判断できる。
+        imu_on = bool(value & 0x01)
+        shown = (gyro, accel, seen, imu_on)
+        if shown == getattr(self, "_imu_range_shown", None):
+            return
+        self._imu_range_shown = shown
+        if seen:
+            note = ""
+        elif imu_on:
+            note = "（未指定のため既定値）"
+        else:
+            note = "（未接続）"
+        try:
+            self._append(f"ジャイロ感度: {gyro} / {accel}{note}")
+        except Exception:
+            pass
 
     def _note_player_save(self, flags: Any) -> None:
         """PLAYER_INFO flags bit2を見たら保存済みを覚える。例外は出さない。"""
