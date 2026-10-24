@@ -216,14 +216,33 @@ class SdlPadReader:
         except Exception:
             return None
 
+    def _pump_events(self) -> None:
+        """SDL に到着/離脱イベントを処理させる。失敗しても読む側は止めない。
+
+        pump は read() だけでなく一覧の取得でも必要になる。ゲームパッド
+        操作がOFFの間は read() が呼ばれず、抜き差ししても一覧が古いまま
+        になるため。pygame が無い・pump が失敗する環境でも、名前の取得
+        自体は続ける。
+        """
+        try:
+            import pygame as _pygame
+
+            _pygame.event.pump()
+        except Exception:
+            pass
+
     def names(self) -> dict[int, str]:
         """繋がっているパッド番号 → 名前。選択肢の表示用。
 
         GameController と生joystick の和集合を返す。抜き差しで
         両者の番号がずれても、どちらかにいれば選べる。
+        取得の前に pump する（操作OFF中でもホットプラグを反映する）。
         """
         gc = self._gc()
         out: dict[int, str] = {}
+        # pump は GameController が使えない環境でも呼ぶ（SDL の到着/離脱を
+        # 処理するのは pygame 側であり、生joystick の列挙にも効く）。
+        self._pump_events()
         if gc is not None:
             try:
                 for i in range(int(gc.get_count())):
@@ -246,6 +265,32 @@ class SdlPadReader:
                     continue
         except Exception:
             pass
+        return out
+
+    def identities(self) -> dict[int, str]:
+        """繋がっているパッド番号 → 個体識別子。選択の追従用。
+
+        instance_id は接続中だけ一意で、SDL の仕様上ほかの個体へ
+        使い回されない。抜き差しで番号（index）が詰め直されても、
+        同じ個体を選び続けるための鍵として使う。取れない環境・
+        古い pygame では空を返す（呼び側は番号だけで追従する）。
+        """
+        if self._gc() is None:
+            return {}
+        self._pump_events()
+        out: dict[int, str] = {}
+        try:
+            import pygame.joystick as _joy
+
+            _joy.init()
+            count = int(_joy.get_count())
+        except Exception:
+            return out
+        for i in range(count):
+            try:
+                out[i] = str(int(_joy.Joystick(i).get_instance_id()))
+            except Exception:
+                continue
         return out
 
     def _stick(self, index: int) -> tuple[Any | None, Any | None]:
@@ -338,12 +383,7 @@ class SdlPadReader:
         # イベントポンプは未接続時も必須。SDL は pump でデバイスの
         # 到着/離脱を処理するため、接続後だけ呼ぶと一度見失った後に
         # 到着イベントを拾えず永久に復帰しない。
-        try:
-            import pygame as _pg
-
-            _pg.event.pump()
-        except Exception:
-            pass
+        self._pump_events()
         gc_stick, joy_stick = self._stick(index)
         if gc_stick is None or joy_stick is None:
             now = time.monotonic()

@@ -311,3 +311,43 @@ def test_sdl_names_listing(monkeypatch) -> None:
     stick = FakeController()
     _install_fake_gc(monkeypatch, {0: stick}, {0: "Pro Controller"})
     assert SdlPadReader().names() == {0: "Pro Controller"}
+
+
+def test_names_pumps_events_so_hotplug_shows_up(monkeypatch) -> None:
+    """操作OFF（read が呼ばれない）でも、一覧取得が pump して到着を拾う。"""
+    sticks: dict[int, FakeController] = {}
+    names: dict[int, str] = {}
+    _install_fake_gc(monkeypatch, sticks, names)
+    import pygame as _pg
+
+    def _pump() -> None:
+        # SDL は pump のときに到着イベントを処理して列挙を更新する。
+        if 0 not in names:
+            sticks[0] = FakeController()
+            names[0] = "Pro Controller"
+
+    _pg.event.pump = _pump
+    reader = SdlPadReader()
+    assert reader.names() == {0: "Pro Controller"}
+
+
+def test_names_survive_pump_failure(monkeypatch) -> None:
+    """pump が失敗しても名前の取得は続ける（pygame の機種差対策）。"""
+    stick = FakeController()
+    _install_fake_gc(monkeypatch, {0: stick}, {0: "Pro Controller"})
+    import pygame as _pg
+
+    def _boom() -> None:
+        raise RuntimeError("pump failed")
+
+    _pg.event.pump = _boom
+    assert SdlPadReader().names() == {0: "Pro Controller"}
+
+
+def test_identities_expose_instance_ids(monkeypatch) -> None:
+    first = FakeController()
+    first.get_instance_id = lambda: 41  # type: ignore[method-assign]
+    second = FakeController()
+    second.get_instance_id = lambda: 42  # type: ignore[method-assign]
+    _install_fake_gc(monkeypatch, {0: first, 1: second}, {0: "A", 1: "B"})
+    assert SdlPadReader().identities() == {0: "41", 1: "42"}
