@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 import tkinter as tk
 import tkinter.ttk as ttk
@@ -33,6 +34,30 @@ class _FakeTransport:
 
     def imu_stats(self) -> dict[str, int]:
         return {"sent": self.sent, "dropped": 0}
+
+
+class _GatedTransport(_FakeTransport):
+    """開始/停止をゲートで止め、ワーカーの重なりを観測する偽トランスポート。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.start_gate = threading.Event()
+        self.stop_gate = threading.Event()
+
+    def start_imu_loop(self, source: Any) -> bool:
+        self.start_calls += 1
+        self.source = source
+        released = self.start_gate.wait(3.0)
+        self.running = True
+        return released
+
+    def stop_imu_loop(self) -> bool:
+        self.stop_calls += 1
+        released = self.stop_gate.wait(3.0)
+        self.running = False
+        return released
 
 
 class _FakeSettings:
@@ -75,12 +100,14 @@ def _wait_until(pred: Any, root: Any = None, timeout: float = 3.0) -> bool:
 def _make_panel(
     tk_root: tk.Tk,
     settings_data: dict[str, str] | None = None,
-) -> tuple[Any, Any, _FakeTransport, _FakeSettings, tk.Toplevel]:
+    transport: Any = None,
+) -> tuple[Any, Any, Any, _FakeSettings, tk.Toplevel]:
     from ImuPanel import ImuPanel
 
     root = tk.Toplevel(tk_root)
     root.withdraw()
-    transport = _FakeTransport()
+    if transport is None:
+        transport = _FakeTransport()
     settings = _FakeSettings()
     if settings_data:
         settings.data.update(settings_data)
@@ -297,3 +324,193 @@ def test_imu_panel_manual_and_detail_rows_stay_below_controls(
     finally:
         panel.close()
         root.destroy()
+
+
+def test_imu_panel_debug_off_collapses_detail(tk_root: tk.Tk) -> None:
+    """デバッグOFFで詳細チェックだけでなく波形も畳む。"""
+    panel, root, _transport, _settings, _root = _make_panel(tk_root)
+    try:
+        panel._debug_var.set(True)
+        panel._on_debug_toggled()
+        panel._detail_var.set(True)
+        panel._on_detail_toggled()
+        root.update()
+        view = panel._gyro_view
+        assert view is not None
+
+        panel._debug_var.set(False)
+        panel._on_debug_toggled()
+        root.update()
+
+        assert panel._detail_var.get() is False
+        assert panel._gyro_view is None
+        assert panel._detail_cb.winfo_manager() == ""
+        assert view._stop is True
+    finally:
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_live_scale_and_invert_apply_while_streaming(
+    tk_root: tk.Tk,
+) -> None:
+    """送出中の感度・反転は次のサンプルから効き、停止中は次回開始から。"""
+    data = {
+        "source": "manual",
+        "accel_signs": "1,1,1",
+        "gyro_signs": "1,1,1",
+        "gyro_scale": "1.0",
+    }
+    panel, root, transport, settings, _root = _make_panel(tk_root, data)
+    try:
+        panel._manual_vars[3].set("1000")
+        panel._manual_vars[4].set("200")
+        panel._on_toggle()
+        assert _wait_until(lambda: transport.running, root)
+        assert _wait_until(lambda: panel._streaming is True, root)
+        source = transport.source
+        assert source is not None
+        assert source() == (0, 0, 4096, 1000, 200, 0)
+
+        panel._scale_var.set("0.5")
+        panel._on_scale_changed()
+        assert settings.data["gyro_scale"] == "0.5"
+        assert source() == (0, 0, 4096, 500, 100, 0)
+        assert _wait_until(lambda: any("即時" in line for line in panel._logged), root)
+
+        panel._invert_var.set("ジャイロ")
+        panel._on_invert_changed()
+        assert settings.data["gyro_signs"] == "1,-1,-1"
+        assert source() == (0, 0, 4096, 500, -100, 0)
+
+        panel._on_toggle()
+        assert _wait_until(
+            lambda: panel._streaming is False and panel._stopping is False, root
+        )
+        trim_before = panel._live_trim
+        panel._scale_var.set("0.25")
+        panel._on_scale_changed()
+        assert panel._live_trim == trim_before
+        assert _wait_until(
+            lambda: any("次回から" in line for line in panel._logged), root
+        )
+    finally:
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_hid_live_invert_uses_hid_keys_only(tk_root: tk.Tk) -> None:
+    """HID直結の送出中反転は hid_* だけを読み書きし、SDL符号へ混ぜない。"""
+    data = {
+        "source": "hid",
+        "accel_signs": "-1,-1,1",
+        "gyro_signs": "-1,-1,1",
+        "hid_accel_signs": "1,1,1",
+        "hid_gyro_signs": "1,1,1",
+    }
+    panel, root, transport, settings, _root = _make_panel(tk_root, data)
+    try:
+        sample = (100, 200, 300, 10, 20, 30)
+
+        def read() -> tuple[int, int, int, int, int, int]:
+            return sample
+
+        # 実HIDを開かず、watched() の符号適用だけを確かめる。
+        setattr(panel, "_build_source", lambda _source, _pad: read)
+        panel._on_toggle()
+        assert _wait_until(lambda: panel._streaming is True, root)
+        source = transport.source
+        assert source is not None
+        assert source() == sample
+
+        panel._invert_var.set("加速度")
+        panel._on_invert_changed()
+        assert settings.data["hid_accel_signs"] == "1,-1,-1"
+        assert settings.data["hid_gyro_signs"] == "1,1,1"
+        assert source() == (100, -200, -300, 10, 20, 30)
+
+        panel._invert_var.set("ジャイロ")
+        panel._on_invert_changed()
+        assert settings.data["hid_accel_signs"] == "1,1,1"
+        assert settings.data["hid_gyro_signs"] == "1,-1,-1"
+        assert source() == (100, 200, 300, 10, -20, -30)
+
+        # SDL用の符号は表示の追従にも書き込みにも触らない。
+        assert settings.data["accel_signs"] == "-1,-1,1"
+        assert settings.data["gyro_signs"] == "-1,-1,1"
+    finally:
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_toggle_does_not_overlap_workers(tk_root: tk.Tk) -> None:
+    """連打しても開始/停止ワーカーが並走せず、停止後は再開始できる。"""
+    transport = _GatedTransport()
+    data = {
+        "source": "manual",
+        "accel_signs": "1,1,1",
+        "gyro_signs": "1,1,1",
+    }
+    panel, root, _transport, _settings, _root = _make_panel(tk_root, data, transport)
+    try:
+        panel._on_toggle()
+        panel._on_toggle()
+        assert getattr(panel, "_starting") is True
+        assert _wait_until(lambda: transport.start_calls == 1, root)
+        assert transport.stop_calls == 0
+        assert _wait_until(
+            lambda: any("処理中" in line for line in panel._logged), root
+        )
+
+        transport.start_gate.set()
+        assert _wait_until(lambda: panel._streaming is True, root)
+        assert getattr(panel, "_starting") is False
+        panel._on_toggle()
+        panel._on_toggle()
+        assert getattr(panel, "_stopping") is True
+        assert _wait_until(lambda: transport.stop_calls == 1, root)
+        assert transport.start_calls == 1
+        assert _wait_until(
+            lambda: any("処理中" in line for line in panel._logged), root
+        )
+
+        transport.stop_gate.set()
+        assert _wait_until(
+            lambda: panel._streaming is False and panel._stopping is False, root
+        )
+
+        # 停止完了後に開始を押したら、黙って無音にせず開始する。
+        panel._on_toggle()
+        assert _wait_until(lambda: transport.start_calls == 2, root)
+        assert _wait_until(lambda: panel._streaming is True, root)
+    finally:
+        transport.start_gate.set()
+        transport.stop_gate.set()
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_source_side_can_leave_signs_to_watched() -> None:
+    """source側の軸変換は符号を掛けない（watchedとの二重適用防止）。"""
+    from ImuPanel import ImuPanel
+
+    class _Reader:
+        def __init__(self) -> None:
+            self.maps: list[tuple[Any, ...]] = []
+
+        def set_axis_map(self, *args: Any) -> None:
+            self.maps.append(args)
+
+    settings = {
+        "accel_axes": "2,0,1",
+        "accel_signs": "-1,-1,1",
+        "gyro_axes": "2,0,1",
+        "gyro_signs": "-1,-1,1",
+    }
+    reader = _Reader()
+    ImuPanel._apply_axis_settings(reader, settings, apply_signs=False)
+    assert reader.maps == [((2, 0, 1), (1, 1, 1), (2, 0, 1), (1, 1, 1))]
+
+    fn = ImuPanel._sample_transform(settings, apply_signs=False)
+    assert fn is not None
+    assert fn((1, 2, 3, 4, 5, 6)) == (3, 1, 2, 6, 4, 5)

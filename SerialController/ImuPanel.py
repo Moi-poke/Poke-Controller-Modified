@@ -55,6 +55,9 @@ CURRENT_INVERT_LABEL = "設定値のまま"
 # ジャイロ出力倍率のプリセット（実機比較用）。
 SCALE_PRESETS = ("1.0", "0.5", "0.25", "0.125", "0.0625")
 
+# 送出中に毎サンプル読む加工値（倍率, 不感帯raw, 加速度符号, ジャイロ符号）。
+_LiveTrim = tuple[float, float, tuple[int, int, int], tuple[int, int, int]]
+
 
 class ImuPanel:
     """ジャイロ送出の操作面。"""
@@ -75,6 +78,14 @@ class ImuPanel:
         self._queue: queue.Queue = queue.Queue()
         self._stop = False
         self._streaming = False
+        # 開始/停止の作業スレッドが走っている間のフラグ。連打で
+        # _do_start と _do_stop が並走しないようにする。
+        self._starting = False
+        self._stopping = False
+        # 送出中に毎サンプル読む加工値（倍率, 不感帯raw, 加速度符号,
+        # ジャイロ符号）。断面を不変タプルで持つので、GUIスレッドからの
+        # 差し替えは次のサンプルから効く。
+        self._live_trim: _LiveTrim | None = None
         self._sensor_reader: Any = None
         self._step_gen: Any = None
         # 直近1秒の最大振幅。表示は瞬時値のため、単発の跳び(spike)を
@@ -203,9 +214,10 @@ class ImuPanel:
         )
         self._manual_frame.grid_remove()
         self._source_cb.bind("<<ComboboxSelected>>", self._on_source_changed, add="")
-        self._apply_visibility()
         # 詳細の可視化パネル。チェックONのときだけ同frame内に展開する。
+        # _apply_visibility() がデバッグOFFで畳むため、先に用意する。
         self._gyro_view: Any = None
+        self._apply_visibility()
         self._load_settings_into_vars()
         # この部品は Window.loadSettings() より先に作られる。設定がまだ
         # 無い状態の既定値で送出開始→保存すると保存値を潰すため、
@@ -301,6 +313,46 @@ class ImuPanel:
         prefix = "hid_" if self._source_name() == "hid" else ""
         return f"{prefix}accel_signs", f"{prefix}gyro_signs"
 
+    def _signs_from_settings(
+        self, settings: dict[str, str], source: str
+    ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        """その入力源が使う符号を設定から読む。読めなければ源の既定へ倒す。
+
+        HID直結は生値がSwitchフレームなので恒等、SDL路は軸写像の
+        逆変換（-1,-1,1）が前提。watched() が毎サンプル適用する。
+        """
+        default = (1, 1, 1) if source == "hid" else (-1, -1, 1)
+        try:
+            from config import parse_imu_axis_map
+        except Exception:
+            return default, default
+        prefix = "hid_" if source == "hid" else ""
+        acc = parse_imu_axis_map(str(settings.get(prefix + "accel_signs", "")), (-1, 1))
+        gyr = parse_imu_axis_map(str(settings.get(prefix + "gyro_signs", "")), (-1, 1))
+        if acc is None:
+            acc = default
+        if gyr is None:
+            gyr = default
+        return acc, gyr
+
+    def _live_trim_from_settings(
+        self, settings: dict[str, str], source: str
+    ) -> _LiveTrim:
+        """送出中に毎サンプル読む加工値を設定から組み立てる。"""
+        try:
+            gyro_scale = float(settings.get("gyro_scale", "1.0") or 1.0)
+        except (TypeError, ValueError):
+            gyro_scale = 1.0
+        if not 0.01 <= gyro_scale <= 4.0:
+            gyro_scale = 1.0
+        try:
+            dead_dps = float(settings.get("gyro_dead_dps", "0.0") or 0.0)
+        except (TypeError, ValueError):
+            dead_dps = 0.0
+        dead_raw = max(0.0, dead_dps) / 0.06103
+        acc_signs, gyr_signs = self._signs_from_settings(settings, source)
+        return (gyro_scale, dead_raw, acc_signs, gyr_signs)
+
     def _load_invert_from_settings(
         self, settings: dict[str, str] | None = None
     ) -> None:
@@ -360,6 +412,13 @@ class ImuPanel:
             self._detail_cb.grid()
         else:
             self._detail_cb.grid_remove()
+            # デバッグOFFで詳細チェックだけ消すと波形が残る。チェックも
+            # 畳み、入力源を通常へ戻した後も見えない状態に揃える。
+            try:
+                self._detail_var.set(False)
+            except Exception:
+                pass
+            self._collapse_detail()
         if not debug and source in DEBUG_SOURCES:
             # デバッグ源を選んだまま通常へ戻したら実機源へ寄せる。
             for name, label in SOURCE_LABELS:
@@ -410,7 +469,7 @@ class ImuPanel:
         return None
 
     def _on_invert_changed(self, _event: Any = None) -> None:
-        """反転の組み合わせを設定へ書く（次の送出開始から効く）。"""
+        """反転の組み合わせを設定へ書き、送出中なら次のサンプルから効かせる。"""
         mode = self._invert_mode()
         if mode is None:
             self._queue.put(("log", "IMU反転: 設定値のまま（符号は書き換えません）"))
@@ -426,10 +485,15 @@ class ImuPanel:
             )
         except Exception:
             pass
-        self._queue.put(("log", f"反転: {self._invert_var.get()}（次回から）"))
+        suffix = "（次回から）"
+        trim = self._live_trim
+        if self._streaming and trim is not None:
+            self._live_trim = (trim[0], trim[1], acc, gyr)
+            suffix = "（即時）"
+        self._queue.put(("log", f"反転: {self._invert_var.get()}{suffix}"))
 
     def _on_scale_changed(self, _event: Any = None) -> None:
-        """ジャイロ倍率を設定へ書く（次の送出開始から効く）。"""
+        """ジャイロ倍率を設定へ書き、送出中なら次のサンプルから効かせる。"""
         try:
             value = float(self._scale_var.get())
         except (TypeError, ValueError):
@@ -438,7 +502,12 @@ class ImuPanel:
             self._settings_writer({"gyro_scale": f"{value:g}"})
         except Exception:
             pass
-        self._queue.put(("log", f"倍率: {value:g}（次回から）"))
+        suffix = "（次回から）"
+        trim = self._live_trim
+        if self._streaming and trim is not None:
+            self._live_trim = (value, trim[1], trim[2], trim[3])
+            suffix = "（即時）"
+        self._queue.put(("log", f"倍率: {value:g}{suffix}"))
 
     def _source_name(self) -> str:
         """画面の入力源ラベル→設定名。読めなければsensor。"""
@@ -466,8 +535,18 @@ class ImuPanel:
 
     def _on_toggle(self) -> None:
         """送出の開始/停止。線操作は作業スレッドで行う。"""
+        if self._starting or self._stopping:
+            self._queue.put(
+                ("log", "開始/停止の処理中です。完了後にもう一度押してください。")
+            )
+            return
         if self._streaming:
-            thread = threading.Thread(target=self._do_stop, daemon=True)
+            self._stopping = True
+            try:
+                self._btn_toggle.configure(text="停止中…")
+            except Exception:
+                pass
+            thread = threading.Thread(target=self._stop_worker, daemon=True)
             thread.start()
             return
         source = self._source_name()
@@ -499,10 +578,31 @@ class ImuPanel:
             self._settings_writer(values)
         except Exception:
             pass
+        self._starting = True
+        try:
+            self._btn_toggle.configure(text="開始中…")
+        except Exception:
+            pass
         thread = threading.Thread(
-            target=self._do_start, args=(source, pad), daemon=True
+            target=self._start_worker, args=(source, pad), daemon=True
         )
         thread.start()
+
+    def _start_worker(self, source: str, pad: int) -> None:
+        """開始ワーカー。終了時は必ずフラグを戻し、失敗なら表示も戻す。"""
+        try:
+            self._do_start(source, pad)
+        finally:
+            self._starting = False
+            if not self._streaming:
+                self._queue.put(("state", "stopped"))
+
+    def _stop_worker(self) -> None:
+        """停止ワーカー。終了時は必ずフラグを戻す。"""
+        try:
+            self._do_stop()
+        finally:
+            self._stopping = False
 
     def _on_step_fire(self) -> None:
         """STEP波形の再発火。送出中でSTEP源のときだけ効く。"""
@@ -523,7 +623,7 @@ class ImuPanel:
         except Exception:
             show = False
         if show:
-            if self._gyro_view is not None:
+            if getattr(self, "_gyro_view", None) is not None:
                 return
             try:
                 from GyroView import GyroView
@@ -546,7 +646,7 @@ class ImuPanel:
 
     def _collapse_detail(self) -> None:
         """詳細表示を畳む。送出は続ける。"""
-        view, self._gyro_view = self._gyro_view, None
+        view, self._gyro_view = getattr(self, "_gyro_view", None), None
         if view is not None:
             try:
                 view.close()
@@ -581,8 +681,11 @@ class ImuPanel:
             try:
                 from core.sdl_sensor import SdlSensorReader
 
-                reader = SdlSensorReader()
-                self._apply_axis_settings(reader, settings)
+                # 符号は watched() が毎サンプル適用する（二重適用防止）。
+                # 軸設定が欠けた場合でも reader 側の既定符号が残らないよう、
+                # 生成時点で恒等にしておく。
+                reader = SdlSensorReader(accel_signs=(1, 1, 1), gyro_signs=(1, 1, 1))
+                self._apply_axis_settings(reader, settings, apply_signs=False)
                 if not reader.open(pad):
                     return None
                 self._sensor_reader = reader
@@ -597,7 +700,10 @@ class ImuPanel:
                 if not reader.is_open() and not reader.open():
                     return None
                 self._sensor_reader = reader
-                transform = self._sample_transform(settings, hid=True)
+                # 符号は watched() が毎サンプル適用する（二重適用防止）。
+                transform = self._sample_transform(
+                    settings, hid=True, apply_signs=False
+                )
                 # 0x30の3サンプルを5msごとに順に送る（階段化を避ける）。
                 inner_read = reader.read_next
                 last_try = {"t": 0.0}
@@ -666,12 +772,15 @@ class ImuPanel:
     def _sample_transform(
         settings: dict[str, str],
         hid: bool = False,
+        apply_signs: bool = True,
     ) -> Any | None:
         """IMU軸・符号の変換関数を作る。恒等ならNone。
 
         HID直結は生値がSwitchフレームのため `hid_*` キー（既定は恒等）を使う。
         接頭辞なしのキーはSDLセンサー用（Switch→SDL変換の逆写像）であり、
         コンソール側の反転解釈を打ち消す実測（例: 符号=1,-1,-1）にも使う。
+        `apply_signs=False` は軸だけを返し、符号は呼び出し側（watched）が
+        毎サンプル適用する（二重適用防止）。
         読めないキーはNone（＝無変換）に倒す。
         """
         try:
@@ -685,22 +794,37 @@ class ImuPanel:
         gs = parse_imu_axis_map(str(settings.get(pre + "gyro_signs", "")), (-1, 1))
         if aa is None or as_ is None or ga is None or gs is None:
             return None
-        if aa == (0, 1, 2) and ga == (0, 1, 2) and as_ == (1, 1, 1) and gs == (1, 1, 1):
+        acc_signs = as_ if apply_signs else (1, 1, 1)
+        gyr_signs = gs if apply_signs else (1, 1, 1)
+        if (
+            aa == (0, 1, 2)
+            and ga == (0, 1, 2)
+            and acc_signs == (1, 1, 1)
+            and gyr_signs == (1, 1, 1)
+        ):
             return None
 
         def apply(sample: Any) -> tuple[int, int, int, int, int, int]:
             ax, ay, az, gx, gy, gz = (int(v) for v in sample)
             acc = (ax, ay, az)
             gyr = (gx, gy, gz)
-            ca = tuple(acc[aa[i]] * as_[i] for i in range(3))
-            cg = tuple(gyr[ga[i]] * gs[i] for i in range(3))
+            ca = tuple(acc[aa[i]] * acc_signs[i] for i in range(3))
+            cg = tuple(gyr[ga[i]] * gyr_signs[i] for i in range(3))
             return (ca[0], ca[1], ca[2], cg[0], cg[1], cg[2])
 
         return apply
 
     @staticmethod
-    def _apply_axis_settings(reader: Any, settings: dict[str, str]) -> None:
-        """軸変換・バイアス設定をreaderへ適用する。読めない項目は飛ばす。"""
+    def _apply_axis_settings(
+        reader: Any,
+        settings: dict[str, str],
+        apply_signs: bool = True,
+    ) -> None:
+        """軸変換・バイアス設定をreaderへ適用する。読めない項目は飛ばす。
+
+        `apply_signs=False` は軸とバイアスだけを渡し、符号は呼び出し側
+        （watched）が毎サンプル適用する（二重適用防止）。
+        """
         try:
             from config import parse_imu_axis_map, parse_imu_bias
         except Exception:
@@ -711,7 +835,10 @@ class ImuPanel:
             ga = parse_imu_axis_map(str(settings.get("gyro_axes", "")), (0, 1, 2))
             gs = parse_imu_axis_map(str(settings.get("gyro_signs", "")), (-1, 1))
             if aa is not None and as_ is not None and ga is not None and gs is not None:
-                reader.set_axis_map(aa, as_, ga, gs)
+                if apply_signs:
+                    reader.set_axis_map(aa, as_, ga, gs)
+                else:
+                    reader.set_axis_map(aa, (1, 1, 1), ga, (1, 1, 1))
             bias = parse_imu_bias(str(settings.get("gyro_bias", "")))
             if bias is not None:
                 reader.set_gyro_bias(bias)
@@ -759,17 +886,9 @@ class ImuPanel:
             settings_now = self._settings_provider()
         except Exception:
             settings_now = {}
-        try:
-            dead_dps = float(settings_now.get("gyro_dead_dps", "0.0") or 0.0)
-        except (TypeError, ValueError):
-            dead_dps = 0.0
-        try:
-            gyro_scale = float(settings_now.get("gyro_scale", "1.0") or 1.0)
-        except (TypeError, ValueError):
-            gyro_scale = 1.0
-        if not 0.01 <= gyro_scale <= 4.0:
-            gyro_scale = 1.0
-        dead_raw = max(0.0, dead_dps) / 0.06103
+        # 加工値は開始時の設定で固定せず、不変タプルを毎サンプル読む。
+        # GUIスレッドの反転・感度変更は次のサンプルから効く。
+        self._live_trim = self._live_trim_from_settings(settings_now, source)
 
         def watched() -> Any:
             sample = inner()
@@ -779,6 +898,20 @@ class ImuPanel:
                 ax, ay, az, gx, gy, gz = (int(v) for v in sample)
             except (TypeError, ValueError):
                 return None
+            trim = panel._live_trim
+            if trim is None:
+                gyro_scale, dead_raw = 1.0, 0.0
+                acc_signs = (1, 1, 1)
+                gyr_signs = (1, 1, 1)
+            else:
+                gyro_scale, dead_raw, acc_signs, gyr_signs = trim
+            # 符号は入力源ではなくここで一度だけ掛ける（二重適用防止）。
+            ax = max(-32768, min(32767, ax * acc_signs[0]))
+            ay = max(-32768, min(32767, ay * acc_signs[1]))
+            az = max(-32768, min(32767, az * acc_signs[2]))
+            gx = max(-32768, min(32767, gx * gyr_signs[0]))
+            gy = max(-32768, min(32767, gy * gyr_signs[1]))
+            gz = max(-32768, min(32767, gz * gyr_signs[2]))
             if gyro_scale != 1.0:
                 # コンソール側のスケール解釈が想定と違う場合の実測トリム。
                 gx = max(-32768, min(32767, int(round(gx * gyro_scale))))
@@ -818,6 +951,10 @@ class ImuPanel:
             # 加工後の値を送出する（不感帯を実際に効かせる）。
             return (ax, ay, az, gx, gy, gz)
 
+        if self._stop:
+            # close() が先に走った場合は線を掴まない。
+            self._close_source()
+            return
         gen = watched
         try:
             start = getattr(transport, "start_imu_loop", None)
@@ -964,12 +1101,17 @@ class ImuPanel:
             self._collapse_detail()
         except Exception:
             pass
-        if self._streaming:
-            thread = threading.Thread(target=self._do_stop, daemon=True)
+        # 開始/停止ワーカーが走っている間に別の停止を重ねない。
+        deadline = time.monotonic() + 1.0
+        while (self._starting or self._stopping) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if self._streaming and not self._stopping:
+            self._stopping = True
+            thread = threading.Thread(target=self._stop_worker, daemon=True)
             thread.start()
             try:
                 thread.join(1.0)
             except Exception:
                 pass
-        else:
+        elif not self._streaming:
             self._close_source()
