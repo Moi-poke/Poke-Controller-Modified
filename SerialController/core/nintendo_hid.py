@@ -52,6 +52,11 @@ _SUB_IMU_ENABLE = 0x40
 _SUB_INPUT_MODE = 0x03
 _IMU_ENABLE_ARG = b"\x01"
 _REPORT_MODE_FULL = b"\x30"
+# スティック12bitの学習前・学習不足時に使う片側幅。ProConの実測
+# （456..3545）を覆うが、中央付近の微小ノイズをフルスケールへ
+# 増幅しないよう、学習がこの半分に達するまでは固定幅で割る。
+_STICK_DEFAULT_HALF_SPAN = 0x600
+_STICK_MIN_CALIB_SPAN = 0x500
 
 # プロセス内で共有するHID実体（パッド読みとIMU送出で同一ハンドルを使う）。
 _shared_lock = threading.Lock()
@@ -104,6 +109,12 @@ class NintendoHidReader:
         self._pad_packet = 0
         # パッド内容の前回値。同じ内容なら packet を進めない。
         self._pad_key: tuple[Any, ...] | None = None
+        # スティック12bitの実測レンジ（左X/左Y/右X/右Y）。ProConの生値は
+        # 0..4095の全域を使わず、個体・軸で偏る（実測 456..3545）。
+        # 中央0x800からの実測片側幅で正規化し、全倒しをフルスケールへ
+        # 合わせる。初回は中央のままなので、最初の全倒しで学習する。
+        self._stick_lo = [0x800, 0x800, 0x800, 0x800]
+        self._stick_hi = [0x800, 0x800, 0x800, 0x800]
         # 読み取り専用スレッドが最新0x30を保持する。呼び出し側はここを見る
         # だけで済み、ブロッキング読みが送出ループを止めない。
         self._latest: bytes | None = None
@@ -626,6 +637,8 @@ class NintendoHidReader:
         self._latest_t = 0.0
         # 個体が変わったときに前の個体の内容を引き継がない。
         self._pad_key = None
+        self._stick_lo = [0x800, 0x800, 0x800, 0x800]
+        self._stick_hi = [0x800, 0x800, 0x800, 0x800]
         self._armed = False
         if dev is not None:
             try:
@@ -690,6 +703,49 @@ class NintendoHidReader:
         """
         with self._lock:
             return self._fresh_030_locked()
+
+    def _stick_to_short_locked(self, raw: int, axis: int) -> int:
+        """12bitスティックを実測レンジでSHORTへ正規化する（錠内）。
+
+        中央0x800は固定し、正側・負側を別々に学習する。ProConの生値は
+        0..4095の全域を使わないため、固定の0x800幅で割ると全倒しが
+        約78%にしかならない（実測 456..3545）。初回の全倒しで片側幅を
+        更新し、その後の全倒しを±32767へ合わせる。
+        """
+        value = max(0, min(0xFFF, int(raw)))
+        # __new__で組み立てるテスト用の実体でも動くよう、未初期化なら
+        # 中央幅から始める（通常は __init__ が初期化する）。
+        lo_list = getattr(self, "_stick_lo", None)
+        hi_list = getattr(self, "_stick_hi", None)
+        if not isinstance(lo_list, list) or len(lo_list) != 4:
+            lo_list = [0x800, 0x800, 0x800, 0x800]
+            self._stick_lo = lo_list
+        if not isinstance(hi_list, list) or len(hi_list) != 4:
+            hi_list = [0x800, 0x800, 0x800, 0x800]
+            self._stick_hi = hi_list
+        lo = lo_list[axis]
+        hi = hi_list[axis]
+        if value < lo:
+            lo = value
+            lo_list[axis] = value
+        if value > hi:
+            hi = value
+            hi_list[axis] = value
+        pos_span = hi - 0x800
+        if pos_span < _STICK_MIN_CALIB_SPAN:
+            pos_span = _STICK_DEFAULT_HALF_SPAN
+        neg_span = 0x800 - lo
+        if neg_span < _STICK_MIN_CALIB_SPAN:
+            neg_span = _STICK_DEFAULT_HALF_SPAN
+        if value >= 0x800:
+            return max(
+                -32768,
+                min(32767, int(round((value - 0x800) / pos_span * 32767))),
+            )
+        return max(
+            -32768,
+            min(32767, int(round((value - 0x800) / neg_span * 32767))),
+        )
 
     def read_pad(self) -> Any:
         """ボタン・スティックをPadStateで読む。失敗は未接続。
@@ -756,6 +812,12 @@ class NintendoHidReader:
             # 進めると 8ms ごとに HID 列挙まで走ってしまう。
             key = (bits, frozenset(pressed), lt, rt, lx, ly, rx, ry)
             with self._lock:
+                # 実測レンジの学習とpacket採番は同じ錠で行う。複数スレッドが
+                # 同時に読んでも片側幅の更新が競合しない。
+                thumb_lx = self._stick_to_short_locked(lx, 0)
+                thumb_ly = self._stick_to_short_locked(ly, 1)
+                thumb_rx = self._stick_to_short_locked(rx, 2)
+                thumb_ry = self._stick_to_short_locked(ry, 3)
                 if key != self._pad_key:
                     self._pad_key = key
                     self._pad_packet += 1
@@ -765,10 +827,10 @@ class NintendoHidReader:
                 buttons=bits,
                 left_trigger=lt,
                 right_trigger=rt,
-                thumb_lx=_stick12_to_short(lx),
-                thumb_ly=_stick12_to_short(ly),
-                thumb_rx=_stick12_to_short(rx),
-                thumb_ry=_stick12_to_short(ry),
+                thumb_lx=thumb_lx,
+                thumb_ly=thumb_ly,
+                thumb_rx=thumb_rx,
+                thumb_ry=thumb_ry,
                 packet=packet,
                 pressed=frozenset(pressed),
             )

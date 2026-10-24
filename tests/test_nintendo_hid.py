@@ -859,3 +859,54 @@ def test_open_waits_for_delayed_first_030(monkeypatch):
         assert factory.devices[0].empty_reads == 0
     finally:
         reader.close()
+
+
+def _report_with_stick(lx: int, ly: int, rx: int = 0x800, ry: int = 0x800) -> bytes:
+    """0x30レポートのスティック12bit欄を差し替える。"""
+    report = bytearray(_report_30())
+    report[6] = lx & 0xFF
+    report[7] = ((lx >> 8) & 0x0F) | ((ly & 0x0F) << 4)
+    report[8] = (ly >> 4) & 0xFF
+    report[9] = rx & 0xFF
+    report[10] = ((rx >> 8) & 0x0F) | ((ry & 0x0F) << 4)
+    report[11] = (ry >> 4) & 0xFF
+    return bytes(report)
+
+
+def test_read_pad_learns_stick_range() -> None:
+    """HID直結の12bitスティックを実測レンジでフルスケールへ合わせる。
+
+    ProConの生値は0..4095の全域を使わない（実測 456..3545）。固定の
+    0x800幅で割ると全倒しが約78%にしかならないため、片側幅を学習する。
+    """
+    import time
+
+    import core.nintendo_hid as nh
+
+    reader = nh.NintendoHidReader()
+    try:
+        reader._latest = _report_with_stick(0x800, 0x800)
+        reader._latest_t = time.monotonic()
+        assert reader.read_pad().thumb_lx == 0
+
+        # 学習前の微小ノイズをフルスケールへ増幅しない。
+        reader._latest = _report_with_stick(0x801, 0x800)
+        reader._latest_t = time.monotonic()
+        small = reader.read_pad().thumb_lx
+        assert 0 < small < 1000
+
+        reader._latest = _report_with_stick(0xDD9, 0x800)
+        reader._latest_t = time.monotonic()
+        assert reader.read_pad().thumb_lx == 32767
+
+        reader._latest = _report_with_stick(0x1C8, 0x800)
+        reader._latest_t = time.monotonic()
+        assert reader.read_pad().thumb_lx == -32767
+
+        reader._latest = _report_with_stick(0x800, 0x800, 0xE00, 0x200)
+        reader._latest_t = time.monotonic()
+        state = reader.read_pad()
+        assert state.thumb_rx == 32767
+        assert state.thumb_ry == -32767
+    finally:
+        reader.close()
