@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import shutil
 import subprocess
 import threading
 import tkinter as tk
@@ -29,6 +30,7 @@ from core.display_mode import (
 )
 from loguru import logger
 from ui.combo_fit import fit_combo_width
+from ui.tooltip import Tooltip
 
 # openCamera() が錠を待つ上限。裏の CameraOpener が握ったままなのは、
 # 開けない機器への cv2.VideoCapture() が driver の中で止まっている場合。
@@ -66,6 +68,23 @@ def _camera_title(label: str) -> str:
     return re.sub(r"\s*\[[^\]]*\]$", "", label).strip()
 
 
+def _use_coreclr_for_pythonnet() -> None:
+    """pythonnet を coreclr で初期化させる（Windows で dotnet がある場合のみ）。
+
+    DirectShowLib の読み込みは ``import clr`` で pythonnet を起動する。
+    既定の .NET Framework ローダーでは
+    「Failed to resolve Python.Runtime.Loader.Initialize」で失敗する環境が
+    あり、``PYTHONNET_RUNTIME=coreclr`` で通ることを実機で確認した。
+    明示設定は尊重する（setdefault）。dotnet が無い環境では Framework
+    しか使えないため触らない。
+    """
+    if os.name != "nt" or "PYTHONNET_RUNTIME" in os.environ:
+        return
+    if shutil.which("dotnet") is None:
+        return
+    os.environ.setdefault("PYTHONNET_RUNTIME", "coreclr")
+
+
 class CameraPanelMixin:
     """カメラパネルMixin。単体では使わない。"""
 
@@ -78,6 +97,7 @@ class CameraPanelMixin:
     camera_keys: dict[int, str]
     camera_key: Any
     _camera_labels: list[str]
+    _camera_name_tooltip: Any
     preview: Any
     serial: Any
     camera_lf: Any
@@ -224,6 +244,12 @@ class CameraPanelMixin:
         self.Camera_Name.config(state="readonly", textvariable=self.camera_name_fromDLL)
         self.Camera_Name.grid(column=1, padx="5", pady="2", row=0, sticky="ew")
         self.Camera_Name.bind("<<ComboboxSelected>>", self.set_cameraid, add="")
+        # ラベルは幅の上限で切るため、長い名前では末尾の識別子（key）が
+        # 見切れる。ホバーで切らない全文（識別子つき）を出す。
+        self._camera_name_tooltip = Tooltip(self.Camera_Name, "")
+        self.Camera_Name.bind(
+            "<<ComboboxSelected>>", self._refresh_camera_name_tooltip, add="+"
+        )
 
         self.reloadButton = ttk.Button(lf)
         self.reloadButton.config(text="再読み込み", command=self.reloadCameraFromTab)
@@ -261,7 +287,18 @@ class CameraPanelMixin:
             pass
 
     def reloadCameraFromTab(self) -> None:
-        """カメラタブの再読み込み。開けたかどうかを知らせへ反映する。"""
+        """カメラタブの再読み込み。一覧を取り直してから開き直す。
+
+        列挙は起動時に1回だけだったため、後から挿したカメラが一覧へ
+        出ず、再読み込みを押しても古い一覧のままだった。ここで
+        「一覧の取り直し」と「開き直し」の両方を行う。
+        一覧を取れない環境（Linux 等）や列挙の失敗でも、今の設定で
+        開き直せるようにする。
+        """
+        try:
+            self.locateCameraCmbbox()
+        except Exception as e:
+            logger.warning(f"カメラ一覧の取り直しで例外: {e}")
         self.openCamera()
 
     def _show_camera_state(
@@ -587,6 +624,7 @@ class CameraPanelMixin:
             return
         if self.camera_dic is not None and cam_id in self.camera_dic:
             self.Camera_Name.current(cam_id)
+            self._refresh_camera_name_tooltip()
 
     def applyCameraId(self, event: Any = None) -> str:
         """Return/FocusOutでIDを検証し、切替成功時だけ保存する。"""
@@ -627,6 +665,8 @@ class CameraPanelMixin:
         devices: list[tuple[str, str]] = []  # (名前, 識別子)
 
         if self.os_name == "Windows":
+            # pythonnet のローダー選択は import clr より前に決める。
+            _use_coreclr_for_pythonnet()
             import clr
 
             # カレントディレクトリ基準の相対指定だと、起動場所が違うだけで
@@ -686,10 +726,12 @@ class CameraPanelMixin:
         # 認識順は起動のたびに入れ替わることがあるため番号だけでは足りない。
         saved_key = self.camera_key.get()
         matched = None
+        matched_by_key = False
         if saved_key:
             for cam_id, key in self.camera_keys.items():
                 if key and key == saved_key:
                     matched = cam_id
+                    matched_by_key = True
                     break
         if matched is None:
             matched = self.camera_id.get()
@@ -699,11 +741,38 @@ class CameraPanelMixin:
             matched = 0
 
         self.camera_id.set(matched)
-        self.camera_key.set(self.camera_keys.get(matched, ""))
+        # 識別子で見つからず番号へ戻したときは、保存済みの識別子を消さない。
+        # 一時的に抜けているだけのカメラが戻ったとき、次の起動・再読み込みで
+        # 同じ個体を選び直せるようにするため（別のボードの key で上書きしない）。
+        if matched_by_key or not saved_key:
+            self.camera_key.set(self.camera_keys.get(matched, ""))
+        elif saved_key:
+            message = (
+                f"保存したカメラ（識別子 {saved_key}）が見つかりません。"
+                "カメラタブで選び直してください"
+            )
+            print(message)
+            logger.warning(message)
         self.camera_entry.bind("<KeyRelease>", self.assignCamera)
         self.camera_entry.bind("<Return>", self.applyCameraId)
         self.camera_entry.bind("<FocusOut>", self.applyCameraId)
         self.Camera_Name.current(matched)
+        self._refresh_camera_name_tooltip()
+
+    def _refresh_camera_name_tooltip(self, event: Any = None) -> None:
+        """カメラ名の吹き出しを、今の切らない全文（識別子つき）へ合わせる。
+
+        コンボの幅は上限で切るため、長い名前では末尾の [key] が
+        見切れる。同名ボードの取り違えを避けるため、ホバーで全文を読める
+        ようにする（ラベル自体は変えない）。
+        """
+        tooltip = getattr(self, "_camera_name_tooltip", None)
+        if tooltip is None:
+            return
+        try:
+            tooltip.text = str(self.Camera_Name.get())
+        except Exception:
+            pass
 
     def set_cameraid(self, event: Any = None) -> None:
         """カメラ名の選択を検証し、成功した場合だけ設定へ保存する。"""
@@ -718,6 +787,7 @@ class CameraPanelMixin:
         previous = self.settings.camera_id.get()
         self.camera_id.set(index)
         self.camera_key.set(self.camera_keys.get(index, ""))
+        self._refresh_camera_name_tooltip()
         if self.openCamera():
             self._on_setting_changed()
             return

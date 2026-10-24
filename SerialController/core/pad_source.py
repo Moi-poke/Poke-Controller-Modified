@@ -4,7 +4,9 @@
 
 XInput 系（Xbox など）と SDL 系（Switch Pro コンなど）の2つの
 読み取り口のうち、指定番号で繋がっている方を選ぶ。呼び出し側は
-XInputReader と同じ read(index) / scan() / available だけ使う。
+read(index) / scan() / available に加え、選択肢の表示名（names）と、
+抜き差しで番号が動いても同じ個体を選び続けるための識別子
+（identities）を使える。
 
 なぜ選ぶのか:
   ・XInput は Xbox 系しか読めない。Switch Pro コンは繋がって
@@ -215,6 +217,33 @@ class PadSource:
                 continue
             if state.connected:
                 out[index] = "XInput パッド"
+        return out
+
+    def identities(self) -> dict[int, str]:
+        """番号 → 個体識別子。一覧更新で同じ個体を選び続けるための鍵。
+
+        SDL は接続中だけ一意な instance_id。HID直結は列挙した個体の
+        パスを使う。XInput は個体を跨いで安定な ID を取れないため
+        載せない（番号のまま追従する）。
+        """
+        try:
+            out = {int(k): str(v) for k, v in self.sdl.identities().items()}
+        except Exception:
+            out = {}
+        if 0 not in out:
+            try:
+                from core.nintendo_hid import NintendoHidReader
+
+                devs = NintendoHidReader.enumerate()
+                if devs:
+                    raw_path = devs[0].get("path", b"") or b""
+                    if isinstance(raw_path, bytes):
+                        key = raw_path.hex()
+                    else:
+                        key = str(raw_path)
+                    out[0] = f"hid:{key}" if key else "hid"
+            except Exception:
+                pass
         return out
 
     def route_of(self, index: int) -> str:

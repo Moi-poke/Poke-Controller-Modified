@@ -104,6 +104,8 @@ class SerialPanelMixin:
     gamepad_dz_label: Any
     gamepad_dz: Any
     _gamepad_after: Any
+    _gamepad_ids: dict[int, str]
+    _gamepad_identity: str
     gamepad_dz_spin: Any
     cb_left_stick_mouse: Any
     cb_right_stick_mouse: Any
@@ -380,6 +382,8 @@ class SerialPanelMixin:
         self.control_lf.config(text="コントローラ")
         self.control_lf.pack(fill="x", padx=5, pady=5)
         self._gamepad_after = None
+        self._gamepad_ids = {}
+        self._gamepad_identity = ""
         self.refreshGamepads()
         self._poll_gamepads()
 
@@ -1375,15 +1379,35 @@ class SerialPanelMixin:
         抜き差ししても選び直せるよう、接続ボタン・チェック切替の
         際に呼び出す。選んでいた物が残っていれば残す。名前は SDL の
         実名があれば実名、XInput のみは汎名になる（PadSource.names）。
+
+        2秒ごとの巡回からも呼ばれるため、触るのは一覧のラベルと
+        選択だけにする。遊びの入力欄は編集中に上書きしない
+        （_refresh_gamepad_deadzone_field）。同じ個体が別の番号へ
+        移っていたら識別子で見つけた番号へ選択を移す。
         """
         try:
             from core.pad_source import PadSource
 
-            names = PadSource().names()
+            source = PadSource()
+            names = source.names()
+            # 名前と識別子を続けて取る。列挙の間に抜き差しが起きても、
+            # ずれは次の巡回で直る（片方だけ古いまま固定しない）。
+            try:
+                identities = source.identities()
+            except Exception:
+                identities = {}
         except Exception:
             names = {}
+            identities = {}
         try:
+            self._gamepad_ids = dict(identities)
             current = self._gamepad_index()
+            moved = self._follow_gamepad(current)
+            if moved is not None and moved != current:
+                current = moved
+                self.settings.gamepad_index.set(current)
+                self._restart_gamepad_at(current)
+                self._on_setting_changed()
             labels = [f"{i}: {names.get(i, '(未接続)')}" for i in range(4)]
             self._gamepad_map = {label: i for i, label in enumerate(labels)}
             self.gamepad_cb["values"] = labels
@@ -1391,9 +1415,69 @@ class SerialPanelMixin:
                 if index == current:
                     self.gamepad_choice.set(label)
                     break
-            self.gamepad_dz.set(str(self._gamepad_deadzone()))
+            self._refresh_gamepad_deadzone_field()
         except Exception as e:
             logger.warning(f"パッド一覧の更新で例外: {e}")
+
+    def _follow_gamepad(self, current: int) -> int | None:
+        """同じ個体が別の番号へ移っていれば、その番号を返す。
+
+        SDL の番号（index）は抜き差しで詰め直されるため、番号だけで
+        選んでいると別のパッドを掴む。接続中は使い回されない
+        instance_id を鍵に、同じ個体の新しい番号を探す。
+        見つからなければ None（今の番号のまま）を返し、今の番号の
+        個体を新しい選択として覚え直す（抜けた個体を追い続けない）。
+        """
+        identities = getattr(self, "_gamepad_ids", {})
+        ident = getattr(self, "_gamepad_identity", "")
+        if ident:
+            for index, value in identities.items():
+                if value == ident:
+                    return int(index)
+        self._gamepad_identity = identities.get(current, "")
+        return None
+
+    def _restart_gamepad_at(self, index: int) -> None:
+        """番号が移った個体を掴み直す。有効化中だけ実体を作り直す。
+
+        読取器は生成時の番号を固定で持つため、選択だけ移すと画面と
+        実際に読むパッドが食い違う。作り直しは一時的に申告が止まるが、
+        別のパッドを読むよりは正しい。
+        """
+        try:
+            if not self.is_use_gamepad.get():
+                return
+            self.serial.stop_gamepad()
+            err = self.serial.set_gamepad_enabled(
+                True, int(index), self._gamepad_deadzone()
+            )
+            if err is not None:
+                self.is_use_gamepad.set(False)
+                return
+            self._bindGamepadMirror()
+        except Exception as e:
+            logger.warning(f"パッドの掴み直しで例外: {e}")
+
+    def _refresh_gamepad_deadzone_field(self) -> None:
+        """遊び欄を設定値へ戻す。ただし入力中は上書きしない。
+
+        一覧の2秒巡回が、ユーザーが打っている途中の値を勝手に戻す
+        実測があった。フォーカスが残っている間は触らず、外れている
+        ときも設定値と同じなら書き換えない。
+        """
+        spin = getattr(self, "gamepad_dz_spin", None)
+        try:
+            if spin is not None and spin.focus_get() is spin:
+                return
+        except Exception:
+            pass
+        value = str(self._gamepad_deadzone())
+        try:
+            if str(self.gamepad_dz.get()).strip() == value:
+                return
+            self.gamepad_dz.set(value)
+        except Exception:
+            pass
 
     def _poll_gamepads(self) -> None:
         """抜き差しで一覧と状態行を追従させる画面側巡回（2秒毎）。
@@ -1447,6 +1531,11 @@ class SerialPanelMixin:
             self.settings.gamepad_index.set(index)
         except Exception:
             index = 0
+        # 選んだ個体を覚える。次の巡回で番号が詰め直されても追える。
+        try:
+            self._gamepad_identity = getattr(self, "_gamepad_ids", {}).get(index, "")
+        except Exception:
+            self._gamepad_identity = ""
         if self.is_use_gamepad.get():
             try:
                 self.serial.stop_gamepad()
