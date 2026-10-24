@@ -223,7 +223,7 @@ def test_open_failure_backs_off_without_blocking(monkeypatch) -> None:
             opens["n"] += 1
             raise RuntimeError("busy")
 
-    _install_fake_gc(monkeypatch, {}, {}, _FailingGc)
+    _install_fake_gc(monkeypatch, {}, {}, _FailingGc, joysticks={0: FakeController()})
     reader = SdlPadReader()
     assert reader.read(0).connected is False
     assert reader.read(0).connected is False
@@ -609,7 +609,9 @@ def test_sdl_open_failure_logs_once(monkeypatch) -> None:
     messages: list[str] = []
     handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
     try:
-        _install_fake_gc(monkeypatch, {}, {}, _FailingGc)
+        _install_fake_gc(
+            monkeypatch, {}, {}, _FailingGc, joysticks={0: FakeController()}
+        )
         reader = SdlPadReader()
         assert reader.read(0).connected is False
         assert reader.read(0).connected is False
@@ -847,3 +849,108 @@ def test_read_axes_finds_the_named_device_at_another_index(monkeypatch) -> None:
     axes = SdlPadReader().read_axes(0, name_hint="pro controller")
     assert axes is not None
     assert axes[:6] == (32767, 32767, 0, 0, 0, 0)
+
+
+def test_raw_joystick_opens_before_gamecontroller(monkeypatch) -> None:
+    """GCを先に開くと生joystick の open が失敗する環境がある（実測）。"""
+    order: list[str] = []
+    stick = FakeController()
+    original_init = stick.init
+
+    def _init() -> None:
+        order.append("raw")
+        original_init()
+
+    stick.init = _init  # type: ignore[method-assign]
+
+    class _RecordingGc(FakeGcModule):
+        def Controller(self, index: int) -> FakeController:
+            order.append("gc")
+            return super().Controller(index)
+
+    _install_fake_gc(monkeypatch, {0: stick}, {0: "Pro Controller"}, _RecordingGc)
+    assert SdlPadReader().read(0).connected is True
+    assert order == ["raw", "gc"]
+
+
+def test_gc_open_failure_keeps_raw_axes_available(monkeypatch) -> None:
+    """GC open が失敗しても生joystick は残し、軸補正に使える。"""
+
+    class _FailingGc(FakeGcModule):
+        def is_controller(self, index: int) -> bool:
+            return True
+
+        def Controller(self, index: int) -> FakeController:
+            raise RuntimeError("busy")
+
+    stick = FakeController()
+    stick.axes = [1.0, -1.0, 0.0, 0.0, -1.0, -1.0]
+    _install_fake_gc(monkeypatch, {}, {}, _FailingGc, joysticks={0: stick})
+    reader = SdlPadReader()
+    assert reader.read(0).connected is False
+    assert 0 in reader._raw_sticks
+    axes = reader.read_axes(0)
+    assert axes is not None
+    assert axes[:4] == (32767, 32767, 0, 0)
+
+
+def test_raw_open_failure_warns_once(monkeypatch) -> None:
+    """生joystick を開けないときは、理由を1回だけ残す。"""
+
+    class _GcOnly(FakeGcModule):
+        def is_controller(self, index: int) -> bool:
+            return True
+
+    from loguru import logger
+
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        _install_fake_gc(monkeypatch, {}, {}, _GcOnly)
+        reader = SdlPadReader()
+        assert reader.read(0).connected is False
+        assert reader.read(0).connected is False
+    finally:
+        logger.remove(handler)
+    assert sum("生joystickを開けません" in m for m in messages) == 1
+
+
+def test_pad_source_warns_once_when_sdl_axes_are_unavailable() -> None:
+    """HID補正に使うSDL軸が無いことを、巡回ごとに洪水にしない。"""
+    from core.pad_source import PadSource
+    from loguru import logger
+
+    class _NoAxes(_SdlAxesOnly):
+        def read_axes(self, index: int, *, name_hint: str = ""):
+            return None
+
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        source = PadSource(xinput=_NoPad(), sdl=_NoAxes(), hid=_FakeHidPad())
+        assert source.read(0).connected is True
+        assert source.read(0).connected is True
+    finally:
+        logger.remove(handler)
+    assert sum("スティック補正にSDL" in m for m in messages) == 1
+
+
+def test_raw_open_failure_backs_off(monkeypatch) -> None:
+    """生joystick の open 失敗を8ms周期で叩き続けない。"""
+    _install_fake_gc(monkeypatch, {}, {}, joysticks={0: FakeController()})
+    import pygame as _pg
+
+    calls = {"n": 0}
+
+    def _raise(index: int):
+        calls["n"] += 1
+        raise RuntimeError("busy")
+
+    _pg.joystick.Joystick = _raise  # type: ignore[assignment]
+    reader = SdlPadReader()
+    assert reader.read(0).connected is False
+    assert reader.read(0).connected is False
+    assert calls["n"] == 1
+    reader._raw_retry_at[0] = 0.0
+    assert reader.read(0).connected is False
+    assert calls["n"] == 2

@@ -153,6 +153,8 @@ class SdlPadReader:
         # 生joystick だけのキャッシュ。GameController を開けない個体でも
         # 校正済みの軸は読める（HID直結の未校正スティックの代替）。
         self._raw_sticks: dict[int, tuple[Any, Any]] = {}
+        # 生joystick の open 失敗の次回試行時刻。8ms周期で叩き続けない。
+        self._raw_retry_at: dict[int, float] = {}
         # 名前から引いた生joystick（番号がずれた HID 補正用）。短時間だけ持つ。
         self._named_raw: dict[str, tuple[Any, float]] = {}
         # open失敗の番号ごとの次回試行時刻。8ms周期の読みから
@@ -231,6 +233,7 @@ class SdlPadReader:
                 self._raw_sticks.clear()
             self._named_raw.clear()
             self._open_retry_at.clear()
+            self._raw_retry_at.clear()
         closed: set[int] = set()
         for gc_stick, joy_stick, _dev_id in pairs:
             for handle in (joy_stick, gc_stick):
@@ -395,11 +398,17 @@ class SdlPadReader:
                 pass
             with self._lock:
                 self._raw_sticks.pop(key, None)
+        with self._lock:
+            retry_at = self._raw_retry_at.get(key, 0.0)
+        if time.monotonic() < retry_at:
+            return None
         try:
             import pygame.joystick as _joy
 
             _joy.init()
             if not 0 <= key < int(_joy.get_count()):
+                with self._lock:
+                    self._raw_retry_at[key] = time.monotonic() + OPEN_RETRY_S
                 return None
             handle = _joy.Joystick(key)
             handle.init()
@@ -409,9 +418,12 @@ class SdlPadReader:
             except Exception:
                 dev_id = None
         except Exception:
+            with self._lock:
+                self._raw_retry_at[key] = time.monotonic() + OPEN_RETRY_S
             return None
         with self._lock:
             self._raw_sticks[key] = (handle, dev_id)
+            self._raw_retry_at.pop(key, None)
         return handle
 
     def _named_raw_stick(self, name_hint: str, *, ttl: float = 2.0) -> Any | None:
@@ -531,6 +543,28 @@ class SdlPadReader:
         gc = self._gc()
         if gc is None:
             return (None, None)
+        # 生joystick を先に開く。SDLのHIDAPI Switchドライバは
+        # GameController を先に開くと生joystick の open が
+        # 「Couldn't setup USB mode」で失敗する実測がある（逆順は成功）。
+        # 失敗しても生の実体はキャッシュへ残す（HID直結の軸補正で使う）。
+        joy_stick = self._raw_stick(index)
+        if joy_stick is None:
+            # 軸が無いとボタンだけ読めても申告できない。理由を1回だけ出す
+            # （GameController 側の open は行わない。使えない実体を増やさない）。
+            try:
+                if bool(gc.is_controller(int(index))):
+                    self._warn_once(
+                        f"raw_open:{index}",
+                        f"SDLの生joystickを開けません（パッド{index}の軸を読めません）",
+                    )
+                else:
+                    self._warn_once(
+                        f"not_controller:{index}",
+                        f"SDLがパッド{index}をGameControllerとして認識しません",
+                    )
+            except Exception:
+                pass
+            return (None, None)
         # Steam起動中はHIDの奪い合いでopenが不安定になる実測（SDL#3450）。
         # read は 8ms 周期で呼ばれるため、ここで sleep して3回試すと
         # 読み取りが0.6秒止まり、その間の入力が飛ぶ。失敗は時刻だけ
@@ -558,9 +592,6 @@ class SdlPadReader:
             return (None, None)
         with self._lock:
             self._open_retry_at.pop(int(index), None)
-        joy_stick = self._raw_stick(index)
-        if joy_stick is None:
-            return (None, None)
         try:
             dev_id = joy_stick.get_instance_id()
         except Exception:
