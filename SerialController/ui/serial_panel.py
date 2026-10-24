@@ -101,11 +101,18 @@ class SerialPanelMixin:
     cb_use_gamepad: Any
     gamepad_label: Any
     gamepad_choice: Any
+    gamepad_cb: Any
+    gamepad_reconnect_btn: Any
     gamepad_dz_label: Any
     gamepad_dz: Any
     _gamepad_after: Any
     _gamepad_ids: dict[int, str]
+    _gamepad_names: dict[int, str]
     _gamepad_identity: str
+    _gamepad_name: str
+    _gamepad_reconnect_busy: bool
+    _gamepad_reconnect_thread: threading.Thread | None
+    _gamepad_skip_auto_restart: bool
     gamepad_dz_spin: Any
     cb_left_stick_mouse: Any
     cb_right_stick_mouse: Any
@@ -349,12 +356,23 @@ class SerialPanelMixin:
         # 番号決め打ちでは、複数台・差し替え時に別の物を掴む。
         self.gamepad_label = ttk.Label(self.control_lf, text="パッド: ")
         self.gamepad_label.grid(column=0, row=2, padx="10", pady="2", sticky="w")
+        self.gamepad_row = ttk.Frame(self.control_lf)
+        self.gamepad_row.grid(column=1, row=2, padx="10", pady="2", sticky="ew")
         self.gamepad_choice = tk.StringVar(value="")
         self.gamepad_cb = ttk.Combobox(
-            self.control_lf, textvariable=self.gamepad_choice, width=28
+            self.gamepad_row, textvariable=self.gamepad_choice, width=28
         )
-        self.gamepad_cb.grid(column=1, row=2, padx="10", pady="2", sticky="ew")
+        self.gamepad_cb.pack(side="left", fill="x", expand=True)
         self.gamepad_cb.bind("<<ComboboxSelected>>", self._on_gamepad_selected, add="")
+        # 手動の再接続。ホットプラグの自動巡回（2秒）で拾えない
+        # 中途半端な状態から、SDL/HID のキャッシュを捨てて戻す。
+        self.gamepad_reconnect_btn = ttk.Button(
+            self.gamepad_row,
+            text="再接続",
+            width=8,
+            command=self._on_gamepad_reconnect,
+        )
+        self.gamepad_reconnect_btn.pack(side="left", padx=(6, 0))
         # 遊び（デッドゾーン）。既定1638=最大値の5%。drift 時に上げる。
         self.gamepad_dz_label = ttk.Label(self.control_lf, text="遊び: ")
         self.gamepad_dz_label.grid(column=0, row=3, padx="10", pady="2", sticky="w")
@@ -383,7 +401,9 @@ class SerialPanelMixin:
         self.control_lf.pack(fill="x", padx=5, pady=5)
         self._gamepad_after = None
         self._gamepad_ids = {}
+        self._gamepad_names = {}
         self._gamepad_identity = ""
+        self._gamepad_name = ""
         # 列挙と掴み直しはワーカーで行う。Tkスレッドで hid.enumerate や
         # stop_gamepad の join を待つと、コントローラ入れ替え時に固まる。
         self._gamepad_refresh_busy = False
@@ -391,6 +411,11 @@ class SerialPanelMixin:
         self._gamepad_restart_busy = False
         self._gamepad_restart_thread: threading.Thread | None = None
         self._gamepad_restart_pending: int | None = None
+        self._gamepad_reconnect_busy = False
+        self._gamepad_reconnect_thread: threading.Thread | None = None
+        # 手動再接続では掴み直しを最後に1回だけ行う（一覧の反映と
+        # 二重に走らせない）。
+        self._gamepad_skip_auto_restart = False
         self.refreshGamepads()
         self._poll_gamepads()
 
@@ -1395,6 +1420,9 @@ class SerialPanelMixin:
         """
         if getattr(self, "_gamepad_refresh_busy", False):
             return
+        if getattr(self, "_gamepad_reconnect_busy", False):
+            # 手動の再接続中は巡回を重ねない（列挙と掴み直しの競合を防ぐ）。
+            return
         self._gamepad_refresh_busy = True
         thread = threading.Thread(
             target=self._refresh_gamepads_worker,
@@ -1443,16 +1471,22 @@ class SerialPanelMixin:
 
     def _apply_gamepad_listing(
         self, names: dict[int, str], identities: dict[int, str]
-    ) -> None:
-        """列挙結果を一覧へ反映する（GUIスレッド専用）。"""
+    ) -> int:
+        """列挙結果を一覧へ反映する（GUIスレッド専用）。
+
+        戻り値は反映後の選択番号。手動再接続はこの戻り値で
+        掴み直す（自動の掴み直しは `_gamepad_skip_auto_restart` で抑える）。
+        """
         try:
             self._gamepad_ids = dict(identities)
+            self._gamepad_names = dict(names)
             current = self._gamepad_index()
-            moved = self._follow_gamepad(current)
+            moved = self._follow_gamepad(current, names)
             if moved is not None and moved != current:
                 current = moved
                 self.settings.gamepad_index.set(current)
-                self._restart_gamepad_at(current)
+                if not getattr(self, "_gamepad_skip_auto_restart", False):
+                    self._restart_gamepad_at(current)
                 self._on_setting_changed()
             labels = [f"{i}: {names.get(i, '(未接続)')}" for i in range(4)]
             self._gamepad_map = {label: i for i, label in enumerate(labels)}
@@ -1462,26 +1496,158 @@ class SerialPanelMixin:
                     self.gamepad_choice.set(label)
                     break
             self._refresh_gamepad_deadzone_field()
+            return current
         except Exception as e:
             logger.warning(f"パッド一覧の更新で例外: {e}")
+            return self._gamepad_index()
 
-    def _follow_gamepad(self, current: int) -> int | None:
+    def _follow_gamepad(
+        self, current: int, names: dict[int, str] | None = None
+    ) -> int | None:
         """同じ個体が別の番号へ移っていれば、その番号を返す。
 
         SDL の番号（index）は抜き差しで詰め直されるため、番号だけで
         選んでいると別のパッドを掴む。接続中は使い回されない
         instance_id を鍵に、同じ個体の新しい番号を探す。
+        再接続では instance_id 自体が変わるため、次に名前で探す
+        （同名が複数あるときは選ばない）。
         見つからなければ None（今の番号のまま）を返し、今の番号の
         個体を新しい選択として覚え直す（抜けた個体を追い続けない）。
         """
+        table = {} if names is None else names
         identities = getattr(self, "_gamepad_ids", {})
         ident = getattr(self, "_gamepad_identity", "")
         if ident:
             for index, value in identities.items():
                 if value == ident:
-                    return int(index)
-        self._gamepad_identity = identities.get(current, "")
+                    key = int(index)
+                    self._gamepad_name = table.get(key, self._gamepad_name)
+                    return key
+        # instance_id が変わった（＝抜き差しした）個体を名前で追う。
+        name = getattr(self, "_gamepad_name", "")
+        if name:
+            same = [int(i) for i, value in table.items() if value == name]
+            if len(same) == 1:
+                key = same[0]
+                self._gamepad_identity = identities.get(key, "")
+                return key
+        # 選択中の番号が一覧に無いなら、繋がっているのが1台だけのときは
+        # その1台へ移る（設定に古い番号が残った起動や、HIDとSDLで
+        # 番号がずれた状態を復帰させる）。
+        if table and current not in table and len(table) == 1:
+            key = next(iter(table))
+            self._gamepad_identity = identities.get(key, "")
+            self._gamepad_name = table[key]
+            return int(key)
+        if current in table:
+            self._gamepad_identity = identities.get(current, "")
+            self._gamepad_name = table[current]
         return None
+
+    def _on_gamepad_reconnect(self) -> None:
+        """手動の再接続。SDL/HID のキャッシュを捨てて列挙し直す。
+
+        2秒の自動巡回は「繋がっている番号」を拾い直すだけで、
+        掴んだままの実体や open のバックオフは捨てない。抜き差しが
+        中途半端に終わったときは、ここで明示的にやり直す。
+        破棄と列挙はワーカー、停止と作り直しは既存の掴み直し
+        ワーカーで行う（Tk を止めない）。
+        """
+        if getattr(self, "_gamepad_reconnect_busy", False):
+            return
+        self._gamepad_reconnect_busy = True
+        try:
+            self.gamepad_reconnect_btn.state(["disabled"])
+        except Exception:
+            pass
+        thread = threading.Thread(
+            target=self._gamepad_reconnect_worker,
+            name="gamepad-reconnect",
+            daemon=True,
+        )
+        self._gamepad_reconnect_thread = thread
+        try:
+            thread.start()
+        except Exception as e:
+            self._gamepad_reconnect_busy = False
+            self._re_enable_gamepad_reconnect()
+            logger.warning(f"パッドの再接続を開始できません: {e}")
+
+    def _gamepad_reconnect_worker(self) -> None:
+        """キャッシュ破棄と再列挙（ワーカー）。Tk には触らない。"""
+        err: str | None = None
+        try:
+            from core.pad_source import PadSource
+
+            # 動いている読取器の経路・実体をまず捨てる。止めるのは
+            # GUI 側の掴み直し（_restart_gamepad_at）に任せる。
+            invalidated_live = False
+            live = getattr(self.serial, "invalidate_gamepad", None)
+            if callable(live):
+                try:
+                    invalidated_live = bool(live())
+                except Exception as e:
+                    logger.debug(f"読取器のキャッシュ破棄で例外: {e}")
+            source = PadSource()
+            if not invalidated_live:
+                # 実体が無い（無効中）ときも、共有 SDL のキャッシュは
+                # ここで捨てる。一覧の取得前に列挙をやり直すため。
+                source.invalidate()
+            names = source.names()
+            identities = source.identities()
+        except Exception as e:
+            logger.warning(f"パッドの再接続で例外: {e}")
+            names, identities = {}, {}
+            err = str(e) or "パッドを列挙できません"
+        try:
+            from core.ui_inbox import post_to_gui
+
+            post_to_gui(
+                self,
+                self._finish_gamepad_reconnect,
+                names,
+                identities,
+                err,
+                on_drop=self._drop_gamepad_reconnect,
+            )
+        except Exception as e:
+            logger.warning(f"パッドの再接続の受け渡しに失敗: {e}")
+            self._drop_gamepad_reconnect()
+
+    def _finish_gamepad_reconnect(
+        self,
+        names: dict[int, str],
+        identities: dict[int, str],
+        err: str | None,
+    ) -> None:
+        """再接続の結果を GUI へ反映する（GUIスレッド専用）。"""
+        try:
+            if err is not None:
+                logger.warning(f"パッドの再列挙に失敗: {err}")
+            # 一覧の反映では掴み直さず、このあと1回だけ行う。
+            self._gamepad_skip_auto_restart = True
+            try:
+                current = self._apply_gamepad_listing(names, identities)
+            finally:
+                self._gamepad_skip_auto_restart = False
+            # 番号が同じでも実体は掴み直す（手動再接続の目的）。
+            self._restart_gamepad_at(current)
+        except Exception as e:
+            logger.warning(f"パッドの再接続の反映で例外: {e}")
+        finally:
+            self._gamepad_reconnect_busy = False
+            self._re_enable_gamepad_reconnect()
+
+    def _drop_gamepad_reconnect(self) -> None:
+        """受け渡しが捨てられたときの後始末（ボタンを戻す）。"""
+        self._gamepad_reconnect_busy = False
+        self._re_enable_gamepad_reconnect()
+
+    def _re_enable_gamepad_reconnect(self) -> None:
+        try:
+            self.gamepad_reconnect_btn.state(["!disabled"])
+        except Exception:
+            pass
 
     def _restart_gamepad_at(self, index: int) -> None:
         """番号が移った個体を掴み直す。有効化中だけ実体を作り直す。
@@ -1624,20 +1790,15 @@ class SerialPanelMixin:
         # 選んだ個体を覚える。次の巡回で番号が詰め直されても追える。
         try:
             self._gamepad_identity = getattr(self, "_gamepad_ids", {}).get(index, "")
+            self._gamepad_name = getattr(self, "_gamepad_names", {}).get(index, "")
         except Exception:
             self._gamepad_identity = ""
+            self._gamepad_name = ""
         if self.is_use_gamepad.get():
-            try:
-                self.serial.stop_gamepad()
-                err = self.serial.set_gamepad_enabled(
-                    True, int(index), self._gamepad_deadzone()
-                )
-                if err is not None:
-                    self.is_use_gamepad.set(False)
-                    return
-                self._bindGamepadMirror()
-            except Exception as e:
-                logger.warning(f"パッド切替で例外: {e}")
+            # stop_gamepad は読取スレッドの join（最大1秒）を待つ。
+            # Tk スレッドで止めると選択のたびに画面が固まるため、
+            # 既存の掴み直しワーカーへ任せる（完了時に鏡を結線する）。
+            self._restart_gamepad_at(index)
         self._on_setting_changed()
 
     def _on_gamepad_toggled(self) -> None:

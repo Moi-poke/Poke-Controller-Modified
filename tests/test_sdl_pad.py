@@ -41,6 +41,7 @@ class FakeController:
         self.buttons: dict[int, int] = {}
         self.axes: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         self._attached = True
+        self.quit_calls = 0
 
     def get_button(self, num: int) -> int:
         return self.buttons.get(num, 0)
@@ -54,11 +55,17 @@ class FakeController:
     def get_instance_id(self) -> int:
         return 0
 
+    def get_name(self) -> str:
+        return "Fake"
+
     def init(self) -> None:
         return None
 
     def attached(self) -> bool:
         return self._attached
+
+    def quit(self) -> None:
+        self.quit_calls += 1
 
 
 class FakeGcModule:
@@ -94,6 +101,7 @@ def _install_fake_gc(
     sticks: dict[int, FakeController],
     names: dict[int, str],
     gc_cls=FakeGcModule,
+    joysticks: dict[int, FakeController] | None = None,
 ) -> None:
     import sys
     import types
@@ -116,10 +124,11 @@ def _install_fake_gc(
     fake_sdl2.controller = fake_gc  # type: ignore[attr-defined]
     fake_pygame._sdl2 = fake_sdl2  # type: ignore[attr-defined]
     # 生joystick の代役。軸はコントローラと共有する。
+    table = sticks if joysticks is None else joysticks
     fake_joystick = types.SimpleNamespace(
         init=lambda: None,
-        get_count=lambda: len(sticks),
-        Joystick=lambda i: sticks[i],
+        get_count=lambda: len(table),
+        Joystick=lambda i: table[i],
     )
     fake_pygame.joystick = fake_joystick  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "pygame", fake_pygame)
@@ -172,8 +181,8 @@ def test_ensure_retries_after_failure(monkeypatch) -> None:
     assert reader.available is True
 
 
-def test_missing_pad_resets_sdl(monkeypatch) -> None:
-    """未接続が続いたら SDL を作り直す。"""
+def test_missing_pad_does_not_quit_sdl(monkeypatch) -> None:
+    """未接続が続いても SDL 全体は落とさない（共有ハンドルを壊さない）。"""
     import core.sdl_pad as sdl_pad
 
     monkeypatch.setattr(sdl_pad, "RESET_MISSING_S", 0.0)
@@ -185,7 +194,43 @@ def test_missing_pad_resets_sdl(monkeypatch) -> None:
     reader = SdlPadReader()
     assert reader.read(0).connected is False
     assert reader.read(0).connected is False
-    assert quits["n"] >= 1
+    assert quits["n"] == 0
+
+
+def test_invalidate_closes_handles_and_clears_backoff(monkeypatch) -> None:
+    """手動再接続用の破棄は実体を閉じ、open の待ちも捨てる。"""
+    _install_fake_gc(monkeypatch, {}, {})
+    reader = SdlPadReader()
+    old_gc = FakeController()
+    old_joy = FakeController()
+    reader._sticks[0] = (old_gc, old_joy, 7)
+    reader._open_retry_at[0] = 1e9
+    reader.invalidate()
+    assert reader._sticks == {}
+    assert reader._open_retry_at == {}
+    assert (old_gc.quit_calls, old_joy.quit_calls) == (1, 1)
+
+
+def test_open_failure_backs_off_without_blocking(monkeypatch) -> None:
+    """open 失敗は sleep せず時刻で抑え、待ちが明けたら再試行する。"""
+    opens = {"n": 0}
+
+    class _FailingGc(FakeGcModule):
+        def is_controller(self, index: int) -> bool:
+            return True
+
+        def Controller(self, index: int):
+            opens["n"] += 1
+            raise RuntimeError("busy")
+
+    _install_fake_gc(monkeypatch, {}, {}, _FailingGc)
+    reader = SdlPadReader()
+    assert reader.read(0).connected is False
+    assert reader.read(0).connected is False
+    assert opens["n"] == 1
+    reader._open_retry_at[0] = 0.0
+    assert reader.read(0).connected is False
+    assert opens["n"] == 2
 
 
 def test_sdl_reads_buttons_hat_stick(monkeypatch) -> None:
@@ -355,6 +400,50 @@ def test_sdl_names_listing(monkeypatch) -> None:
     stick = FakeController()
     _install_fake_gc(monkeypatch, {0: stick}, {0: "Pro Controller"})
     assert SdlPadReader().names() == {0: "Pro Controller"}
+
+
+def test_names_skip_joysticks_that_are_not_controllers(monkeypatch) -> None:
+    """read() が読めない生joystickを選択肢へ出さない。"""
+    live = FakeController()
+    table = {0: FakeController(), 1: live}
+    _install_fake_gc(
+        monkeypatch,
+        {1: live},
+        {0: "Keyboard", 1: "Pro Controller"},
+        joysticks=table,
+    )
+    assert SdlPadReader().names() == {1: "Pro Controller"}
+
+
+def test_names_find_a_controller_above_gc_count(monkeypatch) -> None:
+    """gc.get_count() は本数であり番号の上限ではない（番号1を落とさない）。"""
+    live = FakeController()
+    table = {0: FakeController(), 1: live}
+    _install_fake_gc(
+        monkeypatch,
+        {1: live},
+        {1: "Pro Controller"},
+        joysticks=table,
+    )
+    reader = SdlPadReader()
+    assert reader.names() == {1: "Pro Controller"}
+    live.get_instance_id = lambda: 42  # type: ignore[method-assign]
+    assert reader.identities() == {1: "42"}
+
+
+def test_identities_skip_joysticks_that_are_not_controllers(monkeypatch) -> None:
+    live = FakeController()
+    live.get_instance_id = lambda: 42  # type: ignore[method-assign]
+    other = FakeController()
+    other.get_instance_id = lambda: 41  # type: ignore[method-assign]
+    table = {0: other, 1: live}
+    _install_fake_gc(
+        monkeypatch,
+        {1: live},
+        {0: "Keyboard", 1: "Pro Controller"},
+        joysticks=table,
+    )
+    assert SdlPadReader().identities() == {1: "42"}
 
 
 class _NoPad:
@@ -567,3 +656,194 @@ def test_identities_expose_instance_ids(monkeypatch) -> None:
     second.get_instance_id = lambda: 42  # type: ignore[method-assign]
     _install_fake_gc(monkeypatch, {0: first, 1: second}, {0: "A", 1: "B"})
     assert SdlPadReader().identities() == {0: "41", 1: "42"}
+
+
+class _CountingPad:
+    """読み取り成功を切り替えられる SDL の代役。呼び出し回数を数える。"""
+
+    available = True
+
+    def __init__(self, connected: bool = False) -> None:
+        self.connected = connected
+        self.read_calls = 0
+        self.invalidate_calls = 0
+
+    def read(self, index: int) -> PadState:
+        self.read_calls += 1
+        return PadState(connected=self.connected)
+
+    def scan(self) -> list[int]:
+        return [0] if self.connected else []
+
+    def names(self) -> dict[int, str]:
+        return {0: "SDL"} if self.connected else {}
+
+    def identities(self) -> dict[int, str]:
+        return {0: "sdl-id"} if self.connected else {}
+
+    def invalidate(self) -> None:
+        self.invalidate_calls += 1
+
+
+def test_pad_source_invalidate_drops_route_and_retries_sdl() -> None:
+    """手動再接続は経路の記憶を捨て、SDL から選び直す。"""
+    from core.pad_source import PadSource
+
+    sdl = _CountingPad(connected=False)
+    hid = _FakeHidPad()
+    source = PadSource(xinput=_NoPad(), sdl=sdl, hid=hid)
+    assert source.read(0).connected is True
+    assert source.route_of(0) == "hid"
+
+    sdl.connected = True
+    source.invalidate()
+    assert sdl.invalidate_calls == 1
+    assert source.read(0).connected is True
+    assert source.route_of(0) == "sdl"
+
+
+def test_pad_source_does_not_reread_a_failed_route() -> None:
+    """経路が失敗した回に同じ口を読み直さない（open待ちの二重化を防ぐ）。"""
+    from core.pad_source import PadSource
+
+    sdl = _CountingPad(connected=False)
+    source = PadSource(xinput=_NoPad(), sdl=sdl, hid=_FakeHidPad(open_ok=False))
+    source._route[0] = "sdl"
+    assert source.read(0).connected is False
+    assert sdl.read_calls == 1
+
+
+def test_pad_source_invalidate_resets_hid_backoff() -> None:
+    from core.pad_source import PadSource
+
+    hid = _FakeHidPad(open_ok=False)
+    source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+    assert source.read(0).connected is False
+    assert hid.open_calls == 1
+    source.invalidate()
+    assert source.read(0).connected is False
+    assert hid.open_calls == 2
+
+
+def test_pad_source_returns_to_sdl_from_hid() -> None:
+    """起動直後に SDL が間に合わず HID へ落ちても、後から SDL へ戻る。"""
+    from core.pad_source import PadSource
+
+    sdl = _CountingPad(connected=False)
+    hid = _FakeHidPad()
+    source = PadSource(xinput=_NoPad(), sdl=sdl, hid=hid)
+    assert source.read(0).connected is True
+    assert source.route_of(0) == "hid"
+
+    sdl.connected = True
+    source._sdl_reprobe_at = 0.0
+    assert source.read(0).connected is True
+    assert source.route_of(0) == "sdl"
+
+
+def test_read_axes_works_without_a_gamecontroller(monkeypatch) -> None:
+    """GameController 未認識でも、生joystick の校正済み軸は読める。"""
+    stick = FakeController()
+    stick.axes = [1.0, -1.0, 0.0, 0.0, 1.0, 1.0]
+    _install_fake_gc(monkeypatch, {}, {}, joysticks={0: stick})
+    reader = SdlPadReader()
+    assert reader.read(0).connected is False
+    axes = reader.read_axes(0)
+    assert axes is not None
+    assert axes[:6] == (32767, 32767, 0, 0, 255, 255)
+
+
+def test_read_axes_can_require_a_device_name(monkeypatch) -> None:
+    """同じ番号の別機種を混ぜないよう、名前で確かめられる。"""
+    stick = FakeController()
+    _install_fake_gc(monkeypatch, {}, {}, joysticks={0: stick})
+    reader = SdlPadReader()
+    assert reader.read_axes(0, name_hint="pro controller") is None
+    stick.get_name = lambda: "Nintendo Switch Pro Controller"  # type: ignore[method-assign]
+    assert reader.read_axes(0, name_hint="pro controller") is not None
+
+
+class _SdlAxesOnly:
+    """GameController は開けないが、軸だけ読める SDL の代役。"""
+
+    available = True
+
+    def __init__(self) -> None:
+        self.hint = ""
+
+    def read(self, index: int) -> PadState:
+        return PadState()
+
+    def scan(self) -> list[int]:
+        return []
+
+    def names(self) -> dict[int, str]:
+        return {}
+
+    def identities(self) -> dict[int, str]:
+        return {}
+
+    def invalidate(self) -> None:
+        return None
+
+    def read_axes(self, index: int, *, name_hint: str = ""):
+        self.hint = name_hint
+        return (
+            32767,
+            32767,
+            0,
+            0,
+            0,
+            0,
+            (1.0, -1.0, 0.0, 0.0, -1.0, -1.0),
+        )
+
+
+def test_pad_source_uses_sdl_axes_on_the_hid_route() -> None:
+    """HID の未校正スティックを SDL の校正済み軸で置き換える。"""
+    from core.pad_source import PadSource
+
+    class _HidWithButtons(_FakeHidPad):
+        def read_pad(self) -> PadState:
+            return PadState(
+                connected=self.opened and self.connected,
+                buttons=0x1000,
+                pressed=frozenset({"A"}),
+                thumb_lx=-20000,
+                thumb_ly=-20000,
+            )
+
+    sdl = _SdlAxesOnly()
+    source = PadSource(xinput=_NoPad(), sdl=sdl, hid=_HidWithButtons())
+    state = source.read(0)
+    assert state.connected is True
+    # ボタンは HID のまま、スティックだけ SDL。
+    assert "A" in state.pressed
+    assert (state.thumb_lx, state.thumb_ly) == (32767, 32767)
+    assert (state.thumb_rx, state.thumb_ry) == (0, 0)
+    assert state.raw_axes == (1.0, -1.0, 0.0, 0.0, -1.0, -1.0)
+    assert sdl.hint == "pro controller"
+
+
+def test_invalidate_can_keep_raw_handles(monkeypatch) -> None:
+    """自動の列挙やり直しは、HID補正に使う生joystick を止めない。"""
+    _install_fake_gc(monkeypatch, {}, {})
+    reader = SdlPadReader()
+    raw = FakeController()
+    reader._raw_sticks[0] = (raw, 0)
+    reader.invalidate(close_raw=False)
+    assert 0 in reader._raw_sticks
+    assert raw.quit_calls == 0
+
+
+def test_read_axes_finds_the_named_device_at_another_index(monkeypatch) -> None:
+    """HIDが0番、SDLのProConが1番のように番号がずれても軸を拾う。"""
+    other = FakeController()
+    other.get_name = lambda: "Keyboard"  # type: ignore[method-assign]
+    procon = FakeController()
+    procon.axes = [1.0, -1.0, 0.0, 0.0, -1.0, -1.0]
+    procon.get_name = lambda: "Nintendo Switch Pro Controller"  # type: ignore[method-assign]
+    _install_fake_gc(monkeypatch, {}, {}, joysticks={0: other, 1: procon})
+    axes = SdlPadReader().read_axes(0, name_hint="pro controller")
+    assert axes is not None
+    assert axes[:6] == (32767, 32767, 0, 0, 0, 0)
