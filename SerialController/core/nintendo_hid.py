@@ -85,15 +85,16 @@ class NintendoHidReader:
         self._dev: Any = None
         self._packet = 0
         self._pad_packet = 0
+        # パッド内容の前回値。同じ内容なら packet を進めない。
+        self._pad_key: tuple[Any, ...] | None = None
         # 読み取り専用スレッドが最新0x30を保持する。呼び出し側はここを見る
         # だけで済み、ブロッキング読みが送出ループを止めない。
         self._latest: bytes | None = None
         # 最新0x30を受け取った時刻（monotonic）。鮮度切れは返さない。
         self._latest_t = 0.0
-        # 0x30の3スロットを順に供給するためのキュー（古い順）。
-        self._samples: collections.deque[tuple[int, int, int, int, int, int]] = (
-            collections.deque(maxlen=8)
-        )
+        # open中の印。openは錠を長く持たないため、この間の読み手には
+        # 未接続を返す（ブロッキングさせない）。
+        self._opening = False
         self._replies: collections.deque[bytes] = collections.deque(maxlen=16)
         self._poller: threading.Thread | None = None
         self._poll_stop = threading.Event()
@@ -133,14 +134,22 @@ class NintendoHidReader:
         with self._open_lock:
             if path is None and self._is_ready():
                 return True
-            for _ in range(max(1, int(retries))):
-                if self._open_once(path):
-                    return True
-                try:
-                    time.sleep(0.3)
-                except Exception:
-                    pass
-            return False
+            # 再試行の待ち時間も含めて open 中とする。この間の読み手は
+            # `_open_lock` で待たずに未接続を返せる。
+            with self._lock:
+                self._opening = True
+            try:
+                for _ in range(max(1, int(retries))):
+                    if self._open_once(path):
+                        return True
+                    try:
+                        time.sleep(0.3)
+                    except Exception:
+                        pass
+                return False
+            finally:
+                with self._lock:
+                    self._opening = False
 
     def _is_ready(self) -> bool:
         """0x30が新鮮なまま開いているか（openの再入を弾く）。"""
@@ -166,79 +175,93 @@ class NintendoHidReader:
                 # 鮮度切れのキャッシュを落としてから開き直す。
                 self._latest = None
                 self._latest_t = 0.0
-                self._samples.clear()
             return self.open(retries=2)
         except Exception:
             return False
 
     def _open_once(self, path: bytes | None) -> bool:
-        """1回のopen試行。成功で True。"""
+        """1回のopen試行。成功で True。
+
+        open・handshake・0x30待ちの間は `self._lock` を持たない。持つと
+        GUIのパッド読みやIMU送出がUSBの待ち時間ぶん止まる。開けた
+        ローカル実体を、成功時だけ錠内で `self._dev` へ差し替える。
+        """
         # 旧ハンドルの読み取りスレッドを先に止める（錠の外でjoin）。
         self._stop_poller()
         with self._lock:
             self._close_locked()
-            try:
-                import hid
+        dev: Any = None
+        try:
+            import hid
 
-                dev = hid.device()
-                if path is not None:
-                    dev.open_path(path)
-                else:
-                    dev.open(NINTENDO_VID, PROCON_PID)
-                dev.set_nonblocking(False)
+            dev = hid.device()
+            if path is not None:
+                dev.open_path(path)
+            else:
+                dev.open(NINTENDO_VID, PROCON_PID)
+            dev.set_nonblocking(False)
+            if not self._handshake_dev(dev):
+                return False
+            # IMU有効化 → 0x30モード
+            self._subcmd_dev(dev, 0x40, b"\x01")
+            time.sleep(0.02)
+            self._subcmd_dev(dev, 0x03, b"\x30")
+            time.sleep(0.05)
+            # 0x30が来るか確認
+            report = self._read_report_dev(dev)
+            if report is None or len(report) < 49 or report[0] != 0x30:
+                # もう1回だけ待つ
+                report = self._read_report_dev(dev)
+                if report is None or len(report) < 49 or report[0] != 0x30:
+                    return False
+            # 成功判定に使った0x30も保持する。ここで捨てると直後の
+            # read_pad()が未接続になり、呼び出し側がclose→openを
+            # 繰り返す（8ms周期の開き直しストーム）。
+            with self._lock:
                 self._dev = dev
                 self._packet = 0
-            except Exception:
-                self._close_locked()
-                return False
-            try:
-                if not self._handshake_locked():
-                    self._close_locked()
-                    return False
-                # IMU有効化 → 0x30モード
-                self._subcmd_locked(0x40, b"\x01")
-                time.sleep(0.02)
-                self._subcmd_locked(0x03, b"\x30")
-                time.sleep(0.05)
-                # 0x30が来るか確認
-                report = self._read_report_locked()
-                if report is None or len(report) < 49 or report[0] != 0x30:
-                    # もう1回だけ待つ
-                    report = self._read_report_locked()
-                    if report is None or len(report) < 49 or report[0] != 0x30:
-                        self._close_locked()
-                        return False
-                # 成功判定に使った0x30も保持する。ここで捨てると直後の
-                # read_pad()が未接続になり、呼び出し側がclose→openを
-                # 繰り返す（8ms周期の開き直しストーム）。
+                self._pad_key = None
                 self._latest = report
                 self._latest_t = time.monotonic()
                 # 以降は専用スレッドが読み続け、呼び出し側は最新値を見る。
                 self._start_poller_locked()
-                return True
-            except Exception:
-                self._close_locked()
-                return False
+            dev = None  # 所有権を self へ移した
+            return True
+        except Exception:
+            with self._lock:
+                if self._dev is dev:
+                    self._close_locked()
+                    dev = None
+            return False
+        finally:
+            if dev is not None:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
 
     def _start_poller_locked(self) -> None:
         """読み取り専用スレッドを起こす（錠内で呼ぶ）。
 
         openの成功判定で読んだ0x30は消さない。消すと直後のread_pad()が
         未接続を返し、呼び出し側が開き直しを繰り返す。
+        停止イベントはスレッドごとに新しく作る。前のスレッドの停止
+        イベントをclearで戻すと、joinが間に合わなかった旧スレッドが
+        生き返り、2本が同じハンドルを読む。
         """
         self._replies.clear()
-        self._poll_stop.clear()
-        if self._poller is not None and self._poller.is_alive():
-            return
+        stop = threading.Event()
+        self._poll_stop = stop
         worker = threading.Thread(
             target=self._poll_run,
+            args=(stop,),
             name="nintendo-hid-poll",
             daemon=True,
         )
         self._poller = worker
         worker.start()
 
-    def _poll_run(self) -> None:
+    def _poll_run(self, stop: threading.Event) -> None:
         """デバイスを読み続け、最新0x30と応答を保持する。
 
         生存判定は0x30だけ。0x3f等の別レポートが流れていても0x30が
@@ -246,9 +269,13 @@ class NintendoHidReader:
         読み取りが連続で空振りする（USB再列挙でハンドルが死んだ）ときも
         自分で閉じる。閉じると is_open() が false になり、パッド側とIMU側が
         次の読みで開き直せる。
+
+        stop はスレッド固有。`self._poll_stop` を共有すると、joinが
+        間に合わなかった旧スレッドを新しい開始が clear で生き返らせ、
+        2本が同じハンドルを読む。
         """
         last_030 = time.monotonic()
-        while not self._poll_stop.is_set():
+        while not stop.is_set():
             with self._lock:
                 dev = self._dev
             if dev is None:
@@ -269,17 +296,7 @@ class NintendoHidReader:
                     if self._dev is not dev:
                         break
                     last_030 = now
-                    self._latest = report
-                    self._latest_t = now
-                    # 0x30は5ms間隔の3サンプルを持つ。最新だけだと送信側で
-                    # 15msの階段になるため、3件を順にキューへ積む。
-                    for _off in (13, 25, 37):
-                        try:
-                            self._samples.append(
-                                struct.unpack_from("<6h", report, _off)
-                            )
-                        except struct.error:
-                            break
+                    self._accept_030_locked(report, now)
                 continue
             stale = False
             with self._lock:
@@ -293,6 +310,30 @@ class NintendoHidReader:
             if stale:
                 break
 
+    def _accept_030_locked(self, report: bytes, now: float) -> None:
+        """最新0x30を取り込む（錠内で呼ぶ）。
+
+        重複判定は timer byte ではなく内容（byte2以降＝電池・ボタン・
+        スティック・IMU 3スロット）で行う。timer が固定・巻き戻る個体でも
+        値の変化を取りこぼさないため。内容が同じ再送は最新値の時刻だけ
+        進める。古い個体の値が鮮度切れのまま残っている場合は、内容が
+        同じでも新しいレポートとして受け入れる（復帰時に古い姿勢を
+        返さない）。
+        """
+        prev = self._latest
+        fresh = now - self._latest_t <= _LATEST_TTL_S
+        if (
+            prev is not None
+            and fresh
+            and len(prev) >= 49
+            and len(report) >= 49
+            and prev[2:49] == report[2:49]
+        ):
+            self._latest_t = now
+            return
+        self._latest = report
+        self._latest_t = now
+
     def _stop_poller(self) -> None:
         """読み取りスレッドを止める（錠の外でjoinする）。"""
         self._poll_stop.set()
@@ -301,29 +342,29 @@ class NintendoHidReader:
         if worker is not None and worker.is_alive():
             worker.join(0.5)
 
-    def _write_locked(self, data: bytes) -> bool:
+    def _write_dev(self, dev: Any, data: bytes) -> bool:
         """64B output reportを書く。"""
-        if self._dev is None:
+        if dev is None:
             return False
         try:
             buf = bytes(data) + bytes(_REPORT_LEN - len(data))
-            return int(self._dev.write(buf[:_REPORT_LEN])) == _REPORT_LEN
+            return int(dev.write(buf[:_REPORT_LEN])) == _REPORT_LEN
         except Exception:
             return False
 
-    def _read_report_locked(self) -> bytes | None:
+    def _read_report_dev(self, dev: Any) -> bytes | None:
         """1レポート読む。失敗・空はNone。"""
-        if self._dev is None:
+        if dev is None:
             return None
         try:
-            data = self._dev.read(_REPORT_LEN, timeout_ms=_READ_TIMEOUT_MS)
+            data = dev.read(_REPORT_LEN, timeout_ms=_READ_TIMEOUT_MS)
             if not data:
                 return None
             return bytes(data)
         except Exception:
             return None
 
-    def _handshake_locked(self) -> bool:
+    def _handshake_dev(self, dev: Any) -> bool:
         """80確認。Steam等が初期化済みなら便乗し、未初期化なら自前で行う。
 
         80 02はセッション毎1回のみの制約があり、他プロセスがhandshake済み
@@ -333,9 +374,9 @@ class NintendoHidReader:
         # 80 01を送る。81応答が無くてもsubへ進む（Steamが横取りする場合あり）。
         # 応答があれば読み飛ばしてキューを空にする。
         try:
-            self._write_locked(bytes([0x80, 0x01]))
+            self._write_dev(dev, bytes([0x80, 0x01]))
             for _ in range(5):
-                report = self._read_report_locked()
+                report = self._read_report_dev(dev)
                 if report is None:
                     break
                 if len(report) >= 2 and report[0] == 0x81 and report[1] == 0x01:
@@ -344,48 +385,30 @@ class NintendoHidReader:
             pass
         # 自前handshakeを試す。失敗したら便乗（既に初期化済みのはず）。
         for sub in (0x02, 0x04):
-            if not self._write_locked(bytes([0x80, sub])):
+            if not self._write_dev(dev, bytes([0x80, sub])):
                 return True  # 書き失敗でも便乗を試す
             if sub == 0x04:
-                import time as _time
-
-                _time.sleep(0.05)
+                time.sleep(0.05)
                 continue
-            report = self._read_report_locked()
+            report = self._read_report_dev(dev)
             if report is None or len(report) < 2:
                 return True  # 応答なしでも便乗を試す
             if report[0] != 0x81 or report[1] != sub:
                 return True  # 形状違いでも便乗を試す
         return True
 
-    def _subcmd_locked(self, sub: int, arg: bytes) -> bytes | None:
+    def _subcmd_dev(self, dev: Any, sub: int, arg: bytes) -> bytes | None:
         """サブコマンドを送り0x21応答を返す。失敗はNone。
 
-        open後は受信スレッドが回っているため、応答は `_replies` から拾う
-        （直接readするとスレッドに奪われて必ず失敗する）。
+        open中はまだ読み取りスレッドが居ないため、直接読んで応答を拾う。
         """
         packet = self._packet & 0xF
         self._packet += 1
         out = bytes([0x01, packet]) + _RUMBLE_NEUTRAL + bytes([sub & 0xFF]) + bytes(arg)
-        if not self._write_locked(out):
-            return None
-        poller = self._poller
-        if poller is not None and poller.is_alive():
-            deadline = time.monotonic() + 0.8
-            while time.monotonic() < deadline:
-                with self._lock:
-                    for i, rep in enumerate(self._replies):
-                        if (
-                            len(rep) >= 15
-                            and rep[0] == 0x21
-                            and rep[14] == (sub & 0xFF)
-                        ):
-                            del self._replies[i]
-                            return rep
-                time.sleep(0.005)
+        if not self._write_dev(dev, out):
             return None
         for _ in range(5):
-            report = self._read_report_locked()
+            report = self._read_report_dev(dev)
             if report is None:
                 return None
             if len(report) >= 15 and report[0] == 0x21 and report[14] == (sub & 0xFF):
@@ -398,7 +421,8 @@ class NintendoHidReader:
         dev, self._dev = self._dev, None
         self._latest = None
         self._latest_t = 0.0
-        self._samples.clear()
+        # 個体が変わったときに前の個体の内容を引き継がない。
+        self._pad_key = None
         if dev is not None:
             try:
                 dev.close()
@@ -414,22 +438,22 @@ class NintendoHidReader:
             self._stop_poller()
 
     def is_open(self) -> bool:
-        """開いているか。"""
+        """開いていて、open処理中でもないか。"""
         with self._lock:
-            return self._dev is not None
+            return self._dev is not None and not self._opening
+
+    def is_opening(self) -> bool:
+        """open処理中か（この間の読み手は未接続扱いにする）。"""
+        with self._lock:
+            return self._opening
 
     def read_next(self) -> tuple[int, int, int, int, int, int] | None:
-        """キューから古い順に1件。空なら最新値（保持）。
+        """最新のIMU 1件を返す。パッドAPIと同じ最新値方式。
 
-        0x30が途絶えたら溜まったサンプルも捨てる（鮮度切れの値を
-        送出し続けない）。
+        0x30は11〜15msごとに3スロットを運ぶが、送出は200Hzで読むため
+        古いスロットを順に消費すると時間が巻き戻る。常に最新スロット
+        （offset 37..48）だけを返し、古い値を溜めない。
         """
-        with self._lock:
-            stamp = getattr(self, "_latest_t", None)
-            if stamp is not None and time.monotonic() - stamp > _LATEST_TTL_S:
-                self._samples.clear()
-            elif self._samples:
-                return self._samples.popleft()
         return self.read()
 
     def read(self) -> tuple[int, int, int, int, int, int] | None:
@@ -523,8 +547,14 @@ class NintendoHidReader:
             bits = 0
             for name in pressed:
                 bits |= _BUTTON_BITS.get(name, 0)
+            # 内容が同じなら packet を進めない。Gamepad.poll_once は
+            # packet 不変を「変化なし」として表示更新を省くため、毎回
+            # 進めると 8ms ごとに HID 列挙まで走ってしまう。
+            key = (bits, frozenset(pressed), lt, rt, lx, ly, rx, ry)
             with self._lock:
-                self._pad_packet += 1
+                if key != self._pad_key:
+                    self._pad_key = key
+                    self._pad_packet += 1
                 packet = self._pad_packet
             return PadState(
                 connected=True,

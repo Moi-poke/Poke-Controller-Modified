@@ -41,6 +41,7 @@ import time
 from typing import Any
 
 from core.xinput import MAX_PADS, PadState, pressed_names
+from loguru import logger
 
 # SDL初期化に失敗したときの再試行間隔(秒)。一度の失敗を永久に
 # 引きずると、以降ずっと「ゲームパッドが見つかりません」になる。
@@ -149,6 +150,17 @@ class SdlPadReader:
         self._packet: dict[int, int] = {}
         # 読み取り済みの番号。初回だけ古いキャッシュ疑いで読み直す。
         self._seen: set[int] = set()
+        # 同じ失敗の警告を毎tick出さないための記録（理由ごとに1回）。
+        self._warned: set[str] = set()
+        self._warn_lock = threading.Lock()
+
+    def _warn_once(self, key: str, message: str) -> None:
+        """同じ理由の警告を1回だけ出す。"""
+        with self._warn_lock:
+            if key in self._warned:
+                return
+            self._warned.add(key)
+        logger.warning(message)
 
     def _is_fresh(self, index: int) -> bool:
         """まだ一度も読んでいない番号か。"""
@@ -178,9 +190,10 @@ class SdlPadReader:
             pygame.init()
             _gc.init()
             self._ready = True
-        except Exception:
+        except Exception as e:
             self._ready = False
             self._retry_at = now + ENSURE_RETRY_S
+            self._warn_once(f"ensure:{e!r}", f"SDLを初期化できません: {e}")
         return self._ready
 
     def _reset_sdl(self) -> None:
@@ -338,16 +351,36 @@ class SdlPadReader:
         import time as _time
 
         opened_gc: Any = None
+        last_exc: Exception | None = None
         for _attempt in range(3):
             try:
                 if not bool(gc.is_controller(int(index))):
+                    self._warn_once(
+                        f"not_controller:{index}",
+                        f"SDLがパッド{index}をGameControllerとして認識しません",
+                    )
                     return (None, None)
                 opened_gc = gc.Controller(int(index))
                 break
-            except Exception:
+            except Exception as e:
                 opened_gc = None
+                last_exc = e
+                # 毎tick同じ失敗を出さない。理由（例外）ごとに1回だけ。
+                self._warn_once(
+                    f"controller_open:{index}:{e!r}",
+                    f"SDLでパッド{index}を開けません: {e}",
+                )
                 _time.sleep(0.2)
         if opened_gc is None:
+            try:
+                present = bool(gc.is_controller(int(index)))
+            except Exception:
+                present = False
+            if present and last_exc is None:
+                self._warn_once(
+                    f"controller_open_failed:{index}",
+                    f"SDLでパッド{index}を開けません（3回試行）",
+                )
             return (None, None)
         try:
             raw_stick: Any | None = None

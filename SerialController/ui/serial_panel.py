@@ -384,6 +384,13 @@ class SerialPanelMixin:
         self._gamepad_after = None
         self._gamepad_ids = {}
         self._gamepad_identity = ""
+        # 列挙と掴み直しはワーカーで行う。Tkスレッドで hid.enumerate や
+        # stop_gamepad の join を待つと、コントローラ入れ替え時に固まる。
+        self._gamepad_refresh_busy = False
+        self._gamepad_refresh_thread: threading.Thread | None = None
+        self._gamepad_restart_busy = False
+        self._gamepad_restart_thread: threading.Thread | None = None
+        self._gamepad_restart_pending: int | None = None
         self.refreshGamepads()
         self._poll_gamepads()
 
@@ -1380,11 +1387,29 @@ class SerialPanelMixin:
         際に呼び出す。選んでいた物が残っていれば残す。名前は SDL の
         実名があれば実名、XInput のみは汎名になる（PadSource.names）。
 
-        2秒ごとの巡回からも呼ばれるため、触るのは一覧のラベルと
-        選択だけにする。遊びの入力欄は編集中に上書きしない
-        （_refresh_gamepad_deadzone_field）。同じ個体が別の番号へ
-        移っていたら識別子で見つけた番号へ選択を移す。
+        列挙（SDLのpump・HIDのenumerate）はワーカーで行い、結果だけを
+        `_apply_gamepad_listing` で GUI へ反映する。HID直結時は
+        enumerate が USB 待ちで数十ms〜秒かかることがあり、2秒巡回の
+        Tkスレッドで待つと固まる。前回のラベルはそのまま残す。
+        選択保持・遊び値の非上書き・個体追従は従来どおり。
         """
+        if getattr(self, "_gamepad_refresh_busy", False):
+            return
+        self._gamepad_refresh_busy = True
+        thread = threading.Thread(
+            target=self._refresh_gamepads_worker,
+            name="gamepad-list",
+            daemon=True,
+        )
+        self._gamepad_refresh_thread = thread
+        try:
+            thread.start()
+        except Exception as e:
+            self._gamepad_refresh_busy = False
+            logger.warning(f"パッド一覧の更新を開始できません: {e}")
+
+    def _refresh_gamepads_worker(self) -> None:
+        """パッド一覧の列挙（ワーカー）。Tk には触らず inbox へ積む。"""
         try:
             from core.pad_source import PadSource
 
@@ -1396,9 +1421,30 @@ class SerialPanelMixin:
                 identities = source.identities()
             except Exception:
                 identities = {}
-        except Exception:
+        except Exception as e:
+            logger.warning(f"パッド一覧の列挙で例外: {e}")
             names = {}
             identities = {}
+        try:
+            # 表示の更新は最新 1 件で足りる。裏から after は呼ばない。
+            from core.ui_inbox import post_latest_to_gui
+
+            post_latest_to_gui(
+                self,
+                "gamepad_listing",
+                self._apply_gamepad_listing,
+                names,
+                identities,
+            )
+        except Exception as e:
+            logger.debug(f"パッド一覧の受け渡しに失敗: {e}")
+        finally:
+            self._gamepad_refresh_busy = False
+
+    def _apply_gamepad_listing(
+        self, names: dict[int, str], identities: dict[int, str]
+    ) -> None:
+        """列挙結果を一覧へ反映する（GUIスレッド専用）。"""
         try:
             self._gamepad_ids = dict(identities)
             current = self._gamepad_index()
@@ -1441,22 +1487,66 @@ class SerialPanelMixin:
         """番号が移った個体を掴み直す。有効化中だけ実体を作り直す。
 
         読取器は生成時の番号を固定で持つため、選択だけ移すと画面と
-        実際に読むパッドが食い違う。作り直しは一時的に申告が止まるが、
-        別のパッドを読むよりは正しい。
+        実際に読むパッドが食い違う。stop_gamepad は読取スレッドの
+        join（最大1秒）を待つため、Tkスレッドでは実行しない。ワーカーで
+        止めてから作り直し、完了だけを GUI へ返す。連打時は最新の
+        番号だけを残し、多重再起動しない。
         """
         try:
             if not self.is_use_gamepad.get():
                 return
+            deadzone = self._gamepad_deadzone()
+        except Exception:
+            return
+        index = int(index)
+        if getattr(self, "_gamepad_restart_busy", False):
+            self._gamepad_restart_pending = index
+            return
+        self._gamepad_restart_busy = True
+        thread = threading.Thread(
+            target=self._restart_gamepad_worker,
+            args=(index, deadzone),
+            name="gamepad-restart",
+            daemon=True,
+        )
+        self._gamepad_restart_thread = thread
+        try:
+            thread.start()
+        except Exception as e:
+            self._gamepad_restart_busy = False
+            logger.warning(f"パッドの掴み直しを開始できません: {e}")
+
+    def _restart_gamepad_worker(self, index: int, deadzone: int) -> None:
+        """読取器の停止と作り直し（ワーカー）。Tk には触らない。"""
+        err: str | None = None
+        try:
             self.serial.stop_gamepad()
-            err = self.serial.set_gamepad_enabled(
-                True, int(index), self._gamepad_deadzone()
-            )
-            if err is not None:
-                self.is_use_gamepad.set(False)
-                return
-            self._bindGamepadMirror()
+            err = self.serial.set_gamepad_enabled(True, index, deadzone)
         except Exception as e:
             logger.warning(f"パッドの掴み直しで例外: {e}")
+            err = str(e) or "パッドを掴み直せません"
+        try:
+            from core.ui_inbox import post_to_gui
+
+            post_to_gui(self, self._finish_gamepad_restart, index, err)
+        except Exception as e:
+            logger.debug(f"パッドの掴み直しの受け渡しに失敗: {e}")
+            self._gamepad_restart_busy = False
+
+    def _finish_gamepad_restart(self, index: int, err: str | None) -> None:
+        """掴み直しの結果を GUI へ反映する（GUIスレッド専用）。"""
+        try:
+            if err is not None:
+                self.is_use_gamepad.set(False)
+            else:
+                self._bindGamepadMirror()
+        except Exception as e:
+            logger.warning(f"パッドの掴み直しの反映で例外: {e}")
+        finally:
+            self._gamepad_restart_busy = False
+        pending, self._gamepad_restart_pending = self._gamepad_restart_pending, None
+        if pending is not None and pending != index:
+            self._restart_gamepad_at(pending)
 
     def _refresh_gamepad_deadzone_field(self) -> None:
         """遊び欄を設定値へ戻す。ただし入力中は上書きしない。

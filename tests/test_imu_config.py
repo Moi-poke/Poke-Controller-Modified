@@ -30,6 +30,7 @@ def test_imu_section_defaults():
     assert imu["hid_accel_signs"] == "1,1,1"
     assert imu["hid_gyro_axes"] == "0,1,2"
     assert imu["hid_gyro_signs"] == "1,1,1"
+    assert imu["hid_gyro_scale"] == "1.0,1.0,1.0"
     assert imu["gyro_bias"] == "0.0,0.0,0.0"
 
 
@@ -47,6 +48,7 @@ def test_imu_section_repairs_invalid():
     parser["IMU"]["hid_accel_axes"] = "9,9,9"
     parser["IMU"]["hid_gyro_signs"] = "1,0,1"
     parser["IMU"]["gyro_bias"] = "nan,0,0"
+    parser["IMU"]["hid_gyro_scale"] = "5,0,1"
     changed = config.complete_missing(parser)
     imu = parser["IMU"]
     assert imu["source"] == "sensor"
@@ -59,6 +61,7 @@ def test_imu_section_repairs_invalid():
     assert imu["hid_accel_axes"] == "0,1,2"
     assert imu["hid_gyro_signs"] == "1,1,1"
     assert imu["gyro_bias"] == "0.0,0.0,0.0"
+    assert imu["hid_gyro_scale"] == "1.0,1.0,1.0"
     assert any(c.startswith("IMU.") for c in changed)
 
 
@@ -68,10 +71,12 @@ def test_imu_section_keeps_valid():
     parser = _fresh()
     parser["IMU"]["source"] = "step"
     parser["IMU"]["gyro_bias"] = "0.01,-0.02,0.0"
+    parser["IMU"]["hid_gyro_scale"] = "0.5,1.0,2.0"
     before = config.complete_missing(parser)
     assert not [c for c in before if c.startswith("IMU.")]
     assert parser["IMU"]["source"] == "step"
     assert parser["IMU"]["gyro_bias"] == "0.01,-0.02,0.0"
+    assert parser["IMU"]["hid_gyro_scale"] == "0.5,1.0,2.0"
 
 
 def test_apply_gyro_deadband_zeroes_small_axes() -> None:

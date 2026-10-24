@@ -23,10 +23,12 @@ read(index) / scan() / available に加え、選択肢の表示名（names）と
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from core.sdl_pad import SdlPadReader
 from core.xinput import MAX_PADS, PadState, XInputReader
+from loguru import logger
 
 
 class PadSource:
@@ -37,6 +39,10 @@ class PadSource:
     # ハンドルと初期化状態を使い回すため、共有の実体を1つだけ持つ。
     _shared_sdl: SdlPadReader | None = None
     _shared_lock = threading.Lock()
+
+    # HID open失敗後の再試行間隔(秒)。8ms周期の読みから毎回
+    # 5回×0.3秒の再試行を呼ぶと、その間の読みが止まる。
+    HID_RETRY_S = 0.5
 
     def __init__(
         self,
@@ -58,6 +64,9 @@ class PadSource:
         self._hid_opened = hid is not None
         # 番号 → "xinput" / "sdl" / "hid"。選んでいない番号は無い。
         self._route: dict[int, str] = {}
+        # HID open失敗の次回試行時刻と、SDL→HIDフォールバックのログ済み印。
+        self._hid_retry_at = 0.0
+        self._fallback_logged = False
 
     @property
     def available(self) -> bool:
@@ -101,6 +110,15 @@ class PadSource:
                 self._hid = get_shared_reader()
                 self._hid_opened = False
             reader = self._hid
+            is_opening = getattr(reader, "is_opening", None)
+            if callable(is_opening):
+                try:
+                    # open処理中は待たない。待つと8msの読みがUSBの
+                    # handshake待ち（最大1秒超）で止まる。
+                    if is_opening():
+                        return PadState()
+                except Exception:
+                    pass
             is_open = getattr(reader, "is_open", None)
             if callable(is_open):
                 handle_open = bool(is_open())
@@ -113,9 +131,18 @@ class PadSource:
             # 閉じて開き直すため、IMU側が開いた直後やprobe直後に呼ぶと
             # close→openの往復になり、パッド読みが未接続で返る。
             if not handle_open:
-                opener = getattr(reader, "open", None)
-                if not callable(opener) or not opener():
+                now = time.monotonic()
+                if now < self._hid_retry_at:
                     return PadState()
+                opener = getattr(reader, "open", None)
+                if not callable(opener):
+                    return PadState()
+                # 8ms周期から5回×0.3秒の再試行を呼ばない。1回だけ試し、
+                # 失敗したら HID_RETRY_S 待ってから開き直す。
+                if not opener(retries=1):
+                    self._hid_retry_at = time.monotonic() + self.HID_RETRY_S
+                    return PadState()
+                self._hid_retry_at = 0.0
                 self._hid_opened = True
             read_pad = getattr(reader, "read_pad", None)
             if not callable(read_pad):
@@ -161,6 +188,11 @@ class PadSource:
         state = self._read_hid(index)
         if state.connected:
             self._route[int(index)] = "hid"
+            if not self._fallback_logged:
+                self._fallback_logged = True
+                logger.warning(
+                    "SDLでパッドを読めないため、HID直結（ProCon）へ切り替えました"
+                )
             return state
         state = self._read_xinput(index)
         if state.connected:

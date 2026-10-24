@@ -281,6 +281,10 @@ def default_sections() -> dict[str, dict[str, Any]]:
             "hid_accel_signs": "1,1,1",
             "hid_gyro_axes": "0,1,2",
             "hid_gyro_signs": "1,1,1",
+            # HID直結のジャイロ軸別倍率（3要素・0.01〜4.0）。既定は等倍。
+            # 軸ごとの感度差を実測で補正するためのトリム。SDL経路には
+            # 適用しない（gyro_scale が全経路の倍率）。
+            "hid_gyro_scale": "1.0,1.0,1.0",
             # ジャイロバイアス（rad/s・3要素）。補正値の永続先。
             "gyro_bias": "0.0,0.0,0.0",
             # ジャイロの不感帯（dps）。静止時の残余バイアス・ノイズで
@@ -340,6 +344,14 @@ def parse_imu_axis_map(
 def parse_imu_bias(text: str) -> tuple[float, float, float] | None:
     """UI側からバイアスを読む口（バリデーションと同一規則）。"""
     return _parse_bias(text)
+
+
+def parse_imu_scale(text: str) -> tuple[float, float, float] | None:
+    """HID直結の軸別倍率を読む口（0.01〜4.0の3要素）。"""
+    scale = _parse_bias(text)
+    if scale is None or any(not 0.01 <= v <= 4.0 for v in scale):
+        return None
+    return scale
 
 
 def complete_missing(parser: configparser.ConfigParser) -> list[str]:
@@ -593,6 +605,9 @@ def complete_missing(parser: configparser.ConfigParser) -> list[str]:
         if _parse_bias(imu.get("gyro_bias", "")) is None:
             imu["gyro_bias"] = "0.0,0.0,0.0"
             changed.append("IMU.gyro_bias")
+        if parse_imu_scale(imu.get("hid_gyro_scale", "")) is None:
+            imu["hid_gyro_scale"] = "1.0,1.0,1.0"
+            changed.append("IMU.hid_gyro_scale")
     return changed
 
 

@@ -22,9 +22,11 @@ class _FakeHidDevice:
         self.closed = True
 
 
-def _report_30(ax=0, ay=0, az=4096, gx=0, gy=0, gz=0):
+def _report_30(ax=0, ay=0, az=4096, gx=0, gy=0, gz=0, timer=0):
     body = struct.pack("<6h", ax, ay, az, gx, gy, gz)
-    return bytes([0x30] + [0] * 36)[:13] + body + body + body + bytes(64 - 49)
+    head = bytearray([0x30] + [0] * 36)
+    head[1] = int(timer) & 0xFF
+    return bytes(head)[:13] + body + body + body + bytes(64 - 49)
 
 
 def test_nintendo_hid_parses_latest_sample():
@@ -41,6 +43,139 @@ def test_nintendo_hid_parses_latest_sample():
     reader._latest = report
     reader._packet = 0
     assert reader.read() == (13, 14, 15, 16, 17, 18)
+
+
+def test_read_next_always_returns_latest_slot():
+    """0x30の3スロットを消費せず、毎回最新（37..48）を返す。
+
+    200Hzで読むと3件/11〜15msの生産に追いつかず、古いスロットを順に
+    返すと時間が巻き戻る。パッドAPIと同じ最新値方式を固定する。
+    """
+    import threading
+    import time
+
+    import core.nintendo_hid as nh
+
+    s1 = struct.pack("<6h", 1, 2, 3, 4, 5, 6)
+    s2 = struct.pack("<6h", 7, 8, 9, 10, 11, 12)
+    s3 = struct.pack("<6h", 13, 14, 15, 16, 17, 18)
+    report = bytes([0x30] + [0] * 12) + s1 + s2 + s3 + bytes(64 - 49)
+    reader = nh.NintendoHidReader.__new__(nh.NintendoHidReader)
+    reader._lock = threading.Lock()
+    reader._latest = report
+    reader._latest_t = time.monotonic()
+    reader._packet = 0
+    for _ in range(5):
+        assert reader.read_next() == (13, 14, 15, 16, 17, 18)
+    assert not hasattr(reader, "_samples")
+
+
+def test_read_next_follows_latest_poller_report():
+    """複数の0x30を受けても、read_nextは最後の最新値だけを返し続ける。"""
+    import time
+
+    import core.nintendo_hid as nh
+
+    first = _report_30(1, 1, 1, 1, 1, 1, timer=1)
+    second = _report_30(2, 2, 2, 2, 2, 2, timer=2)
+    reader = nh.NintendoHidReader()
+    reader._dev = _FakeHidDevice([first, second])
+    reader._start_poller_locked()
+    try:
+        deadline = time.monotonic() + 2.0
+        while reader.read() != (2, 2, 2, 2, 2, 2) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        for _ in range(3):
+            assert reader.read_next() == (2, 2, 2, 2, 2, 2)
+    finally:
+        reader.close()
+    assert reader.read_next() is None  # 閉じたら旧個体の値を残さない
+
+
+def test_same_030_content_does_not_replace_latest():
+    """内容まで同じ 0x30 再送は最新値を差し替えず、時刻だけ進める。"""
+    import threading
+    import time
+
+    import core.nintendo_hid as nh
+
+    now = time.monotonic()
+    first = _report_30(1, 0, 0, 0, 0, 0, timer=7)
+    duplicate = _report_30(1, 0, 0, 0, 0, 0, timer=7)
+    reader = nh.NintendoHidReader.__new__(nh.NintendoHidReader)
+    reader._lock = threading.Lock()
+    reader._latest = first
+    reader._latest_t = now
+    with reader._lock:
+        reader._accept_030_locked(duplicate, now + 0.001)
+    assert reader._latest is first
+    assert reader._latest_t == now + 0.001  # 生存時刻だけ進む
+
+
+def test_fixed_timer_still_updates_changed_samples():
+    """timer byte が固定でも、IMUサンプルが変われば最新値を更新する。"""
+    import threading
+    import time
+
+    import core.nintendo_hid as nh
+
+    now = time.monotonic()
+    before = _report_30(1, 2, 3, 4, 5, 6, timer=0)
+    after = _report_30(7, 8, 9, 10, 11, 12, timer=0)
+    reader = nh.NintendoHidReader.__new__(nh.NintendoHidReader)
+    reader._lock = threading.Lock()
+    reader._latest = before
+    reader._latest_t = now
+    with reader._lock:
+        reader._accept_030_locked(after, now + 0.001)
+    assert reader._latest is after
+    assert reader.read() == (7, 8, 9, 10, 11, 12)
+
+
+def test_newer_030_timer_updates_changed_samples():
+    """timer が進んだレポートも当然ながら最新値を更新する。"""
+    import threading
+    import time
+
+    import core.nintendo_hid as nh
+
+    now = time.monotonic()
+    before = _report_30(1, 2, 3, 4, 5, 6, timer=7)
+    after = _report_30(7, 8, 9, 10, 11, 12, timer=8)
+    reader = nh.NintendoHidReader.__new__(nh.NintendoHidReader)
+    reader._lock = threading.Lock()
+    reader._latest = before
+    reader._latest_t = now
+    with reader._lock:
+        reader._accept_030_locked(after, now + 0.001)
+    assert reader._latest is after
+
+
+def test_read_pad_packet_advances_only_on_content_change():
+    """同じ0x30の再読みでは packet を進めない（表示更新を省かせる）。"""
+    import threading
+    import time
+
+    import core.nintendo_hid as nh
+
+    reader = nh.NintendoHidReader.__new__(nh.NintendoHidReader)
+    reader._lock = threading.Lock()
+    reader._latest = _report_30()
+    reader._latest_t = time.monotonic()
+    reader._pad_packet = 0
+    reader._pad_key = None
+    first = reader.read_pad()
+    second = reader.read_pad()
+    assert first.connected is True
+    assert second.packet == first.packet
+
+    changed = bytearray(_report_30())
+    changed[3] = 0x08  # A
+    reader._latest = bytes(changed)
+    reader._latest_t = time.monotonic()
+    third = reader.read_pad()
+    assert third.packet == first.packet + 1
+    assert "A" in third.pressed
 
 
 def test_nintendo_hid_ignores_non_30_cache():
@@ -81,6 +216,7 @@ def test_nintendo_hid_closed_returns_none():
 
     reader = nh.NintendoHidReader()
     assert reader.read() is None
+    assert reader.read_next() is None
     assert reader.is_open() is False
     reader.close()
 
@@ -210,6 +346,72 @@ def test_nintendo_hid_concurrent_open_keeps_one_handle(monkeypatch):
         reader.close()
 
 
+class _SlowOpenHidDevice:
+    """open がゲートで止まる偽デバイス（open中の読みを観測する）。"""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.closed = False
+
+    def open(self, vid, pid):
+        self.entered.set()
+        self.release.wait(2.0)
+
+    def open_path(self, path):
+        self.entered.set()
+        self.release.wait(2.0)
+
+    def set_nonblocking(self, flag):
+        return None
+
+    def write(self, data):
+        return len(data)
+
+    def read(self, size, timeout_ms=0):
+        return list(_report_30(1, 2, 3, 4, 5, 6))
+
+    def close(self):
+        self.closed = True
+
+
+def test_open_does_not_block_readers(monkeypatch):
+    """open中でも is_open / read_pad は錠を待たず false / 未接続を返す。"""
+    import sys
+    import threading
+    import time
+    import types
+
+    import core.nintendo_hid as nh
+
+    dev = _SlowOpenHidDevice()
+    fake = types.ModuleType("hid")
+    fake.device = lambda: dev  # type: ignore[attr-defined]
+    fake.enumerate = lambda vid, pid: []  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "hid", fake)
+    reader = nh.NintendoHidReader()
+    result = []
+    thread = threading.Thread(target=lambda: result.append(reader.open(retries=1)))
+    thread.start()
+    try:
+        assert dev.entered.wait(1.0)
+        started = time.monotonic()
+        assert reader.is_open() is False
+        assert reader.is_opening() is True
+        assert reader.read_pad().connected is False
+        assert time.monotonic() - started < 0.3
+        dev.release.set()
+        thread.join(2.0)
+        assert result == [True]
+        assert reader.is_open() is True
+    finally:
+        dev.release.set()
+        thread.join(2.0)
+        reader.close()
+
+
 def test_nintendo_hid_stale_030_is_not_returned():
     """0x30が途絶えたら古い値を返さない（connected=False）。"""
     import time
@@ -220,11 +422,9 @@ def test_nintendo_hid_stale_030_is_not_returned():
     with reader._lock:
         reader._latest = _report_30(1, 2, 3, 4, 5, 6)
         reader._latest_t = time.monotonic() - (nh._LATEST_TTL_S + 1.0)
-        reader._samples.extend([(7, 8, 9, 10, 11, 12)])
     assert reader.read() is None
     assert reader.read_pad().connected is False
     assert reader.read_next() is None
-    assert not reader._samples
 
 
 class _ChatterHidDevice:

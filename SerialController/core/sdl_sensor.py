@@ -32,6 +32,8 @@ import os
 import threading
 from typing import Any
 
+from loguru import logger
+
 STANDARD_GRAVITY = 9.80665
 RAD_TO_DEG = 57.29577951308232
 ACC_G_PER_LSB = 0.000244
@@ -142,6 +144,17 @@ class SdlSensorReader:
         self._gyro_axes = tuple(int(v) for v in gyro_axes)
         self._gyro_signs = tuple(int(v) for v in gyro_signs)
         self._gyro_bias = tuple(float(v) for v in gyro_bias)
+        # 同じ失敗の警告を1回だけ出す（openの再試行で洪水にしない）。
+        self._warned: set[str] = set()
+        self._warn_lock = threading.Lock()
+
+    def _warn_once(self, key: str, message: str) -> None:
+        """同じ理由の警告を1回だけ出す。"""
+        with self._warn_lock:
+            if key in self._warned:
+                return
+            self._warned.add(key)
+        logger.warning(message)
 
     def _ensure(self) -> bool:
         """SDL2 libを読める状態にする。成功で True。"""
@@ -154,8 +167,9 @@ class SdlSensorReader:
 
             pygame.init()
             _gc.init()
-        except Exception:
+        except Exception as e:
             self._ready = False
+            self._warn_once(f"ensure:{e!r}", f"SDLを初期化できません: {e}")
             return False
         lib = _load_sdl2()
         self._lib = lib
@@ -206,6 +220,10 @@ class SdlSensorReader:
                 try:
                     handle = self._lib.SDL_GameControllerOpen(int(index))
                     if not handle:
+                        self._warn_once(
+                            f"sensor_open:{index}",
+                            f"SDLでパッド{index}のセンサーを開けません",
+                        )
                         continue
                     has_a = bool(
                         self._lib.SDL_GameControllerHasSensor(handle, SDL_SENSOR_ACCEL)
@@ -215,6 +233,10 @@ class SdlSensorReader:
                     )
                     if not (has_a and has_g):
                         self._lib.SDL_GameControllerClose(handle)
+                        self._warn_once(
+                            f"sensor_missing:{index}",
+                            f"パッド{index}は加速度・ジャイロ非対応です",
+                        )
                         continue
                     ok_a = self._lib.SDL_GameControllerSetSensorEnabled(
                         handle, SDL_SENSOR_ACCEL, 1
@@ -224,13 +246,22 @@ class SdlSensorReader:
                     )
                     if ok_a != 0 or ok_g != 0:
                         self._lib.SDL_GameControllerClose(handle)
+                        self._warn_once(
+                            f"sensor_enable:{index}:{ok_a}:{ok_g}",
+                            f"パッド{index}のセンサーを有効化できません"
+                            f"（accel={ok_a}, gyro={ok_g}）",
+                        )
                         continue
                     self._handle = handle
                     self._index = int(index)
                     self._has_accel = True
                     self._has_gyro = True
                     return True
-                except Exception:
+                except Exception as e:
+                    self._warn_once(
+                        f"sensor_open_exc:{index}:{e!r}",
+                        f"SDLでパッド{index}のセンサーを開けません: {e}",
+                    )
                     self._close_locked()
             if attempt + 1 < max(1, int(retries)):
                 try:

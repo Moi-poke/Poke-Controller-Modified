@@ -9,9 +9,12 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 import pytest
+from core.ui_inbox import UiInbox
 from ui.serial_panel import SerialPanelMixin
 
 
@@ -57,13 +60,22 @@ class _Settings:
 class _Serial:
     def __init__(self) -> None:
         self.events: list[Any] = []
+        self.thread_ids: list[int] = []
+        self.gate: threading.Event | None = None
+
+    def _record(self) -> None:
+        self.thread_ids.append(threading.get_ident())
+        if self.gate is not None:
+            self.gate.wait(3.0)
 
     def stop_gamepad(self) -> None:
+        self._record()
         self.events.append("stop")
 
     def set_gamepad_enabled(
         self, enabled: bool, index: int, deadzone: int
     ) -> str | None:
+        self._record()
         self.events.append(("enable", enabled, index, deadzone))
         return None
 
@@ -72,8 +84,15 @@ class _Source:
     def __init__(self, names: dict[int, str], identities: dict[int, str]) -> None:
         self.names_map = names
         self.id_map = identities
+        self.thread_ids: list[int] = []
+        self.gate: threading.Event | None = None
+        self.names_calls = 0
 
     def names(self) -> dict[int, str]:
+        self.names_calls += 1
+        self.thread_ids.append(threading.get_ident())
+        if self.gate is not None:
+            self.gate.wait(3.0)
         return dict(self.names_map)
 
     def identities(self) -> dict[int, str]:
@@ -101,6 +120,18 @@ class _Panel(SerialPanelMixin):
         self._gamepad_ids: dict[int, str] = {}
         self._gamepad_identity = ""
         self.calls: list[str] = []
+        # 列挙と掴み直しはワーカー。結果は inbox 経由で GUI へ戻す。
+        self.inbox = UiInbox()
+        self._gamepad_refresh_busy = False
+        self._gamepad_refresh_thread: threading.Thread | None = None
+        self._gamepad_restart_busy = False
+        self._gamepad_restart_thread: threading.Thread | None = None
+        self._gamepad_restart_pending: Any = None
+
+    def refreshGamepads(self) -> None:
+        """ワーカーを回し、テストでは完了まで待ってから返す。"""
+        super().refreshGamepads()
+        _settle(self)
 
     def _on_setting_changed(self) -> None:
         self.calls.append("save")
@@ -113,6 +144,23 @@ def _install_source(monkeypatch: pytest.MonkeyPatch, source: _Source) -> None:
     import core.pad_source as pad_source
 
     monkeypatch.setattr(pad_source, "PadSource", lambda: source)
+
+
+def _settle(panel: _Panel, timeout: float = 3.0) -> None:
+    """ワーカーの完了と inbox の反映を待つ（テスト用の同期点）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        panel.inbox.drain()
+        threads = (
+            getattr(panel, "_gamepad_refresh_thread", None),
+            getattr(panel, "_gamepad_restart_thread", None),
+        )
+        busy = any(t is not None and t.is_alive() for t in threads)
+        busy = busy or panel._gamepad_refresh_busy or panel._gamepad_restart_busy
+        if not busy and panel.inbox.pending() == 0:
+            return
+        time.sleep(0.005)
+    raise AssertionError("gamepad workers did not settle")
 
 
 def test_refresh_keeps_the_selected_index_and_updates_its_label(
@@ -165,6 +213,8 @@ def test_refresh_restarts_the_reader_when_the_selected_device_moves(
 
     # 番号を固定で持つ読取器を作り直す（画面と実際の読み先を一致させる）。
     assert panel.serial.events == ["stop", ("enable", True, 0, 1638)]
+    assert panel.serial.thread_ids
+    assert threading.get_ident() not in panel.serial.thread_ids
     assert "bind" in panel.calls
 
 
@@ -202,6 +252,64 @@ def test_refresh_does_not_rewrite_a_matching_deadzone(
     panel.refreshGamepads()
 
     assert panel.gamepad_dz.writes == 0
+
+
+def test_refresh_enumerates_off_the_tk_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """列挙はワーカー。Tk（ここではメイン）スレッドを待たせない。"""
+    source = _Source({0: "A"}, {0: "a"})
+    source.gate = threading.Event()
+    panel = _Panel()
+    panel.gamepad_cb["values"] = ["0: previous"]
+    panel.gamepad_choice.set("0: previous")
+    _install_source(monkeypatch, source)
+
+    started = time.monotonic()
+    SerialPanelMixin.refreshGamepads(panel)
+    assert time.monotonic() - started < 0.2
+    # 列挙が終わるまでは前回の表示を保つ。
+    assert panel.gamepad_choice.get() == "0: previous"
+
+    source.gate.set()
+    _settle(panel)
+    assert source.thread_ids
+    assert threading.get_ident() not in source.thread_ids
+    assert panel.gamepad_choice.get() == "0: A"
+
+
+def test_refresh_does_not_stack_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """巡回が重なっても列挙は1本だけ。"""
+    source = _Source({0: "A"}, {0: "a"})
+    source.gate = threading.Event()
+    panel = _Panel()
+    _install_source(monkeypatch, source)
+
+    SerialPanelMixin.refreshGamepads(panel)
+    SerialPanelMixin.refreshGamepads(panel)
+    source.gate.set()
+    _settle(panel)
+    assert source.names_calls == 1
+
+
+def test_restart_requests_do_not_stack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """連続で番号が移っても、再起動は1本ずつ最新番号へ行う。"""
+    panel = _Panel(index=0, enabled=True)
+    panel.serial.gate = threading.Event()
+    panel._restart_gamepad_at(1)
+    panel._restart_gamepad_at(2)
+    assert getattr(panel, "_gamepad_restart_busy") is True
+    pending = panel._gamepad_restart_pending
+    assert pending == 2
+
+    panel.serial.gate.set()
+    _settle(panel)
+    assert panel.serial.events == [
+        "stop",
+        ("enable", True, 1, 1638),
+        "stop",
+        ("enable", True, 2, 1638),
+    ]
+    assert getattr(panel, "_gamepad_restart_busy") is False
+    assert getattr(panel, "_gamepad_restart_pending") is None
 
 
 def test_follow_does_not_chase_a_device_that_is_gone(

@@ -443,6 +443,78 @@ def test_imu_panel_hid_live_invert_uses_hid_keys_only(tk_root: tk.Tk) -> None:
         root.destroy()
 
 
+def test_imu_panel_hid_bias_and_axis_scale_apply_before_signs(
+    tk_root: tk.Tk,
+) -> None:
+    """HIDのgyro_biasはrawへ換算し、軸別倍率→符号の順で効く。"""
+    data = {
+        "source": "hid",
+        "hid_accel_signs": "1,1,1",
+        "hid_gyro_signs": "1,1,1",
+        "gyro_bias": "0.1,0,0",
+        "hid_gyro_scale": "2.0,1.0,0.5",
+        "gyro_scale": "1.0",
+    }
+    panel, root, transport, _settings, _root = _make_panel(tk_root, data)
+    try:
+        sample = (0, 0, 4096, 1000, 200, 400)
+
+        def read() -> tuple[int, int, int, int, int, int]:
+            return sample
+
+        setattr(panel, "_build_source", lambda _source, _pad: read)
+        panel._on_toggle()
+        assert _wait_until(lambda: panel._streaming is True, root)
+        source = transport.source
+        assert source is not None
+        from core.sdl_sensor import gyro_to_raw
+
+        bias = gyro_to_raw(0.1)
+        assert bias == 94
+        # バイアス→軸別倍率→符号。Xは(1000-94)*2、Zは400*0.5。
+        assert source() == (0, 0, 4096, (1000 - bias) * 2, 200, 200)
+
+        panel._invert_var.set("ジャイロ")
+        panel._on_invert_changed()
+        assert source() == (0, 0, 4096, (1000 - bias) * 2, -200, -200)
+    finally:
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_sdl_bias_is_not_double_applied(tk_root: tk.Tk) -> None:
+    """SDL路のバイアスは reader 側だけ。watched() では引かない。"""
+    data = {
+        "source": "sensor",
+        "accel_signs": "1,1,1",
+        "gyro_signs": "1,1,1",
+        "gyro_bias": "0.1,0,0",
+        "hid_gyro_scale": "2.0,2.0,2.0",
+        "gyro_scale": "1.0",
+    }
+    panel, root, transport, settings, _root = _make_panel(tk_root, data)
+    try:
+        trim = panel._live_trim_from_settings(settings.read(), "sensor")
+        assert trim[4] is None
+        assert trim[5] is None
+        hid_trim = panel._live_trim_from_settings(settings.read(), "hid")
+        assert hid_trim[4] == (94, 0, 0)
+
+        sample = (0, 0, 4096, 1000, 200, 400)
+
+        def read() -> tuple[int, int, int, int, int, int]:
+            return sample
+
+        setattr(panel, "_build_source", lambda _source, _pad: read)
+        panel._on_toggle()
+        assert _wait_until(lambda: panel._streaming is True, root)
+        assert transport.source is not None
+        assert transport.source() == sample
+    finally:
+        panel.close()
+        root.destroy()
+
+
 def test_imu_panel_toggle_does_not_overlap_workers(tk_root: tk.Tk) -> None:
     """連打しても開始/停止ワーカーが並走せず、停止後は再開始できる。"""
     transport = _GatedTransport()

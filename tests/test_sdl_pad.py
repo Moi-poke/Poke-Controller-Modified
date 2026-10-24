@@ -90,7 +90,10 @@ class FakeGcModule:
 
 
 def _install_fake_gc(
-    monkeypatch, sticks: dict[int, FakeController], names: dict[int, str]
+    monkeypatch,
+    sticks: dict[int, FakeController],
+    names: dict[int, str],
+    gc_cls=FakeGcModule,
 ) -> None:
     import sys
     import types
@@ -99,7 +102,7 @@ def _install_fake_gc(
     fake_pygame.init = lambda: None  # type: ignore[attr-defined]
     fake_pygame.event = types.SimpleNamespace(pump=lambda: None)  # type: ignore[attr-defined]
     fake_sdl2 = types.ModuleType("pygame._sdl2")
-    fake_gc = FakeGcModule(sticks, names)
+    fake_gc = gc_cls(sticks, names)
     fake_controller = types.ModuleType("pygame._sdl2.controller")
     for attr in (
         "init",
@@ -290,9 +293,49 @@ def test_sdl_guide_maps_to_home(monkeypatch) -> None:
 
 
 def test_sdl_non_controller_is_disconnected(monkeypatch) -> None:
-    _install_fake_gc(monkeypatch, {}, {0: "Keyboard"})
-    reader = SdlPadReader()
-    assert reader.read(0).connected is False
+    """GameController未認識は未接続のまま、警告は1回だけ。"""
+    from loguru import logger
+
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        _install_fake_gc(monkeypatch, {}, {0: "Keyboard"})
+        reader = SdlPadReader()
+        assert reader.read(0).connected is False
+        assert reader.read(0).connected is False
+    finally:
+        logger.remove(handler)
+    assert sum("GameControllerとして認識" in m for m in messages) == 1
+
+
+def test_sdl_ensure_failure_logs_once(monkeypatch) -> None:
+    """SDL初期化の失敗は再試行しても1回だけ出す。"""
+    import sys
+    import types
+
+    from loguru import logger
+
+    fake = types.ModuleType("pygame")
+    fake._sdl2 = types.ModuleType("pygame._sdl2")  # type: ignore[attr-defined]
+    fake_sdl2 = fake._sdl2
+    fake_gc = types.ModuleType("pygame._sdl2.controller")
+    fake_gc.init = lambda: None  # type: ignore[attr-defined]
+    fake_sdl2.controller = fake_gc  # type: ignore[attr-defined]
+    fake.init = lambda: (_ for _ in ()).throw(RuntimeError("no sdl"))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pygame", fake)
+    monkeypatch.setitem(sys.modules, "pygame._sdl2", fake_sdl2)
+    monkeypatch.setitem(sys.modules, "pygame._sdl2.controller", fake_gc)
+
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        reader = SdlPadReader()
+        assert reader.available is False
+        reader._retry_at = 0.0
+        assert reader.available is False
+    finally:
+        logger.remove(handler)
+    assert sum("SDLを初期化できません" in m for m in messages) == 1
 
 
 def test_sdl_disconnected_without_pygame(monkeypatch) -> None:
@@ -332,17 +375,22 @@ class _NoPad:
 class _FakeHidPad:
     """HID直読みの代役。open/close回数を数える。"""
 
-    def __init__(self, connected: bool = True) -> None:
+    def __init__(self, connected: bool = True, open_ok: bool = True) -> None:
         self.opened = False
         self.open_calls = 0
+        self.open_retries: list[int] = []
+        self.open_ok = open_ok
         self.close_calls = 0
         self.connected = connected
 
     def is_open(self) -> bool:
         return self.opened
 
-    def open(self) -> bool:
+    def open(self, retries: int = 5) -> bool:
         self.open_calls += 1
+        self.open_retries.append(retries)
+        if not self.open_ok:
+            return False
         self.opened = True
         return True
 
@@ -395,6 +443,90 @@ def test_pad_source_hid_reopens_after_external_close() -> None:
     hid.opened = False  # 読み取りスレッドが閉じた
     assert source.read(0).connected is True
     assert hid.open_calls == 2
+
+
+def test_pad_source_hid_open_failure_backs_off() -> None:
+    """open失敗は1回だけ試し、0.5秒は次のopenを呼ばない。"""
+    from core.pad_source import PadSource
+
+    hid = _FakeHidPad(open_ok=False)
+    source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+    assert source.read(0).connected is False
+    assert source.read(0).connected is False
+    assert hid.open_calls == 1
+    assert hid.open_retries == [1]
+    # バックオフが明けたら再試行する。
+    source._hid_retry_at = 0.0
+    assert source.read(0).connected is False
+    assert hid.open_calls == 2
+
+
+def test_pad_source_does_not_wait_for_an_opening_handle() -> None:
+    """open処理中は open を呼ばず、未接続を即返す。"""
+    from core.pad_source import PadSource
+
+    class _OpeningHid:
+        def __init__(self) -> None:
+            self.open_calls = 0
+
+        def is_open(self) -> bool:
+            return False
+
+        def is_opening(self) -> bool:
+            return True
+
+        def open(self, retries: int = 5) -> bool:
+            self.open_calls += 1
+            return True
+
+        def read_pad(self):
+            return PadState()
+
+    hid = _OpeningHid()
+    source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+    assert source.read(0).connected is False
+    assert hid.open_calls == 0
+
+
+def test_pad_source_logs_hid_fallback_once() -> None:
+    """SDL→HIDへ切り替えたことを1回だけ出す（巡回ごとに洪水にしない）。"""
+    from core.pad_source import PadSource
+    from loguru import logger
+
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        hid = _FakeHidPad()
+        source = PadSource(xinput=_NoPad(), sdl=_NoPad(), hid=hid)
+        assert source.read(0).connected is True
+        source._route.clear()
+        assert source.read(0).connected is True
+    finally:
+        logger.remove(handler)
+    assert sum("HID直結" in m for m in messages) == 1
+
+
+def test_sdl_open_failure_logs_once(monkeypatch) -> None:
+    """SDL_GameControllerOpen の同じ失敗は毎tickではなく1回だけ出す。"""
+    from loguru import logger
+
+    class _FailingGc(FakeGcModule):
+        def is_controller(self, index: int) -> bool:
+            return True
+
+        def Controller(self, index: int):
+            raise RuntimeError("open failed")
+
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        _install_fake_gc(monkeypatch, {}, {}, _FailingGc)
+        reader = SdlPadReader()
+        assert reader.read(0).connected is False
+        assert reader.read(0).connected is False
+    finally:
+        logger.remove(handler)
+    assert sum("開けません" in m for m in messages) == 1
 
 
 def test_names_pumps_events_so_hotplug_shows_up(monkeypatch) -> None:

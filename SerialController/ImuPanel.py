@@ -55,8 +55,29 @@ CURRENT_INVERT_LABEL = "設定値のまま"
 # ジャイロ出力倍率のプリセット（実機比較用）。
 SCALE_PRESETS = ("1.0", "0.5", "0.25", "0.125", "0.0625")
 
-# 送出中に毎サンプル読む加工値（倍率, 不感帯raw, 加速度符号, ジャイロ符号）。
-_LiveTrim = tuple[float, float, tuple[int, int, int], tuple[int, int, int]]
+# rad/s → Switchジャイロraw。1rad/s = 57.2958dps / 0.06103dps/LSB。
+_GYRO_RAD_TO_RAW = 57.29577951308232 / 0.06103
+
+# 送出中に毎サンプル読む加工値。
+# (倍率, 不感帯raw, 加速度符号, ジャイロ符号, HIDバイアスraw, HID軸別倍率)
+# HIDバイアス・倍率はHID直結のときだけ入り、SDL路ではNone（二重適用防止）。
+_LiveTrim = tuple[
+    float,
+    float,
+    tuple[int, int, int],
+    tuple[int, int, int],
+    tuple[int, int, int] | None,
+    tuple[float, float, float] | None,
+]
+
+
+def _gyro_bias_to_raw(bias: tuple[float, float, float]) -> tuple[int, int, int]:
+    """rad/s のバイアスをSwitchジャイロrawへ換算する。"""
+    return (
+        int(round(float(bias[0]) * _GYRO_RAD_TO_RAW)),
+        int(round(float(bias[1]) * _GYRO_RAD_TO_RAW)),
+        int(round(float(bias[2]) * _GYRO_RAD_TO_RAW)),
+    )
 
 
 class ImuPanel:
@@ -83,8 +104,8 @@ class ImuPanel:
         self._starting = False
         self._stopping = False
         # 送出中に毎サンプル読む加工値（倍率, 不感帯raw, 加速度符号,
-        # ジャイロ符号）。断面を不変タプルで持つので、GUIスレッドからの
-        # 差し替えは次のサンプルから効く。
+        # ジャイロ符号, HIDバイアスraw, HID軸別倍率）。断面を不変タプルで
+        # 持つので、GUIスレッドからの差し替えは次のサンプルから効く。
         self._live_trim: _LiveTrim | None = None
         self._sensor_reader: Any = None
         self._step_gen: Any = None
@@ -351,7 +372,23 @@ class ImuPanel:
             dead_dps = 0.0
         dead_raw = max(0.0, dead_dps) / 0.06103
         acc_signs, gyr_signs = self._signs_from_settings(settings, source)
-        return (gyro_scale, dead_raw, acc_signs, gyr_signs)
+        # HID直結だけ、rad/s のバイアスと軸別倍率をrawへ換算して持つ。
+        # SDL路は SdlSensorReader がバイアスを持っているため、ここで
+        # 入れると二重に引く。
+        hid_bias: tuple[int, int, int] | None = None
+        hid_scale: tuple[float, float, float] | None = None
+        if source == "hid":
+            try:
+                from config import parse_imu_bias, parse_imu_scale
+
+                bias = parse_imu_bias(str(settings.get("gyro_bias", "")))
+                if bias is not None:
+                    hid_bias = _gyro_bias_to_raw(bias)
+                hid_scale = parse_imu_scale(str(settings.get("hid_gyro_scale", "")))
+            except Exception:
+                hid_bias = None
+                hid_scale = None
+        return (gyro_scale, dead_raw, acc_signs, gyr_signs, hid_bias, hid_scale)
 
     def _load_invert_from_settings(
         self, settings: dict[str, str] | None = None
@@ -488,7 +525,7 @@ class ImuPanel:
         suffix = "（次回から）"
         trim = self._live_trim
         if self._streaming and trim is not None:
-            self._live_trim = (trim[0], trim[1], acc, gyr)
+            self._live_trim = (trim[0], trim[1], acc, gyr, trim[4], trim[5])
             suffix = "（即時）"
         self._queue.put(("log", f"反転: {self._invert_var.get()}{suffix}"))
 
@@ -505,7 +542,7 @@ class ImuPanel:
         suffix = "（次回から）"
         trim = self._live_trim
         if self._streaming and trim is not None:
-            self._live_trim = (value, trim[1], trim[2], trim[3])
+            self._live_trim = (value, trim[1], trim[2], trim[3], trim[4], trim[5])
             suffix = "（即時）"
         self._queue.put(("log", f"倍率: {value:g}{suffix}"))
 
@@ -710,7 +747,8 @@ class ImuPanel:
                 transform = self._sample_transform(
                     settings, hid=True, apply_signs=False
                 )
-                # 0x30の3サンプルを5msごとに順に送る（階段化を避ける）。
+                # パッドAPIと同じ最新値方式。0x30の3スロットを古い順に
+                # 消費せず、常に最新スロットだけを返す（時間の巻き戻し防止）。
                 inner_read = reader.read_next
                 last_try = {"t": 0.0}
 
@@ -908,12 +946,32 @@ class ImuPanel:
             except (TypeError, ValueError):
                 return None
             trim = panel._live_trim
+            hid_bias_raw: tuple[int, int, int] | None = None
+            hid_scale: tuple[float, float, float] | None = None
             if trim is None:
                 gyro_scale, dead_raw = 1.0, 0.0
                 acc_signs = (1, 1, 1)
                 gyr_signs = (1, 1, 1)
             else:
-                gyro_scale, dead_raw, acc_signs, gyr_signs = trim
+                (
+                    gyro_scale,
+                    dead_raw,
+                    acc_signs,
+                    gyr_signs,
+                    hid_bias_raw,
+                    hid_scale,
+                ) = trim
+            # HID直結のバイアスは、軸変換後（source側で適用済み）・符号
+            # 適用前の生値から引く。SDL路は reader 側が引いているため
+            # hid_bias_raw は None（二重適用しない）。
+            if hid_bias_raw is not None:
+                gx = max(-32768, min(32767, gx - hid_bias_raw[0]))
+                gy = max(-32768, min(32767, gy - hid_bias_raw[1]))
+                gz = max(-32768, min(32767, gz - hid_bias_raw[2]))
+            if hid_scale is not None and hid_scale != (1.0, 1.0, 1.0):
+                gx = max(-32768, min(32767, int(round(gx * hid_scale[0]))))
+                gy = max(-32768, min(32767, int(round(gy * hid_scale[1]))))
+                gz = max(-32768, min(32767, int(round(gz * hid_scale[2]))))
             # 符号は入力源ではなくここで一度だけ掛ける（二重適用防止）。
             ax = max(-32768, min(32767, ax * acc_signs[0]))
             ay = max(-32768, min(32767, ay * acc_signs[1]))

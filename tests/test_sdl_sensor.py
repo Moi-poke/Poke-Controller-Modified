@@ -99,3 +99,90 @@ def test_closed_reader_returns_none():
     assert reader.read() is None
     assert reader.is_open() is False
     reader.close()
+
+
+def _sensor_with_lib(lib):
+    from core.sdl_sensor import SdlSensorReader
+
+    reader = SdlSensorReader()
+    reader._ready = True
+    reader._lib = lib
+    return reader
+
+
+def test_sensor_open_failure_logs_once():
+    """SDL_GameControllerOpen の失敗は再試行しても1回だけ出す。"""
+    from loguru import logger
+
+    class _Lib:
+        def SDL_GameControllerOpen(self, index):
+            return None
+
+    reader = _sensor_with_lib(_Lib())
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        assert reader.open(0, retries=1) is False
+        assert reader.open(0, retries=1) is False
+    finally:
+        logger.remove(handler)
+    assert sum("開けません" in m for m in messages) == 1
+
+
+def test_sensor_enable_failure_logs_once():
+    """SetSensorEnabled の失敗も理由ごとに1回だけ出す。"""
+    from loguru import logger
+
+    class _Lib:
+        def SDL_GameControllerOpen(self, index):
+            return 1
+
+        def SDL_GameControllerHasSensor(self, handle, kind):
+            return 1
+
+        def SDL_GameControllerSetSensorEnabled(self, handle, kind, enabled):
+            return -1
+
+        def SDL_GameControllerClose(self, handle):
+            return None
+
+    reader = _sensor_with_lib(_Lib())
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        assert reader.open(0, retries=1) is False
+        assert reader.open(0, retries=1) is False
+    finally:
+        logger.remove(handler)
+    assert sum("有効化できません" in m for m in messages) == 1
+
+
+def test_sensor_sdl_ensure_failure_logs_once(monkeypatch):
+    """SDL初期化の失敗も再試行のたびに出さない。"""
+    import sys
+    import types
+
+    from loguru import logger
+
+    fake = types.ModuleType("pygame")
+    fake._sdl2 = types.ModuleType("pygame._sdl2")  # type: ignore[attr-defined]
+    fake_sdl2 = fake._sdl2
+    fake_gc = types.ModuleType("pygame._sdl2.controller")
+    fake_gc.init = lambda: None  # type: ignore[attr-defined]
+    fake_sdl2.controller = fake_gc  # type: ignore[attr-defined]
+    fake.init = lambda: (_ for _ in ()).throw(RuntimeError("no sdl"))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pygame", fake)
+    monkeypatch.setitem(sys.modules, "pygame._sdl2", fake_sdl2)
+    monkeypatch.setitem(sys.modules, "pygame._sdl2.controller", fake_gc)
+
+    from core.sdl_sensor import SdlSensorReader
+
+    reader = SdlSensorReader()
+    messages: list[str] = []
+    handler = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        assert reader.available is False
+        assert reader.available is False
+    finally:
+        logger.remove(handler)
+    assert sum("SDLを初期化できません" in m for m in messages) == 1
