@@ -624,3 +624,118 @@ def test_imu_panel_hid_source_rearms_through_ensure_live(
     finally:
         panel.close()
         root.destroy()
+
+
+def test_imu_panel_hid_start_reports_imu_arm_failure(
+    tk_root: tk.Tk, monkeypatch
+) -> None:
+    """IMUを有効化できないハンドルで「開始しました」と言わない。"""
+    import core.nintendo_hid as nintendo_hid
+
+    class _UnarmedHid:
+        def is_open(self) -> bool:
+            return True
+
+        def is_armed(self) -> bool:
+            return False
+
+        def ensure_live(self) -> bool:
+            return False
+
+        def read_next(self):
+            return None
+
+    fake = _UnarmedHid()
+    monkeypatch.setattr(nintendo_hid, "get_shared_reader", lambda: fake)
+    panel, root, transport, _settings, _root = _make_panel(tk_root, {"source": "hid"})
+    try:
+        panel._do_start("hid", 0)
+        panel._poll()
+        assert transport.running is False
+        assert panel._streaming is False
+        assert "開始しました" not in "".join(panel._logged)
+        assert any("IMUを有効化できません" in line for line in panel._logged)
+    finally:
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_hid_rearms_through_ensure_live_on_missing_sample(
+    tk_root: tk.Tk, monkeypatch
+) -> None:
+    """0x30が途絶えたら、同じ ensure_live 経路で再武装して読める。"""
+    import core.nintendo_hid as nintendo_hid
+
+    class _DroppingHid:
+        def __init__(self) -> None:
+            self.ensure_calls = 0
+            self.reads = 0
+
+        def is_open(self) -> bool:
+            return True
+
+        def is_armed(self) -> bool:
+            return True
+
+        def ensure_live(self) -> bool:
+            self.ensure_calls += 1
+            return True
+
+        def read_next(self):
+            self.reads += 1
+            return None if self.reads == 1 else (1, 2, 3, 4, 5, 6)
+
+    fake = _DroppingHid()
+    monkeypatch.setattr(nintendo_hid, "get_shared_reader", lambda: fake)
+    panel, root, _transport, _settings, _root = _make_panel(tk_root, {"source": "hid"})
+    try:
+        source = panel._build_source("hid", 0)
+        assert source is not None
+        assert source() is None  # 途絶 → 1秒間隔の再武装を試す
+        assert fake.ensure_calls == 2  # 開始時の1回 + 途絶後の1回
+        assert source() == (1, 2, 3, 4, 5, 6)
+    finally:
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_hid_start_always_rearms_even_when_live(
+    tk_root: tk.Tk, monkeypatch
+) -> None:
+    """開始時は毎回 arm_imu を呼ぶ（0x30が新鮮でも再武装する）。"""
+    import core.nintendo_hid as nintendo_hid
+
+    class _LiveHid:
+        def __init__(self) -> None:
+            self.arm_calls = 0
+            self.ensure_calls = 0
+
+        def is_open(self) -> bool:
+            return True
+
+        def is_armed(self) -> bool:
+            return True
+
+        def arm_imu(self) -> bool:
+            self.arm_calls += 1
+            return True
+
+        def ensure_live(self) -> bool:
+            self.ensure_calls += 1
+            return True
+
+        def read_next(self):
+            return (1, 2, 3, 4, 5, 6)
+
+    fake = _LiveHid()
+    monkeypatch.setattr(nintendo_hid, "get_shared_reader", lambda: fake)
+    panel, root, _transport, _settings, _root = _make_panel(tk_root, {"source": "hid"})
+    try:
+        source = panel._build_source("hid", 0)
+        assert source is not None
+        assert source() == (1, 2, 3, 4, 5, 6)
+        assert fake.arm_calls == 1
+        assert fake.ensure_calls == 0
+    finally:
+        panel.close()
+        root.destroy()

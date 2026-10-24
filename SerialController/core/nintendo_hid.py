@@ -8,10 +8,15 @@ SDLを使わないためSteam・pygameと干渉しない。
 
 手順（dekuNukem USB-HID-Notes準拠）:
   1. hidでVID 057E/PID 2009を開く
-  2. 80 01 → 81応答、80 02 → 81、80 03 → 81、80 02 → 81、80 04（USB固定）
+  2. 80 01 → 81応答、80 02 → 81、80 04（USB固定）
   3. sub 0x40 arg 01（IMU有効化）
   4. sub 0x03 arg 30（0x30モード）
-  5. 0x30レポート（64B）からIMU 3件を読む。最新（3件目）を使う。
+  5. 0x21応答（byte13=ACK, byte14=subcmd）を確認して「IMU有効」とする
+  6. 0x30レポート（64B）からIMU 3件を読む。最新（3件目）を使う。
+
+0x30は開いた直後から流れるが、IMU未有効の個体はIMUスロットが全0の
+ままである（実測）。そのため「0x30が来た」だけではIMU有効とみなさず、
+`_armed`（0x40/0x03の応答確認済み）で判定する。
 
 使い方:
     reader = NintendoHidReader()
@@ -35,6 +40,18 @@ _LATEST_TTL_S = 0.3
 # 読み取りスレッドが0x30を見失ってからハンドルを閉じるまで。
 # 空読み3回（_READ_TIMEOUT_MS×3）と同じ猶予。
 _POLL_STALE_S = 0.6
+# サブコマンド応答（0x21）を待つ上限。実機の応答は数msで返る。
+_ARM_REPLY_TIMEOUT_S = 0.4
+# 80ハンドシェイク応答（0x81）を待つ上限。
+_HANDSHAKE_REPLY_TIMEOUT_S = 0.2
+# open直後、最初の0x30が来るまでの上限。ハンドルを閉じた直後やUSB再列挙
+# 直後は0x30が数秒止まることがある（実測）。1回の空読みで諦めない。
+_FIRST_030_TIMEOUT_S = 1.0
+# IMU有効化と入力レポートモードのサブコマンド。
+_SUB_IMU_ENABLE = 0x40
+_SUB_INPUT_MODE = 0x03
+_IMU_ENABLE_ARG = b"\x01"
+_REPORT_MODE_FULL = b"\x30"
 
 # プロセス内で共有するHID実体（パッド読みとIMU送出で同一ハンドルを使う）。
 _shared_lock = threading.Lock()
@@ -95,6 +112,10 @@ class NintendoHidReader:
         # open中の印。openは錠を長く持たないため、この間の読み手には
         # 未接続を返す（ブロッキングさせない）。
         self._opening = False
+        # このハンドルで IMU有効化(0x40 01) と 0x30モード(0x03 30) の
+        # 応答を確認できたか。0x30の鮮度だけでは「IMU有効」とみなさない
+        # （IMU未有効でも0x30は流れ、IMUスロットが全0になる実測）。
+        self._armed = False
         self._replies: collections.deque[bytes] = collections.deque(maxlen=16)
         self._poller: threading.Thread | None = None
         self._poll_stop = threading.Event()
@@ -127,12 +148,19 @@ class NintendoHidReader:
 
         パッド読み・IMU送出・開始処理から並行に呼ばれるため、全体を
         `_open_lock` で直列化する。既に0x30が新鮮なまま開いているなら
-        何もせず True を返し、動いているハンドルを閉じない。
+        何もせず True を返し、動いているハンドルを閉じない。IMUの
+        準備可否は `is_armed()` / `ensure_live()` で判定する（0x30の
+        鮮度だけではIMU有効を意味しない）。
         """
         if not self.available():
             return False
         with self._open_lock:
             if path is None and self._is_ready():
+                # 0x30が新鮮でもIMU未有効のハンドルは再武装しておく。
+                # 失敗してもパッド読みはできるため open 自体は成功のまま
+                # 返し、IMU側は is_armed()/ensure_live() で判断させる。
+                if not self.is_armed():
+                    self._arm_current()
                 return True
             # 再試行の待ち時間も含めて open 中とする。この間の読み手は
             # `_open_lock` で待たずに未接続を返せる。
@@ -156,12 +184,24 @@ class NintendoHidReader:
         with self._lock:
             return self._dev is not None and self._fresh_030_locked() is not None
 
-    def ensure_live(self, max_age_s: float = 0.25) -> bool:
-        """0x30が新鮮なら何もせずTrue。古ければ開き直して再武装する。
+    def is_armed(self) -> bool:
+        """IMU有効化の応答を確認済みのハンドルか。
 
-        「開いているのに0x30が来ない」ハンドル（IMU未有効・report modeが
-        戻った等）を呼び出し側から立て直すための入口。再武装に失敗したら
-        False。例外は投げない。
+        0x30の鮮度ではなく `_armed` を見る。これがFalseのまま0x30だけ
+        流れている状態が「開始しました」と出ていた従来の誤認。
+        """
+        with self._lock:
+            return self._dev is not None and self._armed
+
+    def ensure_live(self, max_age_s: float = 0.25) -> bool:
+        """IMUを読める状態（0x30が新鮮かつIMU有効）を保証する。
+
+        - 新鮮かつ `_armed`: 何もせずTrue
+        - 開いていて新鮮だが未武装: ハンドルを閉じずに再武装する
+        - 0x30が古い/閉じている: 開き直して再武装する
+
+        「0x30が来ている」だけでTrueにしない。再武装に失敗したらFalse。
+        例外は投げない。
         """
         try:
             age = max(0.0, float(max_age_s))
@@ -169,15 +209,60 @@ class NintendoHidReader:
             age = 0.25
         try:
             with self._lock:
-                if self._dev is not None and self._fresh_030_locked(age) is not None:
-                    return True
-                # open()の再利用判定（_LATEST_TTL_S）に引っかからないよう、
-                # 鮮度切れのキャッシュを落としてから開き直す。
+                fresh = (
+                    self._dev is not None and self._fresh_030_locked(age) is not None
+                )
+                armed = self._armed
+            if fresh and armed:
+                return True
+            if fresh:
+                return self.arm_imu()
+            # open()の再利用判定（_LATEST_TTL_S）に引っかからないよう、
+            # 鮮度切れのキャッシュを落としてから開き直す。
+            with self._lock:
                 self._latest = None
                 self._latest_t = 0.0
-            return self.open(retries=2)
+            return self.open(retries=2) and self.is_armed()
         except Exception:
             return False
+
+    def arm_imu(self) -> bool:
+        """開いているハンドルへ IMU有効化(0x40 01)→0x30モード(0x03 30) を送り直す。
+
+        0x30が新鮮でも必ず送る（IMU未有効のハンドルを取り違えない）。
+        0x21応答を確認できたときだけTrue。未接続なら open() してから
+        同じ判定をする。例外は投げない。
+        """
+        try:
+            with self._open_lock:
+                with self._lock:
+                    dev = self._dev
+                if dev is not None:
+                    if self._arm_live(dev):
+                        with self._lock:
+                            self._armed = True
+                        return True
+                    return False
+                need_open = True
+        except Exception:
+            return False
+        if need_open:
+            try:
+                return self.open(retries=2) and self.is_armed()
+            except Exception:
+                return False
+        return False
+
+    def _arm_current(self) -> bool:
+        """錠内（`_open_lock`保持中）から現在のハンドルを再武装する。"""
+        with self._lock:
+            dev = self._dev
+        if dev is None:
+            return False
+        ok = self._arm_live(dev)
+        with self._lock:
+            self._armed = ok
+        return ok
 
     def _open_once(self, path: bytes | None) -> bool:
         """1回のopen試行。成功で True。
@@ -202,18 +287,28 @@ class NintendoHidReader:
             dev.set_nonblocking(False)
             if not self._handshake_dev(dev):
                 return False
-            # IMU有効化 → 0x30モード
-            self._subcmd_dev(dev, 0x40, b"\x01")
-            time.sleep(0.02)
-            self._subcmd_dev(dev, 0x03, b"\x30")
-            time.sleep(0.05)
-            # 0x30が来るか確認
-            report = self._read_report_dev(dev)
-            if report is None or len(report) < 49 or report[0] != 0x30:
-                # もう1回だけ待つ
-                report = self._read_report_dev(dev)
-                if report is None or len(report) < 49 or report[0] != 0x30:
-                    return False
+            # IMU有効化 → 0x30モード。応答の有無を必ず記録する。
+            armed = self._arm_dev(dev)
+            time.sleep(0.03)
+            # 0x30が来るか確認し、IMUスロットが非0なら有効の証拠になる
+            # （他のプロセスが既に有効化した個体への便乗）。
+            report = None
+            deadline = time.monotonic() + _FIRST_030_TIMEOUT_S
+            while time.monotonic() < deadline:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                candidate = self._read_report_dev(
+                    dev, max(1, min(_READ_TIMEOUT_MS, remaining_ms))
+                )
+                if candidate is None:
+                    # 0x30がまだ来ないだけ。期限まで待ち続ける。
+                    continue
+                if len(candidate) >= 49 and candidate[0] == 0x30:
+                    report = candidate
+                    if self._has_imu_payload(candidate):
+                        armed = True
+                    break
+            if report is None:
+                return False
             # 成功判定に使った0x30も保持する。ここで捨てると直後の
             # read_pad()が未接続になり、呼び出し側がclose→openを
             # 繰り返す（8ms周期の開き直しストーム）。
@@ -221,6 +316,7 @@ class NintendoHidReader:
                 self._dev = dev
                 self._packet = 0
                 self._pad_key = None
+                self._armed = armed
                 self._latest = report
                 self._latest_t = time.monotonic()
                 # 以降は専用スレッドが読み続け、呼び出し側は最新値を見る。
@@ -352,12 +448,14 @@ class NintendoHidReader:
         except Exception:
             return False
 
-    def _read_report_dev(self, dev: Any) -> bytes | None:
+    def _read_report_dev(
+        self, dev: Any, timeout_ms: int = _READ_TIMEOUT_MS
+    ) -> bytes | None:
         """1レポート読む。失敗・空はNone。"""
         if dev is None:
             return None
         try:
-            data = dev.read(_REPORT_LEN, timeout_ms=_READ_TIMEOUT_MS)
+            data = dev.read(_REPORT_LEN, timeout_ms=timeout_ms)
             if not data:
                 return None
             return bytes(data)
@@ -370,48 +468,153 @@ class NintendoHidReader:
         80 02はセッション毎1回のみの制約があり、他プロセスがhandshake済み
         だと失敗する実測。その場合は80 01の応答確認だけで通し、サブコマンド
         直送りでIMU有効化する（Steam初期化済みセッションへの便乗）。
+
+        0x30が先に混ざる個体でも目的の0x81が来るまで読み飛ばす。応答が
+        取れないこと自体は失敗にしない（便乗経路を壊さない）。
         """
-        # 80 01を送る。81応答が無くてもsubへ進む（Steamが横取りする場合あり）。
-        # 応答があれば読み飛ばしてキューを空にする。
         try:
-            self._write_dev(dev, bytes([0x80, 0x01]))
-            for _ in range(5):
-                report = self._read_report_dev(dev)
-                if report is None:
-                    break
-                if len(report) >= 2 and report[0] == 0x81 and report[1] == 0x01:
-                    break
+            if not self._write_dev(dev, bytes([0x80, 0x01])):
+                return True  # 書けないなら便乗を試す
+            self._wait_reply_dev(dev, 0x81, 0x01, _HANDSHAKE_REPLY_TIMEOUT_S)
         except Exception:
             pass
         # 自前handshakeを試す。失敗したら便乗（既に初期化済みのはず）。
         for sub in (0x02, 0x04):
-            if not self._write_dev(dev, bytes([0x80, sub])):
-                return True  # 書き失敗でも便乗を試す
-            if sub == 0x04:
-                time.sleep(0.05)
-                continue
-            report = self._read_report_dev(dev)
-            if report is None or len(report) < 2:
-                return True  # 応答なしでも便乗を試す
-            if report[0] != 0x81 or report[1] != sub:
-                return True  # 形状違いでも便乗を試す
+            try:
+                if not self._write_dev(dev, bytes([0x80, sub])):
+                    return True  # 書き失敗でも便乗を試す
+                if sub == 0x04:
+                    time.sleep(0.05)
+                    self._wait_reply_dev(dev, 0x81, sub, _HANDSHAKE_REPLY_TIMEOUT_S)
+                    continue
+                if not self._wait_reply_dev(dev, 0x81, sub, _HANDSHAKE_REPLY_TIMEOUT_S):
+                    return True  # 応答なしでも便乗を試す
+            except Exception:
+                return True
         return True
+
+    def _wait_reply_dev(
+        self, dev: Any, report_id: int, sub: int, timeout_s: float
+    ) -> bool:
+        """指定の 0x81 応答が来るまで読む。0x30等は読み飛ばす。"""
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() < deadline:
+            report = self._read_report_dev(dev)
+            if report is None:
+                return False
+            if len(report) >= 2 and report[0] == report_id and report[1] == sub:
+                return True
+        return False
+
+    @staticmethod
+    def _has_imu_payload(report: bytes | None) -> bool:
+        """0x30のIMU 3スロットに非0があるか。
+
+        IMU未有効の個体はスロットが全0のまま（実測）。静止中でも加速度に
+        重力（≈4096）が乗るため、有限の非0は「どこかが有効化済み」の
+        証拠になる。応答(0x21)が取れない個体（Steamが初期化済み等）の
+        フォールバック判定にだけ使う。
+        """
+        if report is None or len(report) < 49 or report[0] != 0x30:
+            return False
+        for off in (13, 25, 37):
+            try:
+                if any(struct.unpack_from("<6h", report, off)):
+                    return True
+            except struct.error:
+                return False
+        return False
+
+    @staticmethod
+    def _is_reply(report: bytes, sub: int) -> bool:
+        """0x21サブコマンド応答か。byte13=ACK(0x80|sub)、byte14=sub。"""
+        if len(report) < 15 or report[0] != 0x21:
+            return False
+        if report[14] != (sub & 0xFF):
+            return False
+        # ACK byteは 0x80|sub が実測（SPI読み 0x10 → 0x90）。個体差に
+        # 備えて素の0x80も応答として認める（byte14でsubを特定済み）。
+        ack = report[13]
+        return ack in (0x80, 0x80 | (sub & 0xFF))
+
+    def _write_subcmd(self, dev: Any, sub: int, arg: bytes) -> bool:
+        """output report 0x01（packet + rumble + subcmd）を書く。"""
+        packet = self._packet & 0xF
+        self._packet += 1
+        out = bytes([0x01, packet]) + _RUMBLE_NEUTRAL + bytes([sub & 0xFF]) + bytes(arg)
+        return self._write_dev(dev, out)
+
+    def _arm_dev(self, dev: Any) -> bool:
+        """IMU有効化→0x30モードを送り、両方の0x21応答を確認する。
+
+        open直後（読み取りスレッド未起動）向け。応答が取れなかった場合
+        でも、0x30のIMUスロットが非0なら呼び出し側が有効と判定する。
+        """
+        ok_imu = self._subcmd_dev(dev, _SUB_IMU_ENABLE, _IMU_ENABLE_ARG) is not None
+        time.sleep(0.02)
+        ok_mode = self._subcmd_dev(dev, _SUB_INPUT_MODE, _REPORT_MODE_FULL) is not None
+        return ok_imu and ok_mode
+
+    def _arm_live(self, dev: Any) -> bool:
+        """読み取りスレッド稼働中のハンドルへ再武装する。
+
+        応答はスレッドが `_replies` に積むため、直接readしない（直接read
+        するとスレッドと奪い合って応答を失う）。スレッドが居ない場合だけ
+        直接readへ落とす。
+        """
+        try:
+            with self._lock:
+                self._replies.clear()
+            # 応答が片方取れなくても順序どおり両方送る（0x03だけ先に
+            # 効いてIMU未有効のまま0x30が流れる状態を残さない）。
+            ok_imu = self._subcmd_live(dev, _SUB_IMU_ENABLE, _IMU_ENABLE_ARG)
+            ok_mode = self._subcmd_live(dev, _SUB_INPUT_MODE, _REPORT_MODE_FULL)
+            if ok_imu and ok_mode:
+                return True
+            # 応答が取れない個体（他プロセスが初期化済み等）でも、既に
+            # IMUスロットが非0なら有効とみなす（_open_onceと同じ便乗条件）。
+            with self._lock:
+                report = self._fresh_030_locked()
+            return self._has_imu_payload(report)
+        except Exception:
+            return False
+
+    def _subcmd_live(
+        self, dev: Any, sub: int, arg: bytes, timeout_s: float | None = None
+    ) -> bool:
+        """稼働中ハンドルへサブコマンドを送り、応答を待つ。
+
+        戻り値は応答の有無。タイムアウトは入力引数か `_ARM_REPLY_TIMEOUT_S`。
+        """
+        limit = _ARM_REPLY_TIMEOUT_S if timeout_s is None else timeout_s
+        poller = self._poller
+        if poller is None or not poller.is_alive():
+            return self._subcmd_dev(dev, sub, arg) is not None
+        if not self._write_subcmd(dev, sub, arg):
+            return False
+        deadline = time.monotonic() + max(0.0, float(limit))
+        want = sub & 0xFF
+        while time.monotonic() < deadline:
+            with self._lock:
+                for i, report in enumerate(self._replies):
+                    if self._is_reply(report, want):
+                        del self._replies[i]
+                        return True
+            time.sleep(0.005)
+        return False
 
     def _subcmd_dev(self, dev: Any, sub: int, arg: bytes) -> bytes | None:
         """サブコマンドを送り0x21応答を返す。失敗はNone。
 
         open中はまだ読み取りスレッドが居ないため、直接読んで応答を拾う。
         """
-        packet = self._packet & 0xF
-        self._packet += 1
-        out = bytes([0x01, packet]) + _RUMBLE_NEUTRAL + bytes([sub & 0xFF]) + bytes(arg)
-        if not self._write_dev(dev, out):
+        if not self._write_subcmd(dev, sub, arg):
             return None
         for _ in range(5):
             report = self._read_report_dev(dev)
             if report is None:
                 return None
-            if len(report) >= 15 and report[0] == 0x21 and report[14] == (sub & 0xFF):
+            if self._is_reply(report, sub):
                 return report
             # 0x30等が混ざったら読み飛ばす
         return None
@@ -423,6 +626,7 @@ class NintendoHidReader:
         self._latest_t = 0.0
         # 個体が変わったときに前の個体の内容を引き継がない。
         self._pad_key = None
+        self._armed = False
         if dev is not None:
             try:
                 dev.close()

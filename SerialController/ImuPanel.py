@@ -734,14 +734,20 @@ class ImuPanel:
                 from core.nintendo_hid import get_shared_reader
 
                 reader = get_shared_reader()
-                ensure_live = getattr(reader, "ensure_live", None)
-                if callable(ensure_live):
-                    # 開いているのに0x30が古い/IMU未有効のハンドルも、
-                    # 開始時に再武装する（HID直結でジャイロが取れない対策）。
-                    if not ensure_live():
+                # 開始時は必ず 0x40 01 → 0x03 30 を送り直す。0x30が新鮮でも
+                # IMU未有効のハンドル（他プロセスが切り戻した等）を取り違え
+                # ない。応答が取れない個体は0x30の実値で判定する（arm_imu内）。
+                arm_imu = getattr(reader, "arm_imu", None)
+                if callable(arm_imu):
+                    if not arm_imu():
                         return None
-                elif not reader.is_open() and not reader.open():
-                    return None
+                else:
+                    ensure_live = getattr(reader, "ensure_live", None)
+                    if callable(ensure_live):
+                        if not ensure_live():
+                            return None
+                    elif not reader.is_open() and not reader.open():
+                        return None
                 self._sensor_reader = reader
                 # 符号は watched() が毎サンプル適用する（二重適用防止）。
                 transform = self._sample_transform(
@@ -892,6 +898,25 @@ class ImuPanel:
         except Exception:
             pass
 
+    @staticmethod
+    def _hid_failure_message() -> str:
+        """HID直結を開始できなかった理由。IMU未有効と未接続を区別する。"""
+        try:
+            from core.nintendo_hid import get_shared_reader
+
+            reader = get_shared_reader()
+            is_open = getattr(reader, "is_open", None)
+            is_armed = getattr(reader, "is_armed", None)
+            if callable(is_open) and callable(is_armed) and is_open():
+                if not is_armed():
+                    return (
+                        "ProConのIMUを有効化できませんでした"
+                        "（0x40/0x03の応答なし）。USBを挿し直してください。"
+                    )
+        except Exception:
+            pass
+        return "ProConが開けません。USB接続を確認してください。"
+
     def _do_start(self, source: str, pad: int) -> None:
         """送出開始の実体（作業スレッド）。"""
         try:
@@ -918,9 +943,7 @@ class ImuPanel:
                     )
                 )
             elif source == "hid":
-                self._queue.put(
-                    ("log", "ProConが開けません。USB接続を確認してください。")
-                )
+                self._queue.put(("log", self._hid_failure_message()))
             else:
                 self._queue.put(
                     ("log", f"波形の生成に失敗: {source}。設定を確認してください。")
