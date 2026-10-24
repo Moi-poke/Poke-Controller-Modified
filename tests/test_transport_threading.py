@@ -290,7 +290,9 @@ def test_set_transport_releases_lock_during_close() -> None:
 
 def test_set_transport_double_switch_no_leak() -> None:
     """課題2: 二重切替でも worker が漏れず、参照が替わる。"""
-    before = {th.name for th in threading.enumerate() if th.name == "PicoLiveWorker"}
+    # 本数で数える。名前の集合だと先行テストの漏れを1本と数えてしまい、
+    # 実行順によって誤検知する（2本生存時に before={name} で len=1）。
+    before = sum(1 for th in threading.enumerate() if th.name == "PicoLiveWorker")
     pico = Transport.PicoUartTransport()
     sender = Sender.Sender(is_show_serial=False, transport=pico)
     fake = _FastSer()
@@ -311,7 +313,7 @@ def test_set_transport_double_switch_no_leak() -> None:
         if th.name == "PicoLiveWorker" and th.is_alive()
     ]
     # 最初から生きていた分を除いて数える（今回は止めたので 0 のはず）。
-    assert len(leaked) == len(before)
+    assert len(leaked) == before
     sender.closeSerial()
 
 
@@ -319,6 +321,8 @@ def test_start_rx_pump_concurrent_single_thread() -> None:
     """課題3: 読みポンプの二重起動は1本だけ残る。"""
     t = _quiet_transport()
     t.ser = _ScriptedSer()  # type: ignore[assignment]
+    # 先行テストの漏れを基準に含め、この検証の増分だけを見る。
+    before_pump = sum(1 for th in threading.enumerate() if th.name == "PokeConRxPump")
     n = 20
     barrier = threading.Barrier(n)
 
@@ -338,8 +342,7 @@ def test_start_rx_pump_concurrent_single_thread() -> None:
             for th in threading.enumerate()
             if th.name == "PokeConRxPump" and th.is_alive()
         ]
-        # この検証だけが立てた分は1本のはず（他の検証と並列しない前提）。
-        assert len(alive) == 1, f"ポンプが {len(alive)} 本漏れている"
+        assert len(alive) == before_pump + 1, f"ポンプが {len(alive)} 本漏れている"
     finally:
         t.stop_rx_pump()
 
@@ -350,6 +353,7 @@ def test_start_live_worker_concurrent_single_thread() -> None:
     sender = Sender.Sender(is_show_serial=False, transport=pico)
     sender.transport.ser = _FastSer()  # type: ignore[attr-defined]
     assert sender.stopLiveWorker(1.0)
+    before = sum(1 for th in threading.enumerate() if th.name == "PicoLiveWorker")
     n = 20
     barrier = threading.Barrier(n)
 
@@ -369,7 +373,7 @@ def test_start_live_worker_concurrent_single_thread() -> None:
             for th in threading.enumerate()
             if th.name == "PicoLiveWorker" and th.is_alive()
         ]
-        assert len(alive) == 1, f"worker が {len(alive)} 本漏れている"
+        assert len(alive) == before + 1, f"worker が {len(alive)} 本漏れている"
     finally:
         assert sender.stopLiveWorker(1.0)
 

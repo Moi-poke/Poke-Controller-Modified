@@ -24,7 +24,13 @@ _BOTTOM_GAP = 8
 
 
 class ControllerDock:
-    """holder の中に枠を作って仮想コントローラを置き、別窓と行き来させる。"""
+    """holder の中に枠を作って仮想コントローラを置き、別窓と行き来させる。
+
+    companion_factory を渡すと、操作盤の下に連れの部品（ジャイロ欄など）も
+    一緒に置き、別窓への出し入れに追従させる。factoryは (master) → 部品
+    （close() を持つこと）を返す関数。部品の作り直し時は旧部品の close()
+    が走るため、ジャイロ送出は止まる（再開は新しい部品で操作する）。
+    """
 
     def __init__(
         self,
@@ -32,6 +38,7 @@ class ControllerDock:
         holder: Any,
         sender: Callable[[], Any],
         viewport: Any = None,
+        companion_factory: Callable[[Any], Any] | None = None,
     ) -> None:
         """viewport は holder を収めたスクロールする欄（ui.scroll_host.ScrollHost）。
 
@@ -42,9 +49,11 @@ class ControllerDock:
         self._viewport = viewport
         # 送り先は押すたびに引く（再接続で差し替わっても古い物を掴まない）。
         self._sender = sender
+        self._companion_factory = companion_factory
         self.embedded: ControllerGUI | None = None
         self.floating: ControllerGUI | None = None
-
+        self.embedded_companion: Any = None
+        self.floating_companion: Any = None
         self.frame = ttk.Labelframe(holder)
         # タブの残りの高さまで伸ばし、操作盤をそこいっぱいに描く。
         self.frame.pack(fill="both", expand=True)
@@ -67,6 +76,38 @@ class ControllerDock:
             viewport.bind("<Configure>", self._refit_embedded, add="+")
         self._embed()
 
+    def _make_companion(self, master: Any) -> Any:
+        """連れ部品を作る。factory無し・失敗はNone。"""
+        factory = self._companion_factory
+        if factory is None:
+            return None
+        try:
+            part = factory(master)
+            pack = getattr(part, "pack", None)
+            if callable(pack):
+                pack(fill="x", padx=4, pady=(0, 4))
+            return part
+        except Exception:
+            return None
+
+    @staticmethod
+    def _close_companion(part: Any) -> None:
+        """連れ部品を閉じる。例外は投げない。"""
+        if part is None:
+            return
+        try:
+            close = getattr(part, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+        try:
+            frame = getattr(part, "frame", None)
+            if frame is not None:
+                frame.destroy()
+        except Exception:
+            pass
+
     def _embed(self) -> None:
         self._away.pack_forget()
         self._pad_area.pack(fill="both", expand=True, padx=4, pady=4)
@@ -79,6 +120,7 @@ class ControllerDock:
             container=self._pad_area,
             height_limit=self._visible_height if self._viewport is not None else None,
         )
+        self.embedded_companion = self._make_companion(self._pad_area)
 
     def _visible_height(self) -> int | None:
         """操作盤の上端から、スクロールする欄の見えている下端までの高さ。
@@ -118,11 +160,17 @@ class ControllerDock:
             # 押しっぱなしを離してから消す（destroy が解放まで行う）。
             self.embedded.destroy()
             self.embedded = None
+        self._close_companion(self.embedded_companion)
+        self.embedded_companion = None
         self._pad_area.pack_forget()
         self._away.pack(anchor="w", padx=8, pady=4)
         self.pop_button.config(text=BACK_TEXT)
         self.floating = ControllerGUI(self.root, self._sender)
         self.floating.protocol("WM_DELETE_WINDOW", self.close_floating)
+        floating_window = getattr(self.floating, "window", None)
+        if floating_window is None:
+            floating_window = getattr(self.floating, "_window", self.floating)
+        self.floating_companion = self._make_companion(floating_window)
 
     def close_floating(self) -> None:
         """別ウィンドウを閉じ、タブへ戻す。"""
@@ -130,6 +178,8 @@ class ControllerDock:
             return
         self.floating.destroy()
         self.floating = None
+        self._close_companion(self.floating_companion)
+        self.floating_companion = None
         try:
             self._embed()
         except tk.TclError:
@@ -146,3 +196,7 @@ class ControllerDock:
                     pass
         self.floating = None
         self.embedded = None
+        self._close_companion(self.floating_companion)
+        self.floating_companion = None
+        self._close_companion(self.embedded_companion)
+        self.embedded_companion = None
