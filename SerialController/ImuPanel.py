@@ -48,6 +48,9 @@ INVERT_SIGNS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "gyro": ((1, 1, 1), (1, -1, -1)),
     "both": ((1, -1, -1), (1, -1, -1)),
 }
+# 設定ファイルの符号がプリセットのどれとも一致しないときの表示。
+# この表示のまま送出を開始しても、符号を書き換えない。
+CURRENT_INVERT_LABEL = "設定値のまま"
 
 # ジャイロ出力倍率のプリセット（実機比較用）。
 SCALE_PRESETS = ("1.0", "0.5", "0.25", "0.125", "0.0625")
@@ -74,7 +77,6 @@ class ImuPanel:
         self._streaming = False
         self._sensor_reader: Any = None
         self._step_gen: Any = None
-        self._stats_after: Any = None
         # 直近1秒の最大振幅。表示は瞬時値のため、単発の跳び(spike)を
         # 見落とす。Switch側の誤動作切り分け用に統計行へ出す。
         self._peak_g = 0.0
@@ -129,13 +131,13 @@ class ImuPanel:
         )
         self._invert_label = ttk.Label(frame, text="反転")
         self._invert_label.grid(row=3, column=0, sticky=tk.W, padx=2, pady=2)
-        self._invert_var = tk.StringVar(value="なし")
+        self._invert_var = tk.StringVar(value=CURRENT_INVERT_LABEL)
         self._invert_cb = ttk.Combobox(
             frame,
             width=10,
             state="readonly",
             textvariable=self._invert_var,
-            values=[label for _, label in INVERT_LABELS],
+            values=[CURRENT_INVERT_LABEL, *(label for _, label in INVERT_LABELS)],
         )
         self._invert_cb.grid(row=3, column=1, sticky=tk.EW, padx=2, pady=2)
         self._invert_cb.bind("<<ComboboxSelected>>", self._on_invert_changed, add="+")
@@ -190,8 +192,12 @@ class ImuPanel:
                 textvariable=var,
             )
             spin.grid(row=0, column=i * 2 + 1, sticky=tk.W, padx=(0, 2))
+            normalize = self._make_manual_normalizer(i, var)
+            spin.bind("<FocusOut>", normalize, add="+")
+            spin.bind("<Return>", normalize, add="+")
             var.trace_add("write", self._make_manual_trace(i, var))
             self._manual_vars.append(var)
+        # 反転・感度の行（4）と重ねない。詳細表示（6）の手前へ置く。
         self._manual_frame.grid(
             row=5, column=0, columnspan=3, sticky=tk.EW, pady=(4, 0)
         )
@@ -229,25 +235,18 @@ class ImuPanel:
             pad = int(settings.get("pad_index", "0"))
             if 0 <= pad <= 3:
                 self._pad_var.set(str(pad))
-            acc = tuple(
-                int(v) for v in str(settings.get("accel_signs", "1,1,1")).split(",")
-            )
-            gyr = tuple(
-                int(v) for v in str(settings.get("gyro_signs", "1,1,1")).split(",")
-            )
-            for name, label in INVERT_LABELS:
-                if INVERT_SIGNS[name] == (acc, gyr):
-                    self._invert_var.set(label)
-                    break
+            self._load_invert_from_settings(settings)
             scale = float(settings.get("gyro_scale", "1.0") or 1.0)
             self._scale_var.set(f"{scale:g}")
             for i, key in enumerate(
                 ("acc_x", "acc_y", "acc_z", "manual_gx", "manual_gy", "manual_gz")
             ):
                 try:
-                    self._manual_vars[i].set(str(int(settings.get(key, "0"))))
-                except (TypeError, ValueError, IndexError):
-                    pass
+                    value = int(settings.get(key, "0"))
+                except (TypeError, ValueError):
+                    continue
+                self._manual_vars[i].set(str(value))
+                self._normalize_manual_value(i, self._manual_vars[i])
             if source in DEBUG_SOURCES:
                 self._debug_var.set(True)
             self._refresh_source_choices()
@@ -268,6 +267,64 @@ class ImuPanel:
             self._manual_values[index] = max(-32768, min(32767, value))
 
         return _apply
+
+    def _normalize_manual_value(self, index: int, var: tk.StringVar) -> None:
+        """表示中の値をint16へ丸め、送信値と画面表示を一致させる。"""
+        try:
+            value = int(var.get())
+        except (TypeError, ValueError):
+            # 数値として読めない文字列は直前の採用値へ戻す。
+            value = self._manual_values[index]
+        value = max(-32768, min(32767, value))
+        self._manual_values[index] = value
+        text = str(value)
+        if var.get() != text:
+            var.set(text)
+
+    def _make_manual_normalizer(
+        self, index: int, var: tk.StringVar
+    ) -> Callable[[Any], None]:
+        """SpinboxのFocusOut/Return用ハンドラを作る（Tkは引数1つだけ渡す）。"""
+
+        def _normalize(_event: Any) -> None:
+            self._normalize_manual_value(index, var)
+
+        return _normalize
+
+    def _normalize_manual_values(self) -> None:
+        """手動入力の6軸すべてを丸める。送出開始の直前に呼ぶ。"""
+        for i, var in enumerate(self._manual_vars):
+            self._normalize_manual_value(i, var)
+
+    def _sign_keys(self) -> tuple[str, str]:
+        """選択中の入力源が読む符号キー。HID直結だけ hid_* を使う。"""
+        prefix = "hid_" if self._source_name() == "hid" else ""
+        return f"{prefix}accel_signs", f"{prefix}gyro_signs"
+
+    def _load_invert_from_settings(
+        self, settings: dict[str, str] | None = None
+    ) -> None:
+        """選択中の入力源の符号を画面へ反映する。
+
+        プリセットに一致しなければ「設定値のまま」を選び、送出開始時に
+        符号を書き換えない（既定の軸写像を黙って壊さない）。
+        """
+        try:
+            from config import parse_imu_axis_map
+
+            if settings is None:
+                settings = self._settings_provider()
+        except Exception:
+            return
+        acc_key, gyr_key = self._sign_keys()
+        acc = parse_imu_axis_map(str(settings.get(acc_key, "")), (-1, 1))
+        gyr = parse_imu_axis_map(str(settings.get(gyr_key, "")), (-1, 1))
+        if acc is not None and gyr is not None:
+            for name, label in INVERT_LABELS:
+                if INVERT_SIGNS[name] == (acc, gyr):
+                    self._invert_var.set(label)
+                    return
+        self._invert_var.set(CURRENT_INVERT_LABEL)
 
     def _on_source_changed(self, _event: Any = None) -> None:
         """入力源に応じて行を出し分ける（ラベルで説明しない）。"""
@@ -310,6 +367,8 @@ class ImuPanel:
                     self._source_var.set(label)
                     break
             self._refresh_source_choices()
+        # 入力源が変わったら、その源が読む符号を画面へ反映する。
+        self._load_invert_from_settings()
 
     def _refresh_source_choices(self) -> None:
         """デバッグ時だけ診断用の入力源を候補に出す。"""
@@ -342,22 +401,27 @@ class ImuPanel:
 
         return _read
 
-    def _invert_mode(self) -> str:
-        """画面の反転ラベル→設定名。既定none。"""
+    def _invert_mode(self) -> str | None:
+        """画面の反転ラベル→設定名。設定値のままならNone。"""
         label = self._invert_var.get()
         for name, text in INVERT_LABELS:
             if text == label:
                 return name
-        return "none"
+        return None
 
     def _on_invert_changed(self, _event: Any = None) -> None:
         """反転の組み合わせを設定へ書く（次の送出開始から効く）。"""
-        acc, gyr = INVERT_SIGNS[self._invert_mode()]
+        mode = self._invert_mode()
+        if mode is None:
+            self._queue.put(("log", "IMU反転: 設定値のまま（符号は書き換えません）"))
+            return
+        acc, gyr = INVERT_SIGNS[mode]
+        acc_key, gyr_key = self._sign_keys()
         try:
             self._settings_writer(
                 {
-                    "accel_signs": ",".join(str(v) for v in acc),
-                    "gyro_signs": ",".join(str(v) for v in gyr),
+                    acc_key: ",".join(str(v) for v in acc),
+                    gyr_key: ",".join(str(v) for v in gyr),
                 }
             )
         except Exception:
@@ -408,26 +472,31 @@ class ImuPanel:
             return
         source = self._source_name()
         if source == "manual":
+            self._normalize_manual_values()
             self._save_manual_values()
         try:
             pad = int(self._pad_var.get())
         except (TypeError, ValueError):
             pad = 0
-        acc, gyr = INVERT_SIGNS[self._invert_mode()]
         try:
             scale_text = f"{float(self._scale_var.get()):g}"
         except (TypeError, ValueError):
             scale_text = "1"
+        values = {
+            "source": source,
+            "pad_index": str(pad),
+            "gyro_scale": scale_text,
+        }
+        mode = self._invert_mode()
+        if mode is not None:
+            # プリセットを明示的に選んだときだけ書く。未変更のまま開始して
+            # 設定ファイルの既定符号（SDLの逆写像など）を壊さない。
+            acc, gyr = INVERT_SIGNS[mode]
+            acc_key, gyr_key = self._sign_keys()
+            values[acc_key] = ",".join(str(v) for v in acc)
+            values[gyr_key] = ",".join(str(v) for v in gyr)
         try:
-            self._settings_writer(
-                {
-                    "source": source,
-                    "pad_index": str(pad),
-                    "accel_signs": ",".join(str(v) for v in acc),
-                    "gyro_signs": ",".join(str(v) for v in gyr),
-                    "gyro_scale": scale_text,
-                }
-            )
+            self._settings_writer(values)
         except Exception:
             pass
         thread = threading.Thread(
@@ -460,7 +529,9 @@ class ImuPanel:
                 from GyroView import GyroView
 
                 view = GyroView(self.frame, rate_range=500)
-                view.grid(row=3, column=0, columnspan=3, sticky=tk.EW)
+                # 反転（3）・感度（4）・手動入力（5）・詳細チェック（6）と
+                # 重ねない。それらの下へ置く。
+                view.grid(row=7, column=0, columnspan=3, sticky=tk.EW)
                 reset = ttk.Button(view, text="ヨーリセット", command=view.reset_yaw)
                 reset.pack(pady=(0, 4))
                 self._gyro_view = view

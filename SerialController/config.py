@@ -246,7 +246,8 @@ def default_sections() -> dict[str, dict[str, Any]]:
         },
         "IMU": {
             # ジャイロ入力源。sensor … 実コントローラのSDLセンサー /
-            # sine … SINE波形 / step … STEP波形 / rest … 静止値。
+            # hid … ProCon USB HID直結 / sine … SINE波形 / step … STEP波形 /
+            # rest … 静止値 / manual … 手動入力。
             "source": "sensor",
             # センサー用パッド番号（SdlPadReaderと同じ番号空間）。
             "pad_index": 0,
