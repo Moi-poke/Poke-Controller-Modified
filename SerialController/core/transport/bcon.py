@@ -146,6 +146,9 @@ def decode_rumble(payload: bytes) -> tuple[int, int]:
 class BconTransport(Transport):
     """bcon用。STATEバイナリを送りSTATUS/PONG/ACKを読む。"""
 
+    #: is_open が手元で完結する（子プロセス経由の方式は立てない）。
+    is_open_is_local = True
+
     name = "bcon"
     capability = BCON_STATE
 
@@ -178,6 +181,9 @@ class BconTransport(Transport):
         self._parser = BconParser()
         self._rx_thread: threading.Thread | None = None
         self._rx_stop = threading.Event()
+        #: 受信ポンプが諦めたか。立つと、以後チャンクが来ても誰も読まない。
+        #: 待機側が「まだ来ない」と「もう死んでいる」を区別できるようにする。
+        self._rx_dead = False
         self._last_tx = 0.0
         # -- 会話層（Task 4: HELLO/PING/STATUS・baud hunt）の保持 --
         # 直近STATUS（flags/last_seq/err_crc/err_drop/errcode）。錠は_lock。
@@ -1069,6 +1075,14 @@ class BconTransport(Transport):
                 if entry in self._rx_waiters:
                     self._rx_waiters.remove(entry)
 
+    def rx_dead(self) -> bool:
+        """受信ポンプが諦めたか。
+
+        待機側が「まだ来ない」と「もう死んでいる」を区別するために見る。
+        立っている間は、待っても応答は来ない（起こし直しで消える）。
+        """
+        return bool(self._rx_dead)
+
     def rx_pump_running(self) -> bool:
         """読みポンプが動いているか（読むだけ）。"""
         thread = self._rx_thread
@@ -1087,6 +1101,8 @@ class BconTransport(Transport):
             if self.ser is None:
                 return False
             self._rx_stop.clear()
+            # 起こし直しでは「死んだ」印も消す。
+            self._rx_dead = False
             thread = threading.Thread(
                 target=self._rx_loop, name="BconRxPump", daemon=True
             )
@@ -1280,6 +1296,7 @@ class BconTransport(Transport):
         データ到着済みでも復帰が遅れる環境があり、PONG等の往復が
         タイムアウト周期に量子化される。到着を見てから読めば即復帰する。
         """
+        streak = 0
         while not self._rx_stop.is_set():
             ser = self.ser
             if ser is None:
@@ -1289,22 +1306,30 @@ class BconTransport(Transport):
                 if waiting is None:
                     chunk = ser.read(64)
                 else:
-                    try:
-                        available = int(waiting() if callable(waiting) else waiting)
-                    except Exception:
-                        break
+                    available = int(waiting() if callable(waiting) else waiting)
                     if available <= 0:
-                        try:
-                            time.sleep(0.001)
-                        except Exception:
-                            pass
+                        # 到着待ちの譲り（CPU を焼かない）。
+                        time.sleep(0.001)
+                        streak = 0
                         continue
                     chunk = ser.read(min(int(available), 64))
             except Exception:
-                self._logger.warning(
-                    "rx 読み取りで例外のためポンプを止めます", exc_info=True
+                # 一時的な失敗（USB の揺らぎ等）は数回まで許す。1 回で諦めると
+                # 以後チャンクが来ても誰も読まず、待機側はタイムアウトを
+                # 繰り返すだけになる（原因が分からない）。
+                streak += 1
+                if streak <= 3:  # 一時的な失敗は 3 回まで許す
+                    self._logger.debug("rx 読み取りに失敗。再試行します", exc_info=True)
+                    time.sleep(0.02)  # 少し置いてから読み直す
+                    continue
+                self._rx_dead = True
+                self._logger.error(
+                    "rx 読み取りが続けて失敗。ポンプを止めます", exc_info=True
                 )
+                # print は LogPane の待ち行列経由なので裏からでも安全。
+                print("受信が止まりました（シリアル接続を確認してください）")
                 break
+            streak = 0
             if not chunk:
                 continue
             try:

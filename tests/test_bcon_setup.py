@@ -557,7 +557,7 @@ def test_player_info_frame_reaches_lamps_via_queue_and_poll() -> None:
     # GUIスレッドの _poll を手で1回まわす（after予約は stub が捨てる）。
     obj._poll()
     _assert_lamps(obj, 0x05)
-    assert obj._imu_label.text == "IMU: あり"
+    assert obj._imu_label.text == "ジャイロ: あり"
     assert obj._vib_label.text == "振動: あり"
 
     # PLAYER_INFO以外（STATUS 0x20）は拾わない。
@@ -596,7 +596,7 @@ def test_on_status_refreshes_lamps_from_last_player_info() -> None:
     obj._on_status()
     obj._poll()
     _assert_lamps(obj, 0x0A)
-    assert obj._imu_label.text == "IMU: あり"
+    assert obj._imu_label.text == "ジャイロ: あり"
     assert obj._vib_label.text == "振動: なし"
     assert "PLAYER_INFO: 0a 01" in obj._log.text
 
@@ -1053,7 +1053,7 @@ def test_flood_rumble_playerinfo_last_wins_single_update() -> None:
     assert "L=99" in obj._log.text
     assert "R=156" in obj._log.text
     _assert_lamps(obj, 99 & 0x0F)
-    assert obj._imu_label.text == "IMU: あり"
+    assert obj._imu_label.text == "ジャイロ: あり"
     assert obj._vib_label.text == "振動: あり"
 
 

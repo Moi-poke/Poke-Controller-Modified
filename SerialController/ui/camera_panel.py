@@ -13,7 +13,6 @@ import os
 import re
 import subprocess
 import threading
-import time
 import tkinter as tk
 import tkinter.ttk as ttk
 from typing import Any
@@ -31,10 +30,6 @@ from core.display_mode import (
 from loguru import logger
 from ui.combo_fit import fit_combo_width
 
-# _on_camera_opened へ渡すまでの再試行上限。mainloop は構築直後に始まるため
-# 通常は 1 回で通る。待つのは裏スレッドであり GUI は止めない。
-_OPENED_HANDOFF_TIMEOUT_S = 10.0
-_OPENED_HANDOFF_RETRY_S = 0.05
 # openCamera() が錠を待つ上限。裏の CameraOpener が握ったままなのは、
 # 開けない機器への cv2.VideoCapture() が driver の中で止まっている場合。
 # 無限に待つと GUI スレッドが駐車して起動時フリーズに見えるため上限を置く。
@@ -440,37 +435,29 @@ class CameraPanelMixin:
     def _hand_off_open_result(
         self, camera: Any, cam_id: int, seq: int, ok: bool
     ) -> None:
-        """開結果を GUI スレッドへ渡す。mainloop 開始前なら始まるまで待つ。
+        """開結果を GUI スレッドへ渡す。積むだけで待たない。
 
-        ``after`` は mainloop 開始前に呼ぶと ``RuntimeError`` を投げる
-        （``TclError`` ではない）。ここで落とすと結果受けが走らず、失敗時の
-        通知と陳腐カメラの破棄が抜ける。待つのは裏スレッドであり、起動自体は
-        止めない。試行中に終了すれば開いた物だけ閉じて抜ける。
+        inbox へ積み、GUI 側の周期が取り出す。裏から after を呼ぶと main の
+        処理を待って裏スレッドが止まり、終了時の join と噛み合うと固まる。
+        古い結果は _on_camera_opened が seq で捨てるので、遅れても正しさは
+        保たれる。
         """
-        deadline = time.monotonic() + _OPENED_HANDOFF_TIMEOUT_S
-        while True:
-            try:
-                self.root.after(0, self._on_camera_opened, cam_id, seq, camera, ok)
-                return
-            except tk.TclError:
-                # 終了済み。開いてしまった物は閉じる（保持リーク防止）。
-                try:
-                    camera.destroy()
-                except Exception:
-                    pass
-                return
-            except RuntimeError:
-                if time.monotonic() >= deadline:
-                    logger.warning(
-                        "カメラ open 結果の受け渡しを断念: mainloop が "
-                        f"{_OPENED_HANDOFF_TIMEOUT_S} 秒待っても始まらない"
-                    )
-                    try:
-                        camera.destroy()
-                    except Exception:
-                        pass
-                    return
-                time.sleep(_OPENED_HANDOFF_RETRY_S)
+        # GUI がまだ生きているかを裏から判断しない。積むだけにして、取り出しは
+        # GUI 側の周期（inbox の drain）に任せる。期限切れで開いたばかりの
+        # カメラを捨てる判断は要らなくなった（_on_camera_opened が seq で古い
+        # 結果を捨てるため、遅れても正しさは保たれる）。
+        from core.ui_inbox import post_to_gui
+
+        # 実行されずに捨てられたら、その場で閉じる（開き途中のカメラを漏らさない）。
+        post_to_gui(
+            self,
+            self._on_camera_opened,
+            cam_id,
+            seq,
+            camera,
+            ok,
+            on_drop=camera.destroy,
+        )
 
     def _on_camera_opened(self, cam_id: int, seq: int, camera: Any, ok: bool) -> None:
         """裏開きの結果受け（GUI スレッド）。古ければ捨てる。"""
@@ -541,7 +528,7 @@ class CameraPanelMixin:
         裏の CameraOpener が握ったまま返さないのは、開けない機器への
         cv2.VideoCapture() が driver の中で止まっている場合。この meth は
         GUI スレッドから呼ばれるため無限待ちは駐車＝フリーズに見える。
-        取れなくても裏は続行し、終われば after 経由の結果は seq 世代で
+        取れなくても裏は続行し、終われば受け渡し箱へ渡した結果は seq 世代で
         捨てられるので、ここで断るのは安全。
         """
         if self._camera_open_lock.acquire(timeout=_CAMERA_OPEN_LOCK_TIMEOUT_S):

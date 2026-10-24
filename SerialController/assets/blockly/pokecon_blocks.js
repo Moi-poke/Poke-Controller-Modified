@@ -592,6 +592,27 @@
       tooltip: "押しっぱなしを離す。",
     },
     {
+      // 記録した解放（離す）材料。押しっぱなしの END 欄を書き換える方式は、
+      // L/R 同時に倒した記録で片側しか離せなかった。側を欄で持たせる。
+      type: "pokecon_stick_release",
+      message0: "スティックを離す %1",
+      args0: [
+        {
+          type: "field_dropdown",
+          name: "STICK",
+          options: [
+            ["L", "LEFT"],
+            ["R", "RIGHT"],
+            ["L+R", "BOTH"],
+          ],
+        },
+      ],
+      previousStatement: null,
+      nextStatement: null,
+      colour: 160,
+      tooltip: "倒したスティックを中立へ戻す（押しっぱなしを離す）。",
+    },
+    {
       type: "pokecon_finish",
       message0: "正常終了する",
       args0: [],
@@ -2148,6 +2169,16 @@
 
   pythonGenerator.forBlock["pokecon_hold_end"] = function (block) {
     return "self.holdEnd(" + block.getFieldValue("TARGET") + ")\n";
+  };
+
+  // スティックの解放。片側は stick_release、両側は 1 行でまとめて離す
+  // stick_release_both。両側を別々に呼ぶと行が 2 つに分かれる。
+  pythonGenerator.forBlock["pokecon_stick_release"] = function (block) {
+    var stick = String(block.getFieldValue("STICK") || "LEFT");
+    if (stick === "BOTH") {
+      return "self.stick_release_both()\n";
+    }
+    return "self.stick_release(Stick." + (stick === "RIGHT" ? "RIGHT" : "LEFT") + ")\n";
   };
 
   pythonGenerator.forBlock["pokecon_finish"] = function () {

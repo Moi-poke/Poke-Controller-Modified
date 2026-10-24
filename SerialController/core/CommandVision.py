@@ -35,7 +35,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from core.Camera import imwrite
+from core.Camera import BASE_DIR, imwrite
 from loguru import logger
 
 # テンプレート画像のキャッシュ件数。判定ループでは同じ画像を毎秒数十回
@@ -1014,7 +1014,7 @@ class VisionMixin:
 
     # -- 記録・複数検出・色 -------------------------------------------------
 
-    def saveFrame(self, name: str = "frame", crop=None, folder: str = "Debug") -> str:
+    def saveFrame(self, name: str = "frame", crop=None, folder: str = "") -> str:
         """いまの画面を日時つきで保存し、保存先のパスを返す。
 
         show_value=True は print するだけなので、放置運用ではログが
@@ -1027,11 +1027,16 @@ class VisionMixin:
         crop = crop or []
         frame = self._cropOrRaise(self._readFrameOrRaise(), crop)
 
-        os.makedirs(folder, exist_ok=True)
+        # 保存先は BASE_DIR 基準にする（cwd 依存にしない）。Utility.ospath は
+        # 区切りを直すだけなので、相対はここで BASE_DIR と結ぶ。
+        target_dir = folder or path.join(BASE_DIR, "Debug")
+        if not path.isabs(target_dir):
+            target_dir = path.join(BASE_DIR, target_dir)
+        os.makedirs(target_dir, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         stamp += f"_{int((time.time() % 1) * 1000):03d}"
         safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(name))
-        filespec = path.join(folder, f"{stamp}_{safe}.png")
+        filespec = path.join(target_dir, f"{stamp}_{safe}.png")
 
         # 日本語を含む道でも書けるよう、Camera 側の imwrite を使い回す。
         # cv2.imwrite は非 ASCII の道で静かに False を返す。

@@ -22,9 +22,12 @@ from collections.abc import Callable
 from tkinter import ttk
 from typing import Any
 
+# 通常運用では使わない入力源。デバッグ時だけ選べる。
+DEBUG_SOURCES = frozenset({"sine", "step", "rest", "manual"})
+
 SOURCE_LABELS = (
-    ("sensor", "センサー"),
-    ("hid", "ProCon直結"),
+    ("sensor", "パッドAPI"),
+    ("hid", "HID直結"),
     ("sine", "SINE波形"),
     ("step", "STEP波形"),
     ("rest", "静止値"),
@@ -100,21 +103,25 @@ class ImuPanel:
             values=[label for _, label in SOURCE_LABELS],
         )
         self._source_cb.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
-        self._btn_toggle = ttk.Button(frame, text="送出開始", command=self._on_toggle)
+        self._btn_toggle = ttk.Button(frame, text="開始", command=self._on_toggle)
         self._btn_toggle.grid(row=0, column=2, sticky=tk.EW, padx=2, pady=2)
 
-        ttk.Label(frame, text="パッド").grid(
-            row=1, column=0, sticky=tk.W, padx=2, pady=2
+        # パッド番号は SDL センサー入力のときだけ意味がある。行ごと
+        # 出し分け、ラベルで説明しない（レイアウトで示す）。
+        self._pad_frame = ttk.Frame(frame)
+        ttk.Label(self._pad_frame, text="パッド").grid(
+            row=0, column=0, sticky=tk.W, padx=2, pady=2
         )
         self._pad_var = tk.StringVar(value="0")
         self._pad_cb = ttk.Combobox(
-            frame,
+            self._pad_frame,
             width=10,
             state="readonly",
             textvariable=self._pad_var,
             values=["0", "1", "2", "3"],
         )
-        self._pad_cb.grid(row=1, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._pad_cb.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        self._pad_frame.grid(row=1, column=0, columnspan=2, sticky=tk.EW)
         self._btn_step = ttk.Button(frame, text="STEP発火", command=self._on_step_fire)
         self._btn_step.grid(row=1, column=2, sticky=tk.EW, padx=2, pady=2)
 
@@ -122,7 +129,8 @@ class ImuPanel:
         ttk.Label(frame, textvariable=self._stats_var).grid(
             row=2, column=0, columnspan=2, sticky=tk.W, padx=2, pady=2
         )
-        ttk.Label(frame, text="反転").grid(row=3, column=0, sticky=tk.W, padx=2, pady=2)
+        self._invert_label = ttk.Label(frame, text="反転")
+        self._invert_label.grid(row=3, column=0, sticky=tk.W, padx=2, pady=2)
         self._invert_var = tk.StringVar(value=CURRENT_INVERT_LABEL)
         self._invert_cb = ttk.Combobox(
             frame,
@@ -133,7 +141,8 @@ class ImuPanel:
         )
         self._invert_cb.grid(row=3, column=1, sticky=tk.EW, padx=2, pady=2)
         self._invert_cb.bind("<<ComboboxSelected>>", self._on_invert_changed, add="+")
-        ttk.Label(frame, text="感度").grid(row=4, column=0, sticky=tk.W, padx=2, pady=2)
+        self._scale_label = ttk.Label(frame, text="感度")
+        self._scale_label.grid(row=4, column=0, sticky=tk.W, padx=2, pady=2)
         self._scale_var = tk.StringVar(value="1.0")
         self._scale_cb = ttk.Combobox(
             frame,
@@ -144,6 +153,14 @@ class ImuPanel:
         )
         self._scale_cb.grid(row=4, column=1, sticky=tk.EW, padx=2, pady=2)
         self._scale_cb.bind("<<ComboboxSelected>>", self._on_scale_changed, add="+")
+        self._debug_var = tk.BooleanVar(value=False)
+        self._debug_cb = ttk.Checkbutton(
+            frame,
+            text="デバッグ",
+            variable=self._debug_var,
+            command=self._on_debug_toggled,
+        )
+        self._debug_cb.grid(row=2, column=2, sticky=tk.EW, padx=2, pady=2)
         self._detail_var = tk.BooleanVar(value=False)
         self._detail_cb = ttk.Checkbutton(
             frame,
@@ -151,7 +168,7 @@ class ImuPanel:
             variable=self._detail_var,
             command=self._on_detail_toggled,
         )
-        self._detail_cb.grid(row=2, column=2, sticky=tk.EW, padx=2, pady=2)
+        self._detail_cb.grid(row=6, column=0, sticky=tk.W, padx=2, pady=2)
         # 手動入力: 6軸の生値を直接指定して送る。入力源が「手動入力」の
         # ときだけ表示する。値はtraceでメインスレッドから取り込み、
         # 送出スレッドはスナップショット(int6)だけを読む。
@@ -186,9 +203,17 @@ class ImuPanel:
         )
         self._manual_frame.grid_remove()
         self._source_cb.bind("<<ComboboxSelected>>", self._on_source_changed, add="")
+        self._apply_visibility()
         # 詳細の可視化パネル。チェックONのときだけ同frame内に展開する。
         self._gyro_view: Any = None
         self._load_settings_into_vars()
+        # この部品は Window.loadSettings() より先に作られる。設定がまだ
+        # 無い状態の既定値で送出開始→保存すると保存値を潰すため、
+        # イベントループ開始後に読み直す。
+        try:
+            self.frame.after_idle(self._load_settings_into_vars)
+        except Exception:
+            pass
         self._poll()
 
     def pack(self, **kwargs: Any) -> None:
@@ -222,7 +247,10 @@ class ImuPanel:
                     continue
                 self._manual_vars[i].set(str(value))
                 self._normalize_manual_value(i, self._manual_vars[i])
-            self._on_source_changed()
+            if source in DEBUG_SOURCES:
+                self._debug_var.set(True)
+            self._refresh_source_choices()
+            self._apply_visibility()
         except (TypeError, ValueError):
             pass
 
@@ -299,12 +327,63 @@ class ImuPanel:
         self._invert_var.set(CURRENT_INVERT_LABEL)
 
     def _on_source_changed(self, _event: Any = None) -> None:
-        """入力源の切り替え。手動入力のときだけ6軸欄を出し、反転表示を合わせる。"""
-        if self._source_name() == "manual":
+        """入力源に応じて行を出し分ける（ラベルで説明しない）。"""
+        self._apply_visibility()
+
+    def _apply_visibility(self) -> None:
+        """通常は実機の2源だけ。診断用の行はデバッグ時だけ出す。"""
+        source = self._source_name()
+        debug = bool(self._debug_var.get())
+        if source == "sensor":
+            self._pad_frame.grid()
+        else:
+            self._pad_frame.grid_remove()
+        if source == "step":
+            self._btn_step.grid()
+        else:
+            self._btn_step.grid_remove()
+        if source == "manual":
             self._manual_frame.grid()
         else:
             self._manual_frame.grid_remove()
+        for widget in (self._invert_label, self._invert_cb):
+            if debug:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        for widget in (self._scale_label, self._scale_cb):
+            if debug:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        if debug:
+            self._detail_cb.grid()
+        else:
+            self._detail_cb.grid_remove()
+        if not debug and source in DEBUG_SOURCES:
+            # デバッグ源を選んだまま通常へ戻したら実機源へ寄せる。
+            for name, label in SOURCE_LABELS:
+                if name == "hid":
+                    self._source_var.set(label)
+                    break
+            self._refresh_source_choices()
+        # 入力源が変わったら、その源が読む符号を画面へ反映する。
         self._load_invert_from_settings()
+
+    def _refresh_source_choices(self) -> None:
+        """デバッグ時だけ診断用の入力源を候補に出す。"""
+        debug = bool(self._debug_var.get())
+        values = [
+            label for name, label in SOURCE_LABELS if debug or name not in DEBUG_SOURCES
+        ]
+        try:
+            self._source_cb.config(values=values)
+        except Exception:
+            pass
+
+    def _on_debug_toggled(self) -> None:
+        self._refresh_source_choices()
+        self._apply_visibility()
 
     def _manual_reader(self) -> Any:
         """手動入力の読み取り関数。送出スレッドから呼ばれる。"""
@@ -347,13 +426,7 @@ class ImuPanel:
             )
         except Exception:
             pass
-        self._queue.put(
-            (
-                "log",
-                f"IMU反転({self._source_var.get()}): {self._invert_var.get()}"
-                "（次の送出開始から）",
-            )
-        )
+        self._queue.put(("log", f"反転: {self._invert_var.get()}（次回から）"))
 
     def _on_scale_changed(self, _event: Any = None) -> None:
         """ジャイロ倍率を設定へ書く（次の送出開始から効く）。"""
@@ -365,7 +438,7 @@ class ImuPanel:
             self._settings_writer({"gyro_scale": f"{value:g}"})
         except Exception:
             pass
-        self._queue.put(("log", f"ジャイロ倍率: {value:g}（次の送出開始から）"))
+        self._queue.put(("log", f"倍率: {value:g}（次回から）"))
 
     def _source_name(self) -> str:
         """画面の入力源ラベル→設定名。読めなければsensor。"""
@@ -456,8 +529,9 @@ class ImuPanel:
                 from GyroView import GyroView
 
                 view = GyroView(self.frame, rate_range=500)
-                # 反転（3）・感度（4）・手動入力（5）と重ねない。
-                view.grid(row=6, column=0, columnspan=3, sticky=tk.EW)
+                # 反転（3）・感度（4）・手動入力（5）・詳細チェック（6）と
+                # 重ねない。それらの下へ置く。
+                view.grid(row=7, column=0, columnspan=3, sticky=tk.EW)
                 reset = ttk.Button(view, text="ヨーリセット", command=view.reset_yaw)
                 reset.pack(pady=(0, 4))
                 self._gyro_view = view
@@ -696,7 +770,6 @@ class ImuPanel:
         if not 0.01 <= gyro_scale <= 4.0:
             gyro_scale = 1.0
         dead_raw = max(0.0, dead_dps) / 0.06103
-        first_sample = {"done": False}
 
         def watched() -> Any:
             sample = inner()
@@ -723,16 +796,6 @@ class ImuPanel:
                 except Exception:
                     pass
 
-            # 瞬時表示では見えない単発の跳びを1秒窓の最大値で拾う。
-            if not first_sample["done"]:
-                first_sample["done"] = True
-                panel._queue.put(
-                    (
-                        "log",
-                        f"IMU不感帯={dead_dps:.1f}dps 初回サンプル:"
-                        f" acc=({ax},{ay},{az}) gyro=({gx},{gy},{gz})",
-                    )
-                )
             peak_g = max(abs(gx), abs(gy), abs(gz)) * 0.06103
             peak_a = max(abs(ax), abs(ay), abs(az)) * 0.000244
             if peak_g > panel._peak_g:
@@ -762,12 +825,12 @@ class ImuPanel:
         except Exception:
             ok = False
         if not ok:
-            self._queue.put(("log", "IMU送出の開始に失敗しました。"))
+            self._queue.put(("log", "ジャイロ送信を開始できませんでした。"))
             self._close_source()
             return
         self._streaming = True
         self._queue.put(("state", "streaming"))
-        self._queue.put(("log", f"IMU送出を開始: {source}。"))
+        self._queue.put(("log", "ジャイロ送信を開始しました。"))
 
     def _do_stop(self) -> None:
         """送出停止の実体（作業スレッド）。"""
@@ -785,7 +848,7 @@ class ImuPanel:
         self._close_source()
         self._streaming = False
         self._queue.put(("state", "stopped"))
-        self._queue.put(("log", "IMU送出を停止しました。"))
+        self._queue.put(("log", "ジャイロ送信を停止しました。"))
 
     def _close_source(self) -> None:
         """入力源を閉じる。例外は投げない。
@@ -827,9 +890,9 @@ class ImuPanel:
                 elif kind == "state":
                     try:
                         if payload == "streaming":
-                            self._btn_toggle.configure(text="送出停止")
+                            self._btn_toggle.configure(text="停止")
                         else:
-                            self._btn_toggle.configure(text="送出開始")
+                            self._btn_toggle.configure(text="開始")
                     except Exception:
                         pass
         except Exception:

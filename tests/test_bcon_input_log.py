@@ -131,6 +131,12 @@ def test_sender_links_input_log_on_bcon_and_records() -> None:
     _time.sleep(0.5)
     sender.flushInputLog()
     assert any("Button.A" in line for line in lines)
+    # この Sender は live 経路（bcon）なので worker が1本立っている。
+    # 止めずに終わると次の検証まで生き残る。worker の本数を数える検証
+    # （test_transport_threading）は「自分が立てた1本」を前提にしている
+    # ため、残ると2本に見えて落ちる。時計を差し替える検証と重なると、
+    # 残った worker が例外で死んで警告にもなる。
+    assert sender.stopLiveWorker(1.0) is True
 
 
 def test_blockly_recorder_attaches_to_bcon_transports() -> None:

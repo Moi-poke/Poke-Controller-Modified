@@ -31,7 +31,7 @@ import traceback
 from typing import Any
 
 from core.transport.base import BCON_STATE, Transport
-from core.transport.bcon import BconTransport
+from core.transport.bcon import IMU_INTERVAL_S, BconTransport
 
 PROC_PRESET_NAME = "switch-bcon-proc"
 PROC_PRESET_DESCRIPTION = "Switch-bconを別プロセスで送出（GUI負荷切り離し）"
@@ -48,6 +48,9 @@ _ALLOWED_CALLS = frozenset(
         "request_color",
         "last_status",
         "last_player_info",
+        "last_rumble",
+        # 受信ポンプが諦めたか。親側にポンプが無いので子へ問う。
+        "rx_dead",
         "baud_hunt",
         "set_baud_index",
         "set_wired_mode",
@@ -60,6 +63,8 @@ _ALLOWED_CALLS = frozenset(
         "live_stats",
         "request_bootsel",
         "request_reconnect",
+        "hello_established",
+        "send_imu",
     }
 )
 
@@ -504,6 +509,9 @@ class BconProcTransport(Transport):
 
     name = "switch-bcon-proc"
     capability = BCON_STATE
+    #: is_open は子プロセスへの同期往復（timeout 付き）なので、8ms の送出
+    #: ループからは問い合わせさせない（周期が崩れる）。
+    is_open_is_local = False
 
     def __init__(
         self,
@@ -542,6 +550,13 @@ class BconProcTransport(Transport):
         self._rpc_log_t = 0.0
         self._rx_fanout_total = 0
         self._rx_fanout_last = 0
+        # IMU loopは親側で回す（sourceはコールバックのため子へ渡せない）。
+        self._imu_loop_thread: threading.Thread | None = None
+        self._imu_loop_stop = threading.Event()
+        self._imu_lock = threading.Lock()
+        self._imu_stats_lock = threading.Lock()
+        self._imu_sent = 0
+        self._imu_dropped = 0
         try:
             atexit.register(self._terminate_worker)
         except Exception:
@@ -786,7 +801,11 @@ class BconProcTransport(Transport):
             }
 
     def _call(
-        self, method: str, args: tuple = (), timeout: float | None = None
+        self,
+        method: str,
+        args: tuple = (),
+        timeout: float | None = None,
+        margin: float | None = None,
     ) -> tuple[bool, Any]:
         """子へ会話opを送り応答を待つ。(成否, 結果)を返す。"""
         if not self._worker_alive():
@@ -808,7 +827,8 @@ class BconProcTransport(Transport):
             self._mark_dead()
             return False, None
         limit = float(timeout) if timeout else 10.0
-        if not event.wait(limit + PROC_RPC_MARGIN_S):
+        extra = PROC_RPC_MARGIN_S if margin is None else float(margin)
+        if not event.wait(limit + extra):
             with self._pending_lock:
                 self._pending.pop(call_id, None)
             if not self._worker_alive():
@@ -878,6 +898,11 @@ class BconProcTransport(Transport):
 
     def close(self) -> None:
         """線を閉じて子を畳む。二重安全。例外は投げない。"""
+        try:
+            # 親側のIMUループを先に止める（子を畳むとRPCが失敗し続ける）。
+            self.stop_imu_loop()
+        except Exception:
+            pass
         try:
             if self._worker_alive():
                 with self._pending_lock:
@@ -1059,6 +1084,99 @@ class BconProcTransport(Transport):
     def stop_live_loop(self) -> bool:
         return self._rpc_bool("stop_live_loop", (), 5.0)
 
+    def hello_established(self) -> bool:
+        return self._rpc_bool("hello_established", (), 3.0)
+
+    def send_imu(
+        self,
+        ax: int,
+        ay: int,
+        az: int,
+        gx: int,
+        gy: int,
+        gz: int,
+    ) -> bool:
+        # 5ms周期のループから呼ばれるため、待ちは周期より十分短くする
+        # （既定の +5秒マージンだと子の多忙時に数秒ブロックする）。
+        ok, result = self._call(
+            "send_imu", (ax, ay, az, gx, gy, gz), timeout=0.02, margin=0.0
+        )
+        sent = bool(ok and result)
+        with self._imu_stats_lock:
+            if sent:
+                self._imu_sent += 1
+            else:
+                self._imu_dropped += 1
+        return sent
+
+    def imu_loop_running(self) -> bool:
+        thread = self._imu_loop_thread
+        return bool(thread is not None and thread.is_alive())
+
+    def start_imu_loop(self, source: Any, interval_s: float = IMU_INTERVAL_S) -> bool:
+        """親側でサンプルを読み、子の send_imu をRPCで呼ぶ。
+
+        source は関数のため子プロセスへ渡せない。送出は子が行うので、
+        親は読むだけの薄いループを持つ。
+        """
+        with self._imu_lock:
+            thread = self._imu_loop_thread
+            if thread is not None and thread.is_alive():
+                return True
+            self._imu_loop_stop.clear()
+            worker = threading.Thread(
+                target=self._imu_loop_run,
+                args=(source, float(interval_s)),
+                name="bcon-proc-imu",
+                daemon=True,
+            )
+            self._imu_loop_thread = worker
+            worker.start()
+        return True
+
+    def _imu_loop_run(self, source: Any, interval_s: float) -> None:
+        deadline = time.perf_counter()
+        while not self._imu_loop_stop.is_set():
+            deadline += interval_s
+            try:
+                sample = source()
+            except Exception:
+                sample = None
+            if sample is not None:
+                try:
+                    self.send_imu(*sample)
+                except Exception:
+                    pass
+            remain = deadline - time.perf_counter()
+            if remain > 0:
+                self._imu_loop_stop.wait(remain)
+            else:
+                deadline = time.perf_counter()
+
+    def stop_imu_loop(self) -> bool:
+        """止まるまで待つ。死んでいなければ handle を残す（bcon と同じ契約）。
+
+        0.5秒で join を打ち切ったときに handle を消すと、次の start が
+        二本目のループを起こし、古いスレッドも停止イベントのクリアで
+        生き返って二重送出になる。
+        """
+        self._imu_loop_stop.set()
+        with self._imu_lock:
+            thread = self._imu_loop_thread
+        if thread is None:
+            return True
+        thread.join(0.5)
+        alive = thread.is_alive()
+        if not alive:
+            with self._imu_lock:
+                if self._imu_loop_thread is thread:
+                    self._imu_loop_thread = None
+        return not alive
+
+    def imu_stats(self) -> dict[str, int]:
+        with self._imu_stats_lock:
+            return {"sent": int(self._imu_sent), "dropped": int(self._imu_dropped)}
+
     def live_stats(self) -> dict[str, Any]:
         ok, result = self._call("live_stats", (), timeout=3.0)
         if not ok or not isinstance(result, dict):
@@ -1068,6 +1186,46 @@ class BconProcTransport(Transport):
             if key in result:
                 merged[key] = result[key]
         return merged
+
+    def wait_rx(self, prefixes: Any, timeout: float = 0.5) -> str | None:
+        """v1 では子へ転送しない（設計: 2026-09-22-bcon-proc-phase2.md:211）。
+
+        基底の実装は proxy 自身の受信状態を見るため、呼ばれると黙って
+        タイムアウトする。原因が分かるよう 1 回だけ error を残して None を
+        返す（規約: 公開操作から例外は出さない）。
+        """
+        if not getattr(self, "_wait_rx_warned", False):
+            self._wait_rx_warned = True
+            self._logger.error(
+                "wait_rx は switch-bcon-proc では未対応です（設計で v1 除外）"
+            )
+        return None
+
+    def rx_dead(self) -> bool:
+        """子側の受信ポンプが諦めたか。RPC 越しに問う。
+
+        親側に受信ポンプは無い（線を持っているのは子）。自前で False を
+        返すと「死んでいない」と嘘をつくことになるので、子へ問い合わせる。
+        問い合わせに失敗したときは False（死んだと決めつけない）。
+        """
+        ok, result = self._call("rx_dead", (), timeout=3.0)
+        return bool(result) if ok else False
+
+    def last_rumble(self) -> bytes:
+        """直近RUMBLE payloadの写し。未受信・失敗は空。例外は投げない。
+
+        本家 BconTransport と同じ操作面を保つために要る。欠けると
+        BconSetup の getattr(transport, "last_rumble", None) が None になり、
+        振動表示が必ず「（なし）」になる。
+        """
+        ok, result = self._call("last_rumble", (), timeout=3.0)
+        if not ok or result is None:
+            return b""
+        try:
+            return bytes(result)
+        except Exception:
+            self._logger.debug("last_rumble の結果を bytes にできません", exc_info=True)
+            return b""
 
     def last_status(self) -> dict[str, int]:
         ok, result = self._call("last_status", (), timeout=3.0)

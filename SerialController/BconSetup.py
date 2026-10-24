@@ -62,6 +62,7 @@ from core.transport.bcon_protocol import (
     T_PLAYER_INFO,
     T_RUMBLE,
 )
+from loguru import logger
 from ui.tooltip import Tooltip
 
 BCON_WINDOW_TITLE = "Switch-Bcon設定"
@@ -522,14 +523,6 @@ class BconSetup:
         self._col_ops = col_ops
         self._col_info = col_info
 
-        # 短い案内だけ外に置く。詳しい注意は各ボタンの吹き出しへ移した
-        # （長い1行が列の幅を決めないよう短く保つ）。
-        ttk.Label(
-            col_ops,
-            text="シリアルを開いてから「接続」を押してください。",
-            justify=tk.LEFT,
-            wraplength="240p" if embedded else 0,
-        ).pack(anchor=tk.W, pady=(0, 8))
         # 実行中は全ボタンを止める。止めた旨の表示だけ別に置く。
         self._busy_label = ttk.Label(col_ops, text="")
         self._busy_label.pack(anchor=tk.W)
@@ -685,13 +678,6 @@ class BconSetup:
             command=lambda: self._on_emulate_set(2),
         )
         self._btn_e2.grid(row=1, column=3, sticky=tk.EW, padx=2, pady=2)
-        ttk.Label(
-            grp_mode,
-            text="切替後は約0.5秒で再起動します。"
-            "復帰したら「接続」からやり直してください。",
-            justify=tk.LEFT,
-            wraplength="240p" if embedded else 0,
-        ).grid(row=2, column=0, columnspan=4, sticky=tk.W, padx=2, pady=2)
 
         # 取り消せない操作だけ集める。他のボタンはここへ置かない
         # （押し間違いを防ぐための隔離であり、処理は何も変えない）。
@@ -764,7 +750,7 @@ class BconSetup:
                     outline="#4D4D4D",
                 )
             )
-        self._imu_label = ttk.Label(grp_state, text="IMU: 未受信")
+        self._imu_label = ttk.Label(grp_state, text="ジャイロ: なし")
         self._imu_label.grid(row=1, column=0, sticky=tk.W, padx=2, pady=2)
         self._vib_label = ttk.Label(grp_state, text="振動: 未受信")
         self._vib_label.grid(row=1, column=1, sticky=tk.W, padx=2, pady=2)
@@ -1099,7 +1085,7 @@ class BconSetup:
                 # 閉じた後・stubなど、描けない時は色だけ諦める。
                 pass
         for name, label, detected in (
-            ("_imu_label", "IMU", imu),
+            ("_imu_label", "ジャイロ", imu),
             ("_vib_label", "振動", vibration),
         ):
             widget = getattr(self, name, None)
@@ -1133,13 +1119,13 @@ class BconSetup:
             return
         self._imu_range_shown = shown
         if seen:
-            note = "（Switch要求値）"
+            note = ""
         elif imu_on:
-            note = "（0x41は未着。0x40受信済み＝受信経路は正常。既定値で動作）"
+            note = "（未指定のため既定値）"
         else:
-            note = "（0x40/0x41とも未受信。接続直後は出ないことがある）"
+            note = "（未接続）"
         try:
-            self._append(f"IMU感度: ジャイロ {gyro} / 加速度 {accel}{note}")
+            self._append(f"ジャイロ感度: {gyro} / {accel}{note}")
         except Exception:
             pass
 
@@ -1928,6 +1914,8 @@ class BconSetup:
                 rumble_fn = getattr(transport, "last_rumble", None)
                 rumble = bytes(rumble_fn()) if callable(rumble_fn) else b""
             except Exception:
+                # 規約: except にはログ。振動は表示だけなので操作は続ける。
+                logger.debug("RUMBLE の取得に失敗", exc_info=True)
                 rumble = b""
             if rumble:
                 try:

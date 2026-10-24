@@ -36,6 +36,7 @@ from core.pane_arrangement import (
     format_sash_ratios,
     parse_sash_ratios,
 )
+from core.ui_inbox import UiInbox
 from loguru import logger
 from services.audio_service import AudioService
 from services.command_runner import CommandRunner
@@ -162,6 +163,11 @@ class PokeControllerApp(
         self._display_after_id: Any = self.logArea.after(
             LogPane.FLUSH_INTERVAL_MS, self.display_text
         )
+        # 裏スレッドからの受け渡し箱。ワーカーは積むだけにし、取り出しはここ
+        # （GUI スレッド）が行う。裏から after を呼ぶと、呼び出し側スレッドが
+        # main の処理を待って止まり、終了時の join と噛み合うと固まる。
+        self.inbox = UiInbox()
+        self._inbox_after_id: str | None = None
         self.loadSettings()
         self._apply_settings_to_widgets()
         self._setup_camera_name()
@@ -199,6 +205,24 @@ class PokeControllerApp(
         # なるまで戻らないため、先に起こすとここで無限に回って mainloop に
         # 届かず GUI が出ない。順序を変えても描画開始が数十 ms 遅れるだけ。
         self.preview.startCapture()
+        self._start_inbox_pump()
+
+    def _start_inbox_pump(self) -> None:
+        """裏からの受け渡しを取り出し始める（GUI スレッド）。"""
+        self._pump_inbox()
+
+    def _pump_inbox(self) -> None:
+        """溜まった受け渡しを実行し、次の周期を予約する。
+
+        _closing が立ったら再予約しない（終了処理の邪魔をしない）。
+        """
+        self._inbox_after_id = None
+        if self._closing:
+            return
+        try:
+            self.inbox.drain()
+        finally:
+            self._inbox_after_id = self.root.after(16, self._pump_inbox)
 
     # ------------------------------------------------------------------
     # 状態
@@ -273,12 +297,27 @@ class PokeControllerApp(
         # 走行記録の受け先。SerialService が担い、runner が開始・終了で呼ぶ。
         # 記録の失敗で実行は壊さない（runner・service 側で握る）。
         self.runner.set_diag(self.serial, self.profile)
+
+        # 記録中の通常コマンドの開始拒否。判定は編集側の記録を見る。
+        # ui への直参照は作らず、遅延読みで循環を避ける（runner は ui を
+        # 知らない。Window が両者をつなぐ）。
+        def _recording_now() -> bool:
+            try:
+                from ui import blockly_editor
+
+                return bool(blockly_editor.is_recording())
+            except Exception:
+                return False
+
+        self.runner.set_record_guard(_recording_now)
         # 履歴の受け先。開始・終了で 1 行ずつ積む。渡さなければ残さない。
         self.runner.set_history(self.command_history, self._commandKind)
         self._closing = False
         self._exit_requested = False
         self._exit_phase = "idle"
         self._exit_retry_after_id: str | None = None
+        self._exit_preview_retries = 0
+        self._exit_surface_abandoned = False
         # カメラ開きの直列化錠と発行番号。起動時は裏スレッドで開き、
         # Reload は表で開く。両方が同時に走ると DirectShow の open が
         # 食い違うため錠で直列化し、番号で古い結果を捨てる。
@@ -576,6 +615,8 @@ class PokeControllerApp(
         self._closing = True
         self._exit_requested = True
         self._exit_phase = "stopping_preview"
+        self._exit_preview_retries = 0
+        self._exit_surface_abandoned = False
         self.runner.notify_closing()
         self._cancel_exit_afters()
         self._continue_exit()
@@ -604,48 +645,93 @@ class PokeControllerApp(
         if freeze is not None:
             freeze.cleanup()
 
+    #: プレビュー停止の再試行上限（50ms × 40 = 2 秒）。超えたら映像面の
+    #: 解放を諦めて先へ進む。まだ使われている可能性のある GDI 資源を解放
+    #: すると落ちるためで、プロセスが終われば OS が回収する。
+    EXIT_PREVIEW_RETRY_MAX = 40
+
+    def _exit_step(self, label: str, fn: Any) -> None:
+        """終了処理の 1 段。失敗しても記録して先へ進む。
+
+        例外で階段が止まると root.destroy() へ届かない。_closing は立った
+        ままなので 2 回目の終了も無視され、窓を閉じられなくなる。1 段の
+        失敗で残り（シリアル切断・設定保存）を巻き添えにしない。
+        """
+        try:
+            fn()
+        except Exception as exc:
+            logger.exception(f"終了処理（{label}）で例外。続行します: {exc}")
+
     def _continue_exit(self) -> None:
         if not self._exit_requested:
             return
         if self._exit_phase == "stopping_preview":
             self._exit_retry_after_id = None
             if self._stop_preview_for_exit() is not StopResult.STOPPED:
-                self._schedule_preview_stop_retry()
-                return
+                if self._exit_preview_retries < self.EXIT_PREVIEW_RETRY_MAX:
+                    self._exit_preview_retries += 1
+                    self._schedule_preview_stop_retry()
+                    return
+                # 上限に達した。終了の階段（位相）は増やさず、映像面の解放だけを
+                # 省く（面を使っているスレッドが残っている可能性があるため）。
+                logger.error(
+                    "プレビューが止まらないため、映像面の解放を省いて終了します"
+                )
+                self._exit_surface_abandoned = True
             self._exit_phase = "preview_stopped"
 
         if self._exit_phase != "preview_stopped":
             return
 
-        # 映像面はこの点上から合成されない。stopCapture() が STOPPED を
-        # 返した今が最後の _dispatch_one_tick が走らない瞬間なので、
-        # ここで子窓を壊す（lpvBits は frame 配列を指すので先に落とす）。
-        self._exit_phase = "surface_released"
-        if self.preview is not None:
-            self.preview.surface.release()
+        def _close_serial() -> None:
+            if self.serial.shutdown():
+                print("Serial disconnected")
 
-        self._exit_phase = "stopping_services"
-        if self.menu is not None:
+        try:
+            # 映像面はこの点上から合成されない。stopCapture() が STOPPED を
+            # 返した今が最後の _dispatch_one_tick が走らない瞬間なので、
+            # ここで子窓を壊す（lpvBits は frame 配列を指すので先に落とす）。
+            self._exit_phase = "surface_released"
+            if not self._exit_surface_abandoned and self.preview is not None:
+                # release は順序そのものが契約（合成が止まった後に落とす）なので
+                # 直接呼ぶ。失敗しても階段は止めない。
+                try:
+                    self.preview.surface.release()
+                except Exception as exc:
+                    logger.exception(
+                        f"終了処理（映像面の解放）で例外。続行します: {exc}"
+                    )
+            self._exit_phase = "stopping_services"
+            if self.menu is not None:
+                self._exit_step("子窓", self.menu.closeAll)
+            # Bcon タブの購読・期限予約・poll を root 破棄の前に止める
+            self._exit_step("bcon タブ", self._close_bcon_tab)
+            self._exit_step("コマンド停止", lambda: self.runner.shutdown(self.ser))
+            self._exit_step("キーボード", self.serial.stop_keyboard)
+            self._exit_step("コントローラ", self.closingController)
+            self._exit_step("シリアル", _close_serial)
+            # 設定と統計は落ちると復元できないので、後片付けより先に残す。
+            # 保存元は Tk 変数（com_port など）で、serial の生状態は読まない
+            # （Window._save_settings:770-836）。順序は E2E が固定している。
+            self._exit_step("設定と統計の保存", self._save_exit_settings_and_stats)
+            # 受け渡し箱を閉じる。以後の post は on_drop を直ちに実行し、
+            # 溜まっていた分の後始末（開き途中のカメラを閉じる）もここで走る。
+            # 起動を通していない宿主（検証用の偽物）には無いので、有無を見る。
+            inbox = getattr(self, "inbox", None)
+            if inbox is not None:
+                self._exit_step("受け渡し箱", inbox.close)
+            if self.camera is not None:
+                self._exit_step("カメラ", self.camera.destroy)
+            self._exit_step("音声", self._stop_audio)
+            self._exit_step("OpenCV の窓", cv2.destroyAllWindows)
+        finally:
+            sys.stdout = sys.__stdout__
+            logger.debug("Stop Poke Controller")
+            self._exit_phase = "root_destroyed"
             try:
-                self.menu.closeAll()
-            except Exception as exc:
-                logger.warning(f"子窓を閉じるときに例外: {exc}")
-        # Bcon タブの購読・期限予約・poll を root 破棄の前に止める
-        self._close_bcon_tab()
-        self.runner.shutdown(self.ser)
-        self.serial.stop_keyboard()
-        self.closingController()
-        if self.serial.shutdown():
-            print("Serial disconnected")
-        self._save_exit_settings_and_stats()
-        if self.camera is not None:
-            self.camera.destroy()
-        self._stop_audio()
-        cv2.destroyAllWindows()
-        sys.stdout = sys.__stdout__
-        logger.debug("Stop Poke Controller")
-        self._exit_phase = "root_destroyed"
-        self.root.destroy()
+                self.root.destroy()
+            except Exception:
+                logger.exception("root.destroy で例外")
 
     def _schedule_preview_stop_retry(self) -> None:
         # 停止未確定のあいだは 50ms 後に判断し直す。再入の目印なので、

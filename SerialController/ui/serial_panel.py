@@ -101,10 +101,9 @@ class SerialPanelMixin:
     cb_use_gamepad: Any
     gamepad_label: Any
     gamepad_choice: Any
-    gamepad_cb: Any
-    _gamepad_map: dict[str, int]
     gamepad_dz_label: Any
     gamepad_dz: Any
+    _gamepad_after: Any
     gamepad_dz_spin: Any
     cb_left_stick_mouse: Any
     cb_right_stick_mouse: Any
@@ -170,6 +169,11 @@ class SerialPanelMixin:
         self.disconnectComPort.pack(side="left", padx=(5, 0))
 
         self.is_show_serial = tk.BooleanVar()
+        # 値の変化を送信側へ押し込む。送信スレッドに Tk 変数を読ませると、
+        # GUI が忙しい間そこで待たされる（実機で 1.5 秒を実測し、その間は
+        # 姿勢が1本も送られなかった）。変化は必ず GUI スレッドで起きるため、
+        # ここで読んで渡してよい。
+        self.is_show_serial.trace_add("write", lambda *_: self._push_show_serial())
         # 操作ボタンと同じ行に並べると最も幅を取る行になるので、次の行へ。
         self.cb_show_serial = ttk.Checkbutton(self.serial_lf)
         self.cb_show_serial.config(
@@ -279,7 +283,7 @@ class SerialPanelMixin:
         self.bcon_emulate_label = ttk.Label(self.serial_lf)
         # この欄は「Picoが何を名乗るか」の要求値。入力元の選択ではない。
         # 端末側の実状態を読戻してはいない（初期値は常にPro Controller）。
-        self.bcon_emulate_label.config(text="種別(Pico名乗り): ")
+        self.bcon_emulate_label.config(text="種別")
         self.bcon_emulate_label.grid(column=0, padx="5", pady="2", row=4, sticky="w")
 
         self.bcon_emulate = tk.StringVar(value="Pro Controller")
@@ -292,14 +296,6 @@ class SerialPanelMixin:
         )
         self.bcon_emulate_cb.grid(column=1, padx="5", pady="2", row=4, sticky="w")
         self.bcon_emulate_cb.bind("<<ComboboxSelected>>", self.applyBconEmulate, add="")
-        self.bcon_emulate_note = ttk.Label(self.serial_lf)
-        self.bcon_emulate_note.config(
-            text="※エミュレーションする種類。入力元の選択ではありません。"
-            "変更するとPicoが再起動します。",
-            wraplength="240p",
-            justify="left",
-        )
-        self.bcon_emulate_note.grid(column=0, columnspan=2, padx="5", row=5, sticky="w")
         fit_combo_width(self.bcon_emulate_cb, min_chars=8, max_chars=20)
         # 値の列を伸ばし、広い窓では長いポート名・機器名を省略せずに出す。
         self.serial_lf.columnconfigure(1, weight=1)
@@ -357,10 +353,10 @@ class SerialPanelMixin:
         )
         self.gamepad_cb.grid(column=1, row=2, padx="10", pady="2", sticky="ew")
         self.gamepad_cb.bind("<<ComboboxSelected>>", self._on_gamepad_selected, add="")
-        # 遊び（デッドゾーン）。0=なし・GUI と同等。drift 時に上げる。
+        # 遊び（デッドゾーン）。既定1638=最大値の5%。drift 時に上げる。
         self.gamepad_dz_label = ttk.Label(self.control_lf, text="遊び: ")
         self.gamepad_dz_label.grid(column=0, row=3, padx="10", pady="2", sticky="w")
-        self.gamepad_dz = tk.StringVar(value="0")
+        self.gamepad_dz = tk.StringVar(value="1638")
         self.gamepad_dz_spin = ttk.Spinbox(
             self.control_lf,
             textvariable=self.gamepad_dz,
@@ -383,6 +379,9 @@ class SerialPanelMixin:
 
         self.control_lf.config(text="コントローラ")
         self.control_lf.pack(fill="x", padx=5, pady=5)
+        self._gamepad_after = None
+        self.refreshGamepads()
+        self._poll_gamepads()
 
         # ジャイロ送出。コントローラの機能のためこのタブに置く。
         # 仮想コントローラと連れにして別窓にも一緒に連れて行く。
@@ -513,6 +512,18 @@ class SerialPanelMixin:
         self.refreshComPorts()
         self.activateSerial()
 
+    def _push_show_serial(self) -> None:
+        """表示の切替を送信側へ渡す（GUI スレッドから呼ばれる）。
+
+        送信スレッドは Tk 変数を読まないため、値の変化はここで知らせる。
+        送信側がまだ無いとき（起動直後）は SerialService 側が何もしない。
+        """
+        try:
+            value = bool(self.is_show_serial.get())
+        except Exception:
+            return
+        self.serial.set_show_serial(value)
+
     def _sender_spec(self) -> SenderSpec:
         """tk 変数の現在値を通常の値へ落として Sender 生成用にまとめる。
 
@@ -523,7 +534,7 @@ class SerialPanelMixin:
         actions = self.settings.input_log_actions.get().strip()
         return SenderSpec(
             transport_name=self._selectedTransportName(),
-            is_show_serial=self.is_show_serial,
+            is_show_serial=bool(self.is_show_serial.get()),
             arbitration_mode=self.arbitration_mode.get(),
             arbitration_cooldown=self._arbitrationCooldown(),
             input_log_format=self.settings.input_log_format.get(),
@@ -750,9 +761,14 @@ class SerialPanelMixin:
                 except (TypeError, ValueError):
                     pass
                 try:
-                    self.root.after(0, lambda: self._apply_bcon_wired_display(wired))
-                except Exception:
-                    pass
+                    # 表示の更新は最新 1 件で足りる。裏から after は呼ばない。
+                    from core.ui_inbox import post_latest_to_gui
+
+                    post_latest_to_gui(
+                        self, "bcon_wired", self._apply_bcon_wired_display, wired
+                    )
+                except Exception as e:
+                    logger.debug(f"bcon 表示の受け渡しに失敗: {e}")
                 return
 
         threading.Thread(target=job, daemon=True).start()
@@ -831,9 +847,12 @@ class SerialPanelMixin:
             try:
                 if getattr(self, "_closing", False):
                     return
-                self.root.after(0, self._finish_bcon_setter)
-            except Exception:
-                pass
+                # 後始末の通知は必ず届ける（捨てない）。裏から after は呼ばない。
+                from core.ui_inbox import post_to_gui
+
+                post_to_gui(self, self._finish_bcon_setter)
+            except Exception as e:
+                logger.warning(f"切替の反映を予約できませんでした: {e}")
 
         threading.Thread(target=job, daemon=True).start()
 
@@ -1176,6 +1195,10 @@ class SerialPanelMixin:
 
     def closingController(self) -> None:
         """終了時。押しっぱなしを離してから、埋め込みも別窓も消す。"""
+        try:
+            self._cancel_gamepad_patrol()
+        except Exception:
+            pass
         dock = getattr(self, "controller_dock", None)
         if dock is not None:
             dock.shutdown()
@@ -1233,9 +1256,12 @@ class SerialPanelMixin:
     def _onGamepadDisplay(self, snapshot: Any) -> None:
         """読取スレッドからの通知。Tk スレッドへ予約して描く。"""
         try:
-            self.root.after(0, self._paintGamepadMirror, snapshot)
-        except Exception:
-            pass
+            # 表示の更新は最新 1 件で足りる。裏から after は呼ばない。
+            from core.ui_inbox import post_latest_to_gui
+
+            post_latest_to_gui(self, "gamepad", self._paintGamepadMirror, snapshot)
+        except Exception as e:
+            logger.debug(f"ゲームパッド表示の受け渡しに失敗: {e}")
 
     def _paintGamepadMirror(self, snapshot: Any) -> None:
         """仮想パッドへゲームパッドの現在状態を描く（Tk スレッド専用）。"""
@@ -1298,12 +1324,12 @@ class SerialPanelMixin:
         return index if 0 <= index <= 3 else 0
 
     def _gamepad_deadzone(self) -> int:
-        """遊びを通常の int で返す。読めない・範囲外は 0。"""
+        """遊びを通常の int で返す。読めない・範囲外は既定1638。"""
         try:
             value = int(self.settings.gamepad_deadzone.get())
         except (TypeError, ValueError, tk.TclError):
-            return 0
-        return value if 0 <= value <= 8192 else 0
+            return 1638
+        return value if 0 <= value <= 8192 else 1638
 
     def _on_gamepad_dz_changed(self, event: Any = None) -> None:
         """遊びの変更を保存し、有効化中なら作り直して適用する。"""
@@ -1347,7 +1373,8 @@ class SerialPanelMixin:
         """繋がっているパッド一覧を取り直して選択肢へ入れる。
 
         抜き差ししても選び直せるよう、接続ボタン・チェック切替の
-        際に呼び出す。選んでいた物が残っていれば残す。
+        際に呼び出す。選んでいた物が残っていれば残す。名前は SDL の
+        実名があれば実名、XInput のみは汎名になる（PadSource.names）。
         """
         try:
             from core.pad_source import PadSource
@@ -1357,7 +1384,7 @@ class SerialPanelMixin:
             names = {}
         try:
             current = self._gamepad_index()
-            labels = [f"{i}: {names.get(i, 'XInput パッド')}" for i in range(4)]
+            labels = [f"{i}: {names.get(i, '(未接続)')}" for i in range(4)]
             self._gamepad_map = {label: i for i, label in enumerate(labels)}
             self.gamepad_cb["values"] = labels
             for label, index in self._gamepad_map.items():
@@ -1368,9 +1395,42 @@ class SerialPanelMixin:
         except Exception as e:
             logger.warning(f"パッド一覧の更新で例外: {e}")
 
+    def _poll_gamepads(self) -> None:
+        """抜き差しで一覧と状態行を追従させる画面側巡回（2秒毎）。
+
+        Tk から線への往復はしない。選択肢の名前（実名・汎名・未接続）と
+        状態行だけを取り直す。操作中（値を読んでいる最中）の上書きで
+        選択が飛ばないよう、選んでいる番号は保つ（refreshGamepads が
+        現在値を選び直す）。終了時は _cancel_gamepad_patrol で止める。
+        """
+        try:
+            self.refreshGamepads()
+        except Exception:
+            pass
+        try:
+            self._gamepad_after = self.root.after(2000, self._poll_gamepads)
+        except Exception:
+            self._gamepad_after = None
+
+    def _cancel_gamepad_patrol(self) -> None:
+        """巡回の予約を取り消す。終了・破棄の前に呼ぶ。"""
+        try:
+            after_id = getattr(self, "_gamepad_after", None)
+        except Exception:
+            after_id = None
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        try:
+            self._gamepad_after = None
+        except Exception:
+            pass
+
     def _on_gamepad_selected(self, event: Any = None) -> None:
         """選択肢で選んだパッドへ切り替える。途中でも切り替える。
-
         有効化中なら実体を作り直す（番号は生成時に固定のため）。
         無効中なら設定だけ残し、次回有効化で使う。
         """

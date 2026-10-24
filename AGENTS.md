@@ -37,3 +37,24 @@ python .\SerialController\Window.py
 - `Sender` send interval (`Transport.MIN_SEND_INTERVAL`) is derived from baud rate with a 0.02s cap — no flow control on the wire, so don't lower it blindly.
 - `export_py.py` was deleted (unused). Root `makefile` is the legacy AVR LUFA firmware; local `pico_firmware/` is superseded — the dedicated firmware is the separate repo `Moi-poke/pico-wakeCon`, which is the protocol reference.
 - pico-wakeCon wire compat (verified against its `main` branch, no hardware): UART0 115200 8N1 + USB CDC, CRLF, `S <6 hex>` inputs, `O <4 hex> → color ...` replies, 200ms watchdog (keepalive <200ms required), `N` is sent without waiting for a reply. Pico UART connections must use 115200, not the 9600 default.
+
+## Orca 作業役（worker）
+
+Orca の統括役から `docs/tasks/Txx.md` 指示書を受け取って動く場合の追加規律（通常開発では無視してよい）。
+
+- 指示書の「編集してよいファイル」以外は変更しない。迷ったら推測で実装せず、Orca の escalation（統括役への質問）で止める。
+- 指示書を受け取ったら、まず `/goal` に完了条件を設定する（goal プラグインは `opencode.json` の `plugins` で有効化済み）。
+- 完了条件のコマンド（`task ci` 等）がすべて成功するまで完了にしない。実機が必要で検証できない場合は `blocked` にして理由を書く。
+- 完了したら変更をコミットし（履歴の書き換え・未コミット作業の破棄は禁止）、`worker_done` を必ず1回送る（`--outcome succeeded|failed`、`--files-modified`、`--report-path` 付き、要約3文＋`path:line` 証拠）。
+- 既定エージェント（`build`）のまま作業し、`coordinator` 等へ切り替えない。worktree・ブランチの作成は Orca に任せ、自分では作らない。
+
+## IMU (ジャイロ) path — 2026-10 追加
+
+- PC→Pico は `T_IMU_SAMPLE`(0x04/LEN12, 6×int16-LE = ax,ay,az,gx,gy,gz) を5ms間隔。PCの0x30は1レポートに5ms間隔の3サンプルを持つので、リーダーは3スロットを順に供給し（`read_next()`）、FWが直近3件を保持して0x30のスロット0..2へ古い順に載せる。**0x30の送出周期は15ms固定**（これより速いとコンソールがジャイロを過積分する。`jyapayne/switch-pico` の実装註記）。
+- **0x40の引数はIMU形式の選択**（実測: FW 4.51→`02`=圧縮クォータニオン、3.72→`01`=RAW）。FWは引数を`imu_mode`として保持し、1ならRAW 36B、2なら NS-LIB-HID `ns_mode_2_s` 同形の36B（accel y,x,z＋最大成分基準の30bitクォータニオン＋11bit ms）を返す。`3`は未解明として仮定しない。**現行の実機検証は 3.72＋RAW**（Mario Tennis / Splatoonで確認）。4.51を名乗る場合はmode2のクォータニオン経路が必須。
+- 有線0x30のIMUは既定でrole0のみ（`usb_imu_wired_role_ok`）。role1/2で有線ジャイロを試す診断は `JOY_WIRED_IMU_ALL=1`。FW版のA/Bは `JOY_USB_FW_JOY_OLD=1`（Joy役を3.72に）。
+- role2の軸写像はFW側で固定（`k_joy_negate_axis`: 加速度・ジャイロともY,Z反転）。SPI校正値の回転だけ `JOY_SPI_CAL_ROT`（0=なし/1=YZ/4=XZ）で切り分けられる。PC側 `[IMU] accel_*/gyro_axes・signs` は恒等が前提（HID直結でも適用される）。
+- `[IMU] gyro_dead_dps` は送出直前のジャイロ各軸に効く（`core.imu_wave.apply_gyro_deadband`）。`gyro_scale` は実測用トリム。**加工後の値を返さないと不感帯が送出に効かない**（過去に実際に踏んだ）。
+- HIDリーダー (`core.nintendo_hid`) はプロセス共有・読み取り専用スレッドが最新0x30を保持する。`ImuPanel` は停止時に共有ハンドルを閉じない。読取失敗が続いたら自分で閉じ、パッド/IMU側が再オープンする（UF2書き込みでUSBが再列挙されるため必須）。
+- IMUパネルの入力源は通常 **「パッドAPI」（SDL）／「HID直結」** の2つ。`sine`/`step`/`rest`/`manual`、反転・感度・詳細表示は**デバッグ**時だけ出す。ボタンは「開始/停止」。
+- `settings*.ini` は**アプリ終了時に保存**される。起動中に ini を手編集すると終了時に旧値で上書きされるので、編集はアプリを閉じてから行う。

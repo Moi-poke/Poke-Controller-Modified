@@ -121,9 +121,10 @@ class CaptureAreaProxy:
     あり、取り出した先の操作は呼び出し側の責任になる。
     """
 
-    def __init__(self, root: Any, target: Any) -> None:
+    def __init__(self, root: Any, target: Any, inbox: Any = None) -> None:
         self._proxy_root = root
         self._proxy_target = target
+        self._proxy_inbox = inbox
 
     @property
     def widget(self) -> Any:
@@ -135,8 +136,19 @@ class CaptureAreaProxy:
         root = self._proxy_root
         if target is None or root is None:
             return
+
+        def _job() -> None:
+            self._call_guarded(target, name, args, kwargs)
+
+        inbox = self._proxy_inbox
+        if inbox is not None:
+            # コマンドのワーカースレッドから呼ばれる。積むだけにして待たない
+            # （after を裏から呼ぶと main の処理を待って止まる）。
+            inbox.post(_job)
+            return
         try:
-            root.after(0, lambda: self._call_guarded(target, name, args, kwargs))
+            # inbox を持たない宿主（テストの偽物）。従来どおり after へ回す。
+            root.after(0, _job)
         except Exception:
             # 終了後など after 自体が積めないときは捨てる。枠表示は
             # 無くても操作に影響しない。
@@ -370,7 +382,7 @@ class CaptureArea(tk.Frame):
         self.rx_init, self.ry_init = 0, 0
         self.min_x, self.min_y = 0, 0
         self.max_x, self.max_y = 0, 0
-        self.ss = None
+        self.ss: np.ndarray | None = None
 
         self._langle: float | None = None
         self._lmag: float | None = None
@@ -950,6 +962,13 @@ class CaptureArea(tk.Frame):
         from core import preview_filter as _pf
 
         work = frame
+        # 形が違うフレームは補正・抽出の作業バッファへ入らない（np.copyto が
+        # 毎 tick 例外になり、包括 except がログを埋める）。判断は合成側の
+        # dimension_mismatch に任せ、ここは素通しする。作業バッファは補正が
+        # 無効な間は None なので、有無を先に見る。
+        buf = self._correct_buf
+        if buf is not None and frame.shape[:2] != buf.shape[:2]:
+            return frame
         if self._correction_active:
             np.copyto(self._correct_buf, _pf.apply_correction(work, self._correction))
             work = self._correct_buf
@@ -1103,8 +1122,10 @@ class CaptureArea(tk.Frame):
         倍率と余白はビューポートから毎回求める（リサイズ直後でもずれない）。
         変換を 1 箇所に閉じ込めて、入力ごとに別の計算を持たないようにする。
 
-        クランプはしない。ここを通る値はフレームを切り出さない（四隅や
-        中心だけ）ので、余白のクリックを映像の端に丸めるのは
+        クランプはしない（変換だけを 1 箇所へ閉じ込める）。余白のクリックを
+        映像の端に丸めるのは呼び出し側の責務で、範囲キャプチャの押下
+        （StartRangeSS）も自分で丸める。押下と変換は同じフレームを前提に
+        する（範囲キャプチャは押下時に固定した self.ss を基準に丸める）。四隅や中心だけを見る経路の丸め先は
         ``mouseCtrlLeftPress`` の責務。
         """
         return self._mapper().to_capture(event.x, event.y)
@@ -1123,7 +1144,22 @@ class CaptureArea(tk.Frame):
 
         # 選択するのは 1 つの枠で、切り出すのも描画するのも同じフレーム上の
         # 座標なので、入口で一度変換して以降は持ち回すだけにする。
-        self.min_x, self.min_y = self._eventToCapture(event)
+        # 変換は _eventToCapture の 1 箇所に閉じ込めたまま、押下だけを
+        # クランプする。余白（letterbox/pillarbox）で押すと範囲外のキャプチャ
+        # 座標になり、numpy は範囲外を黙って切るため「選んでいない領域」が
+        # 保存される。丸め先は MotionRangeSS と同じ選択中フレーム。
+        if self.ss is None:
+            # 押下時にフレームが無い（カメラ未接続・読み取り失敗）。座標を
+            # 作っても切り出す先が無いので、選択そのものを始めない。
+            print("カメラが開いていません（範囲キャプチャはできません）")
+            return
+        capture_x, capture_y = self._eventToCapture(event)
+        _mapper = self._mapper(self.ss)
+        capture_width, capture_height = _mapper.capture_size
+        self.min_x = min(capture_width, max(0, capture_x))
+        self.min_y = min(capture_height, max(0, capture_y))
+        # クリックだけで離したときに前回の max が残らないよう、ここで揃える。
+        self.max_x, self.max_y = self.min_x, self.min_y
         self._guide = RectState(
             x0=self.min_x,
             y0=self.min_y,
@@ -1183,18 +1219,23 @@ class CaptureArea(tk.Frame):
         # loguru はファイル（と stderr）へしか出ず、ログ欄（sys.stdout 経由）には
         # 出さない。saveCapture の戻り値を捨てると、押した本人には「何も起きな
         # かった」と「保存された」の区別がつかないので、成否を 1 行だけ出す。
-        saved = self.camera.saveCapture(
-            crop=1,
-            crop_ax=[crop_x0, crop_y0, crop_x1, crop_y1],
-        )
-        if saved:
-            saved_to = getattr(self.camera, "capture_dir", "Captures")
-            print(
-                f"範囲キャプチャを保存しました: ({crop_x0}, {crop_y0})-"
-                f"({crop_x1}, {crop_y1}) → {saved_to}"
-            )
+        if crop_x1 - crop_x0 < 1 or crop_y1 - crop_y0 < 1:
+            # 面積 0 の選択は切り出す意味が無い。そのまま渡すと numpy が空を
+            # 返して imwrite が失敗し、「保存に失敗」とだけ出て理由が分からない。
+            print("範囲が小さすぎます（ドラッグで範囲を選んでください）")
         else:
-            print("範囲キャプチャに失敗しました（詳細はログファイル）")
+            saved = self.camera.saveCapture(
+                crop=1,
+                crop_ax=[crop_x0, crop_y0, crop_x1, crop_y1],
+            )
+            if saved:
+                saved_to = getattr(self.camera, "capture_dir", "Captures")
+                print(
+                    f"範囲キャプチャを保存しました: ({crop_x0}, {crop_y0})-"
+                    f"({crop_x1}, {crop_y1}) → {saved_to}"
+                )
+            else:
+                print("範囲キャプチャに失敗しました（詳細はログファイル）")
 
         # after には呼び出し可能オブジェクトを渡す（直接呼ぶと即時実行になる）
         # 予約 ID は控えておく。終了時に残っていると破棄途中の Frame を

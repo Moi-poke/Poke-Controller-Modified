@@ -12,6 +12,7 @@ desktop.ini
 *.eep
 *.exe
 *.json
+!opencode.json
 LUFA/
 .idea/
 SerialController/Captures/
@@ -148,6 +149,7 @@ SerialController/verify_phase*.py
 SerialController/Commands/PythonCommands/verify_*.py
 SerialController/Commands/PythonCommands/verify-*.py
 SerialController/Commands/PythonCommands/stage_baseline_rows.txt
+bcon_jitter_*.csv
 SerialController/Debug/
 SerialController/logs/
 SerialController/log/
@@ -155,3 +157,5 @@ SerialController/log/
 # ルート直下の実行時生成物（PokeConLogger の ../log、旧版の ./Captures）
 /log/
 /Captures/
+.agents/
+.claude/

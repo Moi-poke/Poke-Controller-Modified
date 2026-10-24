@@ -104,7 +104,9 @@ def test_imu_panel_builds_with_source_and_pad(tk_root: tk.Tk) -> None:
         assert isinstance(panel.frame, ttk.Labelframe)
         assert panel._source_var.get() == "SINE波形"
         assert panel._pad_var.get() == "1"
-        assert panel._btn_toggle.cget("text") == "送出開始"
+        assert panel._streaming is False
+        # 診断用の入力源を読んだらデバッグ表示になる。
+        assert panel._debug_var.get() is True
     finally:
         panel.close()
         root.destroy()
@@ -115,11 +117,11 @@ def test_imu_panel_start_stop_calls_transport(tk_root: tk.Tk) -> None:
     try:
         panel._on_toggle()
         assert _wait_until(lambda: transport.running, root), "start not called"
-        assert _wait_until(lambda: panel._btn_toggle.cget("text") == "送出停止", root)
+        assert _wait_until(lambda: panel._streaming is True, root)
         assert settings.saved >= 1
         panel._on_toggle()
         assert _wait_until(lambda: not transport.running, root), "stop not called"
-        assert _wait_until(lambda: panel._btn_toggle.cget("text") == "送出開始", root)
+        assert _wait_until(lambda: panel._streaming is False, root)
     finally:
         panel.close()
         root.destroy()
@@ -144,7 +146,7 @@ def test_imu_panel_closed_serial_logs_and_stays_stopped(tk_root: tk.Tk) -> None:
         assert _wait_until(lambda: len(panel._logged) >= 1, root)
         assert "開いていません" in panel._logged[0]
         assert transport.running is False
-        assert panel._btn_toggle.cget("text") == "送出開始"
+        assert panel._streaming is False
     finally:
         panel.close()
         root.destroy()
@@ -182,7 +184,12 @@ def test_imu_panel_hid_invert_reads_and_writes_hid_keys(tk_root: tk.Tk) -> None:
     }
     panel, root, _transport, settings, _root = _make_panel(tk_root, data)
     try:
-        assert panel._source_var.get() == "ProCon直結"
+        assert panel._source_var.get() == "HID直結"
+        # HID直結は通常運用の源なので、反転はデバッグ表示でだけ出す。
+        assert panel._invert_cb.winfo_manager() == ""
+        panel._debug_var.set(True)
+        panel._on_debug_toggled()
+        assert panel._invert_cb.winfo_manager() == "grid"
         assert panel._invert_var.get() == "加速度"
 
         panel._invert_var.set("ジャイロ")
@@ -192,6 +199,35 @@ def test_imu_panel_hid_invert_reads_and_writes_hid_keys(tk_root: tk.Tk) -> None:
         assert settings.data["hid_gyro_signs"] == "1,-1,-1"
         assert settings.data["accel_signs"] == "-1,-1,1"
         assert settings.data["gyro_signs"] == "-1,-1,1"
+    finally:
+        panel.close()
+        root.destroy()
+
+
+def test_imu_panel_invert_follows_selected_source(tk_root: tk.Tk) -> None:
+    """入力源を切り替えると、その源が読む符号の表示へ追従する。"""
+    data = {
+        "source": "sensor",
+        "accel_signs": "1,-1,-1",
+        "gyro_signs": "1,1,1",
+        "hid_accel_signs": "1,1,1",
+        "hid_gyro_signs": "1,-1,-1",
+    }
+    panel, root, _transport, settings, _root = _make_panel(tk_root, data)
+    try:
+        panel._debug_var.set(True)
+        panel._on_debug_toggled()
+        assert panel._invert_var.get() == "加速度"
+
+        panel._source_var.set("HID直結")
+        panel._on_source_changed()
+        assert panel._invert_var.get() == "ジャイロ"
+
+        panel._source_var.set("パッドAPI")
+        panel._on_source_changed()
+        assert panel._invert_var.get() == "加速度"
+        # 表示の追従だけで、設定は書き換えない。
+        assert settings.saved == 0
     finally:
         panel.close()
         root.destroy()
@@ -247,6 +283,7 @@ def test_imu_panel_manual_and_detail_rows_stay_below_controls(
         root.update()
         scale = panel._scale_cb
         manual = panel._manual_frame
+        detail = panel._detail_cb
         assert manual.winfo_rooty() >= scale.winfo_rooty() + scale.winfo_height()
 
         panel._detail_var.set(True)
@@ -256,6 +293,7 @@ def test_imu_panel_manual_and_detail_rows_stay_below_controls(
         assert view is not None
         assert panel._invert_cb.winfo_ismapped()
         assert view.winfo_rooty() >= manual.winfo_rooty() + manual.winfo_height()
+        assert view.winfo_rooty() >= detail.winfo_rooty() + detail.winfo_height()
     finally:
         panel.close()
         root.destroy()
