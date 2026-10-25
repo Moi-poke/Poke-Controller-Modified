@@ -68,17 +68,17 @@ def test_snippets_category_comes_first_before_basic_operations() -> None:
 
 @NEEDS_NODE
 def test_snippets_category_holds_eight_or_more_items() -> None:
-    """「よく使う形」分類が8個以上の項目（と短い説明）を持つこと。"""
+    """「よく使う形」分類が8個以上の完成形を持つこと（説明ラベルを置かない）。"""
     # Given: 道具箱の先頭分類
     res: dict[str, Any] = run_blockly(
         _SNIPPETS_SETUP
         + "done({ name: SNIPCAT.name, n: SNIPITEMS.length, "
-        + "hasLabel: SNIPCAT.contents.some((c) => c.kind === 'label') });"
+        + "labels: SNIPCAT.contents.filter((c) => c.kind === 'label').length });"
     )
-    # Then: 名前・件数・説明の有無
+    # Then: 名前・件数（分類名と形そのもので使い方が分かる）
     assert res["name"] == "よく使う形"
     assert res["n"] >= 8
-    assert res["hasLabel"] is True
+    assert res["labels"] == 0
 
 
 @NEEDS_NODE

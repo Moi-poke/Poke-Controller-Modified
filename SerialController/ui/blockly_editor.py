@@ -999,10 +999,7 @@ def open_blockly_editor(
     win = tk.Toplevel(root)
     win.title("Blocklyエディタ")
     win.resizable(False, False)
-    tk.Label(win, text="ブラウザで編集し、保存ボタンで保存します。").pack(
-        padx=10, pady=10
-    )
-    tk.Label(win, text=url).pack(padx=10, pady=(0, 10))
+    tk.Label(win, text=url).pack(padx=10, pady=10)
 
     def copy_url() -> None:
         """起動URLをクリップボードへ入れる（自動で開かない環境用）。"""

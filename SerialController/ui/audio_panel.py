@@ -17,6 +17,7 @@ from typing import Any
 from core.AudioCapture import audio_available, parse_display
 from loguru import logger
 from ui.combo_fit import fit_combo_width
+from ui.tooltip import Tooltip
 
 METER_INTERVAL_MS = 200
 # 機器名は長い（'22: HDMI/Line In (2- Live Gamer EXTREME 3) [est. 12ms]'）。
@@ -55,6 +56,8 @@ class AudioPanelMixin:
     audio_output_cb: Any
     audio_input_name: Any
     audio_output_name: Any
+    _audio_input_tip: Any
+    _audio_output_tip: Any
     audio_monitor: Any
     audio_volume: Any
     audio_level: Any
@@ -112,12 +115,24 @@ class AudioPanelMixin:
             "<<ComboboxSelected>>", self._onAudioOutputSelected, add=""
         )
         # モニター（入力を出力へ流す）は出力の行の右に置く。
-        ttk.Checkbutton(
+        monitor = ttk.Checkbutton(
             self.audio_lf,
             text="モニター",
             variable=self.audio_monitor,
             command=self._onMonitorToggled,
-        ).grid(padx="5", pady="2", row=1, column=2, sticky="w")
+        )
+        monitor.grid(padx="5", pady="2", row=1, column=2, sticky="w")
+        Tooltip(monitor, "入力を出力へ流して耳で確認する")
+        # 機器名は幅の上限で切るため、長い名前はホバーで全文を読めるようにする。
+        self._audio_input_tip = Tooltip(self.audio_input_cb, "")
+        self._audio_output_tip = Tooltip(self.audio_output_cb, "")
+        self.audio_input_name.trace_add(
+            "write", lambda *_: self._refresh_audio_name_tooltips()
+        )
+        self.audio_output_name.trace_add(
+            "write", lambda *_: self._refresh_audio_name_tooltips()
+        )
+        self._refresh_audio_name_tooltips()
 
         # 音量（スライダーと値）。音量は頻繁に触るので、機器選択の直下に置く。
         ttk.Label(self.audio_lf, text="音量:").grid(
@@ -342,6 +357,14 @@ class AudioPanelMixin:
         """表示名（"番号: 名前"）から保存用の番号を取り出す。"""
         index = parse_display(display)
         return str(index) if index is not None else display
+
+    def _refresh_audio_name_tooltips(self, _event: Any = None) -> None:
+        """入力・出力の長い名前を、切らずに吹き出しで読めるようにする。"""
+        try:
+            self._audio_input_tip.text = str(self.audio_input_name.get())
+            self._audio_output_tip.text = str(self.audio_output_name.get())
+        except Exception:
+            pass
 
     def _onAudioInputSelected(self, *event: Any) -> None:
         display = self.audio_input_name.get()

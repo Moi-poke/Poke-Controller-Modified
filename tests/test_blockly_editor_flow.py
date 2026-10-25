@@ -20,13 +20,14 @@ def test_fresh_start_shows_one_program_block_and_is_clean() -> None:
         boot();
         await flush(400);
         done({ types: ws.getTopBlocks(false).map((b) => b.type),
-               dirty: els.dirty.textContent, hint: els.status.textContent });
+               dirty: els.dirty.textContent,
+               hint: doc.getElementById('status').textContent });
         """
     )
-    # Then: 初期形・未保存なし・最初の一歩の案内
+    # Then: 初期形・未保存なし・起動時の説明は出さない（画面の並びで示す）
     assert res["types"] == ["pokecon_program"]
     assert res["dirty"] == "保存済み"
-    assert "プログラム" in res["hint"]
+    assert res["hint"] == ""
 
 
 def test_unsaved_draft_is_restored_on_next_start_and_stays_unsaved() -> None:

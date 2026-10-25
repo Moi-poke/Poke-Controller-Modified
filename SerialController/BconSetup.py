@@ -831,6 +831,7 @@ class BconSetup:
             values=[BAUD_DISPLAY_LABELS[i] for i in sorted(BAUD_TABLE)],
         )
         self._baud_cb.grid(row=0, column=1, sticky=tk.EW, padx=2, pady=2)
+        Tooltip(self._baud_cb, "通信速度。通常は既定のままでよい")
         self._btn_baud = ttk.Button(
             grp_baud,
             text="速度を変更",
@@ -861,59 +862,68 @@ class BconSetup:
         # ボタン面から外した用語と注意は吹き出しへ移す（面の文言を短く保つ）。
         Tooltip(
             self._btn_connect,
-            "STATE を止めて HELLO を送り、通ったら live を起こす。",
+            "Pico と接続し、Switch を操作できる状態にする。",
         )
         Tooltip(
             self._btn_status,
-            "STATUS_REQ を送り、flags と PLAYER_INFO を読む。",
+            "Pico の状態と、接続中のコントローラ情報を表示する。",
         )
-        Tooltip(self._btn_ping, "PING を送り、PONG の往復時間を見る。")
+        Tooltip(self._btn_ping, "Pico との通信が通るか確認し、応答時間を表示する。")
         Tooltip(
             self._btn_cap,
-            "CAPTURE_START。指定秒数だけ実機コントローラの入力を取り込み保存する。",
+            "指定した秒数だけ、実際のコントローラ操作を記録する。",
         )
         Tooltip(
             self._btn_beacon,
-            "BEACON_START。保存済みの入力を再生する。成否は PLAYER_INFO の保存済みで判断する。",
+            "保存した操作を Pico から再生する。",
         )
         Tooltip(
             self._btn_reconnect,
-            "待機中の Pico に Switch への再接続を試させる（T_RECONNECT）。",
+            "Switch との接続をやり直す。",
         )
         Tooltip(
             self._btn_w1,
-            "WIRED_MODE=1。USB 直結（無線は止まる）。約0.5秒後に再起動。",
+            "USB 接続に切り替える（Bluetooth は停止。約0.5秒後に再起動）。",
         )
         Tooltip(
             self._btn_w0,
-            "WIRED_MODE=0。Bluetooth。約0.5秒後に再起動。",
+            "Bluetooth 接続に切り替える（約0.5秒後に再起動）。",
         )
         Tooltip(
             self._btn_winfo,
-            "STATUS の有線フラグを見て、今の方式を表示する。",
+            "いま USB 接続か Bluetooth 接続かを表示する。",
         )
-        Tooltip(self._btn_e0, "EMULATE_MODE=0。再起動後に反映。")
-        Tooltip(self._btn_e1, "EMULATE_MODE=1。再起動後に反映。")
-        Tooltip(self._btn_e2, "EMULATE_MODE=2。再起動後に反映。")
+        Tooltip(
+            self._btn_e0,
+            "Switch に Pro Controller として認識させる（再起動後に反映）。",
+        )
+        Tooltip(
+            self._btn_e1,
+            "Switch に Joy-Con (L) として認識させる（再起動後に反映）。",
+        )
+        Tooltip(
+            self._btn_e2,
+            "Switch に Joy-Con (R) として認識させる（再起動後に反映）。",
+        )
         Tooltip(
             self._btn_bootsel,
-            "BOOTSEL へ入る。再起動後は COM が外れる。",
+            "ファームウェア書き込み用のモードで再起動する（COM ポートが外れる）。",
         )
         Tooltip(
             self._btn_clear,
-            "KEY_DELETE。BEACON 相当と Classic 鍵を破棄する。Switch 側の登録解除も必要。",
+            "Pico に取り込んだ入力を破棄する。Switch 側のペアリング解除も別途必要。",
         )
         Tooltip(
             self._btn_keys,
-            "KEY_DELETE。Pico 側のリンク鍵を全削除する。Switch 側の登録解除も必要。",
+            "Pico に保存したペアリング情報をすべて削除する。Switch 側の登録解除も別途必要。",
         )
         Tooltip(
             self._btn_color,
-            "COLOR_SET。4欄の色を送る。再接続後に反映。",
+            "4つの LED の色を Pico に送る（再接続後に反映）。",
         )
         Tooltip(
             self._btn_baud,
-            "選んだ速度へ切り替える。失敗時は元の速度へ戻る。",
+            "通信速度を切り替える。失敗したときは元の速度に戻る。",
         )
         if embedded:
             self._reflow_columns()

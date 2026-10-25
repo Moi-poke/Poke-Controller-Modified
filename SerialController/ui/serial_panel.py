@@ -21,6 +21,7 @@ from loguru import logger
 from services.serial_service import SenderSpec, SerialService
 from ui.combo_fit import fit_combo_width
 from ui.controller_dock import ControllerDock
+from ui.tooltip import Tooltip
 
 # STATUS flags の bit5=有線。SSOTは Switch-bcon の spec/protocol_v3.md。
 _STATUS_FLAG_WIRED = 0x20
@@ -219,6 +220,10 @@ class SerialPanelMixin:
         )
         self.arbitration_cb.grid(column=1, padx="5", pady="2", row=5, sticky="ew")
         self.arbitration_cb.bind("<<ComboboxSelected>>", self.applyArbitration, add="")
+        Tooltip(
+            self.arbitration_cb,
+            "コマンド実行中に手動操作を受け付けるかどうか",
+        )
 
         # プレイヤーランプ（bcon の PLAYER_INFO を省スペース表示）と振動。
         # Bcon設定小窓の4灯と同じく bit0=LED1..bit3=LED4 の横並び。
@@ -305,6 +310,10 @@ class SerialPanelMixin:
         )
         self.bcon_emulate_cb.grid(column=1, padx="5", pady="2", row=4, sticky="w")
         self.bcon_emulate_cb.bind("<<ComboboxSelected>>", self.applyBconEmulate, add="")
+        Tooltip(
+            self.bcon_emulate_cb,
+            "Pico が Switch に名乗るコントローラの種類",
+        )
         fit_combo_width(self.bcon_emulate_cb, min_chars=8, max_chars=20)
         # 値の列を伸ばし、広い窓では長いポート名・機器名を省略せずに出す。
         self.serial_lf.columnconfigure(1, weight=1)
@@ -350,6 +359,7 @@ class SerialPanelMixin:
             command=self._on_keyboard_toggled,
         )
         self.cb_use_keyboard.grid(column=0, row=0, padx="10", pady="5", sticky="ew")
+        Tooltip(self.cb_use_keyboard, "キーボードのキーを Switch のボタンとして送る")
 
         self.is_use_gamepad = tk.BooleanVar()
         self.cb_use_gamepad = ttk.Checkbutton(self.control_lf)
@@ -359,6 +369,7 @@ class SerialPanelMixin:
             command=self._on_gamepad_toggled,
         )
         self.cb_use_gamepad.grid(column=1, row=0, padx="10", pady="5", sticky="ew")
+        Tooltip(self.cb_use_gamepad, "接続したゲームパッドの入力を Switch へ送る")
 
         self.cb_left_stick_mouse = ttk.Checkbutton(self.control_lf)
         self.cb_left_stick_mouse.config(
@@ -377,6 +388,8 @@ class SerialPanelMixin:
         self.cb_right_stick_mouse.grid(
             column=1, row=1, padx="10", pady="5", sticky="ew"
         )
+        Tooltip(self.cb_left_stick_mouse, "マウスを動かして左スティックを操作する")
+        Tooltip(self.cb_right_stick_mouse, "マウスを動かして右スティックを操作する")
         # ゲームパッドの選択行。繋がっているパッドを名前で選ぶ。
         # 番号決め打ちでは、複数台・差し替え時に別の物を掴む。
         self.gamepad_label = ttk.Label(self.control_lf, text="パッド: ")
@@ -398,6 +411,10 @@ class SerialPanelMixin:
             command=self._on_gamepad_reconnect,
         )
         self.gamepad_reconnect_btn.pack(side="left", padx=(6, 0))
+        Tooltip(
+            self.gamepad_reconnect_btn,
+            "ゲームパッドを探し直す（自動で拾えないとき）",
+        )
         # 遊び（デッドゾーン）。既定1638=最大値の5%。drift 時に上げる。
         self.gamepad_dz_label = ttk.Label(self.control_lf, text="遊び: ")
         self.gamepad_dz_label.grid(column=0, row=3, padx="10", pady="2", sticky="w")
@@ -411,6 +428,10 @@ class SerialPanelMixin:
             width=8,
         )
         self.gamepad_dz_spin.grid(column=1, row=3, padx="10", pady="2", sticky="w")
+        Tooltip(
+            self.gamepad_dz_spin,
+            "スティックの小さな傾きを無視する範囲。勝手に動くときに上げる",
+        )
         self.gamepad_dz_spin.bind("<FocusOut>", self._on_gamepad_dz_changed, add="")
         self.gamepad_dz_spin.bind("<Return>", self._on_gamepad_dz_changed, add="")
         # ゲームパッドの状態行。読取中の名前・経路・生軸値を出す。

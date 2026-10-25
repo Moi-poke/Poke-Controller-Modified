@@ -111,6 +111,7 @@
     constructor(value) {
       super(value == null ? "90,100" : value);
       this.SERIALIZABLE = true;
+      this.tooltip = "ドラッグして向きを選ぶ（8方向・強さ100%）";
     }
     static fromJson(options) {
       return new StickPadField(options ? options.value : undefined);
@@ -347,6 +348,7 @@
       );
       this.bare_ = isBare;
       this.setValue(value != null ? String(value) : padValueOf("A", isBare));
+      this.tooltip = "クリックしてボタン・十字キー・スティックを選ぶ";
     }
     static fromJson(options) {
       return new ControllerField(
@@ -424,11 +426,9 @@
         field.setValue(padValueOf(key, bare));
         DDD.hideIfOwner(field, true);
       });
-      var hint = document.createElement("div");
-      hint.textContent = "クリックで選ぶ（A/B/X/Y/L/R キー・矢印＝十字キーでも可）";
-      hint.style.cssText = "padding:6px 4px 0;color:#5c636b;font-size:11px;";
       content.appendChild(box);
-      content.appendChild(hint);
+      // 形そのものが押せることを示し、キー操作は必要なときだけ吹き出しで見せる。
+      box.title = "クリックで選ぶ（A/B/X/Y/L/R キー・矢印＝十字キーでも可）";
       DDD.setColour("#ffffff", "#d6d9de");
       DDD.showPositionedByField(this, function () {});
       setTimeout(function () {
@@ -448,12 +448,12 @@
       message0: "プログラム %1 タグ %2 %3",
       args0: [
         { type: "field_input", name: "NAME", text: "ブロック作成" },
-        { type: "field_input", name: "TAGS", text: "blockly" },
+        { type: "field_input", name: "TAGS", text: "blockly", tooltip: "タグをカンマ区切りで入力（一覧の絞り込みに使う）" },
         { type: "input_statement", name: "DO" },
       ],
       colour: 120,
       tooltip:
-        "コマンド本体（1個まで）。名前がPokeConの一覧に出る。中に操作を上から順に並べる。タグはカンマ区切り。",
+        "コマンドの本体（1個まで）。名前は一覧に出る。中に操作を上から順に並べる。タグはカンマ区切り。",
     },
     {
       type: "pokecon_press",
@@ -490,7 +490,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "L/Rスティックをパッドか角度で倒す（8方向・強さ100%固定）。軌跡の再生は記録から作る。",
+      tooltip: "L/R スティックを8方向・強さ100%で倒す。細かい動きは「スティック軌跡」で再現できる。",
     },
     {
       // 軌跡の再生用。記録（MotionRecorder）が作る。手でも置ける。
@@ -508,8 +508,8 @@
             ["R", "RIGHT"],
           ],
         },
-        { type: "field_input", name: "FROM", text: "0,90" },
-        { type: "field_input", name: "TO", text: "127,90" },
+        { type: "field_input", name: "FROM", text: "0,90", tooltip: "位置を半径,角度で指定（例: 127,90）" },
+        { type: "field_input", name: "TO", text: "127,90", tooltip: "位置を半径,角度で指定（例: 127,90）" },
         { type: "field_number", name: "T_MS", value: 100, min: 1, max: 60000 },
         {
           type: "field_dropdown",
@@ -523,17 +523,17 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "スティックを極座標の from → to へ Tms で動かす（記録の再生用）。離すは区間の最後だけ。",
+      tooltip: "スティックを「半径,角度」の始点から終点へ動かす。記録した動きの再生用。最後に離すか続けるかを選べる。",
     },
     {
       // L/R 同時用。片側ずつの from/to を持ち、同じ T で動かす。
       type: "pokecon_motion2",
       message0: "スティック軌跡 L %1 → %2 R %3 → %4 %5ms %6",
       args0: [
-        { type: "field_input", name: "FROM_L", text: "0,90" },
-        { type: "field_input", name: "TO_L", text: "127,90" },
-        { type: "field_input", name: "FROM_R", text: "0,0" },
-        { type: "field_input", name: "TO_R", text: "127,0" },
+        { type: "field_input", name: "FROM_L", text: "0,90", tooltip: "位置を半径,角度で指定（例: 127,90）" },
+        { type: "field_input", name: "TO_L", text: "127,90", tooltip: "位置を半径,角度で指定（例: 127,90）" },
+        { type: "field_input", name: "FROM_R", text: "0,0", tooltip: "位置を半径,角度で指定（例: 127,90）" },
+        { type: "field_input", name: "TO_R", text: "127,0", tooltip: "位置を半径,角度で指定（例: 127,90）" },
         { type: "field_number", name: "T_MS", value: 100, min: 1, max: 60000 },
         {
           type: "field_dropdown",
@@ -547,7 +547,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "L/R を同じ T で同時に動かす（記録の再生用）。離すは区間の最後だけ。",
+      tooltip: "左右のスティックを同時に、指定した時間で動かす。記録した動きの再生用。最後に離すか続けるかを選べる。",
     },
     {
       type: "pokecon_wait",
@@ -566,7 +566,7 @@
       args0: [],
       output: "Number",
       colour: 120,
-      tooltip: "開始からの経過秒。ifとfinishで時間制限に使う。",
+      tooltip: "開始からの経過秒。条件分岐や正常終了と組み合わせて時間制限に使う。",
     },
     {
       type: "pokecon_hold",
@@ -578,7 +578,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "押しっぱなしにする（holdEndで離す）。",
+      tooltip: "ボタンやスティックを押したままにする（「離す」ブロックで解除）。",
     },
     {
       type: "pokecon_hold_end",
@@ -610,7 +610,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "倒したスティックを中立へ戻す（押しっぱなしを離す）。",
+      tooltip: "倒したスティックを中立に戻す。",
     },
     {
       type: "pokecon_finish",
@@ -619,7 +619,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 120,
-      tooltip: "コマンドを正常終了する（色違い検出時など）。",
+      tooltip: "コマンドを正常終了する（色違いを見つけたときなど）。",
     },
     {
       type: "pokecon_press_rep",
@@ -634,7 +634,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 160,
-      tooltip: "指定回数だけ繰り返し押す。",
+      tooltip: "指定した回数だけボタンを押す。",
     },
     {
       type: "pokecon_print",
@@ -643,6 +643,7 @@
         {
           type: "field_dropdown",
           name: "KIND",
+          tooltip: "「表示」は進捗、「結果」は後で見返すログ",
           options: [
             ["表示", "print"],
             ["結果", "print2"],
@@ -653,7 +654,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 40,
-      tooltip: "ログへ出す（表示＝進捗・結果＝後で見返す用）。",
+      tooltip: "ログにメッセージを出す（進捗の表示や結果の記録に使う）。",
     },
     {
       type: "pokecon_screenshot",
@@ -662,7 +663,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 40,
-      tooltip: "カメラ画像を保存する。使うと画像認識ありになる。",
+      tooltip: "カメラ画像を保存する。",
     },
     {
       type: "pokecon_discord",
@@ -681,7 +682,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 40,
-      tooltip: "Discordへ通知する。画像付きは画像認識ありになる。",
+      tooltip: "Discord にメッセージや画像を送る。",
     },
     {
       type: "pokecon_dialog_choice",
@@ -690,13 +691,13 @@
         { type: "field_input", name: "VAR", text: "setting" },
         { type: "field_input", name: "TITLE", text: "設定" },
         { type: "field_input", name: "LABEL", text: "項目" },
-        { type: "field_input", name: "OPTIONS", text: "A,B" },
-        { type: "field_input", name: "DEFAULT", text: "A" },
+        { type: "field_input", name: "OPTIONS", text: "A,B", tooltip: "選択肢をカンマ区切りで入力（例: A,B）" },
+        { type: "field_input", name: "DEFAULT", text: "A", tooltip: "最初に選ばれる値" },
       ],
       previousStatement: null,
       nextStatement: null,
       colour: 40,
-      tooltip: "実行前に選択肢から選ばせる。取消は終了する。",
+      tooltip: "実行前に選択肢を選ばせる（キャンセルするとコマンドを終了）。",
     },
     {
       type: "pokecon_dialog_number",
@@ -707,12 +708,12 @@
         { type: "field_input", name: "LABEL", text: "個数" },
         { type: "field_number", name: "MIN", value: 1 },
         { type: "field_number", name: "MAX", value: 10 },
-        { type: "field_number", name: "DEFAULT", value: 3 },
+        { type: "field_number", name: "DEFAULT", value: 3, tooltip: "最初に入る値" },
       ],
       previousStatement: null,
       nextStatement: null,
       colour: 40,
-      tooltip: "実行前に数値を選ばせる。取消は終了する。",
+      tooltip: "実行前に数値を選ばせる（キャンセルするとコマンドを終了）。",
     },
     {
       type: "pokecon_dialog_check",
@@ -721,12 +722,12 @@
         { type: "field_input", name: "VAR", text: "confirm" },
         { type: "field_input", name: "TITLE", text: "確認" },
         { type: "field_input", name: "LABEL", text: "送る" },
-        { type: "field_checkbox", name: "DEFAULT", checked: true },
+        { type: "field_checkbox", name: "DEFAULT", checked: true, tooltip: "最初からチェックを入れておく" },
       ],
       previousStatement: null,
       nextStatement: null,
       colour: 40,
-      tooltip: "実行前に確認を取る。取消は終了する。",
+      tooltip: "実行前に確認を取る（キャンセルするとコマンドを終了）。",
     },
     {
       type: "pokecon_audio_tone_contains",
@@ -745,7 +746,7 @@
       inputsInline: false,
       output: "Boolean",
       colour: 20,
-      tooltip: "指定帯域の音量が閾値を超えたら真（要調整）。第2は0,0で使わない。",
+      tooltip: "指定した音域の音量がしきい値を超えたら条件成立。2つ目の音域は使わないとき 0,0 にする。",
     },
     {
       type: "pokecon_audio_wait_tone",
@@ -766,7 +767,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: 20,
-      tooltip: "指定帯域の音が鳴るまで待つ（要調整）。第2は0,0で使わない。",
+      tooltip: "指定した音域の音が鳴るまで待つ。2つ目の音域は使わないとき 0,0 にする。",
     },
     {
       type: "pokecon_vision_press_until",
@@ -786,9 +787,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -797,7 +798,7 @@
       nextStatement: null,
       colour: 195,
       tooltip:
-        "テンプレ画像が出るまで、ボタンを押し続ける（A連打で戦闘開始を待つ等）。上限秒で打ち切る。",
+        "テンプレ画像が出るまで、ボタンを押し続ける（A連打で戦闘開始を待つ等）。上限の時間で打ち切る。",
     },
     {
       type: "pokecon_vision_press_until_gone",
@@ -817,9 +818,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -828,7 +829,7 @@
       nextStatement: null,
       colour: 195,
       tooltip:
-        "テンプレ画像が消えるまで、ボタンを押し続ける。上限秒で打ち切る。",
+        "テンプレ画像が消えるまで、ボタンを押し続ける。上限の時間で打ち切る。",
     },
     {
       type: "pokecon_vision_wait_count",
@@ -848,9 +849,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -859,7 +860,7 @@
       nextStatement: null,
       colour: 195,
       tooltip:
-        "テンプレ画像が指定の個数見つかるまで待つ（卵の数え上げ等）。上限秒で打ち切る。",
+        "テンプレ画像が指定の個数見つかるまで待つ（卵の数え上げ等）。上限の時間で打ち切る。",
     },
     {
       type: "pokecon_vision_count",
@@ -877,9 +878,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -894,13 +895,13 @@
       message0: "サブルーチン %1 引数 %2 %3 戻り値 %4",
       args0: [
         { type: "field_input", name: "NAME", text: "my_sub" },
-        { type: "field_input", name: "ARGS", text: "" },
+        { type: "field_input", name: "ARGS", text: "", tooltip: "引数名をカンマ区切りで入力（例: a,b）" },
         { type: "input_statement", name: "DO" },
         { type: "input_value", name: "RETURN" },
       ],
       extensions: ["pokecon_sub_rename"],
       colour: 290,
-      tooltip: "トップレベルに置く。呼ぶ側から self.名前() で呼べる。",
+      tooltip: "プログラムの外側に置く。呼び出しブロックから名前を選んで使う。",
     },
     {
       type: "pokecon_sub_call",
@@ -936,7 +937,7 @@
       previousStatement: null,
       nextStatement: null,
       colour: "#8a8f98",
-      tooltip: "生成コードに # コメントとして残る。実行には影響しない。",
+      tooltip: "メモとして残る。実行には影響しない。",
     },
   ]);
 
@@ -950,6 +951,23 @@
       super(text == null ? "📷" : text);
       this.EDITABLE = false;
       this.SERIALIZABLE = false;
+      this.tooltip = "クリックで実画面を見ながら範囲・しきい値を調整";
+    }
+    initView() {
+      super.initView();
+      // 文字だけだと押せることが伝わらないため、入力欄と同じ枠を敷いて
+      // 枠全体を当たり判定にする。枠は文字の後ろへ回す。
+      var rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("class", "blocklyFieldRect pokeconCapRect");
+      rect.setAttribute("x", "0");
+      rect.setAttribute("y", "0");
+      rect.setAttribute("width", "0");
+      rect.setAttribute("height", "0");
+      rect.setAttribute("rx", "6");
+      rect.setAttribute("ry", "6");
+      this.fieldGroup_.insertBefore(rect, this.getTextElement());
+      this.borderRect_ = rect;
+      this.fieldGroup_.classList.add("pokeconCapField");
     }
     showEditor_() {
       var b = this.getSourceBlock();
@@ -968,6 +986,10 @@
   // 入口で受け付けない（打ち込み中は赤枠、確定時に直前の値へ戻る）。
   var CROP_TEXT_RE = /^(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)$/;
   class CropField extends Blockly.FieldTextInput {
+    constructor(value) {
+      super(value);
+      this.tooltip = "切り出す範囲を x1,y1,x2,y2 で指定（空なら全体）";
+    }
     static fromJson(options) {
       return new CropField(options && options.text != null ? options.text : "");
     }
@@ -1113,6 +1135,7 @@
         return opts;
       });
       this.setValue(value == null ? "" : String(value));
+      this.tooltip = "クリックしてテンプレ画像を選ぶ";
     }
     static fromJson(options) {
       return new TemplateField(options ? options.value : undefined);
@@ -1459,9 +1482,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -1469,7 +1492,7 @@
       output: "Boolean",
       colour: 195,
       tooltip:
-        "画面にテンプレ画像があれば真。「もし」の条件に使う。📷 調整で実画面を見ながら範囲・閾値を決められる。",
+        "画面にテンプレ画像があれば条件成立。「もし」の条件に使う。📷 調整で実画面を見ながら範囲・しきい値を決められる。",
     },
     {
       type: "pokecon_vision_wait_appear",
@@ -1488,9 +1511,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -1499,7 +1522,7 @@
       nextStatement: null,
       colour: 195,
       tooltip:
-        "テンプレ画像が出るまで待つ。上限秒で打ち切る。",
+        "テンプレ画像が出るまで待つ。上限の時間で打ち切る。",
     },
     {
       type: "pokecon_vision_wait_gone",
@@ -1518,9 +1541,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -1529,7 +1552,7 @@
       nextStatement: null,
       colour: 195,
       tooltip:
-        "テンプレ画像が消えるまで待つ。上限秒で打ち切る。",
+        "テンプレ画像が消えるまで待つ。上限の時間で打ち切る。",
     },
     {
       type: "pokecon_vision_position",
@@ -1547,9 +1570,9 @@
       ],
       message1: "閾値 %1 範囲 %2 グレー %3 %4",
       args1: [
-        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1 },
+        { type: "field_number", name: "THRESHOLD", value: 0.7, min: 0, max: 1, tooltip: "一致とみなすしきい値（0〜1）。高いほど厳しい" },
         { type: "field_crop", name: "CROP", text: "" },
-        { type: "field_checkbox", name: "USE_GRAY", checked: false },
+        { type: "field_checkbox", name: "USE_GRAY", checked: false, tooltip: "色を無視して形だけで照合する" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
       inputsInline: false,
@@ -1563,7 +1586,7 @@
       type: "pokecon_vision_wait_stable",
       message0: "画面が止まるまで待つ 静止 %1 秒 上限 %2 秒",
       args0: [
-        { type: "field_number", name: "QUIET", value: 0.5, min: 0, max: 60 },
+        { type: "field_number", name: "QUIET", value: 0.5, min: 0, max: 60, tooltip: "この秒数だけ画面が変わらなければ止まったとみなす" },
         { type: "field_number", name: "TIMEOUT", value: 10, min: 0, max: 3600 },
       ],
       previousStatement: null,
@@ -1584,7 +1607,7 @@
       ],
       message1: "が割合 %1 以上 範囲 %2 %3",
       args1: [
-        { type: "field_number", name: "RATIO", value: 0.6, min: 0, max: 1 },
+        { type: "field_number", name: "RATIO", value: 0.6, min: 0, max: 1, tooltip: "範囲内の何割以上なら成立とするか（0〜1）" },
         { type: "field_crop", name: "CROP", text: "" },
         { type: "field_capopen", name: "CAPOPEN", text: "📷 調整" },
       ],
@@ -1592,7 +1615,7 @@
       output: "Boolean",
       colour: 195,
       tooltip:
-        "範囲内でHSVの色範囲に入る画素の割合が指定以上なら真。📷 調整で実画面を見ながら決められる。",
+        "範囲内で指定した色（H/S/V）に入るピクセルの割合が基準以上なら条件成立。📷 調整で実画面を見ながら決められる。",
     },
   ]);
 

@@ -21,6 +21,7 @@ from typing import Any
 
 from core import CommandHistory
 from loguru import logger
+from ui.tooltip import Tooltip
 
 # 列名 → 見出し文字。並べ替えの印（▲▼）はここへ足す。
 _HISTORY_TITLES: dict[str, str] = {
@@ -80,6 +81,10 @@ class HistoryPanelMixin:
         self.history_query = tk.StringVar()
         self.history_search_entry = ttk.Entry(search_f, textvariable=self.history_query)
         self.history_search_entry.pack(side="left", fill="x", expand=True, padx="2")
+        Tooltip(
+            self.history_search_entry,
+            "実行履歴を名前・結果・種別・日時で絞り込む（Esc で解除）",
+        )
         # 打つそばから絞る。確定を待つと、目当てが出るまで見えない。
         self.history_search_entry.bind(
             "<KeyRelease>", self._on_history_search_changed, add=""

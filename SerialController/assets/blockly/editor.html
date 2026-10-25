@@ -134,8 +134,7 @@ kbd { padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; b
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); z-index: 950;
 }
-#newdialog h2 { margin: 2px 0 4px; font-size: 14px; }
-#newdialoghint { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+#newdialog h2 { margin: 2px 0 8px; font-size: 14px; }
 #newcards { display: flex; flex-direction: column; gap: 6px; }
 .newcard { text-align: left; white-space: normal; padding: 6px 10px; }
 .newcard.on { background: var(--select); outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -186,6 +185,12 @@ button.run:hover { background: #17793a; }
 #legacy summary { cursor: pointer; padding: 2px 0; }
 #legacy .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 4px 0; }
 .blocklyToolboxCategory { padding: 3px 0; }
+/* ブロック内の📷調整。文字だけでは押せると分からないため、枠を敷いて当たり判定を見せる。 */
+.pokeconCapField, .pokeconCapField text { cursor: pointer; }
+.pokeconCapField .pokeconCapRect { fill: rgba(255, 255, 255, 0.88); stroke: #fff; stroke-width: 1; }
+.blocklySvg .pokeconCapField text.blocklyText { fill: #1f2328; }
+.pokeconCapField:hover .pokeconCapRect { fill: #fff; stroke: #fff; }
+.pokeconCapField:active .pokeconCapRect { fill: #e8eaed; }
 #capmodal { display: none; position: fixed; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; overflow: auto; }
 #capmodalbox { background: var(--panel); margin: 2vh auto; padding: 12px; width: fit-content; max-width: 96vw; border-radius: 8px; }
 #capbigimg { max-width: 90vw; max-height: 66vh; border: 1px solid var(--line); cursor: crosshair; }
@@ -196,9 +201,9 @@ button.run:hover { background: #17793a; }
 <body>
 <header id="bar">
 <div class="grp">
-<button id="newws" aria-label="新規" title="新しいコマンドを作る（今の編集は確認のうえ閉じる）"><span class="n" aria-hidden="true">📄</span><span class="t">新規</span></button>
+<button id="newws" aria-label="新規" title="新しいコマンドを作る（未保存なら確認します）"><span class="n" aria-hidden="true">📄</span><span class="t">新規</span></button>
 <label>保存済み <select id="files" aria-label="保存済みのコマンド"></select></label>
-<button id="open" aria-label="開く" title="選んだ保存物を開く"><span class="n" aria-hidden="true">📂</span><span class="t">開く</span></button>
+<button id="open" aria-label="開く" title="選んだコマンドを開く"><span class="n" aria-hidden="true">📂</span><span class="t">開く</span></button>
 </div>
 <div class="grp">
 <label>保存名 <input id="stem" value="MyBlock" aria-describedby="stemerror" spellcheck="false" autocomplete="off"></label>
@@ -206,11 +211,11 @@ button.run:hover { background: #17793a; }
 <span id="dirty">保存済み</span>
 </div>
 <div class="grp" role="group" aria-label="試し実行">
-<button id="runbtn" class="run" aria-label="実行" title="今の組み立てを保存せずに本体で走らせる (Ctrl+Enter / F5)。右クリックで一部だけ試せます"><span class="s" aria-hidden="true">▶</span> <span class="t">実行</span></button>
+<button id="runbtn" class="run" aria-label="実行" title="今の内容を保存せずに実行する (Ctrl+Enter / F5)。右クリックで一部だけ試せます"><span class="s" aria-hidden="true">▶</span> <span class="t">実行</span></button>
 <button id="pausebtn" class="icon" disabled title="一時停止 (F5)" aria-label="一時停止">⏸</button>
 <button id="stepbtn" class="icon" disabled title="1つ進む (F10)（次のブロックの手前で止める）" aria-label="1つ進む">⏭</button>
 <button id="stopbtn" class="icon" disabled title="停止 (Shift+F5)" aria-label="停止">⏹</button>
-<button id="recbtn" aria-label="記録" title="本体で押した操作を記録し、押すブロックの並びにして挿入する"><span class="s" aria-hidden="true">●</span> <span class="t">記録</span></button>
+<button id="recbtn" aria-label="記録" title="実際に行った操作を記録し、押すブロックの並びとして挿入する"><span class="s" aria-hidden="true">●</span> <span class="t">記録</span></button>
 <span id="runstate" role="status" aria-live="polite"></span>
 </div>
 <div class="grp">
@@ -222,10 +227,10 @@ button.run:hover { background: #17793a; }
 <button id="previewtoggle" aria-label="コード表示" aria-expanded="false" aria-controls="previewwrap" title="生成されるPythonコードを右側に表示"><span class="n" aria-hidden="true">&lt;/&gt;</span><span class="t">コード表示</span></button>
 <button id="morebtn" aria-haspopup="menu" aria-expanded="false" aria-controls="moremenu" title="その他の操作">⋯</button>
 <div id="moremenu" role="menu" aria-label="その他の操作" hidden>
-<button id="cleanup" role="menuitem" title="ブロックの塊を縦に整列">整列</button>
+<button id="cleanup" role="menuitem" title="ブロックを縦に整列">整列</button>
 <button id="fit" role="menuitem" title="すべてのブロックが見えるように表示">全体表示</button>
 <button id="capget" role="menuitem" title="キャプチャから画像テンプレを切り出して保存">📷 テンプレ作成</button>
-<button id="del" role="menuitem" title="選んだ保存物（.py と編集データ）を削除">削除</button>
+<button id="del" role="menuitem" title="選んだコマンドを削除（元に戻せません）">削除</button>
 <button id="themetoggle" role="menuitemcheckbox" aria-checked="false" title="暗い配色と明るい配色を切り替え（設定は保存されます）">🌙 ダークテーマ</button>
 <details id="help">
 <summary role="menuitem" title="使い方の説明を開く">使い方</summary>
@@ -257,8 +262,7 @@ button.run:hover { background: #17793a; }
 </div>
 <div id="newdialog" role="dialog" aria-modal="true" aria-labelledby="newdialogtitle" style="display: none;">
 <div id="newdialogbox">
-<h2 id="newdialogtitle">作例から始める</h2>
-<p id="newdialoghint">作例を下敷きにして新しいコマンドを作ります。選ぶと新しい名前で開きます（保存するまで別のコマンドにはなりません）。</p>
+<h2 id="newdialogtitle">新規コマンド</h2>
 <div id="newcards"></div>
 <p id="newdialogerror" role="status" aria-live="polite"></p>
 <div><button id="newdialogclose">閉じる</button></div>
@@ -308,7 +312,7 @@ button.run:hover { background: #17793a; }
 <div id="capmodal">
 <div id="capmodalbox">
 <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-<span id="capmodalhint">範囲を選択してください（枠内ドラッグで移動・赤い点で大きさ変更・数値でも指定可）</span>
+<span id="capmodaltitle" style="font-weight: 600;">テンプレ画像の切り出し</span>
 <span id="capmodelabel" style="color: var(--muted);"></span>
 <button id="capmodalclose">× 閉じる</button>
 </div>
@@ -316,7 +320,7 @@ button.run:hover { background: #17793a; }
 <label>テンプレ <select id="capblocktpl"></select></label>
 </div>
 <span id="capbigwrap" style="position: relative; display: inline-block;">
-<img id="capbigimg" alt="キャプチャ拡大">
+<img id="capbigimg" alt="キャプチャ拡大" title="枠内ドラッグで移動・赤い点で大きさ変更">
 <div id="capbigrect" style="position: absolute; border: 2px solid #f00; display: none; pointer-events: none;"></div>
 <div id="capmatchrect" style="position: absolute; border: 3px solid #00f; display: none; pointer-events: none;"></div>
 <div id="caph-nw" class="caphandle" style="cursor: nwse-resize;"></div>
@@ -330,12 +334,12 @@ button.run:hover { background: #17793a; }
 <div id="capdimxy" class="capdim"></div>
 <div id="capdimwh" class="capdim"></div>
 </span>
-<div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
+<div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;" title="実画像の画素で指定（スライダー・画像上でも変更可）">
+<span style="color: var(--muted); white-space: nowrap;">範囲（px）</span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">x <input id="capx" type="number" step="1" style="width: 5em;"><input id="caprx" type="range" min="0" value="0" style="width: 90px;"></span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">y <input id="capy" type="number" step="1" style="width: 5em;"><input id="capry" type="range" min="0" value="0" style="width: 90px;"></span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">幅 <input id="capw" type="number" step="1" style="width: 5em;"><input id="caprw" type="range" min="0" value="0" style="width: 90px;"></span>
 <span style="display: inline-flex; gap: 4px; align-items: center; white-space: nowrap;">高さ <input id="caph" type="number" step="1" style="width: 5em;"><input id="caprh" type="range" min="0" value="0" style="width: 90px;"></span>
-<span style="color: var(--muted); white-space: nowrap;">（実画像の画素・マウスでも上下可）</span>
 <span style="display: inline-flex; gap: 8px; align-items: center; white-space: nowrap;"><button id="capretake">取り直す</button><button id="capok">確定</button><button id="capcancel">キャンセル</button></span>
 <span id="capmodalstatus" role="status" aria-live="polite"></span>
 </div>
@@ -387,7 +391,6 @@ button.run:hover { background: #17793a; }
       // 定番の組み合わせ（ドラッグ1回で動く形）。値の穴は実体の数ブロック
       // 入りで、画像は未選択（置いた後に選ぶ）。変数「回数」は置くと作られる。
       { kind: 'category', name: 'よく使う形', colour: '45', contents: [
-        { kind: 'label', text: 'ドラッグして中の数・ボタンを変えて使う' },
         { kind: 'block', type: 'controls_repeat_ext', inputs: { TIMES: { block: { type: 'math_number', fields: { NUM: 10 } } }, DO: { block: { type: 'pokecon_press', fields: { BUTTON: 'A', DURATION: 0.1, WAIT: 0.5 } } } } },
         { kind: 'block', type: 'pokecon_press_rep', fields: { TARGET: 'Button.A', COUNT: 10, DURATION: 0.1, INTERVAL: 0.1, WAIT: 0.1 } },
         { kind: 'block', type: 'pokecon_vision_press_until', fields: { TEMPLATE: '', TARGET: 'Button.A', TIMEOUT: 10 } },
@@ -782,7 +785,7 @@ button.run:hover { background: #17793a; }
     applyPreviewSelection(previewSelId);
     if (st) {
       var n = code ? code.replace(/\n+$/, '').split('\n').length : 0;
-      st.textContent = code ? n + '行（保存される内容）' : '';
+      st.textContent = code ? n + '行' : '';
     }
   }
   function schedulePreview() {
@@ -1247,7 +1250,7 @@ button.run:hover { background: #17793a; }
     newClearList(list);
     newCards = [];
     newSel = 0;
-    var empty = newCard('空のプログラムから作る', '何もない所から始める（従来の新規と同じ）', '', function () { newChooseByStem(''); });
+    var empty = newCard('空のプログラムから作る', '', '', function () { newChooseByStem(''); });
     if (empty) { try { list.appendChild(empty); } catch (e) { /* 続ける */ } newCards.push(empty); }
     newSamples.forEach(function (s) {
       var stem = (s && s.stem) || '';
@@ -3465,9 +3468,9 @@ button.run:hover { background: #17793a; }
       if (!restored) {
         loadState(E.defaultState());
         markClean();
-        setStatus(broken
-          ? '前回の編集の控えは復元できませんでした（ブラウザ内に退避してあります）。新しく始めます'
-          : '左の分類（基本操作・画像認識など）からブロックを引き出し、「プログラム」の中へつなげてください', broken);
+        if (broken) {
+          setStatus('前回の編集の控えは復元できませんでした（ブラウザ内に退避してあります）。新しく始めます', true);
+        }
       } else {
         // 控えは未保存のまま閉じた内容。保存済みとは扱わない。
         markClean('');

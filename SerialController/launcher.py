@@ -488,7 +488,7 @@ class LauncherWindow(ttk.Frame):
         self.master.columnconfigure(0, weight=1)
         self.master.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(0, weight=1)
 
         self._build_widgets()
         self.refresh()
@@ -496,14 +496,6 @@ class LauncherWindow(ttk.Frame):
     # -- 画面 ---------------------------------------------------------------
 
     def _build_widgets(self) -> None:
-        note = ttk.Label(
-            self,
-            text="起動する設定を選んでください。台ごとに分けておくと、"
-            "同じPCで複数の Poke-Controller を同時に動かせます。",
-            wraplength=680,
-        )
-        note.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 8))
-
         self.tree = ttk.Treeview(
             self, columns=self.COLUMNS, show="headings", selectmode="browse"
         )
@@ -512,15 +504,15 @@ class LauncherWindow(ttk.Frame):
             # tk.W / tk.CENTER はただの str のため Any で受ける。
             anchor: Any = tk.W if key in ("profile", "com") else tk.CENTER
             self.tree.column(key, width=self.WIDTHS[key], anchor=anchor)
-        self.tree.grid(row=1, column=0, sticky=tk.NSEW)
+        self.tree.grid(row=0, column=0, sticky=tk.NSEW)
         self.tree.bind("<Double-1>", self.on_start)
 
         bar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=bar.set)
-        bar.grid(row=1, column=1, sticky=tk.NS)
+        bar.grid(row=0, column=1, sticky=tk.NS)
 
         buttons = ttk.Frame(self)
-        buttons.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        buttons.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
 
         self.start_button = ttk.Button(buttons, text="起動", command=self.on_start)
         self.start_button.pack(side=tk.LEFT)
@@ -541,7 +533,7 @@ class LauncherWindow(ttk.Frame):
         )
 
         self.status = ttk.Label(self, text="")
-        self.status.grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
+        self.status.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
 
     # -- 一覧 ---------------------------------------------------------------
 

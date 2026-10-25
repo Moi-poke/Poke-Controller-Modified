@@ -19,12 +19,13 @@ ROOT = Path(__file__).resolve().parent.parent
 BLOCKLY = ROOT / "SerialController" / "assets" / "blockly"
 
 
-def test_modal_hint_is_static_markup() -> None:
-    """操作案内は常設文言であり、操作フィードバックで消えないこと。"""
+def test_modal_heading_is_static_and_operations_live_in_tooltip() -> None:
+    """切り出し窓の見出しは常設し、操作説明は必要なときだけ吹き出しで見せること。"""
     html = (BLOCKLY / "editor.html").read_text(encoding="utf-8")
-    assert 'id="capmodalhint"' in html
-    assert "枠内ドラッグで移動" in html
-    # 案内はcapModalSetStatusの対象ではないこと（上書きされない）。
+    assert 'id="capmodaltitle"' in html
+    assert "テンプレ画像の切り出し" in html
+    assert 'title="枠内ドラッグで移動' in html
+    # 見出しはcapModalSetStatusの対象ではないこと（上書きされない）。
     assert "capModalSetStatus('ドラッグで新規選択" not in html
 
 

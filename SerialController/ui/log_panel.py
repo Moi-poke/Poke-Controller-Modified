@@ -159,7 +159,7 @@ class LogPanelMixin:
             head, text="消去", width=5, command=self._clear_pins, takefocus=False
         )
         clear_pins.pack(side="right")
-        Tooltip(clear_pins, "下の欄（結果とエラー）だけを消します")
+        Tooltip(clear_pins, "この欄の内容を消します（ログ全体は消えません）")
         self.pinView = LogView(
             pin_frame, empty_hint=_PIN_HINT, on_activate=self._on_pin_activated
         )
@@ -265,11 +265,12 @@ class LogPanelMixin:
                 command=functools.partial(self._log_next_problem, level),
             )
             btn.grid(row=0, column=col, padx=(2, 0))
-            Tooltip(btn, f"{name}の件数。押すと上の欄の次の{name}へ移動します")
+            Tooltip(btn, f"{name}の件数。押すとログの次の{name}へ移動します")
             self.log_problem_buttons[level] = btn
 
         menu_btn = ttk.Menubutton(bar, text="表示", width=5)
         menu_btn.grid(row=0, column=6, padx=(4, 0))
+        Tooltip(menu_btn, "ログの表示方法を切り替える")
         menu_btn["menu"] = self._build_log_view_menu(menu_btn)
 
         # Ctrl+F はどこにフォーカスがあっても検索欄へ。Ctrl+K（コマンド
