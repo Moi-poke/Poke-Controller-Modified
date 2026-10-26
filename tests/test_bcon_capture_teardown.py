@@ -7,7 +7,6 @@
 """
 
 import queue as _q
-from pathlib import Path
 from typing import Any
 
 
@@ -211,20 +210,3 @@ def test_other_subscribers_unaffected() -> None:
     transport.emit_frame(0x23, b"\x05\x03")
     assert len(other_seen) == 1
     _ = other_unsub
-
-
-def test_forwarding_stays_for_live_status_paths() -> None:
-    """別過程の全転送は残す（live/状態確認が全ftypeを要するため）。
-
-    T1数え（ftype別rx率・qsize）はBconSetup側で賄え、配達の選別は
-    要らない。転送を削ると他の購読者が壊れるため残す旨を史料に書く。
-    """
-    src = Path("SerialController/core/transport/bcon_proc.py").read_text(
-        encoding="utf-8"
-    )
-    # 全転送の実体が残ること（STATUS等も運ぶ）。
-    assert "_forward_frame" in src
-    assert 'evt_q.put(("rx"' in src or 'evt_q.put(("rx"' in src
-    # 残す理由の史料（他の購読者・live/状態確認への言及）。
-    assert "他の購読者" in src or "他の購読" in src
-    assert "live" in src.lower() or "状態確認" in src

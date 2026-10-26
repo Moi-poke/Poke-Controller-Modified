@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,17 @@ import pytest
 from ui import preview_clock
 
 _PREVIEW_TEST_ID = "test_native_production_60hz_meets_hard_contract"
+
+
+def _external_temp_available() -> bool:
+    root = Path(tempfile.gettempdir()).resolve()
+    return root != support.REPO_ROOT and support.REPO_ROOT not in root.parents
+
+
+pytestmark = pytest.mark.skipif(
+    not _external_temp_available(),
+    reason="preview FPS evidence requires a temp directory outside the repository",
+)
 
 
 def _set_gated_environment(

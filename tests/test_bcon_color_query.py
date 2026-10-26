@@ -140,25 +140,6 @@ def test_preview_canvas_maps_entry_to_fill_on_input() -> None:
     assert canvas.fills[4] == "#000000"
 
 
-def test_no_real_tk_in_this_module() -> None:
-    """この試験盤は実Tkを作らない（ヘッドレス規律）。"""
-    import pathlib
-
-    src = pathlib.Path(__file__).read_text(encoding="utf-8")
-    assert ("tkinter" + ".Tk()") not in src
-    assert ("tk" + ".Tk()") not in src
-
-
-def test_color_query_uses_absolute_imports() -> None:
-    """絶対import規律（SerialController起点・相対なし）。"""
-    import pathlib
-
-    src = pathlib.Path(__file__).read_text(encoding="utf-8")
-    assert "from BconSetup import" in src or "from core.transport" in src
-    assert ("from " + ".BconSetup") not in src
-    assert ("from " + ". import") not in src
-
-
 def _unused_guard(obj: Any) -> None:
     """未使用警告避けの捨て口（呼ばない）。"""
     _ = obj

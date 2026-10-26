@@ -42,7 +42,7 @@ tasks:
   test:
     desc: pytestによる単体検査（実機不要分、絞り込みは `task test -- -k <expr> -q`）
     cmds:
-      - uv run --frozen pytest tests {{.CLI_ARGS}} -q
+      - uv run --frozen pytest tests {{.CLI_ARGS}} -q -n 4
 
   check:
     desc: 検査＋整形＋型検査＋境界検査（修正モード、直列実行）

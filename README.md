@@ -32,7 +32,7 @@ Blocklyエディタの機能拡充（詳細は [`docs/BLOCKLY_EDITOR.md`](docs/B
 - 内部構造の大整理（[`services/`](SerialController/services)・[`ui/`](SerialController/ui)・[`core/serial/`](SerialController/core/serial)・[`core/transport/`](SerialController/core/transport) に分割、[`Window.py`](SerialController/Window.py) は組立専用に）
 - Blocklyエディタ・音声対応・シリアルモニタ・スクリプトzip配布・表示フィルタの追加
 - シリアル通信の堅牢化とPico連携（有線／無線）、並列起動、起動高速化
-- Python 3.12以降が必要に（3.12.10固定）
+- Python 3.12以降が必要に（当時 3.12.10 固定）
 - 自作スクリプト（`Commands.*`）と `settings.ini` の形式はそのまま使えます
 - 内部整理などの実装にはAIによるコーディング補助を利用しています
 
@@ -56,7 +56,7 @@ Blocklyエディタの機能拡充（詳細は [`docs/BLOCKLY_EDITOR.md`](docs/B
 - logエリアへのテキスト出力をqueueを用いた方式に変更。若干高速化
 - スクリプト実行中の例外発生時の出力を変更
 
-Python 3.12以降が必要です（3.12.10固定。`.python-version` 参照）。
+Python 3.12以降が必要です（3.12.15固定。`.python-version` 参照）。
 環境構築・起動の手順は下の [Installation](#installation) を見てください。
 
 ### ~ver3.0の追加・変更点
@@ -138,10 +138,12 @@ Python 3.12以降が必要です（3.12.10固定。`.python-version` 参照）�
 ### 一般ユーザー
 
 uvで管理しています。[`pyproject.toml`](pyproject.toml) + [`uv.lock`](uv.lock) が正本です（`requirements.txt` はありません）。
-Python は 3.12.10 固定（`.python-version`）としており、`uv sync` が用意します。
+Python は 3.12.15 固定（`.python-version`）としており、`uv sync` が用意します。
+
+uv は 0.13.5 以上が必要です（`pyproject.toml` の `required-version` で検査）。
 
 ```cmd
-pip install uv
+pip install "uv>=0.13.5"
 uv sync
 .\.venv\Scripts\activate
 python .\SerialController\Window.py

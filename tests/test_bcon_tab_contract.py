@@ -6,7 +6,6 @@ Tk は作らず、偽の Notebook と偽の BconSetup で出し入れの順序�
 後始末だけを見る。実機・実 Tk の見た目は手動 QA で確かめる。
 """
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -384,20 +383,38 @@ def test_Given_別窓モードのBconSetup_When_送り先を引く_Then_渡さ�
     assert obj._current_sender() is sender
 
 
-# -- 配線（源の静的検査）--------------------------------------------------
+def test_Menubar_のBcon設定はタブを選ぶ(capsys: pytest.CaptureFixture[str]) -> None:
+    from Menubar import PokeController_Menubar
+
+    calls: list[bool] = []
+
+    class _App:
+        def select_bcon_tab(self) -> bool:
+            calls.append(True)
+            return True
+
+    obj: Any = PokeController_Menubar.__new__(PokeController_Menubar)
+    obj.app = _App()
+
+    obj.OpenBconSetup()
+
+    assert calls == [True]
+    assert capsys.readouterr().out == ""
 
 
-def test_Window_は_BconPanelMixin_を混ぜ_シリアルとコントローラの間に枠を作る() -> None:
-    src = Path("SerialController/Window.py").read_text(encoding="utf-8")
-    assert "from ui.bcon_panel import BconPanelMixin" in src
-    assert "BconPanelMixin," in src
-    assert "self._build_bcon_tab()" in src
-    # 初期状態でタブを足さない（bcon 選択時だけ _refresh_bcon_tab が足す）
-    assert "add(self.tab_bcon" not in src
+def test_Menubar_のBcon設定はタブが無いとき理由を出す(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from Menubar import PokeController_Menubar
 
+    class _App:
+        def select_bcon_tab(self) -> bool:
+            return False
 
-def test_Menubar_のBcon設定は_別窓を作らずタブを選ぶ() -> None:
-    src = Path("SerialController/Menubar.py").read_text(encoding="utf-8")
-    body = src[src.index("def OpenBconSetup") : src.index("def OpenSerialMonitor")]
-    assert "select_bcon_tab" in body
-    assert " BconSetup(" not in body  # 別窓の生成は残さない
+    obj: Any = PokeController_Menubar.__new__(PokeController_Menubar)
+    obj.app = _App()
+
+    obj.OpenBconSetup()
+
+    out = capsys.readouterr().out
+    assert "switch-bcon" in out

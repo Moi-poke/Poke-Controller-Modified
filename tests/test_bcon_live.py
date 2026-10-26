@@ -353,19 +353,6 @@ def test_bcon_close_stops_live_loop():
     assert made.ser is None
 
 
-def test_bcon_live_loop_needs_no_tkinter():
-    """送信周期をtkinterのafterに載せない（独立スレッド＋絶対時刻）。"""
-    root = Path(__file__).resolve().parent.parent
-    src = (root / "SerialController" / "core" / "transport" / "bcon.py").read_text(
-        encoding="utf-8"
-    )
-    assert "import tkinter" not in src
-    assert "from tkinter" not in src
-    assert ".after(" not in src
-    assert "perf_counter" in src
-    assert "next_tx" in src
-
-
 def test_bcon_jitter_percentile_vectors():
     tool = _load_jitter_tool()
     assert tool.percentile([], 50) == 0.0

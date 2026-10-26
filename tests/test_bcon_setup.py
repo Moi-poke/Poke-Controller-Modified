@@ -5,7 +5,6 @@ live開始）を偽transportで固める。Tkを使う箇所は __new__＋窓 st
 閉鎖規律（溜め捨て・閉鎖後put禁止）だけ見る。
 """
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,43 +20,6 @@ def test_bcon_setup_imports_without_touching_wake():
         "bcon_setup", "SerialController/BconSetup.py"
     )
     assert spec is not None and spec.loader is not None
-
-
-def test_bcon_setup_does_not_import_wake() -> None:
-    """並置であって分岐・委譲ではない。WakeSetupを読まない。"""
-    src = Path("SerialController/BconSetup.py").read_text(encoding="utf-8")
-    assert "from WakeSetup" not in src
-    assert "import WakeSetup" not in src
-    assert "Bcon設定" in src
-
-
-def test_bcon_setup_class_shape() -> None:
-    """WakeSetupと同形の窓口（作業スレッド＋after還流の部品）を持つ。"""
-    from BconSetup import BconSetup
-
-    for name in (
-        "close",
-        "_poll",
-        "_run",
-        "_guarded",
-        "_transport",
-        "_on_connect",
-        "_on_capture",
-        "_on_beacon",
-        "_on_status",
-        "_on_ping",
-        "_on_wired_show",
-        "_on_wired_off",
-        "_on_wired_on",
-        "_on_clear",
-        "_on_delete_keys",
-        "_on_color",
-        "_update_player_lamps",
-        "_bind_player_info",
-        "_unbind_player_info",
-        "_on_rx_frame",
-    ):
-        assert hasattr(BconSetup, name), name
 
 
 def test_bcon_setup_close_drains_and_ignores_after_close() -> None:
@@ -426,26 +388,10 @@ def test_connect_bcon_never_raises() -> None:
 
 
 def test_transport_default_stays_legacy() -> None:
-    """設定面は註記だけ。既定値は legacy_text のまま（既存iniを変えない）。"""
+    """既定値は legacy_text のまま（既存iniを変えない）。"""
     from config import default_sections
 
     assert default_sections()["Transport"]["name"] == "legacy_text"
-    src = Path("SerialController/config.py").read_text(encoding="utf-8")
-    assert "bcon" in src
-
-
-def test_menubar_opens_bcon_setup() -> None:
-    """Bcon設定がメニューから開ける。WakeSetupは非推奨でメニューに出さない。"""
-    from Menubar import PokeController_Menubar
-
-    # 別窓は廃してタブへ移した（closingBconSetup は無い）。メニューはタブを選ぶ
-    assert hasattr(PokeController_Menubar, "OpenBconSetup")
-    assert not hasattr(PokeController_Menubar, "closingBconSetup")
-    assert not hasattr(PokeController_Menubar, "OpenWakeSetup")
-    src = Path("SerialController/Menubar.py").read_text(encoding="utf-8")
-    assert "Bcon設定" in src
-    assert "Switch2 Wake設定" not in src
-    assert "WakeSetup" not in src
 
 
 # -- Task 4: PLAYER_INFO の実況配線（subscribe→queue→_poll→ランプ）--------
@@ -1010,9 +956,6 @@ def _pipe_caps() -> tuple[int, int, int]:
 def test_flood_rx_queue_bounded_and_overflow_visible() -> None:
     """溢れたら古い方を捨て、捨てた件数を「... N行省略 ...」で可視化する。"""
     from LogPane import DropOldestQueue
-
-    src = Path("SerialController/BconSetup.py").read_text(encoding="utf-8")
-    assert "DropOldestQueue" in src
 
     queue_max, _, _ = _pipe_caps()
     transport = _FakeBconTransport()

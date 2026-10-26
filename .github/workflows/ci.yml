@@ -13,11 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.13.5"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12.10"
+          python-version: "3.12.15"
       - name: Sync deps
         run: uv sync --frozen
       - name: ruff check
@@ -31,4 +33,4 @@ jobs:
       - name: userapi
         run: uv run --frozen python tools/check_user_api.py
       - name: pytest
-        run: uv run --frozen pytest tests -q
+        run: uv run --frozen pytest tests -q -n 4

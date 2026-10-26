@@ -29,6 +29,7 @@ dev = [
     "mypy>=1.19.0",
     "pygubu-designer>=0.40.2",
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.9.7",
     "types-deprecated>=1.2.15.20250304",
     "types-pyyaml>=6.0.12.20250326",
@@ -51,3 +52,6 @@ warn_unreachable = true
 warn_unused_configs = true
 pretty = true
 ignore_missing_imports = true
+
+[tool.uv]
+required-version = ">=0.13.5"

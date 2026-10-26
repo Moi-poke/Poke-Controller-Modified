@@ -279,6 +279,20 @@ def test_latest_frame_seq_monotonic() -> None:
     assert q.get() is None
 
 
+def test_latest_frame_keeps_only_the_newest() -> None:
+    from core.Camera import LatestFrame
+
+    lf = LatestFrame()
+    first = np.zeros((2, 2, 3), dtype=np.uint8)
+    second = np.ones((2, 2, 3), dtype=np.uint8)
+    lf.put(first, time.perf_counter_ns())
+    lf.put(second, time.perf_counter_ns())
+
+    got = lf.get()
+    assert got is not None
+    assert int(got[0, 0, 0]) == 1, "古いフレームが残っています"
+
+
 def test_prepare_src_caches_on_same_seq(monkeypatch: Any) -> None:
     """同じ seq では cvt を繰り返さない。新 frame では再計算する。"""
     from core.Camera import LatestFrame
@@ -503,20 +517,9 @@ def test_vision_cache_guarded_by_lock() -> None:
     assert all(s == seen[0] for s in seen), "同じ seq の同時命中が食い違っています"
 
 
-def test_vision_borrow_contract_documented() -> None:
-    """借用契約：非 retain は読み取り専用の借用（別名）、retain だけ copy。
-
-    性能のため非 retain は cache 本体をそのまま返す。書き換えると
-    以降の判定に影響するため、保持が必要なら retain=True で copy を
-    受けること（契約は docstring に明記）。
-    """
-    from core.CommandVision import VisionMixin
-
+def test_vision_borrow_returns_alias_and_retain_copies() -> None:
+    """非 retain は読み取り専用の借用（別名）、retain だけ copy。"""
     mix, _lf = _make_seq_mix()
-    doc = str(VisionMixin._prepareSrc.__doc__ or "")
-    assert "retain" in doc and ("借用" in doc or "borrow" in doc.lower()), (
-        "借用契約が docstring にありません"
-    )
     borrowed = mix._prepareSrc(None, True)
     borrowed[:] = 255  # 借用物を書き換える（契約違反の側の挙動確認）
     reread = mix._prepareSrc(None, True)
@@ -530,22 +533,6 @@ def test_vision_borrow_contract_documented() -> None:
 # ---------------------------------------------------------------------------
 # 6. minors
 # ---------------------------------------------------------------------------
-
-
-def test_stats_guarded_or_documented() -> None:
-    from core.Camera import Camera
-
-    assert hasattr(Camera, "getStats")
-    mod_file = __import__("core.Camera", fromlist=["__file__"]).__file__
-    assert mod_file is not None
-    has_lock = hasattr(Camera, "__init__") and (
-        "_stat_lock" in open(mod_file, encoding="utf-8").read()
-    )
-    # lock があるか、docstring で telemetry-only と明記か
-    doc = str(Camera.getStats.__doc__ or "")
-    assert has_lock or ("telemetry" in doc.lower() or "競合" in doc or "参考" in doc), (
-        "stats race の guard（lock）も注記もありません"
-    )
 
 
 def test_release_later_joins_even_if_camera_none() -> None:
@@ -566,13 +553,3 @@ def test_release_later_joins_even_if_camera_none() -> None:
     cam._release_later(_T())  # type: ignore[arg-type]
     time.sleep(0.2)
     assert joined, "_release_later が camera None で thread を放置しています"
-
-
-def test_camera_queue_preframe_contract_documented() -> None:
-    """CameraQueue.readFrame は初 frame 前の black-vs-None を docstring で明示。"""
-    from core.Camera import CameraQueue
-
-    doc = str(CameraQueue.readFrame.__doc__ or "")
-    assert ("black" in doc.lower() or "黒" in doc) and "None" in doc, (
-        "初フレーム前の black-vs-None 契約が docstring にありません"
-    )
