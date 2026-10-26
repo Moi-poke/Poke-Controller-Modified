@@ -144,6 +144,9 @@ SerialController/Template/pokopia/
 # Pico 用ファームの作業場（専用品は別 repo pico-wakeCon。手元専用）
 pico_firmware/
 
+# GUI probe screenshots (gui-probe skill)
+.tmp/gui-probe/
+
 # 検証スクリプト・測定残渣・実行時デバッグ出力（コミット不要）
 SerialController/verify_phase*.py
 SerialController/Commands/PythonCommands/verify_*.py

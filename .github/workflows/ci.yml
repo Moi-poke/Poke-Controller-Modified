@@ -32,5 +32,7 @@ jobs:
         run: uv run --frozen python tools/check_core.py
       - name: userapi
         run: uv run --frozen python tools/check_user_api.py
+      - name: docs
+        run: uv run --frozen python tools/check_docs.py
       - name: pytest
         run: uv run --frozen pytest tests -q -n 4

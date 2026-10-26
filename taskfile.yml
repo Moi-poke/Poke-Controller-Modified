@@ -39,6 +39,11 @@ tasks:
     cmds:
       - uv run --frozen python tools/check_user_api.py
 
+  docs:
+    desc: 指示書・設定の参照切れ検査（AGENTS.md / README / task名 / opencode.json）
+    cmds:
+      - uv run --frozen python tools/check_docs.py
+
   test:
     desc: pytestによる単体検査（実機不要分、絞り込みは `task test -- -k <expr> -q`）
     cmds:
@@ -54,10 +59,11 @@ tasks:
       - task: typecheck
       - task: bounds
       - task: userapi
+      - task: docs
       - task: test
 
   ci:
-    desc: 検査＋整形確認＋型検査＋境界検査＋公開API面＋単体検査（修正なし・CI用、並列実行）
+    desc: 検査＋整形確認＋型検査＋境界検査＋公開API面＋参照検査＋単体検査（修正なし・CI用、並列実行）
     deps:
       - lint
       - task: format
@@ -66,6 +72,7 @@ tasks:
       - typecheck
       - bounds
       - userapi
+      - docs
       - test
 
   app:

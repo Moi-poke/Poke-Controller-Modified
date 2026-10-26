@@ -12,10 +12,10 @@ python .\SerialController\Window.py
 ```
 
 - [`uv.lock`](uv.lock) + [`pyproject.toml`](pyproject.toml) are the source of truth for deps (`requirements.txt` was deleted; install flow is in README).
-- Task runner: `task <name>` (needs `winget install Task.Task` once + `task setup_dev` for hooks). Without it, run the `uv run ...` lines inside [`taskfile.yml`](taskfile.yml) directly. Tasks: `sync` / `lint` / `format` / `typecheck` / `bounds` / `userapi` / `test` / `check` (fix mode) / `ci` (no-touch mode) / `app` / `launcher` / `clean`.
-- Gate: `ruff check` + `ruff format --check` + `mypy` + `bounds` + `userapi` + `test` must all pass (`task ci`). The tree is fully typed; don't add new type errors. tkinter/`cv2` stub friction is handled with `Any`-boundaries and a few commented `type: ignore`s — prefer those over restructuring.
+- Task runner: `task <name>` (needs `winget install Task.Task` once + `task setup_dev` for hooks). Without it, run the `uv run ...` lines inside [`taskfile.yml`](taskfile.yml) directly. Tasks: `sync` / `lint` / `format` / `typecheck` / `bounds` / `userapi` / `docs` / `test` / `check` (fix mode) / `ci` (no-touch mode) / `app` / `launcher` / `clean`.
+- Gate: `ruff check` + `ruff format --check` + `mypy` + `bounds` + `userapi` + `docs` + `test` must all pass (`task ci`). The tree is fully typed; don't add new type errors. tkinter/`cv2` stub friction is handled with `Any`-boundaries and a few commented `type: ignore`s — prefer those over restructuring.
 - Multi-instance: `python .\SerialController\launcher.py` (profile picker) or `python .\SerialController\Window.py --profile <name> [--transport <name>]`. Each profile gets `SerialController/settings.<name>.ini` (auto-created with defaults) and a `pokecon[.profile].lock` file — never commit/remove locks manually.
-- Tests in [`tests/`](tests) run via `task test`; CI (`.github/workflows/ci.yml`) runs `task ci` equivalent. Verify with the gate above + `python -m py_compile <file>` and, if possible, a real GUI run. Full verification needs hardware (COM-port microcontroller + capture board), so most changes can't be exercised headless — say so in the summary.
+- Tests in [`tests/`](tests) run via `task test`; CI (`.github/workflows/ci.yml`) runs `task ci` equivalent. Verify with the gate above + `python -m py_compile <file>` and, if possible, a real GUI run. Full verification needs hardware (COM-port microcontroller + capture board), so most changes can't be exercised headless — say so in the summary. `task docs` checks links, `task` names, and `opencode.json` prompt paths in this file and README. Never report a check you did not run as passed; say "not run" and why.
 
 ## Architecture ([`SerialController/`](SerialController) is the app; details in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md))
 
@@ -32,32 +32,27 @@ python .\SerialController\Window.py
 
 ## Conventions / gotchas
 
-- Absolute imports as if [`SerialController/`](SerialController) is on `sys.path` (e.g. `from Commands.Keys import Button`), never relative imports. 4-space indent. Comments and user-visible strings are Japanese — match that.
-- Python floor is 3.12 (`requires-python >=3.12`): `X | None`, builtin generics, `super()`, `type` statements, `except*`, and `Self` are fine. Ruff enforces `I` + `UP006/007/008/035`.
+- Absolute imports as if [`SerialController/`](SerialController) is on `sys.path` (e.g. `from Commands.Keys import Button`), never relative imports. Comments and user-visible strings are Japanese — match that.
+- Python floor is 3.12 (`requires-python >=3.12`): `X | None`, builtin generics, `super()`, `type` statements, `except*`, and `Self` are fine. Style and typing are enforced by ruff/mypy configured in [`pyproject.toml`](pyproject.toml) — don't restate those rules here.
 - Python version policy: floor = oldest version with >1 year of EOL runway left (review each October); pin = latest patch of a stable minor. Current pin: 3.12.15 (3.12 EOL 2028-10; 3.12.16 is released but not yet available as a uv-managed build). Next review Oct 2027: prefer 3.14 over 3.13 (3.13 is security-only since 2026-10; 3.14 on Windows uses Tcl/Tk 9.0.4, so GUI/hardware verification is required; pythonnet 3.2.1 supports 3.14; free-threading is out until further notice).
 - Windows-only deps: `pythonnet`, [`DirectShowLib/`](DirectShowLib), `timeBeginPeriod` in `PythonCommandBase`. Don't add POSIX-only assumptions; `os.name == "nt"` branches are load-bearing. mac/Linux users exist: `Transport.open` posix/Darwin branches and other OS-dependent paths must at least fail gracefully without crashing (return False + log, never raise on bad baud/port). `chmod 0o600` in `Settings` is posix-only guarded.
 - New connection method (beyond the built-in `legacy_text` / `pico_uart` / `switch-bcon` / `switch-bcon-proc`): add a `Transport` subclass + `register_transport(name, factory, description)`. Unknown `capability` names are accepted (treated as legacy-equivalent, sync `send_row`, no live worker); worker-backed methods add their name to `Transport.LIVE_WORKER_CAPABILITIES`. `open/openSerial` accept `**extra` for future params (VID/PID, IP, etc.). `WakeLink` uses `get_raw_serial()/acquire_write_lock()` so non-serial transports degrade to fallback instead of crashing. Logging policy: file (`logger`) for almost everything, GUI (`print` → LogPane) only for critical user-actionable failures (open failure, write timeout, SerialException, resolve/create fallback).
 - `Sender` send interval (`Transport.MIN_SEND_INTERVAL`) is derived from baud rate with a 0.02s cap — no flow control on the wire, so don't lower it blindly.
 - `export_py.py` was deleted (unused). Root `makefile` is the legacy AVR LUFA firmware. The old `pico_firmware/` (underscore) was deleted; current `pico-firmware/` (hyphen) is a new design workspace. The protocol reference is the separate repo `Moi-poke/pico-wakeCon`.
 - pico-wakeCon wire compat (verified against its `main` branch, no hardware): UART0 115200 8N1 + USB CDC, CRLF, `S <6 hex>` inputs, `O <4 hex> → color ...` replies, 200ms watchdog (keepalive <200ms required), `N` is sent without waiting for a reply. Pico UART (legacy text) connections must use 115200, not the 9600 default; BCON uses 1 Mbps.
+- `settings*.ini` は**アプリ終了時に保存**される。起動中に ini を手編集すると終了時に旧値で上書きされるので、編集はアプリを閉じてから行う。
+
+## Working rules
+
+- This file is the entry point. Keep it to project-wide rules and load-bearing gotchas; put long subsystem detail in `docs/` (say when and why to read it) or in a skill.
+- When the same mistake happens twice, fix the harness — this file or a check — not just the current change. If two fixes for the same cause fail, stop and report the cause and what is missing.
+- For an independent second pass, use the read-only [`.opencode/agents/project-reviewer.md`](.opencode/agents/project-reviewer.md). It cannot edit or run commands, so treat its findings as hypotheses to verify.
+- For real-screen checks, use [`.opencode/skills/gui-probe/SKILL.md`](.opencode/skills/gui-probe/SKILL.md) or the read-only [`.opencode/agents/gui-verifier.md`](.opencode/agents/gui-verifier.md).
 
 ## Orca 作業役（worker）
 
-Orca の統括役から `docs/tasks/Txx.md` 指示書を受け取って動く場合の追加規律（通常開発では無視してよい）。
+`docs/tasks/Txx.md` 指示書を受けて動く場合だけ、[`docs/agents/orca-worker.md`](docs/agents/orca-worker.md) の追加規律に従う。
 
-- 指示書の「編集してよいファイル」以外は変更しない。迷ったら推測で実装せず、Orca の escalation（統括役への質問）で止める。
-- 指示書を受け取ったら、まず `/goal` に完了条件を設定する（goal プラグインは `opencode.json` の `plugins` で有効化済み）。
-- 完了条件のコマンド（`task ci` 等）がすべて成功するまで完了にしない。実機が必要で検証できない場合は `blocked` にして理由を書く。
-- 完了したら変更をコミットし（履歴の書き換え・未コミット作業の破棄は禁止）、`worker_done` を必ず1回送る（`--outcome succeeded|failed`、`--files-modified`、`--report-path` 付き、要約3文＋`path:line` 証拠）。
-- 既定エージェント（`build`）のまま作業し、`coordinator` 等へ切り替えない。worktree・ブランチの作成は Orca に任せ、自分では作らない。
+## IMU (ジャイロ)
 
-## IMU (ジャイロ) path — 2026-10 追加
-
-- PC→Pico は `T_IMU_SAMPLE`(0x04/LEN12, 6×int16-LE = ax,ay,az,gx,gy,gz) を5ms間隔。PCの0x30は1レポートに5ms間隔の3サンプルを持つので、リーダーは3スロットを順に供給し（`read_next()`）、FWが直近3件を保持して0x30のスロット0..2へ古い順に載せる。**0x30の送出周期は15ms固定**（これより速いとコンソールがジャイロを過積分する。`jyapayne/switch-pico` の実装註記）。
-- **0x40の引数はIMU形式の選択**（実測: FW 4.51→`02`=圧縮クォータニオン、3.72→`01`=RAW）。FWは引数を`imu_mode`として保持し、1ならRAW 36B、2なら NS-LIB-HID `ns_mode_2_s` 同形の36B（accel y,x,z＋最大成分基準の30bitクォータニオン＋11bit ms）を返す。`3`は未解明として仮定しない。**現行の実機検証は 3.72＋RAW**（Mario Tennis / Splatoonで確認）。4.51を名乗る場合はmode2のクォータニオン経路が必須。
-- 有線0x30のIMUは既定でrole0のみ（`usb_imu_wired_role_ok`）。role1/2で有線ジャイロを試す診断は `JOY_WIRED_IMU_ALL=1`。FW版のA/Bは `JOY_USB_FW_JOY_OLD=1`（Joy役を3.72に）。
-- role2の軸写像はFW側で固定（`k_joy_negate_axis`: 加速度・ジャイロともY,Z反転）。SPI校正値の回転だけ `JOY_SPI_CAL_ROT`（0=なし/1=YZ/4=XZ）で切り分けられる。PC側 `[IMU] accel_*/gyro_axes・signs` は恒等が前提（HID直結でも適用される）。
-- `[IMU] gyro_dead_dps` は送出直前のジャイロ各軸に効く（`core.imu_wave.apply_gyro_deadband`）。`gyro_scale` は実測用トリム。**加工後の値を返さないと不感帯が送出に効かない**（過去に実際に踏んだ）。
-- HIDリーダー (`core.nintendo_hid`) はプロセス共有・読み取り専用スレッドが最新0x30を保持する。`ImuPanel` は停止時に共有ハンドルを閉じない。読取失敗が続いたら自分で閉じ、パッド/IMU側が再オープンする（UF2書き込みでUSBが再列挙されるため必須）。
-- IMUパネルの入力源は通常 **「パッドAPI」（SDL）／「HID直結」** の2つ。`sine`/`step`/`rest`/`manual`、反転・感度・詳細表示は**デバッグ**時だけ出す。ボタンは「開始/停止」。
-- `settings*.ini` は**アプリ終了時に保存**される。起動中に ini を手編集すると終了時に旧値で上書きされるので、編集はアプリを閉じてから行う。
+IMU・HID・ジャイロ・0x30/0x40 に触るときは [`docs/IMU.md`](docs/IMU.md) を読む。
