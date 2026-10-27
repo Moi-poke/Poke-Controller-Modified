@@ -146,6 +146,28 @@ def test_generate_returns_python_from_workspace() -> None:
 
 
 @NEEDS_NODE
+def test_generate_stick_both_emits_left_and_right() -> None:
+    workspace = _workspace(
+        {
+            "type": "pokecon_stick",
+            "fields": {
+                "STICK": "BOTH",
+                "PAD": "90,100",
+                "ANGLE": 90,
+                "DURATION": 0.2,
+                "WAIT": 0.1,
+            },
+        }
+    )
+    result = blockly_headless.generate(workspace, BLOCKLY)
+    assert result.ok, result.errors
+    assert result.data is not None
+    code = result.data["code"]
+    assert "self.press([Direction(Stick.LEFT" in code
+    assert "Direction(Stick.RIGHT" in code
+
+
+@NEEDS_NODE
 def test_generate_reports_unknown_block_without_crashing() -> None:
     workspace = _workspace({"type": "no_such_block", "fields": {}})
     result = blockly_headless.generate(workspace, BLOCKLY)

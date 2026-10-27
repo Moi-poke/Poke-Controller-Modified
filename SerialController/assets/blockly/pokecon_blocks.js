@@ -2088,17 +2088,31 @@
     } catch (e) {
       rawStick = "";
     }
-    var stick = rawStick === "RIGHT" ? "RIGHT" : "LEFT";
+    // L+R は左右同時。press は Direction の配列を受け取れるため、
+    // 片側だけのときは従来どおり単体、両側のときだけ配列にする。
+    var sticks =
+      rawStick === "BOTH"
+        ? ["LEFT", "RIGHT"]
+        : [rawStick === "RIGHT" ? "RIGHT" : "LEFT"];
+    var directions = sticks
+      .map(function (side) {
+        return (
+          "Direction(Stick." +
+          side +
+          ", " +
+          v.angle +
+          ", magnification=" +
+          v.mag / 100 +
+          ")"
+        );
+      })
+      .join(", ");
+    var target = sticks.length > 1 ? "[" + directions + "]" : directions;
     var dur = block.getFieldValue("DURATION");
     var wait = block.getFieldValue("WAIT");
     return (
-      "self.press(Direction(Stick." +
-      stick +
-      ", " +
-      v.angle +
-      ", magnification=" +
-      v.mag / 100 +
-      ")" +
+      "self.press(" +
+      target +
       ", duration=" +
       dur +
       ", wait=" +
