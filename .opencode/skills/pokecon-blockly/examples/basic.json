@@ -1,0 +1,12 @@
+{
+  "stem": "basic",
+  "name": "基本の操作",
+  "tags": ["blockly", "example", "basic"],
+  "do": [
+    {"press": "A", "duration": 0.1, "wait": 0.5},
+    {"wait": 1},
+    {"repeat": 3, "do": [{"press": "B"}]},
+    {"print": "完了"},
+    {"finish": true}
+  ]
+}

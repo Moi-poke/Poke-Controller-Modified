@@ -1,0 +1,45 @@
+{
+  "stem": "flow",
+  "name": "変数と分岐の例",
+  "tags": ["blockly", "example", "flow"],
+  "do": [
+    {"set": "count", "to": 0},
+    {"change": "count", "by": 1},
+    {
+      "while": {
+        "type": "logic_compare",
+        "fields": {"OP": "LT"},
+        "inputs": {"A": {"var": "count"}, "B": 10}
+      },
+      "do": [
+        {"change": "count", "by": 1},
+        {
+          "if": {
+            "type": "logic_compare",
+            "fields": {"OP": "EQ"},
+            "inputs": {"A": {"var": "count"}, "B": 3}
+          },
+          "do": [{"print": "3になりました"}],
+          "else": [{"print": "..."}]
+        },
+        {
+          "if": {
+            "type": "logic_compare",
+            "fields": {"OP": "GT"},
+            "inputs": {"A": {"var": "count"}, "B": 8}
+          },
+          "do": [{"break": true}]
+        }
+      ]
+    },
+    {
+      "if": {
+        "type": "logic_compare",
+        "fields": {"OP": "GTE"},
+        "inputs": {"A": {"var": "count"}, "B": 8}
+      },
+      "do": [{"finish": true}]
+    },
+    {"print": {"var": "count"}}
+  ]
+}

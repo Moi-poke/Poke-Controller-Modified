@@ -1,0 +1,40 @@
+{
+  "stem": "vision",
+  "name": "画像認識の例",
+  "tags": ["blockly", "example", "vision"],
+  "do": [
+    {
+      "type": "pokecon_vision_wait_appear",
+      "fields": {
+        "TEMPLATE": "controller_check/btn_a.png",
+        "TIMEOUT": 10,
+        "THRESHOLD": 0.8,
+        "USE_GRAY": true
+      }
+    },
+    {
+      "type": "pokecon_vision_press_until",
+      "fields": {
+        "TEMPLATE": "controller_check/btn_b.png",
+        "TARGET": "Button.A",
+        "TIMEOUT": 5,
+        "CROP": "0,0,1280,720"
+      }
+    },
+    {
+      "type": "pokecon_vision_wait_count",
+      "fields": {
+        "TEMPLATE": "controller_check/btn_a.png",
+        "COUNT": 2,
+        "TIMEOUT": 10
+      }
+    },
+    {
+      "print": {
+        "type": "pokecon_vision_count",
+        "fields": {"TEMPLATE": "controller_check/btn_a.png"}
+      }
+    },
+    {"screenshot": true}
+  ]
+}

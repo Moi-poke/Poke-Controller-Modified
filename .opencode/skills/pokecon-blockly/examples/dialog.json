@@ -1,0 +1,42 @@
+{
+  "stem": "dialog",
+  "name": "設定入力の例",
+  "tags": ["blockly", "example", "dialog"],
+  "do": [
+    {
+      "dialog_choice": {
+        "var": "mode",
+        "title": "モード",
+        "label": "選ぶ",
+        "options": ["A", "B"],
+        "default": "A"
+      }
+    },
+    {
+      "dialog_number": {
+        "var": "count",
+        "title": "回数",
+        "label": "回数",
+        "min": 1,
+        "max": 3,
+        "default": 2
+      }
+    },
+    {
+      "dialog_check": {
+        "var": "confirm",
+        "title": "確認",
+        "label": "実行する",
+        "default": true
+      }
+    },
+    {
+      "if": {"var": "confirm"},
+      "do": [
+        {"repeat": {"var": "count"}, "do": [{"press": "A"}]},
+        {"print": {"var": "mode"}}
+      ],
+      "else": [{"print": "中止しました"}]
+    }
+  ]
+}

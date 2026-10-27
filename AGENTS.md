@@ -48,6 +48,7 @@ python .\SerialController\Window.py
 - When the same mistake happens twice, fix the harness — this file or a check — not just the current change. If two fixes for the same cause fail, stop and report the cause and what is missing.
 - For an independent second pass, use the read-only [`.opencode/agents/project-reviewer.md`](.opencode/agents/project-reviewer.md). It cannot edit or run commands, so treat its findings as hypotheses to verify.
 - For real-screen checks, use [`.opencode/skills/gui-probe/SKILL.md`](.opencode/skills/gui-probe/SKILL.md) or the read-only [`.opencode/agents/gui-verifier.md`](.opencode/agents/gui-verifier.md).
+- Blockly を自動で組むときは [`.opencode/skills/pokecon-blockly/SKILL.md`](.opencode/skills/pokecon-blockly/SKILL.md) と [`tools/blockly_agent.py`](tools/blockly_agent.py) を使う（仕様 → `check` → `build --write`。`.py` を直接書かない）。
 
 ## Orca 作業役（worker）
 

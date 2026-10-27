@@ -1,0 +1,28 @@
+{
+  "stem": "audio",
+  "name": "音検知の例",
+  "tags": ["blockly", "example", "audio"],
+  "do": [
+    {
+      "type": "pokecon_audio_wait_tone",
+      "fields": {
+        "LO": 3000,
+        "HI": 3200,
+        "THRESH": 1000000,
+        "TIMEOUT": 10
+      }
+    },
+    {
+      "if": {
+        "type": "pokecon_audio_tone_contains",
+        "fields": {
+          "LO": 3000,
+          "HI": 3200,
+          "THRESH": 1000000
+        }
+      },
+      "do": [{"finish": true}],
+      "else": [{"print": "まだ音が鳴っていません"}]
+    }
+  ]
+}

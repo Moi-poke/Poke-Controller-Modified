@@ -71,6 +71,19 @@
 - タグ： プログラム欄のタグ（カンマ区切り、既定 `blockly`）が `TAGS = [...]` として出る。一覧の絞り込み・タグ編集と連動する（GUIのタグ編集が最優先）。
 - 配布： zipには `.py` と同名 `.blockly.json` が対で入る（あれば再編集可）。manifestはv0相当を保つ（`format` 欄は将来の判別用に予約、現行は無くてもv0扱い）。
 
+## AIエージェントから組む
+
+- スキル：[`.opencode/skills/pokecon-blockly/SKILL.md`](../.opencode/skills/pokecon-blockly/SKILL.md)。コンパクト仕様から `.blockly.json` + `.py` の対を作る手順・カタログ・作例を同梱する。
+- CLI：`uv run --frozen python tools/blockly_agent.py catalog|check|build|render ...`。
+  - `catalog` はブロックの fields / inputs / 選択肢を出し、`--format markdown` で [`references/blocks.md`](../.opencode/skills/pokecon-blockly/references/blocks.md)（生成物。手で編集しない）を作れる。
+  - `check` は仕様を組み立てて保存前検査を通す（0=成功、1=検査失敗、2=使い方/node 不在）。`--json` の `code` で生成 Python を確認できる。
+  - `build` は workspace JSON を出し、`--write` で `.blockly.json` と `.py` の対を保存する。`--write` では保存名（`stem`）が必要。
+  - `render` は保存済み `.blockly.json` から Python を生成して表示する。
+- 生成には `node`（Blockly のヘッドレス生成）が必要。アプリ本体・カメラ・シリアル実機は不要。実機での試し実行・記録は本体起動中だけ行う。
+- 保存物はブラウザ編集と同じ `${保存名}.py` + `${保存名}.blockly.json` の対。`.py` は直接書かず、仕様 → `check` → `build --write` の順に通す。`pokecon.pySha256` の記録・手編集検出も共通なので、既存保存物を上書きするときはユーザーの意図を先に確認する。
+- ブラウザ編集は従来どおり使える（AI 生成物を開いて直すこともできる）。画像は `Template/` の実在名だけを使い、`TEMPLATE` は空にしない。`CROP` は `x1,y1,x2,y2`、`THRESHOLD` は0〜1。
+- ハードウェアが無い環境では `check` / `render` までを検証し、実画面・実機は未確認と明記する。画面確認は [`.opencode/skills/gui-probe/SKILL.md`](../.opencode/skills/gui-probe/SKILL.md) か Blockly エディタに委ねる。
+
 ## サンプル
 
 `Commands/PythonCommands/BlocklySample*.py`（同名 `.blockly.json` 付き11種：基本・スティック・サブルーチン・画像認識・保持連打・変数フロー・出力・音検知・設定入力・時間制限・画像音声）。そのまま実行・再編集できる。画像認識系のテンプレは `controller_check/btn_a.png` を使う。音検知はAudio欄の入力が必要。

@@ -1,0 +1,28 @@
+{
+  "stem": "subroutine",
+  "name": "サブルーチンの例",
+  "tags": ["blockly", "example", "subroutine"],
+  "do": [
+    {"call": "countdown", "args": [3]},
+    {"print": {"call_value": "add", "args": [1, 2]}}
+  ],
+  "subs": [
+    {
+      "name": "countdown",
+      "args": ["n"],
+      "do": [
+        {"repeat": {"var": "n"}, "do": [{"print": {"var": "n"}}]}
+      ]
+    },
+    {
+      "name": "add",
+      "args": ["a", "b"],
+      "do": [{"comment": "2つの値を足して返す"}],
+      "return": {
+        "type": "math_arithmetic",
+        "fields": {"OP": "ADD"},
+        "inputs": {"A": {"var": "a"}, "B": {"var": "b"}}
+      }
+    }
+  ]
+}
