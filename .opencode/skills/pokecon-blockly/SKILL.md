@@ -93,6 +93,7 @@ Blockly の見た目を手で組み立てる代わりに、小さな宣言的仕
 - `check` と `render` は実機なしで実行できる。
 - 試し実行・操作の記録は、アプリ本体が起動していてユーザーが許可したときだけ行う。
 - 実画面・ドラッグ操作の確認は Blockly エディタか [gui-probe](../gui-probe/SKILL.md) に委ねる。ハードウェアが無い環境では「実機確認は未実施」と明記する。
+- 実機なしでどこまで検証できるか、実機で何を確かめるかは [docs/BLOCKLY_AGENT_VERIFICATION.md](../../../docs/BLOCKLY_AGENT_VERIFICATION.md) に層分けしてある。
 
 ## 参照
 
