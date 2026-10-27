@@ -35,6 +35,7 @@ from core.transport.bcon_protocol import (
 )
 from core.transport.registry import (
     DEFAULT_TRANSPORT as DEFAULT_TRANSPORT,
+    canonical_transport_name as canonical_transport_name,
     create_transport as create_transport,
     describe_transports as describe_transports,
     get_transport_info as get_transport_info,

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import threading
 import time
+from numbers import Integral, Real
 from typing import Any
 
 from core.xinput import MAX_PADS, PadState, pressed_names
@@ -124,13 +125,15 @@ def _normalize_axis(value: Any) -> float:
     pygame 2.6 の get_axis は int（Sint16相当の -32768〜32767）を
     返す。-1.0〜1.0 の float だと思って掛け算すると、中立の微小値
     （例: -1324）が -1324.0 へ膨らみ、丸めで全倒れになる。
-    -1〜1 の範囲ならそのまま float 化し、それ以外は Sint16 として
-    32767 で割る。負側の -32768 は -1.0 に丸める。
+    整数（および整数系の実数）は常に Sint16 として 32767 で割り、
+    負側の -32768 は -1.0 に丸める。正規化済みとして素通しするのは
+    float（numpy の浮動小数を含む）だけにする。int の 1 は 1LSB の
+    ノイズであり、全倒れへ増幅してはいけない。
     """
     raw = value() if callable(value) else value
     number = float(raw)  # type: ignore[arg-type]
-    if isinstance(raw, float) or -1.0 <= number <= 1.0:
-        # float 実装か、既に -1〜1 の範囲ならそのまま使う。
+    if isinstance(raw, Real) and not isinstance(raw, Integral):
+        # float 実装（pygame-ce 等）は既に -1〜1 の正規化済み。
         return max(-1.0, min(1.0, number))
     return max(-1.0, min(1.0, number / 32767.0))
 

@@ -234,3 +234,95 @@ def test_proc_call_latency_and_fanout(monkeypatch) -> None:
         assert again["rx_fanout_last"] >= 1
     finally:
         made.close()
+
+
+# -- 送信数(sent)は線に出た分だけ・開き直しはSEQ口座を戻す（実機不要）--
+
+
+class _CountingSer:
+    """writeの結果だけ操作できる疑似線。1呼び出し=1試行。"""
+
+    is_open = True
+
+    def __init__(self, result: int = 0) -> None:
+        self.result = result
+        self.attempts = 0
+        self.written: list[bytes] = []
+
+    def write(self, data: bytes) -> int:
+        self.attempts += 1
+        if self.result > 0:
+            self.written.append(bytes(data))
+        return self.result
+
+    def read(self, n: int) -> bytes:
+        _ = n
+        time.sleep(0.001)
+        return b""
+
+    def close(self) -> None:
+        self.is_open = False
+
+
+def test_bcon_sent_counts_only_successful_writes() -> None:
+    """失敗writeでsentを増やさない（run-journalのsent差分を過大にしない）。"""
+    from core.transport import create_transport
+
+    made = create_transport("bcon")
+    ser = _CountingSer(result=0)
+    made.ser = ser
+    before = made.live_stats()["sent"]
+    made.send_row("10 08")
+    assert ser.attempts == 1
+    assert made.live_stats()["sent"] == before
+    ser.result = 13  # STATE LEN8フレーム長（3+8+2）
+    made.send_row("10 08")
+    assert made.live_stats()["sent"] == before + 1
+
+
+def test_bcon_live_loop_sent_counts_only_successful_writes() -> None:
+    """120Hz loopも同じ。書けなかった刻みはsentに載せない。"""
+    from core.transport import create_transport
+
+    made = create_transport("bcon")
+    ser = _CountingSer(result=0)
+    made.ser = ser
+    assert made.start_live_loop() is True
+    try:
+        made.send_row("10 08")
+        deadline = time.monotonic() + 2.0
+        while ser.attempts < 3 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert ser.attempts >= 3
+        assert made.live_stats()["sent"] == 0
+    finally:
+        made.stop_live_loop()
+
+
+def test_bcon_open_resets_rx_seq_gap_accounting(monkeypatch: Any) -> None:
+    """開き直しは新しい握手。再開後の最初のSEQを欠番に数えない。"""
+    import core.transport.bcon as _bcon
+
+    class _FakeSerial:
+        is_open = True
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = args, kwargs
+
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+        def read(self, n: int) -> bytes:
+            _ = n
+            return b""
+
+        def close(self) -> None:
+            self.is_open = False
+
+    monkeypatch.setattr(_bcon.serial, "Serial", _FakeSerial)
+    made = _bcon.BconTransport()
+    assert made.open(0, "COM9", 1000000) is True
+    made._note_rx_seq(200)
+    assert made.open(0, "COM9", 1000000) is True
+    made._note_rx_seq(0)
+    assert made.live_stats()["seq_gap"] == 0

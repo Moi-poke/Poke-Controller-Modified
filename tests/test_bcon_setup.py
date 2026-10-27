@@ -232,8 +232,14 @@ class _FakeBconTransport:
     name = "bcon"
     capability = "BCON_STATE"
 
-    def __init__(self, hello_ok: bool = True, opened: bool = True) -> None:
+    def __init__(
+        self,
+        hello_ok: bool = True,
+        opened: bool = True,
+        events: list[str] | None = None,
+    ) -> None:
         self.calls: list[str] = []
+        self.events = events if events is not None else self.calls
         self._opened = opened
         self._hello_ok = hello_ok
         self.sent: list[tuple[int, bytes]] = []
@@ -248,21 +254,26 @@ class _FakeBconTransport:
             "errcode": 0,
         }
 
+    def _note(self, name: str) -> None:
+        self.calls.append(name)
+        if self.events is not self.calls:
+            self.events.append(name)
+
     def is_open(self) -> bool:
         return self._opened
 
     def stop_live_loop(self) -> bool:
-        self.calls.append("stop")
+        self._note("stop")
         return True
 
     def hello(self, timeout: float = 3.0) -> bool:
         _ = timeout
-        self.calls.append("hello")
+        self._note("hello")
         return self._hello_ok
 
     def start_live_loop(self, interval_s: float = 1.0 / 120.0) -> bool:
         _ = interval_s
-        self.calls.append("start")
+        self._note("start")
         return True
 
     def _send_session_frame(self, type_: int, payload: bytes, note: str) -> bool:
@@ -296,18 +307,28 @@ class _FakeBconTransport:
 
 
 class _FakeSender:
-    def __init__(self, transport: Any) -> None:
+    def __init__(self, transport: Any, events: list[str] | None = None) -> None:
         self.transport = transport
         self.calls: list[str] = []
+        self.events = events if events is not None else self.calls
+
+    def _note(self, name: str) -> None:
+        self.calls.append(name)
+        if self.events is not self.calls:
+            self.events.append(name)
 
     def stopLiveWorker(self, timeout: float = 1.0) -> bool:
         _ = timeout
-        self.calls.append("worker_stop")
+        self._note("worker_stop")
+        return True
+
+    def discardLive(self) -> bool:
+        self._note("discard")
         return True
 
     def startLiveWorker(self, transport: Any = None) -> bool:
         _ = transport
-        self.calls.append("worker_start")
+        self._note("worker_start")
         return True
 
 
@@ -315,13 +336,22 @@ def test_connect_bcon_hello_before_live() -> None:
     """開→HELLO→live開始の順。HELLO_ACKの前にSTATEは流さない。"""
     from BconSetup import connect_bcon
 
-    transport = _FakeBconTransport(hello_ok=True)
-    sender = _FakeSender(transport)
+    events: list[str] = []
+    transport = _FakeBconTransport(hello_ok=True, events=events)
+    sender = _FakeSender(transport, events=events)
     logs: list[str] = []
     assert connect_bcon(transport, logs.append, sender) is True
-    # 止めて→HELLO→起こすの順。STATE抑止が先。
+    # 止めて→溜めを捨てて→HELLO→起こすの順。STATE抑止が先。
+    assert events == [
+        "stop",
+        "worker_stop",
+        "discard",
+        "hello",
+        "start",
+        "worker_start",
+    ]
     assert transport.calls == ["stop", "hello", "start"]
-    assert sender.calls == ["worker_stop", "worker_start"]
+    assert sender.calls == ["worker_stop", "discard", "worker_start"]
     assert any("HELLO" in text for text in logs)
 
 
@@ -335,7 +365,7 @@ def test_connect_bcon_hello_fail_never_starts() -> None:
     assert connect_bcon(transport, logs.append, sender) is False
     assert transport.calls == ["stop", "hello"]
     assert "start" not in transport.calls
-    assert sender.calls == ["worker_stop"]
+    assert sender.calls == ["worker_stop", "discard"]
     assert "worker_start" not in sender.calls
     assert any("NEUTRAL" in text for text in logs)
 

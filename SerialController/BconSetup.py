@@ -408,6 +408,17 @@ def connect_bcon(
                     stop_worker()
             except Exception:
                 pass
+        # HELLO待ちのあいだにキーボード・パッドの apply* が溜めた古い
+        # 押下/離しを捨てる。止める前の_workerは落ちているため
+        # _live_closing も立っておらず、捨てないと開始後に幻のタップが
+        # 流れる。持たない運搬器でも落とさない（getattr＋握り潰し）。
+        if sender is not None:
+            try:
+                discard_live = getattr(sender, "discardLive", None)
+                if callable(discard_live):
+                    discard_live()
+            except Exception:
+                pass
         try:
             hello_ok = bool(transport.hello(timeout=hello_timeout))
         except Exception:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 from core import pack_zip
@@ -119,3 +120,76 @@ def test_uninstall_path_escape_rejected(tmp_path: Path) -> None:
     app = tmp_path / "app"
     app.mkdir()
     assert script_pack.uninstall_package(app, "../../x").status == "failed"
+
+
+def test_install_refuses_unowned_file_collision(tmp_path: Path) -> None:
+    app = tmp_path / "app"
+    entry = app / "Commands" / "PythonCommands" / "MyPack.py"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("# 手書きのコマンド\n", encoding="utf-8")
+
+    src = tmp_path / "other" / "src"
+    (src / "Commands" / "PythonCommands").mkdir(parents=True)
+    data = {
+        "name": "other-pack",
+        "version": "1.0.0",
+        "author": "bob",
+        "description": "other",
+        "entry": "MyPack.py",
+        "minAppVersion": "4.0.0",
+        "templates": [],
+    }
+    (src / "pokecon.json").write_text(json.dumps(data), encoding="utf-8")
+    (src / "Commands" / "PythonCommands" / "MyPack.py").write_text(
+        "from Commands.Keys import Button\n", encoding="utf-8"
+    )
+    zip_path = tmp_path / "other-pack.zip"
+    pack_zip.create_pack(src, zip_path)
+
+    res = script_pack.install_zip(app, zip_path)
+
+    assert res.status == "failed"
+    assert "衝突" in res.message
+    assert entry.read_text(encoding="utf-8") == "# 手書きのコマンド\n"
+    assert not (app / "InstalledPacks" / ".backup").exists()
+
+
+def test_install_unsupported_compression_fails_gracefully(
+    tmp_path: Path, monkeypatch
+) -> None:
+    app = tmp_path / "app"
+    app.mkdir()
+    zip_path = make_zip(tmp_path, "1.0.0")
+
+    def raise_unsupported(*_args, **_kwargs):
+        raise NotImplementedError("compression method 9")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", raise_unsupported)
+    res = script_pack.install_zip(app, zip_path)
+
+    assert res.status == "failed"
+    assert "zip を開けません" in res.message
+
+
+def test_uninstall_continues_after_unlink_error(tmp_path: Path, monkeypatch) -> None:
+    app = tmp_path / "app"
+    app.mkdir()
+    script_pack.install_zip(app, make_zip(tmp_path, "1.0.0"))
+    entry = app / "Commands" / "PythonCommands" / "MyPack.py"
+    template = app / "Template" / "my-pack" / "a.png"
+    real_unlink = Path.unlink
+
+    def fail_entry_unlink(self: Path, *args, **kwargs) -> None:
+        if self.name == "MyPack.py":
+            raise PermissionError(13, "アクセスが拒否されました", str(self))
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_entry_unlink)
+    res = script_pack.uninstall_package(app, "my-pack")
+
+    assert res.status == "failed"
+    assert entry.is_file()
+    assert not template.exists()
+    assert "MyPack.py" in res.message
+    # 実体が残っている間は導入記録も残し、原因を直して再試行できるようにする。
+    assert script_pack.read_record(app, "my-pack") is not None

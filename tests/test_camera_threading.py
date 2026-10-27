@@ -86,6 +86,8 @@ def test_reopen_does_not_resurrect_old_thread(monkeypatch: Any) -> None:
         assert cam.openCamera(0)
         for _ in range(20):
             cam.destroy()
+            # 解放待ちの間は開き直さない（同じデバイスの二重オープン防止）。
+            assert _wait_until(lambda: not cam.release_pending, 3.0)
             assert cam.openCamera(0)
         # 旧スレッドが蘇ったぶんだけ沈殿するので少し待つ
         time.sleep(0.6)
@@ -553,3 +555,217 @@ def test_release_later_joins_even_if_camera_none() -> None:
     cam._release_later(_T())  # type: ignore[arg-type]
     time.sleep(0.2)
     assert joined, "_release_later が camera None で thread を放置しています"
+
+
+# ---------------------------------------------------------------------------
+# 7. 旧世代フレームの混入 / 解放待ち中の再オープン / 解放失敗
+# ---------------------------------------------------------------------------
+
+
+def _make_gated_capture_class(
+    release_raises: bool = False,
+) -> tuple[Any, list[Any]]:
+    """read() を Event で止められる VideoCapture 替身。
+
+    cameraId 0 は古い世代（画素値 10）。cameraId 1 は最初の 1 枚だけ
+    画素値 200 を返し、以降は止まる。旧フレームが新世代を上書きしたかを
+    値で見分けられる。
+    """
+    instances: list[Any] = []
+
+    class _GatedCap:
+        def __init__(self, camera_id: int = 0, *a: Any, **k: Any) -> None:
+            self.camera_id = int(camera_id)
+            self.read_entered = threading.Event()
+            self.read_gate = threading.Event()
+            self.reads = 0
+            instances.append(self)
+
+        def isOpened(self) -> bool:
+            return True
+
+        def read(self) -> tuple[bool, Any]:
+            self.read_entered.set()
+            self.reads += 1
+            if self.camera_id == 0:
+                self.read_gate.wait(5.0)
+                return True, np.full((4, 4, 3), 10, dtype=np.uint8)
+            if self.reads == 1:
+                return True, np.full((4, 4, 3), 200, dtype=np.uint8)
+            self.read_gate.wait(5.0)
+            return True, np.full((4, 4, 3), 201, dtype=np.uint8)
+
+        def release(self) -> None:
+            if release_raises:
+                raise RuntimeError("USB capture removed")
+            return None
+
+        def set(self, *a: Any, **k: Any) -> bool:
+            return True
+
+        def get(self, *a: Any, **k: Any) -> float:
+            return 0.0
+
+    return _GatedCap, instances
+
+
+def _wait_until(predicate: Any, timeout: float = 2.0) -> bool:
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def test_reopened_camera_does_not_publish_old_generation_frame(
+    monkeypatch: Any,
+) -> None:
+    """旧 read が新世代の開始後に戻っても、そのフレームを公開しない。"""
+    from core import Camera as CamMod
+    from core.Camera import Camera
+
+    fake_cap, caps = _make_gated_capture_class()
+    monkeypatch.setattr(cv2, "VideoCapture", fake_cap)
+    monkeypatch.setattr(CamMod, "_configure_capture", lambda *a, **k: None)
+    monkeypatch.setattr(CamMod, "THREAD_JOIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(CamMod, "THREAD_RELEASE_TIMEOUT", 0.05)
+    monkeypatch.setattr(CamMod, "RELEASE_RETRY_TOTAL_S", 0.1)
+
+    cam = Camera(fps=30)
+    try:
+        assert cam.openCamera(0)
+        old = caps[0]
+        assert old.read_entered.wait(2.0), "旧カメラの read が始まっていません"
+
+        # 旧スレッドは read 中。join がタイムアウトして解放は裏へ回る。
+        assert cam.destroy() is False
+        assert _wait_until(lambda: not cam.release_pending, 2.0)
+        assert cam.release_failed, "解放断念が状態に残っていません"
+
+        # 解放断念後は開き直しを試みる（警告は出るが新世代は始まる）。
+        cam.frame_queue.clear()
+        assert cam.openCamera(1)
+        assert _wait_until(
+            lambda: (f := cam.readFrame()) is not None and int(f[0, 0, 0]) == 200,
+            2.0,
+        ), "新カメラのフレームが来ていません"
+
+        # ここで旧 read を解放する。新世代のフレームを旧カメラのフレームで
+        # 上書きしてはいけない。
+        old.read_gate.set()
+        time.sleep(0.1)
+        frame = cam.readFrame()
+        assert frame is not None
+        assert int(frame[0, 0, 0]) == 200, (
+            f"旧世代のフレームが新セッションへ公開されました: {int(frame[0, 0, 0])}"
+        )
+    finally:
+        for cap in caps:
+            cap.read_gate.set()
+        cam.destroy()
+        _wait_until(lambda: not cam.release_pending, 2.0)
+
+
+def test_open_refuses_while_deferred_release_pending(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    """解放待ちの間に開き直すと、同じデバイスを二重に開かない。"""
+    from core import Camera as CamMod
+    from core.Camera import Camera
+
+    fake_cap, caps = _make_gated_capture_class()
+    monkeypatch.setattr(cv2, "VideoCapture", fake_cap)
+    monkeypatch.setattr(CamMod, "_configure_capture", lambda *a, **k: None)
+    monkeypatch.setattr(CamMod, "THREAD_JOIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(CamMod, "THREAD_RELEASE_TIMEOUT", 10.0)
+    monkeypatch.setattr(CamMod, "RELEASE_RETRY_TOTAL_S", 10.0)
+
+    cam = Camera(fps=30)
+    old = None
+    try:
+        assert cam.openCamera(0)
+        old = caps[0]
+        assert old.read_entered.wait(2.0), "旧カメラの read が始まっていません"
+        assert cam.destroy() is False
+        assert cam.release_pending
+
+        built = len(caps)
+        capsys.readouterr()  # ここまでの出力は捨てる
+        assert cam.openCamera(1) is False
+        assert cam.release_pending, "解放待ちが解除されています"
+        assert len(caps) == built, "解放待ちなのに 2 台目の VideoCapture を作りました"
+        assert cam.camera is None
+        assert "解放待ち" in capsys.readouterr().out
+    finally:
+        if old is not None:
+            old.read_gate.set()
+        _wait_until(lambda: not cam.release_pending, 2.0)
+        cam.destroy()
+
+
+def test_open_clears_queue_under_generation_lock(monkeypatch: Any) -> None:
+    """clear は世代 bump と同じ錠の中で行う（旧 put を clear 後に残さない）。"""
+    from core import Camera as CamMod
+    from core.Camera import Camera
+
+    fake_cap, caps = _make_gated_capture_class()
+    monkeypatch.setattr(cv2, "VideoCapture", fake_cap)
+    monkeypatch.setattr(CamMod, "_configure_capture", lambda *a, **k: None)
+
+    cam = Camera(fps=30)
+    locked: list[bool] = []
+    real_clear = cam.frame_queue.clear
+
+    def _clear_recording_lock() -> None:
+        locked.append(cam._lock.locked())
+        real_clear()
+
+    cam.frame_queue.clear = _clear_recording_lock  # type: ignore[method-assign]
+    try:
+        assert cam.openCamera(0)
+        assert locked, "openCamera が frame_queue.clear() を呼んでいません"
+        assert all(locked), (
+            f"frame_queue.clear が Camera._lock の外で呼ばれています: {locked}"
+        )
+    finally:
+        cam.frame_queue.clear = real_clear  # type: ignore[method-assign]
+        for cap in caps:
+            cap.read_gate.set()
+        cam.destroy()
+
+
+def test_deferred_release_failure_sets_release_failed(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    """裏の release() が投げても待ち役を落とさず、状態と GUI に残す。"""
+    from core import Camera as CamMod
+    from core.Camera import Camera
+
+    fake_cap, caps = _make_gated_capture_class(release_raises=True)
+    monkeypatch.setattr(cv2, "VideoCapture", fake_cap)
+    monkeypatch.setattr(CamMod, "_configure_capture", lambda *a, **k: None)
+    monkeypatch.setattr(CamMod, "THREAD_JOIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(CamMod, "THREAD_RELEASE_TIMEOUT", 0.5)
+    monkeypatch.setattr(CamMod, "RELEASE_RETRY_TOTAL_S", 3.0)
+
+    cam = Camera(fps=30)
+    old = None
+    try:
+        assert cam.openCamera(0)
+        old = caps[0]
+        assert old.read_entered.wait(2.0), "旧カメラの read が始まっていません"
+        assert cam.destroy() is False
+        assert cam.release_pending
+
+        capsys.readouterr()  # ここまでの出力は捨てる
+        old.read_gate.set()
+        assert _wait_until(
+            lambda: not cam.release_pending and cam.release_failed, 2.0
+        ), "解放失敗が release_failed に残っていません"
+        assert "挿し直して" in capsys.readouterr().out
+    finally:
+        if old is not None:
+            old.read_gate.set()
+        _wait_until(lambda: not cam.release_pending, 2.0)
+        cam.destroy()

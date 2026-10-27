@@ -406,7 +406,14 @@ class Camera:
     # -- 開閉 ---------------------------------------------------------------
 
     def openCamera(self, cameraId: int) -> bool:
-        """カメラを開いて取得スレッドを起動する。成否を返す。"""
+        """カメラを開いて取得スレッドを起動する。成否を返す。
+
+        前回の解放が裏で続いている間は開かない。同じデバイスを二重に
+        開くと、失敗したり古い設定のまま掴んだりするため。
+        """
+        if self.release_pending:
+            self._report_release_pending()
+            return False
         if self.release_failed:
             # 前回の解放を断念している。開けない原因がこれだと分かるようにする
             # （一度知らせたら消す。毎回は出さない）。
@@ -420,7 +427,10 @@ class Camera:
         try:
             if self.isOpened():
                 logger.debug("Camera is already opened")
-                self.destroy()
+                if not self.destroy():
+                    # 解放待ち（または解放失敗）のまま二重オープンへ進まない。
+                    self._report_release_pending()
+                    return False
         except Exception:
             # 既存ハンドルが壊れていると isOpened() も destroy() も投げる。
             # ここで漏らすと Tk コールバックまで例外が抜けるため bool 契約へ倒す。
@@ -435,11 +445,15 @@ class Camera:
                     logger.error(traceback.format_exc())
             return False
 
-        self.frame_queue.clear()
         # 旧スレッドの Event を clear で蘇らせない。新世代の Event を作る。
-        self._generation += 1
-        self._stop_event = threading.Event()
-        self._error = None
+        # 世代の更新と clear を同じ錠で行う。旧スレッドの put 判定と公開の
+        # 間に clear が割り込むと、消したはずのフレームが残るため。
+        # 錠順は Camera._lock -> LatestFrame._lock（逆順の取得は無い）。
+        with self._lock:
+            self._generation += 1
+            self._stop_event = threading.Event()
+            self._error = None
+            self.frame_queue.clear()
 
         camera: Any = None
         try:
@@ -538,7 +552,8 @@ class Camera:
         ここで長く待つと「閉じるボタンが効かない」ように見える。
         待つのは THREAD_JOIN_TIMEOUT までとし、間に合わなければ解放を
         別スレッドへ委ねて呼び出し元（GUI スレッド）は即座に返す。
-        戻り値は「その場で解放しきれたか」。
+        戻り値は「その場で解放しきれたか」。裏で解放待ちが続いている場合も
+        False を返す。
 
         解放待ちが上限を超えたら、断念したことを状態に残して利用者へ 1 行
         出す（黙って諦めると「開き直せない」だけが残って原因が分からない）。
@@ -546,9 +561,13 @@ class Camera:
         if self.release_pending:
             # 前回の解放がまだ裏で続いている（取得スレッドの停止待ち）。
             logger.debug("解放待ちの最中に destroy が呼ばれました")
+        was_pending = self.release_pending
         self._stop_event.set()
         # 世代を進めて旧スレッドの蘇生を防ぐ（次 open が新 Event を作る）。
-        self._generation += 1
+        # _update の put 判定と同じ錠で進め、判定と公開の間に割り込まれない
+        # ようにする。
+        with self._lock:
+            self._generation += 1
 
         thread, self._thread = self._thread, None
         if thread is not None and thread.is_alive():
@@ -561,8 +580,8 @@ class Camera:
                 self._release_later(thread)
                 return False
 
-        self._release()
-        return True
+        released = self._release()
+        return released and not was_pending
 
     def _release_later(self, thread: threading.Thread) -> None:
         """取得スレッドの終了を待ってから解放する見張りを裏で走らせる。
@@ -576,7 +595,7 @@ class Camera:
         """
         with self._lock:
             camera, self.camera = self.camera, None
-        self.release_pending = True
+            self.release_pending = True
 
         def waiter() -> None:
             # 1 回で諦めず、合計の上限まで分割して待つ（遅れて止まるスレッドを
@@ -591,33 +610,64 @@ class Camera:
                     break
             if thread.is_alive():
                 # 待つのを止めたので「解放待ち」ではなくなる。
-                self.release_pending = False
                 self.release_failed = True
                 logger.error(
                     "Camera thread did not stop within "
                     f"{RELEASE_RETRY_TOTAL_S}s. Skip releasing the device."
                 )
                 # 利用者の次の行動（挿し直し）が変わるので GUI にも出す。
-                print(
-                    "カメラの解放に失敗しました。"
-                    "USB キャプチャを挿し直してから開き直してください"
-                )
+                self._report_release_failed()
+                self.release_pending = False
                 return
+            if camera is not None:
+                try:
+                    camera.release()
+                except Exception:
+                    # デバイスが抜けた等で release が投げても待ち役を落とさない。
+                    # 失敗を残さないと、次の open が原因不明の失敗に見える。
+                    self.release_failed = True
+                    logger.error("Camera release failed after thread stopped.")
+                    logger.error(traceback.format_exc())
+                    self._report_release_failed()
+                else:
+                    logger.debug("Camera destroyed (deferred)")
             self.release_pending = False
-            if camera is None:
-                return
-            camera.release()
-            logger.debug("Camera destroyed (deferred)")
 
         threading.Thread(target=waiter, name="CameraReleaser", daemon=True).start()
 
-    def _release(self) -> None:
-        """デバイスを解放する。取得スレッドが止まっていることが前提。"""
+    def _release(self) -> bool:
+        """デバイスを解放する。取得スレッドが止まっていることが前提。
+
+        戻り値は「その場で解放しきれたか」。release() が投げても destroy の
+        bool 契約を守るため、失敗は release_failed に残して False を返す。
+        """
         with self._lock:
             camera, self.camera = self.camera, None
-        if camera is not None:
+        if camera is None:
+            return True
+        try:
             camera.release()
-            logger.debug("Camera destroyed")
+        except Exception:
+            self.release_failed = True
+            logger.error("Camera release failed.")
+            logger.error(traceback.format_exc())
+            self._report_release_failed()
+            return False
+        logger.debug("Camera destroyed")
+        return True
+
+    def _report_release_pending(self) -> None:
+        """解放待ちで開き直せないことを利用者へ伝える。"""
+        message = "前回のカメラ解放待ちです。少し待ってから開き直してください"
+        logger.warning(message)
+        print(message)
+
+    def _report_release_failed(self) -> None:
+        """解放失敗を利用者へ伝える（GUI は LogPane 経由で print を拾う）。"""
+        print(
+            "カメラの解放に失敗しました。"
+            "USB キャプチャを挿し直してから開き直してください"
+        )
 
     # -- フレーム -----------------------------------------------------------
 
@@ -677,9 +727,10 @@ class Camera:
     def _start_thread(self) -> None:
         # 起動時の Event・世代・カメラを捕まえて渡す。self 経由で毎回
         # 読み直すと、次 open の新デバイスを旧スレッドが読んでしまう。
-        stop_event = self._stop_event
-        generation = self._generation
-        camera = self.camera
+        with self._lock:
+            stop_event = self._stop_event
+            generation = self._generation
+            camera = self.camera
         self._thread = threading.Thread(
             target=self._update,
             args=(stop_event, generation, camera),
@@ -806,7 +857,16 @@ class Camera:
                     break
                 continue
 
-            self.frame_queue.put(frame, t_capture_ns)
+            # read() から戻った時点で世代・停止が変わっていないかを、公開と
+            # 同じ錠の中で確認する。destroy 後の旧 read が新世代のフレームを
+            # 上書きするのを防ぐ最後の関門。
+            with self._lock:
+                # read() 中に停止が立つことがある（テストの最終フレームも同じ）。
+                # 世代が同じなら今のセッションのフレームなので公開する。
+                # 混ぜてはいけないのは「別世代」のフレームだけ。
+                if generation != self._generation:
+                    break
+                self.frame_queue.put(frame, t_capture_ns)
             with self._stat_lock:
                 if self._stat_began_at is None:
                     self._stat_began_at = started
@@ -841,9 +901,10 @@ class Camera:
         if self.isRunning():
             return
         # 共有 Event の clear 使い回しをやめ、新世代で開始する。
-        self._generation += 1
-        self._stop_event = threading.Event()
-        self._error = None
+        with self._lock:
+            self._generation += 1
+            self._stop_event = threading.Event()
+            self._error = None
         self._start_thread()
 
     def camera_thread_stop(self) -> None:

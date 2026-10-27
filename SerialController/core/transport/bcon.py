@@ -324,6 +324,10 @@ class BconTransport(Transport):
             self._live_rtt_ms = None
             # 開き直しは新しい握手。HELLO_ACKを受けるまで抑止を続ける。
             self._hello_established = False
+            # Pico再起動でSEQは0から振り直される。口座を戻さないと
+            # 再開後の最初のフレームを欠番として数えてしまう。
+            self._rx_last_seq = None
+            self._rx_seq_gap = 0
         if old is not None:
             try:
                 old.close()
@@ -478,7 +482,8 @@ class BconTransport(Transport):
             frame = frame_build(T_STATE, payload, seq)
             sent_ok = bool(self._write_frame(frame, row, measure_perf, begin, end, ser))
             with self._lock:
-                self._live_sent += 1
+                if sent_ok:
+                    self._live_sent += 1
                 self._live_latest = (payload, note)
                 self._live_last_tx = time.perf_counter()
             if sent_ok:
@@ -931,7 +936,8 @@ class BconTransport(Transport):
                 sent_ok = bool(self._write_frame(frame, note, show, begin, end, ser))
             now = time.perf_counter()
             with self._lock:
-                self._live_sent += 1
+                if sent_ok:
+                    self._live_sent += 1
                 self._live_latest = (payload, note)
                 self._live_last_tx = now
             if sent_ok and not held:

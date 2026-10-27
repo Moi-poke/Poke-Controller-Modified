@@ -74,6 +74,30 @@ def test_open_fails_without_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cap.isOpened() is False
 
 
+def test_open_input_closes_stream_when_start_fails() -> None:
+    """start 失敗で作ったストリームを解放する（デバイス保持を残さない）。"""
+
+    class StartFailingStream:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def start(self) -> None:
+            raise RuntimeError("start failed")
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    stream = StartFailingStream()
+
+    def factory(**kwargs: Any) -> StartFailingStream:
+        return stream
+
+    cap = AC.AudioCapture(input_factory=factory)
+    assert cap.openInput("dummy") is False
+    assert stream.close_calls == 1
+    assert cap.isOpened() is False
+
+
 def test_record_collects_seconds() -> None:
     box: dict[str, FakeStream] = {}
 

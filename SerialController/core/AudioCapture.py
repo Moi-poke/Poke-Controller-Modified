@@ -487,6 +487,7 @@ class AudioCapture:
             rate = native_rate(sd, True, None)
         # 新しい自レートに合わせて環を作り直す（開始前に済ませる）
         self._prepare_ring(rate)
+        stream: Any = None
         try:
             if self._factory is not None:
                 stream = self._factory(
@@ -510,6 +511,13 @@ class AudioCapture:
                 )
             stream.start()
         except Exception as e:
+            # 生成済みのストリームはデバイスを掴んだままになり得る。
+            # 解放してから失敗を返す（次回の open を塞がない）。
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
             logger.error(f"音声入力を開けません ({name or '既定'}): {e}")
             return False
         self._stream = stream

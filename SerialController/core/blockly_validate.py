@@ -19,6 +19,9 @@ from core.user_api_allowlist import ALLOWED_COMMANDS_SUBS, THIRD_PARTY
 
 _STEM_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+#: 入れ子が深すぎて走査できないJSONの異常文（保存・読込で共通）。
+DEEP_WORKSPACE_ERROR = "ワークスペースが深すぎます（保存できる上限を超えています）"
+
 # 正本は core/user_api_allowlist.py。後方互換のため旧名でも読める。
 _ALLOWED_COMMANDS_SUBS = ALLOWED_COMMANDS_SUBS
 _THIRD_PARTY = THIRD_PARTY
@@ -312,6 +315,9 @@ def validate_workspace_json(text: str) -> list[str]:
         data = json.loads(text)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         return [f"ワークスペースJSONが壊れています（{e}）"]
+    except RecursionError:
+        # json の復号自体が深さ上限で落ちる。例外を外へ出さない。
+        return [DEEP_WORKSPACE_ERROR]
     if not isinstance(data, dict):
         return ["ワークスペースJSONはオブジェクトで書いてください"]
     blocks = data.get("blocks")
@@ -359,14 +365,19 @@ def validate_dialog_vars(text: str) -> list[str]:
         data = json.loads(text)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         return []
+    except RecursionError:
+        return [DEEP_WORKSPACE_ERROR]
     if not isinstance(data, dict):
         return []
     blocks = data.get("blocks")
     if not isinstance(blocks, dict) or not isinstance(blocks.get("blocks"), list):
         return []
     found: list[dict[str, object]] = []
-    for top in blocks["blocks"]:
-        _walk_blocks(top, found)
+    try:
+        for top in blocks["blocks"]:
+            _walk_blocks(top, found)
+    except RecursionError:
+        return [DEEP_WORKSPACE_ERROR]
     errors: list[str] = []
     for block in found:
         if block.get("type") not in _DIALOG_BLOCKS:

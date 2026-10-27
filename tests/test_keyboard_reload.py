@@ -90,3 +90,21 @@ def test_reload_preserves_holding_without_leak(tmp_path: Path) -> None:
     kb.on_press("b")
     assert keys.inputs[-1] == (Button.A,)
     assert kb.holding == ["b"]
+
+
+def test_percent_binding_is_read_literally(tmp_path: Path) -> None:
+    """Given: Button.A = % / When: 設定を読む / Then: % が literal に割り当てられる."""
+    ini = tmp_path / "settings.ini"
+    _write_ini(ini, "%")
+    kb = SwitchKeyboardController(FakeKeyPress(), setting_path=str(ini))
+    assert kb.key_map["%"] is Button.A
+
+
+def test_reload_reads_percent_literally(tmp_path: Path) -> None:
+    """Given: 読み込み済み / When: % へ書換えて再読込 / Then: % が literal に割り当てられる."""
+    ini = tmp_path / "settings.ini"
+    _write_ini(ini, "a")
+    kb = SwitchKeyboardController(FakeKeyPress(), setting_path=str(ini))
+    _write_ini(ini, "%")
+    assert kb.reload_key_map() is True
+    assert kb.key_map["%"] is Button.A

@@ -486,3 +486,42 @@ def test_closing_the_pad_while_a_stick_is_tilted_returns_it_to_neutral(
 
     # Then: 倒したまま Switch 側に残さない。
     assert sender.sticks[-1] == ("L", 128, 128)
+
+
+def test_show_external_does_not_change_mouse_stick_state(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    knob = _face_centre(pad, "LCLICK")
+    assert pad._stick_xy["L"] == (128, 128)
+
+    # When: the gamepad mirror shows the left stick pushed right.
+    pad.showExternal(stick_l=(255, 128))
+
+    # Then: 外部表示はマウス操作の状態を書き換えず、頭だけ外部の位置で描く。
+    assert pad._stick_xy["L"] == (128, 128)
+    assert pad._ext_stick_xy["L"] == (255, 128)
+    assert _face_centre(pad, "LCLICK")[0] > knob[0] + 3
+
+
+def test_release_all_held_does_not_neutral_external_stick(
+    area: tk.Toplevel,
+) -> None:
+    pad = _shown(area)
+    sender = pad.ser
+    knob = _face_centre(pad, "LCLICK")
+    pad.showExternal(stick_l=(255, 128))
+
+    # When: the pad is closed or popped out while the gamepad holds the stick.
+    pad.releaseAllHeld()
+
+    # Then: 外部表示のスティックを中立へ戻す行を送らない（ゲームパッドが
+    #       倒している状態をマウス操作として上書きしない）。
+    assert sender.sticks == []
+
+    # When: the gamepad disconnects and the mirror is cleared.
+    pad.clearExternal()
+
+    # Then: 外部表示は消え、頭はマウスの値（中立）へ戻る。
+    assert pad._ext_stick_xy == {"L": None, "R": None}
+    assert _face_centre(pad, "LCLICK") == pytest.approx(knob, abs=1)

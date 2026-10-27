@@ -126,6 +126,14 @@ class ControllerGUI:
         self._held_click: str | None = None
         # 送ったスティックの座標（0〜255）。頭の描画と中立へ戻す判断に使う。
         self._stick_xy: dict[str, tuple[int, int]] = {"L": (128, 128), "R": (128, 128)}
+        # 外部表示（ゲームパッド）のスティック座標。None は外部表示なしで、
+        # その側は _stick_xy（マウス操作）を描く。マウスの状態とは混ぜない。
+        #   混ぜると、閉じる・別窓へ出すときの中立送信がゲームパッドの
+        #   倒している状態を上書きしてしまう（外部表示は送信しない）。
+        self._ext_stick_xy: dict[str, tuple[int, int] | None] = {
+            "L": None,
+            "R": None,
+        }
         # 外部表示（ゲームパッド）の押し込み集合。_draw_knob の光に使う。
         self._ext_click: set = set()
         # 論理座標 → 画面座標の倍率とずらし（_redraw で決まる）。
@@ -338,10 +346,12 @@ class ControllerGUI:
             self._text(shape.cx, shape.cy, shape.label, px, key)
 
     def _draw_knob(self, shape: PadShape) -> None:
-        """スティックの頭。送った座標の向きへ、溝の中でずらして描く。"""
+        """スティックの頭。表示中の座標の向きへ、溝の中でずらして描く。"""
         name = shape.name
         self.canvas.delete(f"knob:{name}")
-        x, y = self._stick_xy[STICK_SIDES[name]]
+        side = STICK_SIDES[name]
+        ext_xy = self._ext_stick_xy[side]
+        x, y = ext_xy if ext_xy is not None else self._stick_xy[side]
         radius = shape.w * 0.34
         travel = shape.w / 2 - radius
         cx = shape.cx + (x - 128) / 127.5 * travel
@@ -699,6 +709,8 @@ class ControllerGUI:
         """
         self._grab = None
         self._held_click = None
+        # 外部表示（ゲームパッド）は送信していないのでここでは触らない。
+        #   _stick_xy（マウスで倒した分）だけを中立へ戻す。
         for side, xy in list(self._stick_xy.items()):
             if xy != (128, 128):
                 self._neutralStick(side)
@@ -761,9 +773,9 @@ class ControllerGUI:
             for direction in self.HAT_DIRS:
                 self._paint(direction, direction in hat)
             if stick_l is not None:
-                self._stick_xy["L"] = (int(stick_l[0]), int(stick_l[1]))
+                self._ext_stick_xy["L"] = (int(stick_l[0]), int(stick_l[1]))
             if stick_r is not None:
-                self._stick_xy["R"] = (int(stick_r[0]), int(stick_r[1]))
+                self._ext_stick_xy["R"] = (int(stick_r[0]), int(stick_r[1]))
             for shape in SHAPES:
                 if shape.name in STICK_SIDES:
                     try:
@@ -792,6 +804,7 @@ class ControllerGUI:
             ):
                 self._paint(name, name in self._held_btn)
             self._ext_click = set()
+            self._ext_stick_xy = {"L": None, "R": None}
             self._paintHat()
             for shape in SHAPES:
                 if shape.name in STICK_SIDES:

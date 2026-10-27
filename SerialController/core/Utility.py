@@ -62,7 +62,9 @@ def importAllModules(
         logger.debug(f"Import module: {name}")
         try:
             modules.append(importlib.import_module(name))
-        except Exception:
+        except (Exception, SystemExit):
+            # ユーザーコマンドが import 時に sys.exit() を呼んでも、他の
+            # コマンドの読み込みを止めない（KeyboardInterrupt 等は対象外）。
             logger.error(f"Failed to import module: {name}\n{traceback.format_exc()}")
 
     return modules

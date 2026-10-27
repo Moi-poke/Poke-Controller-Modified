@@ -160,6 +160,12 @@ def _checked_rel(info: zipfile.ZipInfo) -> str | None:
         or ":" in raw
     ):
         raise PackError(f"置けないパスです: {info.filename!r}")
+    for part in parts:
+        problem = pack_manifest._segment_problem(part)
+        if problem is not None:
+            raise PackError(
+                f"置けないパスです: {info.filename!r}（{part!r}: {problem}）"
+            )
     if (info.external_attr >> 16) & 0o170000 == 0o120000:
         raise PackError(f"シンボリックリンクは置けません: {info.filename!r}")
     return PurePosixPath(raw).as_posix()
@@ -187,6 +193,16 @@ def safe_extract(zip_path: str | Path, dest_dir: str | Path) -> list[str]:
                     f"合計が大きすぎます（上限 {MAX_TOTAL_BYTES // 1024 // 1024} MiB）"
                 )
             rels.append((info, rel))
+        # Windows は大文字小文字・末尾のドット/空白を区別しない。別名の
+        # 項目が同じファイルになるなら、書く前に断る（上書き・幽霊項目の防止）。
+        seen: dict[str, str] = {}
+        for _info, rel in rels:
+            key = "/".join(
+                part.rstrip(" .").casefold() for part in PurePosixPath(rel).parts
+            )
+            if key in seen:
+                raise PackError(f"同名になるファイルがあります: {seen[key]} と {rel}")
+            seen[key] = rel
         for info, rel in rels:
             target = dest / PurePosixPath(rel).as_posix()
             target.parent.mkdir(parents=True, exist_ok=True)

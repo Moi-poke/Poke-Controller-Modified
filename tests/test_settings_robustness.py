@@ -2,6 +2,8 @@
 
 import configparser
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import Settings
 import config
@@ -155,3 +157,70 @@ def test_valid_values_are_preserved() -> None:
 
     assert parser["General Setting"].getboolean("is_show_realtime") is False
     assert parser["Window"]["log_sash_ratio"] == "0.42"
+
+
+class _FakeVar:
+    """Tk 変数の代役。GuiSettings を Tk 無しで組み立てるため get/set だけ持つ。"""
+
+    def __init__(self, value: Any = None, **_kwargs: Any) -> None:
+        self._value = value
+
+    def get(self) -> Any:
+        return self._value
+
+    def set(self, value: Any) -> None:
+        self._value = value
+
+
+@pytest.fixture
+def fake_tk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GuiSettings.__init__ が作る Tk 変数を、Tk を使わない代役へ差し替える。"""
+    monkeypatch.setattr(
+        Settings,
+        "tk",
+        SimpleNamespace(
+            StringVar=_FakeVar,
+            BooleanVar=_FakeVar,
+            IntVar=_FakeVar,
+            DoubleVar=_FakeVar,
+        ),
+    )
+
+
+def use_settings_path(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """GuiSettings が読み書きする ini を一時ファイルへ向ける。"""
+    monkeypatch.setattr(Settings.GuiSettings, "SETTING_PATH", str(path))
+
+
+def test_settings_round_trip_preserves_percent_in_values(
+    tmp_path: Path, fake_tk: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_settings_path(monkeypatch, tmp_path / "settings.ini")
+    settings = Settings.GuiSettings()
+    settings.input_log_format.set("{time:%H:%M}")
+    settings.com_port_name.set("COM 100%")
+
+    settings.save()
+
+    reloaded = Settings.GuiSettings()
+    assert reloaded.input_log_format.get() == "{time:%H:%M}"
+    assert reloaded.com_port_name.get() == "COM 100%"
+
+
+def test_load_accepts_raw_percent_in_ini(
+    tmp_path: Path, fake_tk: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.ini"
+    path.write_text(
+        "[General Setting]\n"
+        "com_port_name = COM 100%\n"
+        "[Input Log]\n"
+        "format = {time:%H:%M}\n",
+        encoding="utf-8",
+    )
+    use_settings_path(monkeypatch, path)
+
+    settings = Settings.GuiSettings()
+
+    assert settings.input_log_format.get() == "{time:%H:%M}"
+    assert settings.com_port_name.get() == "COM 100%"

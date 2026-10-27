@@ -322,6 +322,18 @@ def _tick(
     )
 
 
+def _control_state(
+    epoch: int = 1, generation: int = 1, fps: int = 60
+) -> preview_clock._ControlState:
+    return preview_clock._ControlState(
+        kind=preview_clock._ControlKind.ACTIVE,
+        epoch=epoch,
+        generation=generation,
+        configured_fps=fps,
+        active=True,
+    )
+
+
 def _dispatch_with_label(
     calls: list[str], label: str = "dispatch"
 ) -> Callable[[], preview_clock.DispatchResult]:
@@ -773,6 +785,66 @@ def test_latest_only_mailbox_accounting_balances(
     stale_dropped = int(accounting["stale_tick_dropped_count"])
     pending_at_end = int(accounting["pending_tick_present_at_window_end"])
     assert published == dispatched + superseded + stale_dropped + pending_at_end
+
+
+def test_evidence_and_accounting_are_bounded_without_window() -> None:
+    # Given: a mailbox whose accounting window is never opened by production code.
+    state = preview_clock._SharedState(60, None)
+    control = _control_state()
+
+    # When: a long preview session publishes and consumes ticks in lockstep.
+    for sequence in range(1, 10_001):
+        state.publish_tick(
+            control,
+            deadline_qpc=sequence,
+            emitted_qpc=sequence,
+            qpc_frequency_hz=10_000_000,
+        )
+        assert state.consume_tick(1, 1) is not None
+
+    # Then: both stores stay bounded instead of growing with the session.
+    assert len(state.evidence) <= 16_384
+    assert len(state._accounting_events) == 0
+
+    # When: the same session runs past the evidence cap.
+    for sequence in range(10_001, 20_001):
+        state.publish_tick(
+            control,
+            deadline_qpc=sequence,
+            emitted_qpc=sequence,
+            qpc_frequency_hz=10_000_000,
+        )
+        assert state.consume_tick(1, 1) is not None
+
+    # Then: evidence keeps only the newest 16,384 rows; the oldest are dropped.
+    assert len(state.evidence) == 16_384
+    assert len(state._accounting_events) == 0
+
+
+def test_accounting_window_still_counts() -> None:
+    # Given: a mailbox with an explicitly opened accounting window.
+    state = preview_clock._SharedState(60, None)
+    control = _control_state()
+    state.begin_accounting()
+    assert state._accounting_active is True
+
+    # When: a few ticks are published and dispatched inside the window.
+    for sequence in range(1, 4):
+        state.publish_tick(
+            control,
+            deadline_qpc=sequence,
+            emitted_qpc=sequence,
+            qpc_frequency_hz=10_000_000,
+        )
+        assert isinstance(state.consume_tick(1, 1), preview_clock.PreviewTick)
+    accounting = state.end_accounting()
+
+    # Then: the window reports its counts and releases its accounting state.
+    assert accounting["worker_tick_published_count"] == 3
+    assert accounting["main_dispatch_count"] == 3
+    assert accounting["latest_only_accounting_ok"] is True
+    assert state._accounting_events == []
+    assert state._accounting_active is False
 
 
 def test_blit_skipped_no_new_frame_counter_tracks_only_empty_mailbox_ticks(

@@ -36,6 +36,11 @@ _NATIVE_WAKE_POLL_MS: Final[int] = 1
 _NATIVE_WAKE_MIN_POLL_MS: Final[int] = 1
 _NATIVE_WAKE_IDLE_POLL_MS: Final[int] = 1
 _NATIVE_WAKE_DRAIN_BUDGET_S: Final[float] = 0.004
+# evidence は production では drain_evidence() されない（drain は health/調査経路のみ）。
+# 上限なしだと 45-60fps の長時間プレビューで 1 tick あたり 1 行が際限なく積まれ、
+# セッション時間に比例してメモリが増える。直近 EVIDENCE_MAX_ROWS 行だけを保持し、
+# 古い行から捨てる。60fps・1 tick あたり 2 行でも 60 秒の窓を十分に覆う（約 136 秒分）。
+EVIDENCE_MAX_ROWS: Final[int] = 16384
 
 
 class StopResult(StrEnum):
@@ -632,7 +637,7 @@ class _SharedState:
         self.current_control: _ControlState | None = None
         self.pending: PreviewTick | None = None
         self.wakes: deque[_RuntimeWake] = deque()
-        self.evidence: list[Mapping[str, object]] = []  # noqa: E501  # noqa: OBJECT_OK
+        self.evidence: deque[Mapping[str, object]] = deque(maxlen=EVIDENCE_MAX_ROWS)
         self.qpc_frequency_hz = 0
         self.worker_thread_native_id = 0
         self.last_sequence = 0
@@ -658,6 +663,7 @@ class _SharedState:
         self.window_class_destroyed = False
         self.window_class_unregistered = False
         self._accounting_events: list[tuple[str, int]] = []
+        self._accounting_active = False
         self._accounting_start_index: int | None = None
         self._accounting_start_pending = False
         self._accounting_start_period_skipped = 0
@@ -732,7 +738,8 @@ class _SharedState:
 
     def _drop_pending_locked(self) -> None:
         if self.pending is not None:
-            self._accounting_events.append(("stale", self.pending.sequence))
+            if self._accounting_active:
+                self._accounting_events.append(("stale", self.pending.sequence))
             self.pending = None
             self.stale_tick_dropped_count += 1
 
@@ -745,10 +752,14 @@ class _SharedState:
     ) -> PreviewTick:
         with self.lock:
             if self.pending is not None:
-                self._accounting_events.append(("superseded", self.pending.sequence))
+                if self._accounting_active:
+                    self._accounting_events.append(
+                        ("superseded", self.pending.sequence)
+                    )
                 self.pending_tick_superseded_count += 1
             sequence = self.last_sequence + 1
-            self._accounting_events.append(("published", sequence))
+            if self._accounting_active:
+                self._accounting_events.append(("published", sequence))
             tick = PreviewTick(
                 epoch=control.epoch,
                 generation=control.generation,
@@ -784,7 +795,8 @@ class _SharedState:
             if tick is None:
                 return None
             if tick.epoch != epoch or tick.generation != generation:
-                self._accounting_events.append(("stale", tick.sequence))
+                if self._accounting_active:
+                    self._accounting_events.append(("stale", tick.sequence))
                 self.stale_tick_dropped_count += 1
                 self._append_evidence_locked(
                     {
@@ -795,7 +807,8 @@ class _SharedState:
                     }
                 )
                 return _StaleTickDrop.STALE
-            self._accounting_events.append(("dispatched", tick.sequence))
+            if self._accounting_active:
+                self._accounting_events.append(("dispatched", tick.sequence))
             self.main_dispatch_count += 1
             self.last_delivered_sequence = tick.sequence
             return tick
@@ -914,6 +927,9 @@ class _SharedState:
 
     def begin_accounting(self) -> None:
         with self.lock:
+            # 前回の窓が閉じ切っていない場合の取りこぼしを避けるため、先に空にする。
+            self._accounting_events.clear()
+            self._accounting_active = True
             self._accounting_start_index = len(self._accounting_events)
             self._accounting_start_pending = self.pending is not None
             self._accounting_start_period_skipped = self.period_skipped_count
@@ -946,6 +962,7 @@ class _SharedState:
             self._accounting_start_pending = False
             self._accounting_start_period_skipped = 0
             self._accounting_events.clear()
+            self._accounting_active = False
             return result
 
     @staticmethod

@@ -319,7 +319,14 @@ def install_zip(
         staged.mkdir()
         try:
             pack_zip.safe_extract(zip_path, staged)
-        except (pack_zip.PackError, OSError, zipfile.BadZipFile) as e:
+        except (
+            pack_zip.PackError,
+            OSError,
+            zipfile.BadZipFile,
+            RuntimeError,
+            NotImplementedError,
+            ValueError,
+        ) as e:
             return InstallResult(status="failed", message=f"zip を開けません: {e}")
         report = pack_zip.validate_staged(staged)
         if not report.ok or report.manifest is None:
@@ -399,6 +406,21 @@ def install_zip(
         json_rel = PurePosixPath(entry_rel).with_suffix(".blockly.json").as_posix()
         if (staged / json_rel).is_file():
             rels.append(json_rel)
+        if old is None:
+            collisions: list[str] = []
+            for rel in rels:
+                confined = _confined_path(app, rel)
+                if confined is not None and confined.exists():
+                    collisions.append(rel)
+            if collisions:
+                return InstallResult(
+                    status="failed",
+                    manifest=manifest,
+                    message=(
+                        f"既存のファイルと衝突します: {', '.join(collisions)}"
+                        "（手動で退避してから導入してください）"
+                    ),
+                )
         stamp = (
             time.strftime("%Y%m%d_%H%M%S") + f"_{time.time_ns() % 1_000_000_000:09d}"
         )
@@ -502,6 +524,7 @@ def uninstall_package(app_dir: str | Path, name: str) -> UninstallResult:
     if rec is None:
         return UninstallResult(status="failed", message=f"導入記録がありません: {name}")
     removed: list[str] = []
+    failed: list[str] = []
     missing: list[str] = []
     skipped: list[str] = []
     for rel in rec.files:
@@ -511,8 +534,13 @@ def uninstall_package(app_dir: str | Path, name: str) -> UninstallResult:
             skipped.append(rel)
             continue
         if path.is_file():
-            path.unlink()
-            removed.append(rel)
+            try:
+                path.unlink()
+            except OSError as e:
+                logger.warning(f"削除できません: {path}（{e}）")
+                failed.append(rel)
+            else:
+                removed.append(rel)
         else:
             missing.append(rel)
     try:
@@ -534,13 +562,41 @@ def uninstall_package(app_dir: str | Path, name: str) -> UninstallResult:
                 next(folder.iterdir())
                 break
             except StopIteration:
-                folder.rmdir()
+                try:
+                    folder.rmdir()
+                except OSError as e:
+                    logger.warning(f"空フォルダを消せません: {folder}（{e}）")
+                    break
                 folder = folder.parent
-    _record_path(app, name).unlink(missing_ok=True)
+    record_failed = False
+    if failed:
+        # 実体が残っているのに記録だけ消すと、所有権が分からず再試行できない。
+        # 失敗したときは記録を残し、利用者が原因を直してから削除し直せるようにする。
+        logger.warning(f"削除に失敗したため導入記録を残します: {name}")
+    else:
+        try:
+            _record_path(app, name).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(f"導入記録を消せません: {name}（{e}）")
+            record_failed = True
     logger.info(f"削除: {name}（{len(removed)}件）")
-    message = f"削除しました: {name}（{len(removed)}件）"
+    if failed or record_failed:
+        message = (
+            f"削除できませんでした: {name}"
+            f"（削除 {len(removed)}件 / 失敗 {len(failed)}件）"
+        )
+        if failed:
+            message += f"。残ったもの: {', '.join(failed)}"
+        if record_failed:
+            message += "。導入記録を消せませんでした"
+    else:
+        message = f"削除しました: {name}（{len(removed)}件）"
     if missing:
         message += f"。見つからなかったもの: {', '.join(missing)}"
     if skipped:
         message += f"。無視したもの: {', '.join(skipped)}"
-    return UninstallResult(status="removed", message=message, removed=removed)
+    return UninstallResult(
+        status="failed" if failed or record_failed else "removed",
+        message=message,
+        removed=removed,
+    )

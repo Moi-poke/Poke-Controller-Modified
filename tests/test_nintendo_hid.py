@@ -221,6 +221,69 @@ def test_nintendo_hid_closed_returns_none():
     reader.close()
 
 
+class _BlockingReadHidDevice:
+    """read が解除イベントまで戻らない偽デバイス（close の競合を観測する）。"""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.closed = False
+        self.closed_during_read = False
+        self._reading = False
+
+    def read(self, size, timeout_ms=0):
+        self._reading = True
+        self.entered.set()
+        self.release.wait(5.0)
+        self._reading = False
+        return []
+
+    def write(self, data):
+        return len(data)
+
+    def close(self):
+        self.closed_during_read = self._reading
+        self.closed = True
+
+
+def test_close_does_not_close_device_while_read_blocked():
+    """読み取り中の dev.close() をしない（ネイティブuse-after-freeの回避）。"""
+    import threading
+
+    import core.nintendo_hid as nh
+
+    dev = _BlockingReadHidDevice()
+    reader = nh.NintendoHidReader()
+    reader._dev = dev
+    reader._start_poller_locked()
+    assert dev.entered.wait(2.0)
+
+    done = threading.Event()
+
+    def closer() -> None:
+        reader.close()
+        done.set()
+
+    thread = threading.Thread(target=closer)
+    thread.start()
+    try:
+        # close はブロック中の read を待つ（この時点では完了しない）。
+        assert not done.wait(0.1)
+        assert dev.closed_during_read is False
+        assert dev.closed is False
+
+        dev.release.set()
+        assert done.wait(2.0)
+        assert dev.closed is True
+        assert dev.closed_during_read is False
+        assert reader.is_open() is False
+    finally:
+        dev.release.set()
+        thread.join(2.0)
+
+
 def test_nintendo_hid_shared_reader_is_singleton():
     """パッド読みとIMU送出は同一ハンドルを共有する（二重open防止）。"""
     import core.nintendo_hid as nh

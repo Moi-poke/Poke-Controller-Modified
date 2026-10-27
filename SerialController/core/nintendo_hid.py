@@ -104,6 +104,12 @@ class NintendoHidReader:
         # open/closeを直列化する。パッド読み・IMU送出・開始処理が同時に
         # openすると、後から来た側が動いているハンドルを閉じてしまう。
         self._open_lock = threading.Lock()
+        # ネイティブ呼び出し（read/write/close）を直列化する。読み取り
+        # スレッドが dev.read() の最中に他スレッドが dev.close() すると、
+        # hidapi 側で解放済みハンドルを触る（use-after-free）。
+        # 取得順は _open_lock → _lock → _io_lock。読み取りスレッドは
+        # _io_lock を離してから _lock を取るため逆順にならない。
+        self._io_lock = threading.Lock()
         self._dev: Any = None
         self._packet = 0
         self._pad_packet = 0
@@ -388,7 +394,8 @@ class NintendoHidReader:
             if dev is None:
                 break
             try:
-                data = dev.read(_REPORT_LEN, timeout_ms=_READ_TIMEOUT_MS)
+                with self._io_lock:
+                    data = dev.read(_REPORT_LEN, timeout_ms=_READ_TIMEOUT_MS)
             except Exception:
                 with self._lock:
                     # 別スレッドが開き直した後の新しいハンドルは閉じない。
@@ -455,7 +462,8 @@ class NintendoHidReader:
             return False
         try:
             buf = bytes(data) + bytes(_REPORT_LEN - len(data))
-            return int(dev.write(buf[:_REPORT_LEN])) == _REPORT_LEN
+            with self._io_lock:
+                return int(dev.write(buf[:_REPORT_LEN])) == _REPORT_LEN
         except Exception:
             return False
 
@@ -466,7 +474,8 @@ class NintendoHidReader:
         if dev is None:
             return None
         try:
-            data = dev.read(_REPORT_LEN, timeout_ms=timeout_ms)
+            with self._io_lock:
+                data = dev.read(_REPORT_LEN, timeout_ms=timeout_ms)
             if not data:
                 return None
             return bytes(data)
@@ -631,7 +640,11 @@ class NintendoHidReader:
         return None
 
     def _close_locked(self) -> None:
-        """錠内で閉じる。cacheも消す（閉じた後のreadはNone）。"""
+        """錠内で閉じる。cacheも消す（閉じた後のreadはNone）。
+
+        `_io_lock` を取ってから閉じる。読み取りスレッドが dev.read() の
+        最中なら、その完了を待ってからハンドルを解放する。
+        """
         dev, self._dev = self._dev, None
         self._latest = None
         self._latest_t = 0.0
@@ -642,17 +655,23 @@ class NintendoHidReader:
         self._armed = False
         if dev is not None:
             try:
-                dev.close()
+                with self._io_lock:
+                    dev.close()
             except Exception:
                 pass
 
     def close(self) -> None:
-        """閉じる。例外は投げない。openとは直列化する。"""
+        """閉じる。例外は投げない。openとは直列化する。
+
+        読み取りスレッドを先に止めてから閉じる。逆順だと、スレッドが
+        dev.read() の最中にハンドルを閉じることになる。`_stop_poller`
+        は最大0.5秒待ち、残っていても `_close_locked` の `_io_lock` が
+        読み取り1回分（最大 _READ_TIMEOUT_MS）の完了を待つ。
+        """
         with self._open_lock:
-            self._poll_stop.set()
+            self._stop_poller()
             with self._lock:
                 self._close_locked()
-            self._stop_poller()
 
     def is_open(self) -> bool:
         """開いていて、open処理中でもないか。"""

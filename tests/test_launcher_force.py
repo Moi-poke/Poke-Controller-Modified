@@ -108,3 +108,37 @@ def test_launch_force_restores_lock_on_popen_failure(
     data = json.loads(after.read_bytes().decode("utf-8"))
     assert int(data.get("pid", 0)) == victim
     assert after.read_bytes() == before
+
+
+def test_read_summary_reads_percent_literally(monkeypatch, tmp_path: Path) -> None:
+    """com_port_name の % が補間エラーにならず literal に読めること."""
+    monkeypatch.setattr(launcher, "APP_DIR", str(tmp_path))
+    monkeypatch.setattr(launcher, "SETTING_GLOB", str(tmp_path / "settings*.ini"))
+    (tmp_path / "settings.a.ini").write_text(
+        "[General Setting]\ncom_port_name = COM 100%\n", encoding="utf-8"
+    )
+    try:
+        assert launcher.read_summary("a")["com"] == "COM 100%"
+        assert "a" in launcher.list_profiles()
+    finally:
+        while str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+
+
+def test_list_profiles_skips_unsanitized_names(monkeypatch, tmp_path: Path) -> None:
+    """settings.a.b.ini は a_b に正規化されるため一覧に出さないこと."""
+    monkeypatch.setattr(launcher, "APP_DIR", str(tmp_path))
+    monkeypatch.setattr(launcher, "SETTING_GLOB", str(tmp_path / "settings*.ini"))
+    (tmp_path / "settings.a.b.ini").write_text(
+        "[General Setting]\ncom_port_name = COM 7\n", encoding="utf-8"
+    )
+    (tmp_path / "settings.a_b.ini").write_text(
+        "[General Setting]\ncom_port_name = COM 8\n", encoding="utf-8"
+    )
+    try:
+        profiles = launcher.list_profiles()
+    finally:
+        while str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+    assert "a_b" in profiles
+    assert "a.b" not in profiles

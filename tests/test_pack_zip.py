@@ -134,3 +134,63 @@ def test_staged_with_hyphen_dir_fails(tmp_path: Path) -> None:
     )
     report = pack_zip.validate_staged(src)
     assert not report.ok
+
+
+def test_case_insensitive_collision_rejected(tmp_path: Path) -> None:
+    bad = tmp_path / "case.zip"
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr("A.txt", "upper")
+        zf.writestr("a.txt", "lower")
+    dest = tmp_path / "out"
+    with pytest.raises(pack_zip.PackError, match="同名"):
+        pack_zip.safe_extract(bad, dest)
+    assert not dest.exists()
+
+
+@pytest.mark.parametrize("name", ["NUL", "CON.txt"])
+def test_reserved_device_name_rejected(tmp_path: Path, name: str) -> None:
+    bad = tmp_path / "reserved.zip"
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr(name, "x")
+    with pytest.raises(pack_zip.PackError):
+        pack_zip.safe_extract(bad, tmp_path / "out")
+
+
+def test_trailing_dot_collision_rejected(tmp_path: Path) -> None:
+    bad = tmp_path / "dot.zip"
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr("T/x.png", b"first")
+        zf.writestr("T/x.png.", b"second")
+    dest = tmp_path / "out"
+    with pytest.raises(pack_zip.PackError):
+        pack_zip.safe_extract(bad, dest)
+    assert not dest.exists()
+
+
+def test_valid_pack_still_extracts(tmp_path: Path) -> None:
+    good = tmp_path / "good.zip"
+    entries = {
+        "pokecon.json": b"{}",
+        "Commands/PythonCommands/My.py": b"# my\n",
+        "Template/p/a.png": b"\x89PNG\r\n\x1a\n",
+    }
+    with zipfile.ZipFile(good, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    dest = tmp_path / "out"
+    files = pack_zip.safe_extract(good, dest)
+    assert files == list(entries)
+    for name, data in entries.items():
+        assert (dest / name).read_bytes() == data
+
+
+def test_duplicate_entry_rejected(tmp_path: Path) -> None:
+    bad = tmp_path / "dup.zip"
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(bad, "w") as zf:
+            zf.writestr("T/x.png", b"first")
+            zf.writestr("T/x.png", b"second")
+    dest = tmp_path / "out"
+    with pytest.raises(pack_zip.PackError, match="同名"):
+        pack_zip.safe_extract(bad, dest)
+    assert not dest.exists()

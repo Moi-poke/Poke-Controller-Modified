@@ -311,7 +311,14 @@ class SerialService:
         """
         if self.sender is None:
             return (False, False)
-        if name == self.sender.getTransportName():
+        # 表示名と実体名は一致しない（BconTransport.name == "bcon" だが
+        # プリセット名は "switch-bcon"）。別名で押し直しただけで作り直すと
+        # 線を閉じて HELLO からやり直しになるため、正規化してから比べる。
+        # 未登録名を既定へ落とす resolve_transport_name は使わない
+        # （未知名どうしが legacy_text に潰れて別方式を取り違える）。
+        requested = transport.canonical_transport_name(name)
+        current = transport.canonical_transport_name(self.sender.getTransportName())
+        if requested is not None and requested == current:
             return (False, True)
         new_transport = transport.create_transport(name, logger=transport_logger)
         linked = self.sender.setTransport(new_transport)

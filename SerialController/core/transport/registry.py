@@ -144,6 +144,20 @@ def transport_capability(name: str | None) -> str:
     return str(info.get("capability", LEGACY_ROW))
 
 
+def canonical_transport_name(name: str | None) -> str | None:
+    """登録名・旧名を登録簿のキーへ寄せる。未登録なら None。
+
+    `resolve_transport_name` と違い、未知の名前を既定へ落とさない。
+    「選択中の方式と同じか」の判定に既定へのフォールバックを使うと、
+    未登録名どうしが同じ既定へ潰れて別方式を取り違える。
+    """
+    key = str(name).strip() if name is not None else ""
+    if not key:
+        return None
+    key = TRANSPORT_ALIASES.get(key, key)
+    return key if key in _REGISTRY else None
+
+
 def resolve_transport_name(name: str | None) -> str:
     """指定された名前を、実際に使える名前へ直す。
 

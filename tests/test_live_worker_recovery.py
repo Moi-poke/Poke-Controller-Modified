@@ -320,3 +320,124 @@ def test_drop_owner_queues_a_state_without_the_runaway_press() -> None:
     assert pushed, "取り下げが列へ積まれていない"
     # 線に残る最後の状態がこれ。押下が残っていると Switch 側で押しっぱなしになる。
     assert int(pushed[-1]["btn"]) == 0, pushed[-1]
+
+
+def test_cross_owner_sticks_do_not_roll_back() -> None:
+    """Given: script が左、gamepad が右を申告している / When: script が左を動かす / Then: 右が巻き戻らないこと。"""
+    from core.serial.sender import Sender
+    from fakes import FakeTransport
+
+    sender = Sender(is_show_serial=False, transport=FakeTransport())
+    sender.setStick("L", 100, 100, source="script")
+    sender.setStick("R", 200, 100, source="gamepad")
+    sender.setStick("L", 150, 100, source="script")
+
+    snap = sender.snapshot()
+    assert (snap["lx"], snap["ly"]) == (150, 100), snap
+    # 左の再申告で、触っていない右の gamepad 側まで巻き戻ってはいけない。
+    assert (snap["rx"], snap["ry"]) == (200, 100), snap
+
+
+def test_restore_owner_keeps_saved_stick_coordinates() -> None:
+    """Given: script の左スティックを退避した / When: gamepad が右を動かした後に戻す / Then: 退避した左だけが戻ること。"""
+    from core.serial.sender import Sender
+    from fakes import FakeTransport
+
+    sender = Sender(is_show_serial=False, transport=FakeTransport())
+    sender.setStick("L", 100, 100, source="script")
+    sender.setStick("R", 200, 100, source="gamepad")
+    assert sender.suspendOwner("script") is True
+    sender.setStick("R", 180, 100, source="gamepad")
+    assert sender.restoreOwner("script") is True
+
+    snap = sender.snapshot()
+    assert (snap["lx"], snap["ly"]) == (100, 100), snap
+    assert (snap["rx"], snap["ry"]) == (180, 100), snap
+
+
+def test_open_after_slow_close_restarts_live_worker() -> None:
+    """Given: 送出で詰まったまま close が join を諦めた線 / When: すぐ開き直す / Then: worker を起こし直すこと。"""
+    import threading
+
+    from core import Transport
+    from core.serial.sender import Sender
+    from fakes import FakeTransport
+
+    class SlowLiveTransport(FakeTransport):
+        name = "slowlive"
+        capability = Transport.PICO_LIVE_STATE
+        # 手元で開閉を判定できる方式（送出ループが問い合わせる）。
+        is_open_is_local = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.release = threading.Event()
+            self.blocked = threading.Event()
+            self._block_once = True
+
+        def send_row(self, row: str, measure_perf: bool = True) -> None:
+            if self._block_once:
+                self._block_once = False
+                self.blocked.set()
+                # 実線の書き込みタイムアウト／ドライバ停止の代役。
+                self.release.wait(5.0)
+            super().send_row(row, measure_perf=measure_perf)
+
+    transport = SlowLiveTransport()
+    sender = Sender(is_show_serial=False, transport=transport)
+    try:
+        assert sender.openSerial(1) is True
+        assert transport.blocked.wait(3.0), "worker が送信で詰まっていない"
+
+        sender.closeSerial()
+        # close は join を諦めて戻る（古い worker はまだ詰まったまま）。
+        assert sender.isLiveWorkerRunning() is True
+
+        # 開き直しが join で待っている間に、詰まっていた送信を放す。
+        timer = threading.Timer(0.2, transport.release.set)
+        timer.start()
+        try:
+            assert sender.openSerial(1) is True
+        finally:
+            timer.cancel()
+
+        # 古い worker が抜けたあと、代わりの worker が動き続けること。
+        assert _wait_until(sender.isLiveWorkerRunning, timeout=2.0), (
+            "開き直したのに worker が居ない（無音のまま）"
+        )
+
+        before = len(transport.rows)
+        sender.setStick("L", 200, 100, source="script")
+        expected = sender.encodePicoState(sender.snapshot())
+        assert _wait_until(
+            lambda: len(transport.rows) > before and transport.rows[-1] == expected
+        ), transport.rows
+    finally:
+        transport.release.set()
+        sender.stopLiveWorker(1.0)
+
+
+def test_legacy_close_sends_neutral_and_resets_state() -> None:
+    """Given: legacy の線で A を押した / When: 閉じる / Then: 中立の行を送り、押下状態も入力ログも残さないこと。"""
+    from core.Keys import Button
+    from core.serial.sender import Sender
+    from fakes import FakeTransport
+
+    transport = FakeTransport()
+    sender = Sender(is_show_serial=False, transport=transport)
+    assert sender.openSerial(1) is True
+    sender.pressButtons([Button.A], source="keyboard")
+    sender.sendPosture()
+    assert transport.rows, "押下の行が出ていない"
+    pressed = int(transport.rows[-1].split()[0], 16)
+    assert pressed & 0xFFFC != 0, transport.rows
+
+    sender.closeSerial()
+
+    # 線に残る最後の行が中立であること（下位2bitは変化印）。
+    parts = transport.rows[-1].split()
+    assert int(parts[0], 16) & 0xFFFC == 0, transport.rows
+    assert int(parts[1]) == 8, transport.rows
+    assert int(sender.snapshot()["btn"]) == 0
+    # 閉じたあとに押下が残ると、次の接続の差分が狂う。
+    assert sender.input_logger._btn == 0

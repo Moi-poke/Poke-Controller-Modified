@@ -96,13 +96,13 @@ def _with_record(workspace_json: str, code: str) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
-def _atomic_write(target: Path, text: str) -> None:
-    """一時ファイル経由で書く。書けたらのみ置き換える。"""
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    """一時ファイル経由でバイト列を書く。書けたらのみ置き換える。"""
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".tmp_blockly_")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fp:
-            fp.write(text)
+        with os.fdopen(fd, "wb") as fp:
+            fp.write(data)
         os.replace(tmp_name, target)
     except BaseException:
         try:
@@ -110,6 +110,11 @@ def _atomic_write(target: Path, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _atomic_write(target: Path, text: str) -> None:
+    """一時ファイル経由で書く。書けたらのみ置き換える。"""
+    _atomic_write_bytes(target, text.encode("utf-8"))
 
 
 def save_blockly(
@@ -123,6 +128,8 @@ def save_blockly(
     errors.extend(blockly_validate.validate_workspace_json(workspace_json))
     errors.extend(blockly_validate.validate_generated_code(python_code))
     errors.extend(blockly_validate.validate_dialog_vars(workspace_json))
+    # 深すぎるJSONは両方の検証が同じ異常を返すため、重複を落とす。
+    errors = list(dict.fromkeys(errors))
     if errors:
         return SaveResult(
             status="failed",
@@ -147,17 +154,32 @@ def save_blockly(
     lock = _lock_for(stem)
     try:
         with lock:
+            # .py を置き換える前に旧中身を退避する。json側だけ失敗したときに
+            # 旧スクリプトを失わない（置換済みの分を戻す）ため。
+            try:
+                old_py: bytes | None = py_path.read_bytes()
+            except FileNotFoundError:
+                old_py = None
+            except OSError as e:
+                logger.warning(f"Blockly保存前の退避に失敗: {e}")
+                return SaveResult(
+                    status="failed", message=f"保存できません: {e}", errors=[str(e)]
+                )
             try:
                 _atomic_write(py_path, code)
                 try:
                     _atomic_write(json_path, stored_json)
                 except Exception:
-                    # json側の想定外の例外でも.pyだけ残さない。HTTP受け口は
-                    # 例外を握れず無応答になるため、ここで必ず結果に変える。
+                    # json側の失敗で対が壊れる。旧.pyがあれば中身を戻し、
+                    # 無ければ新規作成分を消す。HTTP受け口は例外を握れず
+                    # 無応答になるため、ここで必ず結果に変える。
                     try:
-                        py_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                        if old_py is None:
+                            py_path.unlink(missing_ok=True)
+                        else:
+                            _atomic_write_bytes(py_path, old_py)
+                    except Exception as restore_error:
+                        logger.warning(f"Blockly保存の巻き戻しに失敗: {restore_error}")
                     raise
             except Exception as e:
                 logger.warning(f"Blockly保存に失敗: {e}")
@@ -379,29 +401,38 @@ def load_blockly(app_dir: str | Path, stem: str) -> LoadResult:
     except (OSError, UnicodeDecodeError) as e:
         logger.warning(f"Blockly読込に失敗: {e}")
         return LoadResult(status="failed", message=f"開けません: {e}")
-    errors = blockly_validate.validate_workspace_json(text)
-    if errors:
+    try:
+        errors = blockly_validate.validate_workspace_json(text)
+        if errors:
+            return LoadResult(
+                status="failed", message="開けません:\n- " + "\n- ".join(errors)
+            )
+        data = json.loads(text)
+        record = data.pop(RECORD_KEY, None)
+        if record is None:
+            return LoadResult(
+                status="ok", message=f"開きました: {stem}", workspace_json=text
+            )
+        external = False
+        digest = record.get("pySha256") if isinstance(record, dict) else None
+        if isinstance(digest, str):
+            try:
+                current = path.with_name(f"{stem}.py").read_bytes().decode("utf-8")
+                external = _py_digest(current) != digest
+            except (OSError, UnicodeDecodeError):
+                external = False
+        workspace = json.dumps(data, ensure_ascii=False)
+    except RecursionError:
+        # 深すぎるJSONは検証側でも落とすが、念のためここでも例外を外へ出さない。
+        logger.warning(f"Blockly読込に失敗: 深すぎます: {stem}")
         return LoadResult(
-            status="failed", message="開けません:\n- " + "\n- ".join(errors)
+            status="failed",
+            message="開けません:\n- " + blockly_validate.DEEP_WORKSPACE_ERROR,
         )
-    data = json.loads(text)
-    record = data.pop(RECORD_KEY, None)
-    if record is None:
-        return LoadResult(
-            status="ok", message=f"開きました: {stem}", workspace_json=text
-        )
-    external = False
-    digest = record.get("pySha256") if isinstance(record, dict) else None
-    if isinstance(digest, str):
-        try:
-            current = path.with_name(f"{stem}.py").read_bytes().decode("utf-8")
-            external = _py_digest(current) != digest
-        except (OSError, UnicodeDecodeError):
-            external = False
     return LoadResult(
         status="ok",
         message=f"開きました: {stem}",
-        workspace_json=json.dumps(data, ensure_ascii=False),
+        workspace_json=workspace,
         external_edit=external,
     )
 

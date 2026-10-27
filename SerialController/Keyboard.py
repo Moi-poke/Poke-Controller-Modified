@@ -83,7 +83,9 @@ class SwitchKeyboardController(Keyboard):
         self.holdingDir: list[Any] = []
         self.holdingHatDir: list[Any] = []
 
-        self.setting = configparser.ConfigParser()
+        # 補間を無効にする。キー割り当ての "%"（Shift+5）を
+        # BasicInterpolation が壊れた参照として例外にするため。
+        self.setting = configparser.ConfigParser(interpolation=None)
         self.setting.optionxform = str  # type: ignore[assignment, method-assign]
 
         path = setting_path or self.SETTING_PATH
@@ -123,7 +125,7 @@ class SwitchKeyboardController(Keyboard):
         if not os.path.isfile(path):
             logger.warning(f"キーコンフィグが無いため再読込しません: {path}")
             return False
-        fresh = configparser.ConfigParser()
+        fresh = configparser.ConfigParser(interpolation=None)
         fresh.optionxform = str  # type: ignore[assignment, method-assign]
         try:
             read_ok = fresh.read(path, encoding="utf-8")

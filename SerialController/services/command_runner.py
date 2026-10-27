@@ -169,8 +169,21 @@ class CommandRunner:
         表示は状態を映すためのもので、状態そのものではない。文言を
         変えた・開始の途中で例外が出た・外から表示を触った、のどれでも
         判定が狂う。状態はここだけで持つ。
+
+        打ち切り後は state が idle でも古いスレッドが生きていることが
+        ある（_fenced_thread）。その間の再読込・スクリプト導入は走って
+        いるモジュールを差し替えて足元を崩すため、忙しいと答える。
+        ここでは状態も塞ぎも変えない（外すのは開始時と後始末の役目）。
         """
-        return self._state != "idle"
+        if self._state != "idle":
+            return True
+        fenced = self._fenced_thread
+        if fenced is None:
+            return False
+        try:
+            return bool(fenced.is_alive())
+        except Exception:
+            return False
 
     def set_diag(self, diag: Any, profile: str = "") -> None:
         """走行記録の受け先を渡す。Window が組み立て後に呼ぶ。
@@ -287,6 +300,12 @@ class CommandRunner:
         逆にすると、ごく短いコマンドが start の中で終わった場合に、
         後始末が先に走り、あとから実行中の見た目へ書き換えてしまう。
         """
+        # 終了処理が始まっている。ここで始めると後始末が捨てられ、
+        # 終わりきらないコマンドが閉じた線へ書きに行く。状態は変えない。
+        if self._closing:
+            self._notify("終了処理中のため開始できません")
+            logger.warning("Start refused while closing")
+            return
         # この入口はGUIスレッドから呼ぶ。作業側かどうかの目印を更新する。
         self._gui_thread_id = threading.get_ident()
         # 打ち切り後に塞いだ古い作業が生きている間は新規開始を断り、
@@ -852,11 +871,16 @@ class CommandRunner:
             running = bool(thread is not None and thread.is_alive())
         except Exception:
             running = False
-        if not running and not getattr(command, "alive", False):
+        alive = bool(getattr(command, "alive", False))
+        # MCU コマンドは thread/alive を持たず isRunning だけを持つ。
+        # これを見ないと、マクロを動かしたままアプリを閉じることになり、
+        # マイコン側はボタンを押したままになる。
+        mcu_running = bool(getattr(command, "isRunning", False))
+        if not running and not alive and not mcu_running:
             self._reap_fenced_thread()
             return True
 
-        if getattr(command, "alive", False):
+        if alive or mcu_running:
             try:
                 command.end(ser)
             except Exception as e:

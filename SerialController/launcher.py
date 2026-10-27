@@ -31,6 +31,8 @@ import tkinter.simpledialog as tksimple
 import tkinter.ttk as ttk
 from typing import Any
 
+from loguru import logger
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 WINDOW_SCRIPT = os.path.join(APP_DIR, "Window.py")
 SETTING_GLOB = os.path.join(APP_DIR, "settings*.ini")
@@ -83,7 +85,9 @@ def profile_from_path(path: str) -> str | None:
 def read_summary(profile: str) -> dict:
     """一覧に出す項目を settings ファイルから読む。壊れていても落とさない。"""
     info = {"profile": profile, "com": "", "camera": "", "key": "", "fps": ""}
-    parser = configparser.ConfigParser()
+    # 補間を無効にする。com_port_name = COM 100% のような値を
+    # BasicInterpolation が壊れた参照として例外にするため。
+    parser = configparser.ConfigParser(interpolation=None)
     # 大文字小文字を区別する（標準のドキュメントどおりの用法）。
     parser.optionxform = str  # type: ignore[assignment, method-assign]
     try:
@@ -114,8 +118,20 @@ def list_profiles() -> list[str]:
     found = []
     for path in glob.glob(SETTING_GLOB):
         profile = profile_from_path(path)
-        if profile is not None:
-            found.append(profile)
+        if profile is None:
+            continue
+        # 本体は --profile を sanitize_profile してから settings を読む。
+        # 名前が変わるファイルを一覧に出すと、選んでも別のファイルが読まれ、
+        # 一覧から削除しても実ファイルが残るため、ここで除外する。
+        if profile:
+            normalized = sanitize_profile(profile)
+            if normalized != profile:
+                logger.warning(
+                    "プロファイル名を正規化できないため一覧から除外します: "
+                    f"{path} (正規化後: {normalized})"
+                )
+                continue
+        found.append(profile)
     # 既定を先頭にし、残りは名前順
     found.sort(key=lambda p: (p != "", p.lower()))
     return found

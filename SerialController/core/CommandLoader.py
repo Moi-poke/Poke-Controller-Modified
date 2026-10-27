@@ -38,8 +38,9 @@ class CommandLoader:
         for mod_name in list(set(cur_module_names) & set(loaded_module_dic.keys())):
             try:
                 importlib.reload(loaded_module_dic[mod_name])
-            except Exception:
+            except (Exception, SystemExit):
                 # ファイル名と経緯を残して次へ進む（単体分離を保つ）。
+                # sys.exit() による SystemExit も 1 ファイル分として握る。
                 logger.error(
                     f"再読み込みに失敗しました: {mod_name}\n{traceback.format_exc()}"
                 )

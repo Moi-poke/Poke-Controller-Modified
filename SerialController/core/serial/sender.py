@@ -483,7 +483,18 @@ class Sender:
         """
         opened = self.transport.open(portNum, portName, baudrate, **extra)
         if opened and self._liveCapable():
-            self.startLiveWorker()
+            if not self.startLiveWorker():
+                # 直前の close が join を諦めた場合、停止指示を受けた古い
+                # worker がまだ send_row で詰まっている。そのままでは
+                # startLiveWorker が「生きている」と見て何も起こさず、
+                # 古い worker が抜けた後に無音になる（接続表示は繋がったまま）。
+                # 1度だけ止め直してから起こし直す。二重起動はしない。
+                self.stopLiveWorker(1.0)
+                if not self.startLiveWorker():
+                    self._logger.error(
+                        "PicoLiveWorker did not restart; "
+                        "the old worker is still stopping"
+                    )
         return opened
 
     def closeSerial(self) -> None:
@@ -491,17 +502,20 @@ class Sender:
 
         停止は順序が全てである。
 
-            1  新規の live 入力の受付を停止する
-            2  未送信の通常状態を破棄する
-            3  中立を送る（_closing指定。受付停止後のため順序が保たれる）
-            4  送出の完了を期限つきで待つ
-            5  worker へ停止を要求する
-            6  期限つきで停止を待つ
-            7  入力ログを初期化する
+            1  新規の live 入力の受付を停止する（live のみ）
+            2  未送信の通常状態を破棄する（live のみ）
+            3  中立を送る（live は _closing 指定。legacy は閉じる直前に
+               中立の1行を書く）
+            4  送出の完了を期限つきで待つ（live のみ）
+            5  worker へ停止を要求する（live のみ）
+            6  期限つきで停止を待つ（live のみ）
+            7  入力ログを初期化する（live / legacy の両方）
             8  Transport を閉じる
 
         中立の送出は worker が生きているうちに行う。worker を止めてから
-        列へ入れても誰も送出しないため、押下が残る。
+        列へ入れても誰も送出しないため、押下が残る。legacy は状態を送る
+        相手が消えるため、閉じる直前に neutral の1行を書いておかないと、
+        最後の押下行が線に残って Switch 側が押しっぱなしになる。
 
         ステップ 1 から 7 は try の内側に置き、ステップ 8 は finally で必ず実行
         する。途中で失敗しても回線を開いたままにしない。
@@ -530,8 +544,20 @@ class Sender:
                 # 5 から 7: 停止を要求し、起床させ、期限つきで待つ。
                 if not self.stopLiveWorker(self.CLOSE_JOIN_S):
                     self._logger.error("PicoLiveWorker did not stop; closing anyway")
-                # 8: 入力ログを初期化する。
-                self.input_logger.reset()
+            else:
+                # 7: legacy は閉じたあとに送る相手が居ない。押下を落として
+                #    中立の1行を書いてから閉じる（状態だけ戻しても、線に
+                #    残っている最後の行は押下のままになる）。
+                try:
+                    self.sendNeutralAll()
+                except Exception:
+                    self._logger.error(
+                        "Neutral state could not be sent before closing",
+                        exc_info=True,
+                    )
+            # 8: 入力ログを初期化する。live / legacy のどちらも、閉じた
+            #    時点で押下の差分を捨てる（次に開いたときの差分を狂わせない）。
+            self.input_logger.reset()
         finally:
             # 9: どの手順が失敗しても回線は必ず閉じる。手順 1〜3 を
             # try の外に置くと、そこで例外が出たときに閉じず、かつ
@@ -781,8 +807,10 @@ class Sender:
 
         ボタンは owner ごとのビット列を持ち、送る値は全 owner の OR とする。
         同じボタンを 2 者が押している場合、両方が離すまで落とさないため
-        である。Hat とスティックは値であり OR できないため、owner ごとに
-        (値, revision) を持ち、revision が最大のものを採る。
+        である。Hat は値であり OR できないため owner ごとに (値, revision)
+        を持つ。スティックは左右で独立して倒せるため、owner ごとに
+        ({"L": (x, y), ...}, {"L": revision, ...}) と側ごとの revision を
+        持ち、側ごとに revision が最大のものを採る。
         """
         if not hasattr(self, "_owner_btn"):
             self._owner_btn: dict[str, int] = {}
@@ -889,8 +917,10 @@ class Sender:
             if saved["stick"] is not None:
                 # Hat と同じく、いまの revision で入れ直す。古い revision
                 # のまま戻すと、退避中に来た他の申告に負け続ける。
+                # 側ごとに revision を持つため、退避した側だけを更新する。
                 claim = saved["stick"][0]
-                self._owner_stick[owner] = (claim, self.getRevision() + 1)
+                revisions = {side: self.getRevision() + 1 for side in claim}
+                self._owner_stick[owner] = (claim, revisions)
             if self._applyComposed():
                 self._bumpRevision()
                 if self._liveCapable():
@@ -954,15 +984,19 @@ class Sender:
         """その側のスティック申告のうち revision が最大の座標を返す。
 
         申告が無ければ None。呼び出し側は self._lock を保持していること。
-        所有者ごとの申告は ({"L": (x, y), "R": (x, y)}, revision) の形で
-        _owner_stick に入る。Hat と同じく revision 順で選ぶ。
+        所有者ごとの申告は ({"L": (x, y), ...}, {"L": revision, ...}) の形で
+        _owner_stick に入る。左右は独立して倒せるため、側ごとの revision で
+        選ぶ（片側の申告で反対側まで新しくしない）。
         """
         self._ensureOwners()
         latest = None
         latest_rev = -1
-        for claim, rev in self._owner_stick.values():
-            if side in claim and int(rev) >= latest_rev:
-                latest_rev = int(rev)
+        for claim, revisions in self._owner_stick.values():
+            if side not in claim:
+                continue
+            rev = int(revisions.get(side, -1))
+            if rev >= latest_rev:
+                latest_rev = rev
                 latest = claim[side]
         return latest
 
@@ -1096,20 +1130,25 @@ class Sender:
                 or str(stick).upper().endswith("RIGHT")
                 else "L"
             )
-            # 自分の前回申告を土台に、渡された軸だけ上書きする。申告が
-            # 初めての側は現在の姿勢を土台にする（差分の意味を保つ）。
-            prev_claim, _ = self._owner_stick.get(owner, ({}, -1))
+            # 触った側だけを申告する。触っていない側まで claim に種を
+            # 蒔くと、その側の revision まで上がり、他所有者の申告を
+            # 巻き戻す（左を動かしただけで gamepad の右が戻る）。
+            # 自分の前回申告がその側にあればそれを土台にし、初めてなら
+            # 現在の姿勢を土台にする（差分の意味を保つ）。
+            prev_claim, prev_revisions = self._owner_stick.get(owner, ({}, {}))
             claim = dict(prev_claim)
-            for name, ax, ay in (("L", "lx", "ly"), ("R", "rx", "ry")):
-                if name not in claim:
-                    claim[name] = (int(self._posture[ax]), int(self._posture[ay]))
+            revisions = dict(prev_revisions)
+            if side not in claim:
+                ax, ay = ("lx", "ly") if side == "L" else ("rx", "ry")
+                claim[side] = (int(self._posture[ax]), int(self._posture[ay]))
             cx, cy = claim[side]
             if x is not None:
                 cx = int(x)
             if y is not None:
                 cy = int(y)
             claim[side] = (cx, cy)
-            self._owner_stick[owner] = (claim, self.getRevision() + 1)
+            revisions[side] = self.getRevision() + 1
+            self._owner_stick[owner] = (claim, revisions)
             if self._applyComposed():
                 self._bumpRevision()
                 if self._liveCapable():

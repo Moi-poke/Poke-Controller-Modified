@@ -63,6 +63,28 @@ def test_switch_same_name_noop() -> None:
     assert linked is True
 
 
+def test_switch_alias_of_current_transport_is_noop() -> None:
+    """同じ運搬物の別名で押し直しても作り直さない（bcon→switch-bcon）。"""
+    service, _ = make_service()
+
+    class _BconSender:
+        def __init__(self) -> None:
+            self.set_calls = 0
+
+        def getTransportName(self) -> str:
+            return "bcon"
+
+        def setTransport(self, _transport: object) -> bool:
+            self.set_calls += 1
+            return True
+
+    sender = _BconSender()
+    service.sender = sender  # type: ignore[assignment]
+    assert service.switch_transport("switch-bcon") == (False, True)
+    assert sender.set_calls == 0
+    assert service.sender is sender
+
+
 def test_switch_to_dummy_legacy() -> None:
     class DummyLegacy(FakeTransport):
         name = "dummy_legacy_tmp"

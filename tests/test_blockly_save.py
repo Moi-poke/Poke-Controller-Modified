@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from core import blockly_validate
 from services import blockly_save
 
 
@@ -178,6 +179,55 @@ def test_save_rollback_on_second_write(
     assert res.status == "failed"
     assert not (app / "Commands" / "PythonCommands" / "MyBlock.py").exists()
     assert not (app / "Commands" / "PythonCommands" / "MyBlock.blockly.json").exists()
+
+
+def test_failed_json_write_restores_previous_py(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2件目（.blockly.json）の書き込み失敗で、置換済みの旧.pyを巻き戻す。"""
+    app = make_app(tmp_path)
+    py_dir = app / "Commands" / "PythonCommands"
+    py_path = py_dir / "Deep.py"
+    sentinel = "# 旧スクリプト（巻き戻し確認用）\n"
+    py_path.write_text(sentinel, encoding="utf-8")
+    orig = blockly_save._atomic_write
+
+    def faulty(target: Path, text: str) -> None:
+        if target.name.endswith(".blockly.json"):
+            raise OSError("故障注入")
+        orig(target, text)
+
+    monkeypatch.setattr(blockly_save, "_atomic_write", faulty)
+    res = blockly_save.save_blockly(app, "Deep", good_ws(), good_code())
+    assert res.status == "failed"
+    assert py_path.read_text(encoding="utf-8") == sentinel
+    assert not (py_dir / "Deep.blockly.json").exists()
+
+
+def _deep_ws(depth: int) -> str:
+    """`next` を depth 段つないだ深いワークスペースJSONを文字列で作る。"""
+    chain = '{"type": "pokecon_wait", "next": {"block": ' * depth
+    chain += '{"type": "pokecon_wait"}'
+    chain += "}}" * depth
+    return '{"blocks": {"languageVersion": 0, "blocks": [' + chain + "]}}"
+
+
+def test_deep_json_save_returns_failed_without_recursion_error(tmp_path: Path) -> None:
+    """1500段の入れ子でもRecursionErrorを漏らさずfailedで返す。"""
+    app = make_app(tmp_path)
+    res = blockly_save.save_blockly(app, "Deep", _deep_ws(1500), good_code())
+    assert res.status == "failed"
+    assert blockly_validate.DEEP_WORKSPACE_ERROR in res.errors
+    assert list((app / "Commands" / "PythonCommands").iterdir()) == []
+
+
+def test_deep_json_load_returns_failed_without_recursion_error(tmp_path: Path) -> None:
+    """深すぎる保存物を開いてもRecursionErrorを漏らさずfailedで返す。"""
+    app = make_app(tmp_path)
+    py_dir = app / "Commands" / "PythonCommands"
+    (py_dir / "Deep.blockly.json").write_text(_deep_ws(1500), encoding="utf-8")
+    res = blockly_save.load_blockly(app, "Deep")
+    assert res.status == "failed"
 
 
 def test_bad_dialog_var_fails_without_files(tmp_path: Path) -> None:

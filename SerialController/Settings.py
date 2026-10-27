@@ -32,7 +32,11 @@ class GuiSettings:
         self.profile = self.sanitize_profile(profile)
         self.setting_path = self._path_for(self.profile)
 
-        self.setting: configparser.ConfigParser = configparser.ConfigParser()
+        # ini の値は書式（Input Log の strftime）やパスをそのまま持つ。
+        # 既定の BasicInterpolation は生の % を弾くため無効化する。
+        self.setting: configparser.ConfigParser = configparser.ConfigParser(
+            interpolation=None
+        )
         self.setting.optionxform = str  # type: ignore[assignment]
 
         if not os.path.exists(self.setting_path):
@@ -231,7 +235,7 @@ class GuiSettings:
         そこで、ここではファイルを読み直したうえで KeyMap-* だけを
         差し替えて書き出す。触っていない設定には一切手を付けない。
         """
-        latest = configparser.ConfigParser()
+        latest = configparser.ConfigParser(interpolation=None)
         latest.optionxform = str  # type: ignore[assignment]
         if os.path.isfile(self.setting_path):
             latest.read(self.setting_path, encoding="utf-8")
@@ -272,7 +276,7 @@ class GuiSettings:
         """
         if not os.path.isfile(self.setting_path):
             return
-        latest = configparser.ConfigParser()
+        latest = configparser.ConfigParser(interpolation=None)
         latest.optionxform = str  # type: ignore[assignment]
         if not latest.read(self.setting_path, encoding="utf-8"):
             return

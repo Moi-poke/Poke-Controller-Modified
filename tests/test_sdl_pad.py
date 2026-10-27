@@ -7,8 +7,9 @@ Switch Pro コンなど XInput に対応していないパッドは SDL（pygame
 
 from __future__ import annotations
 
+from core.gamepad_map import stick_to_xy
 from core.sdl_pad import SdlPadReader, _axis_to_short, _trigger_to_byte
-from core.xinput import PadState
+from core.xinput import DEADZONE_LEFT, PadState
 
 
 def test_axis_conversion() -> None:
@@ -32,6 +33,18 @@ def test_normalize_axis_sint16() -> None:
     assert abs(_normalize_axis(-1324) - (-1324 / 32767)) < 1e-9
     # float 実装はそのまま
     assert _normalize_axis(0.5) == 0.5
+
+
+def test_normalize_axis_int_one_is_not_full_scale() -> None:
+    """int の ±1 は Sint16 の1LSB。全倒れへ増幅しない。"""
+    from core.sdl_pad import _normalize_axis
+
+    assert _normalize_axis(1) == 1 / 32767
+    assert _normalize_axis(-1) == -1 / 32767
+    # 微小ノイズの int 1 が座標の全倒れ（255）にならない。
+    coord = stick_to_xy(_axis_to_short(_normalize_axis(1)), 0, DEADZONE_LEFT)
+    assert coord != (255, 128)
+    assert coord == (128, 128)
 
 
 class FakeController:

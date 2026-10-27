@@ -1,5 +1,6 @@
 """CommandRunner の状態遷移の検証。画面なし・時計は偽物で回す。"""
 
+import threading
 from typing import Any
 
 from fakes import FakeCommand, FakeScheduler, FakeSer, FakeThread, StuckThread
@@ -164,6 +165,38 @@ def test_shutdown_clean_and_stuck() -> None:
     _ = notices
 
 
+class _McuShapedCommand:
+    """McuCommand と同じ形の偽物。thread/alive を持たず isRunning だけ。"""
+
+    NAME = "McuFake"
+
+    def __init__(self) -> None:
+        self.isRunning = False
+        self.start_calls: list[tuple[Any, Any]] = []
+        self.end_calls: list[Any] = []
+
+    def start(self, ser: Any, on_done: Any) -> bool:
+        self.start_calls.append((ser, on_done))
+        self.isRunning = True
+        return True
+
+    def end(self, ser: Any) -> None:
+        self.end_calls.append(ser)
+        self.isRunning = False
+
+
+def test_shutdown_sends_end_to_mcu_shaped_command() -> None:
+    """終了時は MCU コマンドにも end を送る（isRunning しか持たない）。"""
+    runner, _, _, _, _ = make_runner()
+    cmd = _McuShapedCommand()
+    ser = FakeSer()
+    runner.request_start(cmd, ser)
+    assert cmd.isRunning
+    assert runner.shutdown(ser) is True
+    assert cmd.end_calls == [ser]
+    assert cmd.isRunning is False
+
+
 def test_closing_skips_post() -> None:
     runner, clock, _, _, _ = make_runner()
     runner.request_start(FakeCommand(), FakeSer())
@@ -171,6 +204,18 @@ def test_closing_skips_post() -> None:
     runner.stop_post(token=runner._run_token)
     assert not clock.queued
     assert runner.state == "running"
+
+
+def test_start_is_refused_while_closing() -> None:
+    """終了処理中は開始を受け付けない（後始末が捨てられる実行を作らない）。"""
+    runner, _, notices, _, _ = make_runner()
+    cmd = FakeCommand()
+    runner.notify_closing()
+    runner.request_start(cmd, FakeSer())
+    assert runner.state == "idle"
+    assert runner.running_command is None
+    assert cmd.start_calls == []
+    assert any("終了処理中" in m for m in notices)
 
 
 def test_cancel_watch() -> None:
@@ -200,6 +245,25 @@ def test_post_on_gui_keeps_live_fenced_thread() -> None:
     runner._fenced_thread = fenced
     runner.post_on_gui(runner._run_token)
     assert runner._fenced_thread is fenced
+
+
+def test_is_busy_true_while_fenced_thread_alive() -> None:
+    """状態が idle でも塞いだ線が生きている間は忙しい（再読込を止める）。"""
+    runner, _, _, _, _ = make_runner()
+    runner.request_start(FakeCommand(thread=FakeThread(alive=False)), FakeSer())
+    release = threading.Event()
+    fenced = threading.Thread(target=release.wait, daemon=True)
+    fenced.start()
+    try:
+        runner._fenced_thread = fenced
+        runner.post_on_gui(runner._run_token)
+        assert runner.state == "idle"
+        assert runner.is_busy() is True
+    finally:
+        release.set()
+        fenced.join(timeout=5)
+    assert not fenced.is_alive()
+    assert runner.is_busy() is False
 
 
 def test_shutdown_reaps_dead_fenced_thread() -> None:
