@@ -5,10 +5,10 @@
 生成コマンド:
 
 ```sh
-uv run --frozen python tools/blockly_agent.py catalog --format markdown --output .opencode/skills/pokecon-blockly/references/blocks.md
+uv run --frozen python tools/blockly_agent.py catalog --format markdown --output docs/blockly-agent/references/blocks.md
 ```
 
-仕様の書き方は `spec.md`、使い方は `../SKILL.md` を参照してください。
+仕様の書き方は [spec.md](spec.md)、使い方は [手順](../README.md) を参照してください。
 
 ## 画像テンプレート（`TEMPLATE` に書ける名前）
 

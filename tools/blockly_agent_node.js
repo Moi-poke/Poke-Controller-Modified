@@ -39,6 +39,7 @@ const ASSETS = [
   "msg/ja.js",
   "pokecon_blocks.js",
   "pokecon_capture.js",
+  "pokecon_editor.js",
 ];
 
 // ---- 最小 DOM スタブ -------------------------------------------------------
@@ -391,6 +392,46 @@ function collectCode(Blockly, request, warnings) {
   return { ok: true, code: code, warnings: warnings };
 }
 
+// ---- 試し実行 -------------------------------------------------------------
+
+function collectTrial(Blockly, request, warnings) {
+  const workspaceJson = request.workspace;
+  if (
+    !workspaceJson ||
+    typeof workspaceJson !== "object" ||
+    Array.isArray(workspaceJson)
+  ) {
+    return {
+      ok: false,
+      errors: ["request.workspace がありません"],
+      warnings: warnings,
+    };
+  }
+  const editor = Blockly.PokeconEditor;
+  if (!editor || typeof editor.trialCode !== "function") {
+    return {
+      ok: false,
+      errors: [
+        "試し実行の生成器を読み込めませんでした（pokecon_editor.js を確認してください）",
+      ],
+      warnings: warnings,
+    };
+  }
+  const workspace = new Blockly.Workspace();
+  Blockly.serialization.workspaces.load(workspaceJson, workspace);
+  const made = editor.trialCode(workspace, Blockly.Python, {});
+  if (!made || typeof made.code !== "string") {
+    return {
+      ok: false,
+      errors: [
+        (made && made.error) || "試し実行のコードを生成できませんでした",
+      ],
+      warnings: warnings,
+    };
+  }
+  return { ok: true, code: made.code, warnings: warnings };
+}
+
 // ---- 本体 -----------------------------------------------------------------
 
 function main() {
@@ -400,7 +441,7 @@ function main() {
   const warnings = [];
   if (!mode || !assetsDir || !requestPath) {
     failure([
-      "使い方: node blockly_agent_node.js <catalog|generate> <assets-dir> <request.json>",
+      "使い方: node blockly_agent_node.js <catalog|generate|trial> <assets-dir> <request.json>",
     ]);
     return;
   }
@@ -423,6 +464,8 @@ function main() {
       emit(collectCatalog(Blockly, warnings));
     } else if (mode === "generate") {
       emit(collectCode(Blockly, request, warnings));
+    } else if (mode === "trial") {
+      emit(collectTrial(Blockly, request, warnings));
     } else {
       failure(["不明なモードです: " + String(mode)]);
     }

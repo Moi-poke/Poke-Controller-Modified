@@ -6,6 +6,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import pytest
 from core import blockly_headless
 from services import blockly_author
@@ -601,7 +603,11 @@ def app_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     shutil.copytree(BLOCKLY, base / "assets" / "blockly")
     template = base / "Template" / "controller_check"
     template.mkdir(parents=True)
-    (template / "btn_a.png").write_bytes(b"png")
+    # 実在するPNGを置く（検査は復号まで通すため、偽のバイト列では落ちる）。
+    image = np.full((20, 20, 3), 128, dtype=np.uint8)
+    ok, buf = cv2.imencode(".png", image)
+    assert ok
+    (template / "btn_a.png").write_bytes(bytes(buf))
     return base
 
 
@@ -685,10 +691,119 @@ def test_render_workspace_from_built_json(app_dir: Path) -> None:
     assert "self.wait(0.5)" in rendered.code
 
 
+def _workspace_blocks(workspace: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks = workspace.get("blocks", {}).get("blocks", [])
+    found: list[dict[str, Any]] = []
+    stack: list[Any] = list(reversed(blocks))
+    while stack:
+        block = stack.pop()
+        if not isinstance(block, dict):
+            continue
+        found.append(block)
+        inputs = block.get("inputs")
+        if isinstance(inputs, dict):
+            for slot in inputs.values():
+                if isinstance(slot, dict) and isinstance(slot.get("block"), dict):
+                    stack.append(slot["block"])
+        nxt = block.get("next")
+        if isinstance(nxt, dict) and isinstance(nxt.get("block"), dict):
+            stack.append(nxt["block"])
+    return found
+
+
+@NEEDS_NODE
+def test_check_workspace_keeps_ids_positions_and_extra_state(app_dir: Path) -> None:
+    spec = {
+        "stem": "WorkspaceKeep",
+        "name": "保持の確認",
+        "tags": ["blockly"],
+        "do": [
+            {"comment": "このコメントを残す"},
+            {"set": "count", "to": 0},
+            {"change": "count", "by": 1},
+            {"if": True, "do": [{"print": "yes"}], "else": [{"print": "no"}]},
+            {"press": "A", "duration": 0.02, "wait": 0},
+        ],
+    }
+    built = blockly_author.build_workspace(spec, blockly_headless.catalog(app_dir).data)
+    assert built.ok, built.errors
+    workspace = built.workspace
+    assert workspace is not None
+    blocks = _workspace_blocks(workspace)
+    assert blocks
+    for index, block in enumerate(blocks):
+        block["id"] = f"keep{index}"
+    workspace["blocks"]["blocks"][0]["x"] = 40
+    workspace["blocks"]["blocks"][0]["y"] = 60
+    if_block = next(b for b in blocks if b.get("type") == "controls_if")
+    if_block["extraState"] = {"hasElse": True}
+    original = json.loads(json.dumps(workspace, ensure_ascii=False))
+
+    checked = blockly_author.check_workspace(workspace, app_dir)
+    assert checked.ok, checked.errors
+    assert checked.workspace is not None
+    kept = _workspace_blocks(checked.workspace)
+    assert [b.get("id") for b in kept] == [
+        b.get("id") for b in _workspace_blocks(original)
+    ]
+    assert checked.workspace["blocks"]["blocks"][0]["x"] == 40
+    assert checked.workspace["blocks"]["blocks"][0]["y"] == 60
+    kept_if = next(b for b in kept if b.get("type") == "controls_if")
+    assert kept_if.get("extraState") == {"hasElse": True}
+    assert checked.workspace["variables"] == original["variables"]
+    assert any(
+        b.get("type") == "pokecon_comment"
+        and b.get("fields", {}).get("TEXT") == "このコメントを残す"
+        for b in kept
+    )
+
+
+@NEEDS_NODE
+def test_save_workspace_roundtrip_is_renderable(app_dir: Path) -> None:
+    built = blockly_author.build_workspace(
+        _smoke_spec("WorkspaceSaved"), blockly_headless.catalog(app_dir).data
+    )
+    assert built.ok, built.errors
+    result = blockly_author.save_workspace(built.workspace, app_dir, "WorkspaceSaved")
+    assert result.status == "saved", result.message
+    json_path = app_dir / "Commands" / "PythonCommands" / "WorkspaceSaved.blockly.json"
+    py_path = app_dir / "Commands" / "PythonCommands" / "WorkspaceSaved.py"
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    digest = hashlib.sha256(py_path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    assert saved["pokecon"]["pySha256"] == digest
+    rendered = blockly_author.render_workspace(saved, app_dir)
+    assert rendered.ok, rendered.errors
+    assert "self.wait(0.5)" in rendered.code
+
+
+@NEEDS_NODE
+def test_check_workspace_rejects_corrupt_template(app_dir: Path) -> None:
+    template = app_dir / "Template" / "controller_check"
+    (template / "broken.png").write_bytes(b"not an image")
+    built = blockly_author.build_workspace(
+        {
+            "name": "壊れた画像",
+            "do": [
+                {
+                    "if": {
+                        "type": "pokecon_vision_contains",
+                        "fields": {"TEMPLATE": "controller_check/broken.png"},
+                    },
+                    "do": [{"print": "x"}],
+                }
+            ],
+        },
+        blockly_headless.catalog(app_dir).data,
+    )
+    assert built.ok, built.errors
+    checked = blockly_author.check_workspace(built.workspace, app_dir)
+    assert not checked.ok
+    assert any("壊れています" in error for error in checked.errors)
+
+
 @NEEDS_NODE
 def test_catalog_markdown_lists_fields(app_dir: Path) -> None:
     catalog = blockly_headless.catalog(app_dir)
-    assert catalog.ok, catalog.errors
     from services import blockly_templates
 
     text = blockly_author.catalog_markdown(

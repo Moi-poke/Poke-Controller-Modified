@@ -40,7 +40,7 @@ tasks:
       - uv run --frozen python tools/check_user_api.py
 
   docs:
-    desc: 指示書・設定の参照切れ検査（AGENTS.md / README / task名 / opencode.json）
+    desc: 指示書・設定の参照切れ検査（共通エージェント文書 / Claude import / task名 / opencode.json）
     cmds:
       - uv run --frozen python tools/check_docs.py
 

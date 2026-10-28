@@ -73,6 +73,22 @@ def generate(
     )
 
 
+def generate_trial(
+    workspace: dict[str, Any],
+    app_dir: str | Path,
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> HeadlessResult:
+    """ワークスペース JSON から、試し実行用（目印つき）コードを生成する。
+
+    目印の付け方はブラウザの `Blockly.PokeconEditor.trialCode` が正本。
+    Node 側で文字列置換をせず、同じ関数を通す。
+    """
+    return _run(
+        "trial", resolve_assets(app_dir), {"workspace": workspace}, timeout=timeout
+    )
+
+
 def _run(
     mode: str,
     assets: Path,

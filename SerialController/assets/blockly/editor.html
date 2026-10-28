@@ -2094,7 +2094,9 @@ button.run:hover { background: #17793a; }
     setStatus(result === '停止' ? '試し実行を止めました' : '試し実行が終わりました（' + result + '）', false);
   }
   function runControl(action, extra) {
-    var body = { action: action };
+    // どの操作も、いま表示している実行の runId を付ける。別の実行へ
+    // 切り替わっていたら本体が断る（古い画面の操作を届かせない）。
+    var body = { action: action, runId: run.runId };
     if (extra) { Object.keys(extra).forEach(function (k) { body[k] = extra[k]; }); }
     return postJson('./run/control', body).then(function (j) {
       if (!j.ok && j.message) { setStatus(j.message, true); }
@@ -2176,6 +2178,172 @@ button.run:hover { background: #17793a; }
     var stop = byId('stopbtn');
     if (stop) { stop.title = '停止 (Shift+F5)'; }
   })();
+  // ---- ライブ編集（開いたままAIのパッチを受ける） --------------------------
+  // 版（revision）が一致するときだけ適用する。人間が先に編集していれば
+  // 版が変わるため、適用せず conflict を返す（相手の変更を潰さない）。
+  var live = { client: "", revision: "", busy: false, leased: true, lastBeat: 0, timer: null };
+  function liveClientId() {
+    try {
+      var a = new Uint8Array(8);
+      crypto.getRandomValues(a);
+      return 'c' + Array.prototype.map.call(a, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+    } catch (e) {
+      return 'c' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    }
+  }
+  live.client = liveClientId();
+  function liveCanonical(v) {
+    if (v === null || typeof v !== 'object') { return JSON.stringify(v); }
+    if (Array.isArray(v)) { return '[' + v.map(liveCanonical).join(',') + ']'; }
+    var keys = Object.keys(v).sort();
+    var parts = [];
+    keys.forEach(function (k) {
+      var x = v[k];
+      if (typeof x === 'undefined') { return; }
+      parts.push(JSON.stringify(k) + ':' + liveCanonical(x));
+    });
+    return '{' + parts.join(',') + '}';
+  }
+  function liveDigest(text) {
+    if (window.crypto && crypto.subtle) {
+      return crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(function (buf) {
+        return Array.prototype.map.call(new Uint8Array(buf), function (x) {
+          return ('0' + x.toString(16)).slice(-2);
+        }).join('');
+      });
+    }
+    var h = 2166136261;
+    for (var i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return Promise.resolve('fnv1a:' + (h >>> 0).toString(16));
+  }
+  function liveStateJson() { return Blockly.serialization.workspaces.save(ws); }
+  function livePost(path, payload) {
+    return fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(function (r) { return r.json(); });
+  }
+  function liveSnapshot(force) {
+    return Promise.resolve().then(function () {
+      var state = liveStateJson();
+      return liveDigest(liveCanonical(state)).then(function (rev) {
+        var now = Date.now();
+        if (!force && rev === live.revision && now - live.lastBeat < 1500) {
+          return rev;
+        }
+        live.revision = rev;
+        live.lastBeat = now;
+        return livePost('./live/snapshot', {
+          client: live.client, revision: rev, workspace: state, dirty: !!dirty,
+        }).then(function (j) {
+          live.leased = !!(j && j.ok && j.leased !== false);
+          return rev;
+        }).catch(function () { live.leased = false; return rev; });
+      });
+    });
+  }
+  function liveSchedule() {
+    if (live.timer) { clearTimeout(live.timer); }
+    live.timer = setTimeout(function () { live.timer = null; liveSnapshot(false); }, 250);
+  }
+  function liveApply(req) {
+    var ops = (req && req.ops) || [];
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i];
+      var b = ws.getBlockById(op.blockId);
+      if (!b) { return 'ブロックが見つかりません: ' + op.blockId; }
+      try {
+        b.setFieldValue(op.value, op.field);
+      } catch (e) {
+        return 'フィールドを変更できません: ' + op.field;
+      }
+    }
+    return '';
+  }
+  function liveLoadWorkspace(state) {
+    if (!state || typeof state !== 'object') { return 'workspace がありません'; }
+    var x = ws.scrollX, y = ws.scrollY, scale = ws.scale;
+    try {
+      Blockly.Events.disable();
+      try {
+        ws.clear();
+        Blockly.serialization.workspaces.load(state, ws);
+      } finally {
+        Blockly.Events.enable();
+      }
+    } catch (e) {
+      return 'workspace を読み込めません: ' + String((e && e.message) || e);
+    }
+    try { if (typeof ws.scroll === 'function') { ws.scroll(x, y); } } catch (e) { /* 続ける */ }
+    try { if (typeof ws.setScale === 'function') { ws.setScale(scale); } } catch (e) { /* 続ける */ }
+    // 構造変更は読み込み直しのため、既存の元に戻す履歴とは混ぜない。
+    try { if (typeof ws.clearUndo === 'function') { ws.clearUndo(); } } catch (e) { /* 続ける */ }
+    return '';
+  }
+  function livePoll() {
+    if (live.busy || !live.leased) { return; }
+    if (ws.isDragging && ws.isDragging()) { return; }
+    if (Blockly.Gesture && Blockly.Gesture.inProgress && Blockly.Gesture.inProgress()) { return; }
+    if (Blockly.WidgetDiv && Blockly.WidgetDiv.isVisible && Blockly.WidgetDiv.isVisible()) { return; }
+    live.busy = true;
+    fetch('./live/next?client=' + encodeURIComponent(live.client))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) { return; }
+        if (j.leased === false) { live.leased = false; return; }
+        var req = j.request;
+        if (!req) { return; }
+        var state = liveStateJson();
+        if (req.deadline && Date.now() > req.deadline) {
+          return livePost('./live/result', {
+            client: live.client, id: req.id, ok: false, status: 'expired',
+            error: '要求が期限切れになりました', revision: live.revision, workspace: state,
+          });
+        }
+        return liveDigest(liveCanonical(state)).then(function (rev) {
+          if (req.baseRevision !== rev) {
+            live.revision = rev;
+            return livePost('./live/result', {
+              client: live.client, id: req.id, ok: false, status: 'conflict',
+              error: 'エディタの内容が変わっています', revision: rev, workspace: state,
+            });
+          }
+          var error = req.mode === 'load'
+            ? liveLoadWorkspace(req.workspace)
+            : liveApply(req);
+          if (error) {
+            return livePost('./live/result', {
+              client: live.client, id: req.id, ok: false, status: 'failed',
+              error: error, revision: rev, workspace: state,
+            });
+          }
+          return liveSnapshot(true).then(function () {
+            return livePost('./live/result', {
+              client: live.client, id: req.id, ok: true, status: 'applied',
+              revision: live.revision, workspace: liveStateJson(),
+            });
+          }).then(function () {
+            setStatus('AIが編集しました（保存で確定）', false);
+          });
+        });
+      })
+      .catch(function () { /* 次の周期で再試行 */ })
+      .then(function () { live.busy = false; });
+  }
+  if (typeof fetch === 'function' && typeof setInterval === 'function') {
+    ws.addChangeListener(function (e) {
+      if (e && e.isUiEvent) { return; }
+      liveSchedule();
+    });
+    setTimeout(function () { liveSnapshot(true); }, 500);
+    setInterval(livePoll, 400);
+    setInterval(function () { if (!live.leased) { liveSnapshot(true); } }, 2000);
+  }
+
   setRunUi(false, false);
   // 右クリック：一部だけ試す・区切り。値ブロック・影・プログラム自身には出さない。
   // 区切りの付け外しは右クリックと F9 で共用する（実行中なら差し替えも送る）。

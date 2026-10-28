@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """指示書・設定の参照切れを機械的に検査する。
 
-AGENTS.md / README.md の相対リンク、`task <name>` の参照、opencode.json の
-agent prompt が実在するかを確認する。壊れた参照はエージェントに誤った
-コンテキストを与えるため、task ci で落とす。
+共通エージェント文書の相対リンク、Claude の import、`task <name>` の参照、
+opencode.json の agent prompt が実在するかを確認する。
+壊れた参照はエージェントに誤ったコンテキストを与えるため、task ci で落とす。
 """
 
 from __future__ import annotations
@@ -16,19 +16,45 @@ from pathlib import Path
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED = (
+MD_FILES = (
     "AGENTS.md",
     "README.md",
+    "CLAUDE.md",
+    "docs/AI_AUTOMATION.md",
+    "docs/blockly-agent/README.md",
+    "docs/blockly-agent/references/spec.md",
+    "docs/blockly-agent/references/cli.md",
+    "docs/blockly-agent/references/vision.md",
+    "docs/blockly-agent/references/blocks.md",
+    ".opencode/skills/pokecon-blockly/SKILL.md",
+    "docs/BLOCKLY_EDITOR.md",
+    "docs/BLOCKLY_AGENT_VERIFICATION.md",
+    "docs/design-blockly-agent.md",
+)
+REQUIRED = (
+    *MD_FILES,
     "opencode.json",
     "taskfile.yml",
     ".github/workflows/ci.yml",
+    "docs/blockly-agent/examples/basic.json",
+    "docs/blockly-agent/examples/flow.json",
+    "docs/blockly-agent/examples/vision.json",
+    "docs/blockly-agent/examples/subroutine.json",
+    "docs/blockly-agent/examples/audio.json",
+    "docs/blockly-agent/examples/dialog.json",
 )
-MD_FILES = ("AGENTS.md", "README.md")
-TASK_DOC_FILES = ("AGENTS.md", "docs/ARCHITECTURE.md")
+TASK_DOC_FILES = (
+    "AGENTS.md",
+    "docs/ARCHITECTURE.md",
+    "docs/AI_AUTOMATION.md",
+    "docs/blockly-agent/README.md",
+    "docs/BLOCKLY_AGENT_VERIFICATION.md",
+)
 LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 TASK_REF = re.compile(r"`task ([a-z][a-z0-9_-]*)")
 FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 PROMPT_REF = re.compile(r"^\{file:(.+)\}$")
+INSTRUCTION_IMPORT = re.compile(r"^@([^\s]+)\s*$", re.MULTILINE)
 
 
 def strip_fences(text: str) -> str:
@@ -67,6 +93,18 @@ def check_links(root: Path, errors: list[str]) -> int:
             if not (path.parent / target).resolve().exists():
                 errors.append(f"{name}: リンク先が無い: {raw}")
     return checked
+
+
+def check_instruction_imports(root: Path, errors: list[str]) -> int:
+    path = root / "CLAUDE.md"
+    if not path.is_file():
+        return 0
+    text = strip_fences(path.read_text(encoding="utf-8"))
+    targets = INSTRUCTION_IMPORT.findall(text)
+    for target in targets:
+        if not (path.parent / target).resolve().is_file():
+            errors.append(f"CLAUDE.md: import先が無い: {target}")
+    return len(targets)
 
 
 def check_tasks(root: Path, errors: list[str]) -> int:
@@ -137,6 +175,7 @@ def main() -> int:
     checked = check_links(root, errors)
     checked += check_tasks(root, errors)
     checked += check_opencode(root, errors)
+    checked += check_instruction_imports(root, errors)
 
     if errors:
         for error in errors:

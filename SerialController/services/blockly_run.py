@@ -75,6 +75,10 @@ class TrialSession:
         self.step_pending = False
         #: 編集画面から停止を頼んだか（記録用。結果の判定は finish_called で行う）。
         self.stop_requested = False
+        #: 時間上限つきの試し実行の期限（monotonic 秒）。None なら上限なし。
+        self.deadline: float | None = None
+        #: 期限で止めたか。結果は通常の停止と同じ「停止」にし、ここで見分ける。
+        self.timed_out = False
         #: 「正常終了する」（finish）を通ったか。停止（本体のボタンを含む）と
         #: finish はどちらも StopThread で抜けるため、これで見分ける。
         self.finish_called = False
@@ -138,6 +142,7 @@ class TrialSession:
             "errorBlock": self.error_block,
             "logs": [list(item) for item in self.logs_since(int(since))],
             "vars": [[name, self.variables[name]] for name in sorted(self.variables)],
+            "timedOut": self.timed_out,
         }
 
     # -- 作業スレッドから呼ばれる ---------------------------------------------

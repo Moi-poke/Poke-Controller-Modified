@@ -1,5 +1,8 @@
 # Blockly エージェント authoring（設計）
 
+初期設計の記録。以下の機能一覧・不足の説明は設計時点のもので、現在の契約ではない。
+現行の作業は [共通手順](blockly-agent/README.md) と [CLI 契約](blockly-agent/references/cli.md) に従う。
+
 ## 背景
 
 Poke-Controller の Blockly は、`.blockly.json`（Blockly の workspace JSON）と同名の `.py` の対で保存する。`.py` はブラウザの `pythonGenerator.workspaceToCode()` が作り、保存時に `/save` へ workspaceJson と pythonCode の両方を渡す。この形は人間の編集には十分だが、エージェントが自動で組むには次の不足がある。
@@ -33,8 +36,9 @@ Poke-Controller では「生 JSON を手書きさせず、小さな宣言的仕�
    - 既定の app dir は `SerialController/`。`--app-dir` で差し替え可能（テスト用）。
 4. `tools/blockly_agent_node.js`
    - node 側の入り口。`catalog` と `generate` の2モード。ブラウザ資産をそのまま使う。
-5. `.opencode/skills/pokecon-blockly/`
-   - `SKILL.md`（手順・規律）、`references/blocks.md`（生成カタログ）、`references/spec.md`（仕様）、`examples/*.json`。
+5. [`docs/blockly-agent/`](blockly-agent/)
+   - 共通 README（手順・規律）、`references/blocks.md`（生成カタログ）、`references/spec.md`（仕様）、`references/cli.md`（CLI 契約）、`references/vision.md`（画像認識）、`examples/*.json`。
+   - OpenCode の `.opencode/skills/pokecon-blockly/SKILL.md` は共通手順を読む薄い adapter。
 6. `tests/test_blockly_author.py` / `tests/test_blockly_author_node.py`
    - builder の形、検査、実 Blockly での生成、保存対、カタログ。
 

@@ -12,6 +12,7 @@ desktop.ini
 *.eep
 *.exe
 *.json
+!docs/blockly-agent/examples/*.json
 !opencode.json
 LUFA/
 .idea/

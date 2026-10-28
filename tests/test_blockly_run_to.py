@@ -154,7 +154,9 @@ def test_run_with_run_to_stops_before_that_block(
     snap = wait_state(host, lambda s: s["paused"] and s["blockId"] == "pr1")
     assert snap["running"] is True
     # When: 再開する
-    assert post(host, "/run/control", {"action": "resume"})["ok"]
+    assert post(host, "/run/control", {"action": "resume", "runId": reply["runId"]})[
+        "ok"
+    ]
     # Then: 最後まで走って完了
     assert wait_state(host, lambda s: s["result"])["result"] == "完了"
 

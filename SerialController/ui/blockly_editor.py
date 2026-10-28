@@ -17,9 +17,11 @@ import hashlib
 import http.server
 import itertools
 import json
+import math
 import queue
 import socket
 import threading
+import time
 import urllib.parse
 import webbrowser
 from collections.abc import Callable
@@ -28,9 +30,12 @@ from pathlib import Path
 from typing import Any
 
 import WindowUtils
+from core import blockly_headless
 from services import (
+    blockly_author,
     blockly_capture,
     blockly_color,
+    blockly_live,
     blockly_match,
     blockly_record,
     blockly_run,
@@ -93,6 +98,15 @@ _GUI_CALLS: queue.Queue[tuple[Callable[[], Any], Future[Any]]] = queue.Queue()
 #: GUI スレッドの応答を待つ上限(秒)。本体が固まっていても受け口は返す。
 GUI_CALL_TIMEOUT_S = 5.0
 
+#: `/run/state` が名乗る機能。ブラウザ側は見て分岐できる（今は表示に使わない）。
+RUN_CAPABILITIES = ["boundedTrial", "runIdControl"]
+
+#: runId が無い・古いときに返す理由（別の試し実行へ切り替わった）。
+RUN_SWITCHED_MESSAGE = "試し実行が切り替わったため操作しません"
+
+#: `/run/control` が受ける操作名。
+_CONTROL_ACTIONS = frozenset({"stop", "pause", "resume", "step", "breakpoints"})
+
 
 class _Trial:
     """いまの（直近の）試し実行。様子と、走らせたクラスの組。"""
@@ -103,6 +117,8 @@ class _Trial:
 
 
 _TRIAL: _Trial | None = None
+#: 開いているエディタとCLIをつなぐライブ編集の仲介。
+_LIVE = blockly_live.LiveBridge()
 _RUN_IDS = itertools.count(1)
 #: 区切り（ブレークポイント）の既定。次の実行にも引き継ぐ。
 _BREAKPOINTS: frozenset[str] = frozenset()
@@ -194,18 +210,23 @@ def _observe_record_owners() -> None:
 
 
 def drain_gui_calls() -> None:
-    """待ち行列の仕事を片付ける。GUI スレッドの見回りから呼ぶ。"""
+    """待ち行列の仕事を片付ける。GUI スレッドの見回りから呼ぶ。
+
+    片付けたあとに時間上限（時間制限つき試し実行）を見る。期限は GUI スレッドで
+    しか判定しないため、受け口のスレッドからは触らない。
+    """
     while True:
         try:
             fn, fut = _GUI_CALLS.get_nowait()
         except queue.Empty:
-            return
+            break
         if not fut.set_running_or_notify_cancel():
             continue
         try:
             fut.set_result(fn())
         except Exception as e:
             fut.set_exception(e)
+    _enforce_trial_deadline()
 
 
 def _our_command(trial: _Trial | None) -> Any:
@@ -218,6 +239,64 @@ def _our_command(trial: _Trial | None) -> Any:
     if cmd is not None and type(cmd) is trial.cls:
         return cmd
     return None
+
+
+def _enforce_trial_deadline() -> None:
+    """時間上限に達した試し実行を止める（GUI スレッドから呼ぶ）。
+
+    自分の試し実行が走っているときだけ効く。通常のコマンドや、別の実行へ
+    切り替わったあとの古い期限では何もしない。停止は本体と同じ停止経路
+    （host.stopPlay）へ頼み、二度は頼まない（期限を消してから呼ぶ）。
+    """
+    trial = _TRIAL
+    if trial is None:
+        return
+    session = trial.session
+    deadline = session.deadline
+    if deadline is None or session.timed_out:
+        return
+    cmd = _our_command(trial)
+    if cmd is None or not getattr(cmd, "alive", True):
+        return
+    if time.monotonic() < deadline:
+        return
+    # 先に印を付ける（stopPlay の中で見回りが再入しても二度呼ばない）。
+    session.timed_out = True
+    session.stop_requested = True
+    session.deadline = None
+    host = _RUN_HOST
+    if host is None:
+        return
+    try:
+        host.stopPlay()
+    except Exception:
+        pass
+
+
+def _stop_trial_for_close() -> None:
+    """閉じる前に、時間上限つきの自分の試し実行へ停止を頼む（GUI スレッドから）。
+
+    上限なしの試し実行は従来どおり閉じても走り続ける（本体側で止められる）。
+    停止は本体の停止ボタンと同じ経路（host.stopPlay）を使う。
+    """
+    trial = _TRIAL
+    if trial is None:
+        return
+    session = trial.session
+    if session.deadline is None:
+        return
+    cmd = _our_command(trial)
+    if cmd is None or not getattr(cmd, "alive", True):
+        return
+    session.stop_requested = True
+    session.deadline = None
+    host = _RUN_HOST
+    if host is None:
+        return
+    try:
+        host.stopPlay()
+    except Exception:
+        pass
 
 
 def _run_state(since: int) -> dict[str, Any]:
@@ -246,6 +325,7 @@ def _run_state(since: int) -> dict[str, Any]:
             "errorBlock": "",
             "logs": [],
             "vars": [],
+            "timedOut": False,
         }
     else:
         state = trial.session.snapshot(since)
@@ -262,6 +342,8 @@ def _run_state(since: int) -> dict[str, Any]:
             "busy": busy,
             # 本体側で一覧のコマンドが走っている（試し実行は始められない）。
             "otherBusy": busy and cmd is None,
+            # 受け口が受ける操作の形（時間上限つき・runId 付き操作）。
+            "capabilities": list(RUN_CAPABILITIES),
         }
     )
     return state
@@ -386,6 +468,35 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             names = blockly_templates.list_image_templates(WindowUtils.APP_DIR)
             self._reply(True, "", {"templates": names})
             return
+        if path == "/live/state":
+            snapshot = _LIVE.snapshot()
+            if snapshot is None:
+                self._reply(
+                    False,
+                    "エディタの状態がまだありません（開いて少し待ってください）",
+                )
+                return
+            self._reply(
+                True,
+                "",
+                {
+                    "revision": snapshot["revision"],
+                    "workspace": snapshot["workspace"],
+                    "dirty": snapshot["dirty"],
+                    "client": snapshot["client"],
+                    "queued": snapshot["queued"],
+                    "active": snapshot["active"],
+                },
+            )
+            return
+        if path == "/live/next":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            client = query.get("client", [""])[0]
+            if not client:
+                self._reply(False, "client がありません")
+                return
+            self._reply(True, "", _LIVE.next_request(client))
+            return
         if path == "/frame":
             getter = _GET_FRAME
             if getter is None:
@@ -480,6 +591,24 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self._refuse_foreign(is_post=True):
+            return
+        if urllib.parse.urlsplit(self.path).path == "/live/snapshot":
+            payload = self._read_json()
+            if payload is None:
+                return
+            self._live_snapshot(payload)
+            return
+        if urllib.parse.urlsplit(self.path).path == "/live/result":
+            payload = self._read_json()
+            if payload is None:
+                return
+            self._live_result(payload)
+            return
+        if urllib.parse.urlsplit(self.path).path == "/live/patch":
+            payload = self._read_json()
+            if payload is None:
+                return
+            self._live_patch(payload)
             return
         if urllib.parse.urlsplit(self.path).path == "/run":
             payload = self._read_json()
@@ -688,6 +817,161 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_error(404)
 
+    def _live_snapshot(self, payload: dict[str, Any]) -> None:
+        """ブラウザの現在のワークスペースと版を受け取る。"""
+        client = payload.get("client")
+        revision = payload.get("revision")
+        workspace = payload.get("workspace")
+        if not isinstance(client, str) or not client:
+            self._reply(False, "client がありません")
+            return
+        if not isinstance(revision, str) or not revision:
+            self._reply(False, "revision がありません")
+            return
+        if not isinstance(workspace, dict):
+            self._reply(False, "workspace がありません")
+            return
+        leased = _LIVE.update(client, revision, workspace, bool(payload.get("dirty")))
+        self._reply(True, "", {"leased": leased})
+
+    def _live_result(self, payload: dict[str, Any]) -> None:
+        """ブラウザの適用結果を受け取る。"""
+        client = payload.get("client")
+        request_id = payload.get("id")
+        if not isinstance(client, str) or not client:
+            self._reply(False, "client がありません")
+            return
+        if isinstance(request_id, bool) or not isinstance(request_id, int):
+            self._reply(False, "id がありません")
+            return
+        revision = payload.get("revision")
+        workspace = payload.get("workspace")
+        accepted = _LIVE.complete(
+            client,
+            request_id,
+            ok=payload.get("ok") is True,
+            revision=revision if isinstance(revision, str) else "",
+            workspace=workspace if isinstance(workspace, dict) else None,
+            error=str(payload.get("error") or ""),
+            status=str(payload.get("status") or ""),
+        )
+        self._reply(accepted, "" if accepted else "要求が切り替わっています")
+
+    def _live_patch(self, payload: dict[str, Any]) -> None:
+        """CLIの要求を検証し、開いているエディタへ渡して結果を待つ。"""
+        base_revision = payload.get("baseRevision")
+        operations = payload.get("operations")
+        if not isinstance(base_revision, str) or not base_revision:
+            self._reply(False, "baseRevision を書いてください", {"status": "usage"})
+            return
+        snapshot = _LIVE.snapshot()
+        if snapshot is None:
+            self._reply(
+                False,
+                "エディタの状態がまだありません（開いて少し待ってください）",
+                {"status": "unavailable"},
+            )
+            return
+        if snapshot["revision"] != base_revision:
+            self._reply(
+                False,
+                "エディタの内容が変わっています（読み直してください）",
+                {
+                    "status": "conflict",
+                    "revision": snapshot["revision"],
+                    "workspace": snapshot["workspace"],
+                },
+            )
+            return
+        catalog = blockly_headless.catalog(WindowUtils.APP_DIR)
+        if not catalog.ok or catalog.data is None:
+            self._reply(
+                False,
+                (catalog.errors or ["カタログを取得できませんでした"])[0],
+                {"status": "failed"},
+            )
+            return
+        patched = blockly_author.patch_workspace(
+            snapshot["workspace"], operations, catalog.data
+        )
+        if not patched.ok or patched.workspace is None:
+            self._reply(
+                False,
+                (patched.errors or ["操作を適用できませんでした"])[0],
+                {"status": "failed", "errors": patched.errors},
+            )
+            return
+        structural = any(change.get("op") != "set_field" for change in patched.changes)
+        live_ops: list[dict[str, Any]] = []
+        if not structural:
+            for change in patched.changes:
+                block_id = change.get("blockId")
+                if not isinstance(block_id, str) or not block_id:
+                    self._reply(
+                        False,
+                        "ブロックIDがありません（エディタで読み直してください）",
+                        {"status": "failed"},
+                    )
+                    return
+                live_ops.append(
+                    {
+                        "blockId": block_id,
+                        "field": change["field"],
+                        "value": change.get("liveValue"),
+                    }
+                )
+        checked = blockly_author.check_workspace(patched.workspace, WindowUtils.APP_DIR)
+        if not checked.ok or checked.workspace is None:
+            self._reply(
+                False,
+                (checked.errors or ["検査に通りませんでした"])[0],
+                {"status": "failed", "errors": checked.errors},
+            )
+            return
+        request_id, error = _LIVE.enqueue(
+            live_ops,
+            base_revision,
+            mode="load" if structural else "ops",
+            workspace=patched.workspace,
+        )
+        if request_id is None:
+            latest = _LIVE.snapshot() or snapshot
+            self._reply(
+                False,
+                error,
+                {
+                    "status": "unavailable",
+                    "revision": latest["revision"],
+                    "workspace": latest["workspace"],
+                },
+            )
+            return
+        result = _LIVE.wait(request_id, timeout=blockly_live.REQUEST_SECONDS + 2.0)
+        if result.get("ok") is True:
+            self._reply(
+                True,
+                "AIの変更を適用しました（保存はまだです）",
+                {
+                    "status": "applied",
+                    "revision": result.get("revision", ""),
+                    "workspace": result.get("workspace"),
+                    "changes": patched.changes,
+                    "code": checked.code,
+                },
+            )
+            return
+        latest = _LIVE.snapshot() or snapshot
+        self._reply(
+            False,
+            result.get("error") or "AIの変更を適用できませんでした",
+            {
+                "status": result.get("status", "failed"),
+                "revision": latest["revision"],
+                "workspace": latest["workspace"],
+                "changes": patched.changes,
+            },
+        )
+
     def _start_trial(self, payload: dict[str, Any]) -> None:
         """保存せずに今の組み立てを本体の実行器で走らせる（試し実行）。"""
         global _TRIAL, _BREAKPOINTS
@@ -705,6 +989,10 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                 "操作の記録中は試し実行できません（記録を止めてから試してください）",
             )
             return
+        allowed, max_seconds, reason = _parse_max_seconds(payload)
+        if not allowed:
+            self._reply(False, reason)
+            return
         if "breakpoints" in payload:
             _BREAKPOINTS = _as_ids(payload.get("breakpoints"))
         session = blockly_run.TrialSession(next(_RUN_IDS))
@@ -720,13 +1008,32 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             self._reply(False, "実行できません:\n- " + "\n- ".join(errors))
             return
         trial = _Trial(session, cls)
-        try:
-            message = _call_on_gui(lambda: host.start_external_command(cls))
-        except Exception as e:
-            # 開始の後の手順（一覧の作り直し等）で落ちても、走っていれば追跡する。
-            # 追跡しないと編集画面から見えず、止めることもできない。
-            if _our_command(trial) is not None:
+
+        def _begin() -> str | None:
+            """混雑の確認・開始・公開をまとめて GUI スレッドで行う。
+
+            受け口のスレッドが別々に確かめると、その間に別の実行が始まって
+            対象を取り違える。期限もここ（開始の直前）で取る。
+            """
+            global _TRIAL
+            if max_seconds is not None:
+                session.deadline = time.monotonic() + max_seconds
+            try:
+                message = host.start_external_command(cls)
+            except Exception:
+                # 開始の後の手順（一覧の作り直し等）で落ちても、走っていれば追跡する。
+                # 追跡しないと編集画面から見えず、止めることもできない。
+                if _our_command(trial) is not None:
+                    _TRIAL = trial
+                raise
+            if not message:
                 _TRIAL = trial
+            return message
+
+        try:
+            message = _call_on_gui(_begin)
+        except Exception as e:
+            if _TRIAL is trial:
                 self._reply(
                     True,
                     f"試し実行を始めました（本体で注意: {e}）",
@@ -738,45 +1045,60 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         if message:
             self._reply(False, str(message))
             return
-        _TRIAL = trial
         self._reply(True, "試し実行を始めました", {"runId": session.run_id})
 
     def _control_trial(self, payload: dict[str, Any]) -> None:
-        """試し実行の停止・一時停止・再開・1つ進む・区切りの差し替え。"""
-        global _BREAKPOINTS
+        """試し実行の停止・一時停止・再開・1つ進む・区切りの差し替え。
+
+        どの操作も「いまの試し実行の runId」を要求する。確かめるのは GUI スレッド
+        で操作する時点なので、待っている間に別の実行へ切り替わっていても、
+        古い画面の操作が新しい実行へかからない。
+        """
         action = str(payload.get("action", ""))
-        trial = _TRIAL
-        if action == "breakpoints":
-            _BREAKPOINTS = _as_ids(payload.get("breakpoints"))
-            if trial is not None:
-                trial.session.breakpoints = _BREAKPOINTS
-            self._reply(True, "")
+        if action not in _CONTROL_ACTIONS:
+            self._reply(False, f"知らない操作です: {action}")
             return
-        host = _RUN_HOST
-        cmd = _our_command(trial)
-        if host is None or trial is None or cmd is None:
-            self._reply(False, "試し実行は動いていません")
+        run_id = payload.get("runId")
+        if not _is_run_id(run_id):
+            self._reply(False, RUN_SWITCHED_MESSAGE)
             return
-        session = trial.session
+
+        def _apply() -> tuple[bool, str]:
+            global _BREAKPOINTS
+            trial = _TRIAL
+            if trial is None or trial.session.run_id != run_id:
+                return (False, RUN_SWITCHED_MESSAGE)
+            session = trial.session
+            if action == "breakpoints":
+                _BREAKPOINTS = _as_ids(payload.get("breakpoints"))
+                session.breakpoints = _BREAKPOINTS
+                return (True, "")
+            host = _RUN_HOST
+            cmd = _our_command(trial)
+            if host is None or cmd is None:
+                return (False, "試し実行は動いていません")
+            try:
+                if action == "stop":
+                    session.stop_requested = True
+                    host.stopPlay()
+                elif action == "pause":
+                    host.set_running_paused(True)
+                elif action == "resume":
+                    host.set_running_paused(False)
+                else:  # step
+                    # 次のブロックの手前で止まるよう頼んでから動かす。
+                    session.step_pending = True
+                    host.set_running_paused(False)
+            except Exception as e:
+                return (False, f"本体が応答しません: {e}")
+            return (True, "")
+
         try:
-            if action == "stop":
-                session.stop_requested = True
-                _call_on_gui(host.stopPlay)
-            elif action == "pause":
-                _call_on_gui(lambda: host.set_running_paused(True))
-            elif action == "resume":
-                _call_on_gui(lambda: host.set_running_paused(False))
-            elif action == "step":
-                # 次のブロックの手前で止まるよう頼んでから動かす。
-                session.step_pending = True
-                _call_on_gui(lambda: host.set_running_paused(False))
-            else:
-                self._reply(False, f"知らない操作です: {action}")
-                return
+            ok, message = _call_on_gui(_apply)
         except Exception as e:
             self._reply(False, f"本体が応答しません: {e}")
             return
-        self._reply(True, "")
+        self._reply(ok, message)
 
     def _start_record(self) -> None:
         """本体の送信線に記録を付ける（マクロ記録の開始）。"""
@@ -885,6 +1207,28 @@ def _as_ids(value: Any) -> frozenset[str]:
     return frozenset(str(v) for v in value if isinstance(v, str) and v)
 
 
+def _parse_max_seconds(payload: dict[str, Any]) -> tuple[bool, float | None, str]:
+    """試し実行の時間上限を読む。無ければ (True, None, "")。
+
+    あるときは正の有限の数だけを受ける（真偽値・文字列・NaN・無限・0以下は断る）。
+    ブラウザから来ない形でも、受け口は自分で確かめる。
+    """
+    if "maxSeconds" not in payload:
+        return (True, None, "")
+    value = payload.get("maxSeconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return (False, None, "時間上限は秒数（正の数）で書いてください")
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        return (False, None, "時間上限は0より大きい有限の秒数で書いてください")
+    return (True, seconds, "")
+
+
+def _is_run_id(value: Any) -> bool:
+    """runId として使える正の整数か（真偽値は整数扱いしない）。"""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def _py_dir_mtime() -> float:
     """保存先フォルダの更新時刻。読めなければ 0.0（比較不能＝変化なし扱い）。"""
     try:
@@ -957,7 +1301,12 @@ def _stop_server() -> None:
 
 
 def stop_blockly_editor() -> None:
-    """Menubar.closeAllから呼ぶ。開きっぱなしでの終了を防ぐ。"""
+    """Menubar.closeAllから呼ぶ。開きっぱなしでの終了を防ぐ。
+
+    閉じる前に、時間上限つきの試し実行が走っていれば止める（GUI スレッドから
+    呼ばれる）。上限なしの試し実行は従来どおり本体側で止める。
+    """
+    _stop_trial_for_close()
     _stop_server()
 
 
@@ -1067,6 +1416,8 @@ def open_blockly_editor(
             pass
 
     def on_close() -> None:
+        # 閉じたあと止められなくなるため、上限つきの試し実行はここで止める。
+        _stop_trial_for_close()
         _stop_server()
         try:
             win.destroy()

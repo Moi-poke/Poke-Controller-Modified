@@ -6,7 +6,9 @@ Poke-Controller の Blockly プログラムを、AI エージェントが機械�
 2. 本物の Blockly（node の vm）で Python を生成し、保存前検査を通す。
 3. `build --write` で `SerialController/Commands/PythonCommands/<stem>.py` と `<stem>.blockly.json` の対を保存する。
 
-`.py` を直接書かない。正本はこの仕様と `.blockly.json`。既存の保存物を修正するときも、仕様を直して `check` → `build --write` を通す。
+保存済み作品の正本は `.blockly.json`、`.py` は派生物。このコンパクト仕様は新規作成用の入力であり、保存済み作品と並ぶ正本ではない。
+新規は仕様 → `check` → `build --write`、既存作品は `check --workspace` → `patch --dry-run` → `patch --write` で扱う（[手順](../README.md)、[CLI 契約](cli.md)）。
+GUI 編集済み作品を古い仕様から作り直さず、workspace の ID・配置・コメント・変数を保持して部分編集する。
 
 ## トップレベル
 
@@ -417,33 +419,12 @@ Poke-Controller の Blockly プログラムを、AI エージェントが機械�
 - `text_join` の `ADD2` 以降は現行カタログに無い。3要素以上は入れ子にする。
 - `elseIfCount` の `I` は大文字。`elseifCount` は Blockly が読まない。
 - `stem` は `[A-Za-z_][A-Za-z0-9_]*`。`build --write` では必須。
-- `.py` を直接編集しない。手編集は次の `build --write` で消える（`pokecon.pySha256` の検出対象）。
-- 既存ファイルを上書きするときは、先にユーザーの意図を確認する。
-
-## CLI の早見表
-
-```sh
-# カタログ（JSON / Markdown）
-uv run --frozen python tools/blockly_agent.py catalog
-uv run --frozen python tools/blockly_agent.py catalog --format markdown
-
-# 検査（0=成功、1=検査失敗、2=使い方/node 不在）
-uv run --frozen python tools/blockly_agent.py check my_spec.json
-uv run --frozen python tools/blockly_agent.py check my_spec.json --json
-
-# workspace JSON を作る / 検査して対保存する
-uv run --frozen python tools/blockly_agent.py build my_spec.json
-uv run --frozen python tools/blockly_agent.py build my_spec.json --write
-uv run --frozen python tools/blockly_agent.py build my_spec.json --write --stem MyBlock
-
-# 保存済み .blockly.json から Python を生成する
-uv run --frozen python tools/blockly_agent.py render SerialController/Commands/PythonCommands/MyBlock.blockly.json
-```
-
-`--app-dir` はテストや別置き場の `SerialController/` を指すときだけ使う。オプションはサブコマンドの後ろに置く。`check --json` の `code` で生成 Python を確認できる。`build` 単体は workspace JSON を出す（Python は出さない）。
+- `.py` を直接編集しない。手編集を検出した通常保存は拒否され、明示許可時だけ `--overwrite-external` を使う（[手順](../README.md)）。
+- 既存作品を上書きするときはユーザーの意図を確認し、保存済み workspace から `patch` する。ディスクの版検査はブラウザの未保存編集を検出しない。
 
 ## 関連
 
-- [SKILL.md](../SKILL.md) — 手順・規律。
+- [手順](../README.md) — 作成・保存済み作品の部分編集・ライブ編集。
+- [cli.md](cli.md) — CLI オプション、操作 JSON、版と結果の読み方。
 - [blocks.md](blocks.md) — 生成されたブロック一覧。手で編集しない。
 - [examples/](../examples/) — 動く作例。

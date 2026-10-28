@@ -126,6 +126,28 @@ def test_breakpoint_toggle_is_sent_with_the_run() -> None:
     assert res["bps"] == ["w1"]
 
 
+def test_breakpoint_toggled_while_running_is_sent_with_the_run_id() -> None:
+    """実行中に付けた区切りも、いまの実行の runId を付けて送ること。"""
+    res = run_editor(
+        _SETUP
+        + """
+        boot();
+        await flush(400);
+        els.runbtn.handlers.click();
+        await flush(300);
+        const item = Blockly.ContextMenuRegistry.registry.getItem('pokeconBreakpoint');
+        item.callback({ block: ws.getBlockById('w1') });
+        await flush(100);
+        const sent = runCalls().filter((c) => c.url === './run/control').pop();
+        await settle();
+        done({ body: sent.body });
+        """
+    )
+    assert res["body"]["action"] == "breakpoints"
+    assert res["body"]["runId"] == 1
+    assert res["body"]["breakpoints"] == ["w1"]
+
+
 def test_pause_step_and_stop_buttons_send_controls() -> None:
     """一時停止・1つ進む・停止は /run/control へ操作を送り、一時停止中は再開に変わること。"""
     res = run_editor(
@@ -147,12 +169,12 @@ def test_pause_step_and_stop_buttons_send_controls() -> None:
         els.stopbtn.handlers.click();
         await flush(50);
         const actions = runCalls().filter((c) => c.url === './run/control')
-          .map((c) => c.body.action);
+          .map((c) => c.body.action + ':' + c.body.runId);
         await settle();
         done({ actions, pausedLabel, runState: els.runstate.textContent });
         """
     )
-    assert res["actions"] == ["pause", "resume", "step", "stop"]
+    assert res["actions"] == ["pause:1", "resume:1", "step:1", "stop:1"]
     assert "再開" in res["pausedLabel"]
 
 

@@ -173,6 +173,12 @@ python .\SerialController\Window.py --profile switch1 --transport pico_uart
 - ログファイル本体は `log/` 直下（`log_日時.log`）に起動ごとに作られます。添えると原因が追いやすくなります。
 - `log/` が増えてきたら古い物から手で消してかまいません（自動削除はしません）。
 
+### 外部 AI でスクリプトを作る
+
+自分の clone を Codex、Claude Code などのワークスペースとして開き、既存の Blockly CLI で作品を作成・編集できます。
+追加の前提と依頼例は [外部 AI の利用手順](docs/AI_AUTOMATION.md) を参照してください。
+PokeCon への LLM 組込みや skill の別途インストールは不要です。
+
 ### 開発する方
 
 開発用コマンドはタスクランナー `task` にまとめています。

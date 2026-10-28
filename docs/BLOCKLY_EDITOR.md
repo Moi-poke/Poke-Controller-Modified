@@ -39,7 +39,19 @@
 - 試し実行は使用回数・実行履歴に残さない（一覧に無く再実行できないため）。表示名は `[試し] <プログラム名>`。
 - 走らせる前に保存と同じ検査（import の公開面・NAME と do・サブルーチン・テンプレ参照）を通し、目印の引数が素の文字列であることも確かめる（手で書き換えたIDからの差し込みを防ぐ）。走らせる分に画像未選択の画像認識ブロックがあれば送らない。
 - 仕組み：試し実行用の生成では各ブロックの手前に `_pokecon_step(self, '<ブロックID>')` を差す（保存用のコードには入らない）。本体（[`services/blockly_run.py`](../SerialController/services/blockly_run.py)）がその呼び先で「いまどのブロックか」を記録し、区切り・1つ進むはコマンド自身の一時停止で止める。ブロックごとに停止・一時停止の関所（`_gate`）を通すため、待ちを含まない無限ループでも止められる。受け口は `POST /run`・`GET /run/state`・`POST /run/control`（開始・停止は待ち行列でGUIスレッドへ渡す）。
+- 外部のAIクライアント向けに、`POST /run` は任意の `maxSeconds`（正の有限秒）を受け、期限は開始を受け付けたGUIスレッドで決める。期限を過ぎた自分の試し実行は GUI の見回りが一度だけ止め、結果は「停止」＋`timedOut:true` になる（OS／GUIが固まる場合の保証ではない）。`/run/control` は全操作に正の整数 `runId` を要求し、いまの試し実行と違えば何も変えずに断る。`/run/state` は `capabilities:["boundedTrial","runIdControl"]` を返す。エディタ窓を閉じる経路でも、上限つきの試し実行は止めてから閉じる。上限なし（`maxSeconds` 省略）のブラウザ試行は従来どおり。
 - 本体と繋がっていない（受け口だけ動いている）ときは試し実行できない旨を返す。別のコマンドが本体で走っている間は始められない。
+
+## AIからのライブ編集
+
+開いたままのワークスペースへ、AIの変更をマウス操作なしで適用できる。編集画面が約0.4秒ごとに `GET /live/next` を引き、`Blockly` のAPIでフィールドを変える。入力イベントは使わない。
+
+- `GET /live/state` で現在の `revision` と workspace、`POST /live/patch` で操作と `baseRevision` を渡す。CLI は `live status` / `live patch`。
+- 適用するのは、画面の現在の版が `baseRevision` と一致するときだけ。人が先に編集していれば `conflict` を返し、何も変えない。
+- フィールドは差分適用。構造変更（`create_block` / `connect` / `delete_block`）もライブで行える。構造変更は検証済みworkspaceを読み込むため、元に戻す履歴はクリアされる。
+- 適用しても保存はしない（画面は未保存のまま）。保存は人が行う。
+- 同じアプリの別タブには適用しない（最初に名乗った1タブを貸与し、5秒応答が無ければ譲る）。ドラッグ中・フィールド編集中は次の周期へ回す。
+- 受け口は `POST /live/snapshot`・`POST /live/result`（画面側）と `GET /live/state`・`POST /live/patch`（CLI側）。従来の Host / Origin / Content-Type 検査を通る。
 
 ## 操作の記録
 
@@ -73,16 +85,10 @@
 
 ## AIエージェントから組む
 
-- スキル：[`.opencode/skills/pokecon-blockly/SKILL.md`](../.opencode/skills/pokecon-blockly/SKILL.md)。コンパクト仕様から `.blockly.json` + `.py` の対を作る手順・カタログ・作例を同梱する。
-- CLI：`uv run --frozen python tools/blockly_agent.py catalog|check|build|render ...`。
-  - `catalog` はブロックの fields / inputs / 選択肢を出し、`--format markdown` で [`references/blocks.md`](../.opencode/skills/pokecon-blockly/references/blocks.md)（生成物。手で編集しない）を作れる。
-  - `check` は仕様を組み立てて保存前検査を通す（0=成功、1=検査失敗、2=使い方/node 不在）。`--json` の `code` で生成 Python を確認できる。
-  - `build` は workspace JSON を出し、`--write` で `.blockly.json` と `.py` の対を保存する。`--write` では保存名（`stem`）が必要。
-  - `render` は保存済み `.blockly.json` から Python を生成して表示する。
-- 生成には `node`（Blockly のヘッドレス生成）が必要。アプリ本体・カメラ・シリアル実機は不要。実機での試し実行・記録は本体起動中だけ行う。
-- 保存物はブラウザ編集と同じ `${保存名}.py` + `${保存名}.blockly.json` の対。`.py` は直接書かず、仕様 → `check` → `build --write` の順に通す。`pokecon.pySha256` の記録・手編集検出も共通なので、既存保存物を上書きするときはユーザーの意図を先に確認する。
-- ブラウザ編集は従来どおり使える（AI 生成物を開いて直すこともできる）。画像は `Template/` の実在名だけを使い、`TEMPLATE` は空にしない。`CROP` は `x1,y1,x2,y2`、`THRESHOLD` は0〜1。
-- ハードウェアが無い環境では `check` / `render` までを検証し、実画面・実機は未確認と明記する。画面確認は [`.opencode/skills/gui-probe/SKILL.md`](../.opencode/skills/gui-probe/SKILL.md) か Blockly エディタに委ねる。
+- 導入・準備・依頼例は [外部 AI の利用手順](AI_AUTOMATION.md)、作成・保存済み作品の部分編集・ライブ編集は [共通手順](blockly-agent/README.md) を参照する。
+- 引数・操作 JSON・版ガードは [CLI 契約](blockly-agent/references/cli.md)、構文は [コンパクト仕様](blockly-agent/references/spec.md)、画像認識は [vision ガイド](blockly-agent/references/vision.md) にまとめる。
+- 生成には指定の Python / uv 環境と PATH 上の `node` が必要。生成・検査・保存・ローカル画像照合・試行 preview は実機不要。`frame` / `live` / 許可後の実機試行は、その clone の本体と対象プロファイルのエディタが必要。
+- 保存済み作品の正本は `.blockly.json`、`.py` は派生物、コンパクト仕様は新規作成用入力。GUI 編集済み作品を古い仕様から作り直さない。開いた画面と共同編集するときは上記のライブ編集を使い、保存は人が行う。
 
 ## サンプル
 
